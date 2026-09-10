@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+: "${BLENDER_BIN:=blender}"
+: "${PYTHON_BIN:=python3}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+: "${PRINTABLE_BLENDER_STATE_DIR:=$REPOSITORY_ROOT/.dev/printable-blender/state}"
+: "${PRINTABLE_BLENDER_WORKSPACE_ROOT:=$REPOSITORY_ROOT/.dev/printable-blender/workspace}"
+export PRINTABLE_BLENDER_STATE_DIR PRINTABLE_BLENDER_WORKSPACE_ROOT
+export PYTHONPATH="$REPOSITORY_ROOT/addon${PYTHONPATH:+:$PYTHONPATH}"
+
+exec "$PYTHON_BIN" -m printable_bridge.supervisor "$BLENDER_BIN" "$REPOSITORY_ROOT"

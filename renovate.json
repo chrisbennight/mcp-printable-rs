@@ -1,0 +1,16 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["cargo", "dockerfile", "github-actions", "custom.regex"],
+  "labels": ["dependencies"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Version pins declared under a `# renovate:` hint comment: the rustup-init installer version in the amd64 workflow, and the toolchain channel in rust-toolchain.toml. The rustup sha256 next to the version pin is NOT bumped automatically — a version bump therefore fails checksum verification in CI until the sha is updated by hand, which is the intended loud failure mode.",
+      "fileMatch": ["^\\.gitea/workflows/.*\\.ya?ml$", "^rust-toolchain\\.toml$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s*\\n\\s*(?:[A-Z0-9_]+|channel)\\s*[:=]\\s*\"(?<currentValue>[^\"]+)\""
+      ]
+    }
+  ]
+}

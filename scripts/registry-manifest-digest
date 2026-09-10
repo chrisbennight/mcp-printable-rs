@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+  echo "usage: registry-manifest-digest <image-reference>" >&2
+  exit 64
+fi
+
+manifest_file="$(mktemp "${TMPDIR:-/tmp}/printable-registry-manifest.XXXXXX")"
+trap 'rm -f "$manifest_file"' 0 HUP INT TERM
+
+docker buildx imagetools inspect "$1" --raw > "$manifest_file"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  digest="$(sha256sum "$manifest_file" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  digest="$(shasum -a 256 "$manifest_file" | awk '{print $1}')"
+else
+  echo "sha256sum or shasum is required" >&2
+  exit 69
+fi
+
+case "$digest" in
+  ''|*[!0-9a-f]*)
+    echo "registry returned an invalid manifest digest" >&2
+    exit 65
+    ;;
+esac
+
+if [ "${#digest}" -ne 64 ]; then
+  echo "registry returned an invalid manifest digest" >&2
+  exit 65
+fi
+
+printf 'sha256:%s\n' "$digest"

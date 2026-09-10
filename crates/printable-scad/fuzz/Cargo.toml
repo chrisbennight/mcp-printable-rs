@@ -1,0 +1,23 @@
+[package]
+name = "printable-scad-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+printable-scad = { path = ".." }
+
+[[bin]]
+name = "gate"
+path = "fuzz_targets/gate.rs"
+test = false
+doc = false
+bench = false
+
+# Detached from the parent workspace: libfuzzer-sys needs a nightly toolchain
+# and the sanitizer runtime, which the main workspace build must not require.
+[workspace]

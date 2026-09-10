@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 4 ]; then
+  echo "usage: $0 <server-image> <blender-image> <smoke-driver> <expected-tools>" >&2
+  exit 2
+fi
+
+server_ref="$1"
+blender_ref="$2"
+smoke_driver="$3"
+expected_tools="$4"
+test -x "$smoke_driver"
+test -s "$expected_tools"
+
+suffix="${PRINTABLE_PAIR_SMOKE_RUN_ID:-$$}"
+case "$suffix" in
+  *[!A-Za-z0-9_.-]*)
+    echo "PRINTABLE_PAIR_SMOKE_RUN_ID contains unsafe characters" >&2
+    exit 2
+    ;;
+esac
+
+network="printable-pair-${suffix}"
+workspace="printable-workspace-${suffix}"
+blender_name="printable-blender-${suffix}"
+worker_name="printable-render-worker-${suffix}"
+server_name="printable-server-${suffix}"
+smoke_name="printable-smoke-${suffix}"
+bearer="$(printf '%064d' 0)"
+
+cleanup() {
+  docker rm -f "$smoke_name" "$server_name" "$blender_name" "$worker_name" >/dev/null 2>&1 || true
+  docker volume rm "$workspace" >/dev/null 2>&1 || true
+  docker network rm "$network" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+cleanup
+
+docker network create --internal "$network" >/dev/null
+docker volume create "$workspace" >/dev/null
+docker run --rm --platform linux/amd64 --user 0:0 \
+  --entrypoint /bin/sh --volume "$workspace:/workspace" \
+  "$server_ref" -c 'chown 10001:10001 /workspace'
+
+docker run -d --name "$blender_name" --platform linux/amd64 \
+  --network "$network" --network-alias printable-blender \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 \
+  --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770 \
+  --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
+  --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
+  --volume "$workspace:/workspace" \
+  -e PRINTABLE_BLENDER_MODE=ui \
+  -e PRINTABLE_BLENDER_UI_BACKEND=software \
+  "$blender_ref" >/dev/null
+
+wait_healthy() {
+  local container_name="$1"
+  for _ in $(seq 1 300); do
+    local state
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name")"
+    if [ "$state" = healthy ]; then
+      return 0
+    fi
+    if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != true ]; then
+      docker logs "$container_name" || true
+      return 1
+    fi
+    sleep 2
+  done
+  docker logs "$container_name" || true
+  return 1
+}
+
+wait_healthy "$blender_name"
+if ! docker exec "$blender_name" python3 \
+  /opt/printable/addon/integration_smoke.py \
+  --host 127.0.0.1 --mode capabilities; then
+  docker logs "$blender_name" || true
+  exit 1
+fi
+docker exec "$blender_name" test -s /workspace/smoke/scene.blend
+# The direct bridge probe owns this fixed job id and intentionally exercises
+# reserved mechanical-analysis output. Remove only that probe-owned subtree
+# before the server performs durable recovery inspection on the new volume.
+docker exec "$blender_name" rm -rf -- /workspace/.printable/jobs/smoke
+docker exec "$blender_name" test ! -e /workspace/.printable/jobs/smoke
+
+docker run -d --name "$worker_name" --platform linux/amd64 \
+  --network "$network" --network-alias printable-render-worker \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 \
+  --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770 \
+  --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
+  --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
+  --volume "$workspace:/workspace" \
+  -e PRINTABLE_BLENDER_ROLE=render_worker \
+  -e PRINTABLE_BLENDER_MODE=background \
+  "$blender_ref" >/dev/null
+wait_healthy "$worker_name"
+
+docker run -d --name "$server_name" --platform linux/amd64 \
+  --network "$network" --network-alias printable-server \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 \
+  --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770 \
+  --volume "$workspace:/workspace" \
+  -e PRINTABLE_HTTP_HOST=0.0.0.0 \
+  -e PRINTABLE_HTTP_PORT=8123 \
+  -e PRINTABLE_ALLOWED_HOSTS=printable-server,printable-server:8123 \
+  -e "PRINTABLE_MCP_BEARER=${bearer}" \
+  -e PRINTABLE_WORKSPACE_ROOT=/workspace \
+  -e PRINTABLE_BLENDER_WORKSPACE_ROOT=/workspace \
+  -e BLENDER_HOST=printable-blender \
+  -e BLENDER_PORT=9876 \
+  -e PRINTABLE_RENDER_WORKER_HOST=printable-render-worker \
+  "$server_ref" >/dev/null
+wait_healthy "$server_name"
+docker exec "$server_name" test -s /workspace/smoke/scene.blend
+
+docker run -d --name "$smoke_name" --platform linux/amd64 \
+  --network "$network" \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 64 --tmpfs /tmp:rw,exec,uid=10001,gid=10001,mode=1770 \
+  --volume "$workspace:/workspace:ro" \
+  --entrypoint /bin/sleep "$server_ref" infinity >/dev/null
+docker exec -i "$smoke_name" /bin/sh -c \
+  'umask 077; cat > /tmp/printable-smoke; chmod 0500 /tmp/printable-smoke' \
+  < "$smoke_driver"
+docker exec -i "$smoke_name" /bin/sh -c \
+  'umask 077; cat > /tmp/expected-tools.txt' \
+  < "$expected_tools"
+
+for container_name in "$smoke_name" "$server_name" "$blender_name" "$worker_name"; do
+  socket_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}' "$container_name")"
+  test -z "$socket_mount"
+done
+
+if ! docker exec \
+  -e PRINTABLE_SMOKE_HOST=printable-server:8123 \
+  -e "PRINTABLE_SMOKE_BEARER=${bearer}" \
+  -e PRINTABLE_SMOKE_DURABLE_SOURCE=smoke/scene.blend \
+  -e PRINTABLE_SMOKE_WORKSPACE_ROOT=/workspace \
+  -e PRINTABLE_SMOKE_REQUIRE_READY=1 \
+  -e PRINTABLE_SMOKE_REQUIRE_ISOLATED_WORKER=1 \
+  -e PRINTABLE_SMOKE_REQUIRE_NATIVE_VIEW=1 \
+  "$smoke_name" /tmp/printable-smoke \
+    http://printable-server:8123 /tmp/expected-tools.txt; then
+  docker logs "$server_name" || true
+  docker logs "$blender_name" || true
+  docker logs "$worker_name" || true
+  exit 1
+fi
+
+echo "PAIR_SMOKE_OK"

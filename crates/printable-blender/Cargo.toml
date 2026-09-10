@@ -1,0 +1,34 @@
+[package]
+name = "printable-blender"
+description = "TCP client for the Blender addon bridge: length-prefixed JSON framing, deadlines, version handshake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Exposes the scriptable in-process fake addon to downstream crates (the server
+# crate's integration tests) and, via the self dev-dependency below, to this
+# crate's own integration tests. In-crate unit tests get it via cfg(test).
+fake-addon = []
+
+[dependencies]
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps JSON object key order through Value round-trips so
+# backend output remains readable and predictable when rendered as text.
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# Self dev-dependency so this crate's integration tests (tests/), which link the
+# library without cfg(test), still see the fake_addon module: plain `cargo test`
+# resolves it without needing --features fake-addon on the command line.
+printable-blender = { path = ".", features = ["fake-addon"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt", "macros", "rt-multi-thread"] }
+tracing-subscriber = "0.3"

@@ -1,0 +1,10 @@
+/target
+.env
+/.dev/
+.DS_Store
+*.swp
+__pycache__/
+*.py[cod]
+
+# git worktrees created per the worktree-first workflow (AGENTS.md)
+.worktrees/

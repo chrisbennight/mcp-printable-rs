@@ -1,0 +1,19 @@
+[package]
+name = "printable-geom"
+description = "Pure mesh geometry and FDM printability analysis (parry3d + Manifold); no I/O, no async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# f64-precision CSG (booleans, volume, validity) via safe bindings to the
+# manifold3d C++ library. default-features = false drops the `parallel` (TBB)
+# feature, so the native build needs only cmake + a C++ compiler + git — no
+# extra system libraries. The sys crate clones and compiles manifold3d on the
+# first build (internet required once) and caches it thereafter.
+manifold-csg = { version = "0.4.0", default-features = false }
+parry3d-f64 = { version = "0.30.0", default-features = false, features = ["alloc", "required-features", "std"] }
+serde = { version = "1", features = ["derive"] }
+stl_io = "0.11.0"
+thiserror = "2"

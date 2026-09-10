@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Validate local Markdown links and stable heading anchors."""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+import re
+import sys
+from urllib.parse import unquote
+
+
+ROOT = Path(__file__).resolve().parent.parent
+LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
+HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+HTML = re.compile(r"<[^>]+>")
+PUNCTUATION = re.compile(r"[^a-z0-9 _-]")
+EXCLUDED = {".git", ".worktrees", "target"}
+
+
+def anchor(text: str) -> str:
+    value = HTML.sub("", text).strip().lower()
+    value = PUNCTUATION.sub("", value).replace(" ", "-")
+    return re.sub(r"-+", "-", value)
+
+
+def anchors(path: Path) -> set[str]:
+    found: set[str] = set()
+    duplicates: Counter[str] = Counter()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = HEADING.match(line)
+        if match is None:
+            continue
+        base = anchor(match.group(1))
+        suffix = duplicates[base]
+        duplicates[base] += 1
+        found.add(base if suffix == 0 else f"{base}-{suffix}")
+    return found
+
+
+def markdown_files() -> list[Path]:
+    return sorted(
+        path
+        for path in ROOT.rglob("*.md")
+        if not EXCLUDED.intersection(path.relative_to(ROOT).parts)
+    )
+
+
+def main() -> int:
+    failures: list[str] = []
+    cached_anchors: dict[Path, set[str]] = {}
+    for source in markdown_files():
+        text = source.read_text(encoding="utf-8")
+        for match in LINK.finditer(text):
+            raw = match.group(1).strip("<>")
+            if raw.startswith(("http://", "https://", "mailto:")):
+                continue
+            target_text, separator, fragment = raw.partition("#")
+            target_text = unquote(target_text)
+            if re.search(r":\d+$", target_text):
+                failures.append(f"{source.relative_to(ROOT)}: unstable line link {raw}")
+                continue
+            target = source if not target_text else (source.parent / target_text).resolve()
+            try:
+                target.relative_to(ROOT)
+            except ValueError:
+                failures.append(f"{source.relative_to(ROOT)}: link escapes repository {raw}")
+                continue
+            if not target.exists():
+                failures.append(f"{source.relative_to(ROOT)}: missing link target {raw}")
+                continue
+            if separator and fragment and target.is_file() and target.suffix == ".md":
+                known = cached_anchors.setdefault(target, anchors(target))
+                if fragment not in known:
+                    failures.append(
+                        f"{source.relative_to(ROOT)}: missing heading anchor {raw}"
+                    )
+    if failures:
+        for failure in failures:
+            print(failure, file=sys.stderr)
+        return 1
+    print(f"docgate: checked {len(markdown_files())} Markdown files")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

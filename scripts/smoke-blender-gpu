@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: smoke-blender-gpu <digest-qualified-image-reference>" >&2
+  exit 2
+fi
+
+image="$1"
+if [[ ! "$image" =~ ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+:[A-Za-z0-9][A-Za-z0-9._-]{0,127}@sha256:[0-9a-f]{64}$ ]]; then
+  echo "image must be a digest-qualified registry reference (tag@sha256:<64 lowercase hex>)" >&2
+  exit 2
+fi
+run_id="${PRINTABLE_GPU_SMOKE_RUN_ID:-$$}"
+if [[ ! "$run_id" =~ ^[A-Za-z0-9_.-]{1,40}$ ]]; then
+  echo "PRINTABLE_GPU_SMOKE_RUN_ID must be 1-40 safe name characters" >&2
+  exit 2
+fi
+gpu_name="printable-blender-gpu-smoke-${run_id}"
+unavailable_name="printable-blender-no-gpu-smoke-${run_id}"
+
+for command_name in docker nvidia-smi; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "required command is unavailable: ${command_name}" >&2
+    exit 1
+  fi
+done
+
+mapfile -t peer_pids < <(
+  nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits |
+    awk '$1 ~ /^[0-9]+$/ { print $1 }'
+)
+if [ "${#peer_pids[@]}" -eq 0 ]; then
+  echo "no pre-existing GPU workload is available for the coexistence proof" >&2
+  exit 1
+fi
+peer_pid="${peer_pids[0]}"
+
+require_peer() {
+  if ! nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits |
+    awk -v target="$peer_pid" '$1 + 0 == target { found=1 } END { exit !found }'; then
+    echo "pre-existing GPU process ${peer_pid} disappeared during the smoke" >&2
+    exit 1
+  fi
+}
+
+process_memory_mib() {
+  nvidia-smi --query-compute-apps=pid,used_memory \
+    --format=csv,noheader,nounits |
+    awk -F, -v target="$1" '
+      $1 + 0 == target {
+        gsub(/[[:space:]]/, "", $2)
+        if ($2 + 0 > maximum) maximum=$2 + 0
+        found=1
+      }
+      END { print found ? maximum : 0 }
+    '
+}
+
+cleanup_if_present() {
+  for container_name in "$gpu_name" "$unavailable_name"; do
+    if docker inspect "$container_name" >/dev/null 2>&1; then
+      docker rm -f "$container_name" >/dev/null
+    fi
+  done
+}
+trap 'cleanup_if_present || true' EXIT
+cleanup_if_present
+
+common_args=(
+  --read-only
+  --cap-drop ALL
+  --security-opt no-new-privileges
+  --pids-limit 512
+  --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770
+  --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750
+  --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750
+  --tmpfs /workspace:rw,uid=10001,gid=10001,mode=1770
+  -e PRINTABLE_BLENDER_RENDER_DEVICE=OPTIX
+)
+
+docker run -d --name "$unavailable_name" \
+  "${common_args[@]}" \
+  "$image" >/dev/null
+
+stopped=""
+for _ in $(seq 1 90); do
+  if [ "$(docker inspect --format '{{.State.Running}}' "$unavailable_name")" != true ]; then
+    stopped=1
+    break
+  fi
+  sleep 1
+done
+if [ -z "$stopped" ]; then
+  echo "Blender stayed running even though its required GPU was unavailable" >&2
+  exit 1
+fi
+if [ "$(docker inspect --format '{{.State.ExitCode}}' "$unavailable_name")" = 0 ]; then
+  echo "Blender reported success even though its required GPU was unavailable" >&2
+  exit 1
+fi
+if ! docker logs "$unavailable_name" 2>&1 |
+  grep -Fq 'OPTIX requested but no compatible device is available'; then
+  echo "GPU-unavailable startup did not emit a visible failure" >&2
+  docker logs "$unavailable_name" >&2 || true
+  exit 1
+fi
+require_peer
+
+docker run -d --name "$gpu_name" --gpus all \
+  "${common_args[@]}" \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display \
+  -e PRINTABLE_BLENDER_MODE=ui \
+  -e PRINTABLE_BLENDER_UI_BACKEND=egl \
+  "$image" >/dev/null
+
+healthy=""
+for _ in $(seq 1 180); do
+  state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$gpu_name")"
+  if [ "$state" = healthy ]; then
+    healthy=1
+    break
+  fi
+  if [ "$(docker inspect --format '{{.State.Running}}' "$gpu_name")" != true ]; then
+    echo "GPU-enabled Blender exited during startup" >&2
+    docker logs "$gpu_name" >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+if [ -z "$healthy" ]; then
+  echo "GPU-enabled Blender did not become healthy" >&2
+  docker logs "$gpu_name" >&2 || true
+  exit 1
+fi
+require_peer
+
+port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$gpu_name")"
+if [ "$port_bindings" != '{}' ] && [ "$port_bindings" != null ]; then
+  echo "GPU smoke container unexpectedly publishes a host port" >&2
+  exit 1
+fi
+if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$gpu_name" |
+  grep -q '^DISPLAY='; then
+  echo "GPU smoke container unexpectedly has DISPLAY configured" >&2
+  exit 1
+fi
+if docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$gpu_name" |
+  grep -q '^/var/run/docker.sock$'; then
+  echo "GPU smoke container unexpectedly has Docker control access" >&2
+  exit 1
+fi
+
+blender_pid="$(docker top "$gpu_name" -eo pid,comm | awk '$2 == "blender" { print $1; exit }')"
+if [ -z "$blender_pid" ]; then
+  echo "could not resolve the host Blender process id" >&2
+  exit 1
+fi
+
+docker exec "$gpu_name" python3 /opt/printable/addon/integration_smoke.py \
+  --host 127.0.0.1 --mode gpu-ui
+require_peer
+
+docker exec "$gpu_name" python3 /opt/printable/addon/integration_smoke.py \
+  --host 127.0.0.1 --mode gpu-eevee
+require_peer
+
+baseline_memory_mib="$(process_memory_mib "$blender_pid")"
+if [[ ! "$baseline_memory_mib" =~ ^[0-9]+$ ]]; then
+  echo "could not measure Blender GPU memory before the Cycles stage" >&2
+  exit 1
+fi
+
+docker exec "$gpu_name" python3 /opt/printable/addon/integration_smoke.py \
+  --host 127.0.0.1 --mode gpu-cycles &
+smoke_pid=$!
+peak_memory_mib="$baseline_memory_mib"
+peak_sm_percent=0
+sample_count=0
+while kill -0 "$smoke_pid" >/dev/null 2>&1; do
+  require_peer
+  pmon_sample="$(nvidia-smi pmon -s um -c 1)"
+  require_peer
+  process_sample="$(
+    printf '%s\n' "$pmon_sample" |
+      awk -v target="$blender_pid" '$2 + 0 == target { print $4 "," $10; exit }'
+  )"
+  sm_percent=""
+  memory_mib=""
+  IFS=, read -r sm_percent memory_mib <<< "$process_sample" || true
+  if [[ "$memory_mib" =~ ^[0-9]+$ ]] && [ "$memory_mib" -gt "$peak_memory_mib" ]; then
+    peak_memory_mib="$memory_mib"
+  fi
+  if [[ "$sm_percent" =~ ^[0-9]+$ ]] && [ "$sm_percent" -gt "$peak_sm_percent" ]; then
+    peak_sm_percent="$sm_percent"
+  fi
+  sample_count=$((sample_count + 1))
+done
+wait "$smoke_pid"
+require_peer
+
+if [ "$sample_count" -eq 0 ]; then
+  echo "Cycles render completed before GPU observation began" >&2
+  exit 1
+fi
+if [ "$peak_memory_mib" -le "$baseline_memory_mib" ]; then
+  echo "Cycles render did not increase Blender GPU memory above baseline" >&2
+  exit 1
+fi
+if [ "$peak_sm_percent" -le 0 ]; then
+  echo "Cycles render had no observable Blender streaming-multiprocessor use" >&2
+  exit 1
+fi
+
+docker exec "$gpu_name" test -s /workspace/smoke/gpu-eevee.png
+docker exec "$gpu_name" test -s /workspace/smoke/gpu-cycles.png
+docker exec "$gpu_name" test -s /workspace/smoke/gpu-cycles-dark.png
+
+gpu_identity="$(
+  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader |
+    awk 'NR == 1 { print; exit }'
+)"
+image_identity="$(docker image inspect --format '{{.Id}}' "$image")"
+cleanup_if_present
+trap - EXIT
+echo "GPU_SMOKE_OK"
+echo "image=${image}"
+echo "image_id=${image_identity}"
+echo "gpu=${gpu_identity}"
+echo "cycles_baseline_memory_mib=${baseline_memory_mib}"
+echo "cycles_peak_memory_mib=${peak_memory_mib}"
+echo "cycles_peak_sm_percent=${peak_sm_percent}"
+echo "cycles_observation_samples=${sample_count}"
+echo "coexisting_peer_pid=${peer_pid}"
+echo "display=unset"
+echo "published_ports=none"
+echo "gpu_unavailable=fails_visible"

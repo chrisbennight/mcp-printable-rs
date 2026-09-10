@@ -1,0 +1,3 @@
+import("part.stl");
+surface(file = "height.png", center = true);
+translate([0, 0, 5]) import("second.stl", convexity = 10);

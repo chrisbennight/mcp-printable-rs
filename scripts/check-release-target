@@ -1,0 +1,172 @@
+#!/bin/sh
+set -eu
+
+violations=0
+workflow_count=0
+for workflow in .gitea/workflows/*.yml .gitea/workflows/*.yaml; do
+  [ -f "$workflow" ] || continue
+  workflow_count=$((workflow_count + 1))
+  if grep -Ein 'macos|darwin|linux/arm64|setup-qemu-action' "$workflow"; then
+    violations=1
+  fi
+done
+
+[ "$workflow_count" -gt 0 ]
+
+if grep -En 'linux/arm64|setup-qemu-action' build-docker.sh; then
+  violations=1
+fi
+
+if [ "$violations" -ne 0 ]; then
+  echo "release configuration must target Linux/amd64 only" >&2
+  exit 1
+fi
+
+grep -Fq 'platforms: linux/amd64' .gitea/workflows/build.yml
+grep -Fq 'docker buildx build --platform linux/amd64 ' build-docker.sh
+grep -Fq 'publish-release-pair:' .gitea/workflows/build.yml
+grep -Fq 'gpu-smoke-blender:' .gitea/workflows/build.yml
+grep -Fq 'release-security:' .gitea/workflows/build.yml
+grep -Fq 'needs: [image, blender-image, gpu-smoke-blender, release-security]' \
+  .gitea/workflows/build.yml
+grep -Fq 'digest: ${{ steps.digest.outputs.digest }}' .gitea/workflows/build.yml
+grep -Fq 'BLENDER_DIGEST: ${{ needs.blender-image.outputs.digest }}' .gitea/workflows/build.yml
+grep -Fq 'SERVER_DIGEST: ${{ needs.image.outputs.digest }}' .gitea/workflows/build.yml
+grep -Fq 'BLENDER_DIGEST: ${{ needs.gpu-smoke-blender.outputs.blender_digest }}' .gitea/workflows/build.yml
+grep -Fq 'needs: publish-release-pair' .gitea/workflows/build.yml
+grep -Fq 'org.printable.server.digest' release/Dockerfile
+grep -Fq 'org.printable.blender.digest' release/Dockerfile
+grep -Fq 'mcp-printable-release' build-docker.sh
+grep -Fq 'smoke_ref="${TAG}@${DIGEST}"' .gitea/workflows/build.yml
+grep -Fq 'scripts/registry-manifest-digest "$server_commit_tag"' build-docker.sh
+grep -Fq 'smoke "$verified_server" linux/amd64' build-docker.sh
+grep -Fq 'smoke_blender "$verified_blender"' build-docker.sh
+grep -Fq 'scripts/smoke-release-pair' build-docker.sh
+grep -Fq 'scripts/smoke-release-pair' .gitea/workflows/build.yml
+grep -Fq 'PRINTABLE_SMOKE_DURABLE_SOURCE=smoke/scene.blend' \
+  scripts/smoke-release-pair
+grep -Fq 'PRINTABLE_SMOKE_WORKSPACE_ROOT=/workspace' \
+  scripts/smoke-release-pair
+grep -Fq 'PRINTABLE_SMOKE_REQUIRE_READY=1' scripts/smoke-release-pair
+grep -Fq -- '--volume "$workspace:/workspace:ro"' \
+  scripts/smoke-release-pair
+test -x scripts/smoke-release-pair
+test -f scripts/verify_release_image.py
+test -f scripts/release_security.py
+test -f release/security-policy.json
+grep -Fq 'GRYPE_VERSION: "0.110.0"' .gitea/workflows/build.yml
+grep -Fq '"scanner_version": "0.110.0"' release/security-policy.json
+grep -Fq 'verify_grype_version(policy["scanner_version"])' \
+  scripts/release_security.py
+grep -Fq 'python3 scripts/release_security.py "$server_ref" "$blender_ref"' \
+  .gitea/workflows/build.yml
+grep -Fq 'python3 scripts/verify_release_image.py server "$server_ref" "$GITHUB_SHA"' \
+  .gitea/workflows/build.yml
+test "$(grep -Fc 'SOURCE_REVISION=${{ github.sha }}' .gitea/workflows/build.yml)" -eq 2
+grep -Fq 'org.printable.role="server"' Dockerfile
+grep -Fq 'org.printable.role="blender"' blender/Dockerfile
+pair_smoke_line="$(grep -nF '  scripts/smoke-release-pair \' build-docker.sh | cut -d: -f1)"
+pair_publish_line="$(grep -nF 'pair_commit_tag=' build-docker.sh | cut -d: -f1)"
+if [ "$pair_smoke_line" -ge "$pair_publish_line" ]; then
+  echo "release pair smoke must precede pair-record publication" >&2
+  exit 1
+fi
+security_job_line="$(grep -nF '  release-security:' .gitea/workflows/build.yml | cut -d: -f1)"
+pair_job_line="$(grep -nF '  publish-release-pair:' .gitea/workflows/build.yml | cut -d: -f1)"
+if [ "$security_job_line" -ge "$pair_job_line" ]; then
+  echo "release image security gates must precede pair-record publication" >&2
+  exit 1
+fi
+grep -Fq 'scripts/smoke-blender-gpu "$verified_blender"' build-docker.sh
+grep -Fq 'FROM scratch AS smoke-export' Dockerfile
+grep -Fq -- '--target smoke-export --output type=local,dest=target/release' \
+  .gitea/workflows/build.yml
+grep -Fq -- '--target smoke-export --output type=local,dest=target/release' \
+  build-docker.sh
+if grep -Fq 'cargo build --release --locked --bin printable-smoke' \
+  .gitea/workflows/build.yml; then
+  echo "smoke driver must use the production image build baseline" >&2
+  exit 1
+fi
+
+if output="$(scripts/smoke-blender-gpu \
+  gitea.cacahuate.org/bennight/mcp-printable-blender:sha-deadbeef 2>&1)"; then
+  echo "GPU smoke accepted a mutable image tag" >&2
+  exit 1
+fi
+printf '%s\n' "$output" | grep -Fq 'image must be a digest-qualified registry reference'
+
+if grep -Fq '.Manifest.Digest' .gitea/workflows/build.yml build-docker.sh; then
+  echo "OCI manifest documents do not contain their own registry digest" >&2
+  exit 1
+fi
+
+sh -n scripts/registry-manifest-digest scripts/test-registry-manifest-digest
+sh scripts/test-registry-manifest-digest
+
+grep -Fq 'pair_channel="gitea.cacahuate.org/bennight/mcp-printable-release:production"' \
+  .gitea/workflows/build.yml
+imagetools_count="$(grep -Ehc \
+  'docker[[:space:]]+buildx[[:space:]]+imagetools[[:space:]]+create([[:space:]]|$)' \
+  .gitea/workflows/build.yml build-docker.sh | awk '{ total += $1 } END { print total + 0 }')"
+if [ "$imagetools_count" -ne 1 ] || \
+  grep -Eq 'docker[[:space:]]+buildx[[:space:]]+imagetools[[:space:]]+create([[:space:]]|$)' \
+    build-docker.sh; then
+  echo "only the verified release-pair record may have a mutable channel" >&2
+  exit 1
+fi
+grep -Fq 'docker buildx imagetools create --prefer-index=false \' \
+  .gitea/workflows/build.yml
+grep -Fq -- '--tag "$pair_channel" "$pair_ref"' .gitea/workflows/build.yml
+if grep -En \
+  'mcp-printable(-rs|-blender):(latest|production)([^[:alnum:]_.-]|$)' \
+  .gitea/workflows/build.yml build-docker.sh; then
+  echo "server and Blender images may not publish mutable release aliases" >&2
+  exit 1
+fi
+direct_publish_count="$(grep -Ehc \
+  'docker[[:space:]]+buildx[[:space:]]+build .*--push([[:space:]]|$)' \
+  .gitea/workflows/build.yml build-docker.sh | awk '{ total += $1 } END { print total + 0 }')"
+action_publish_count="$(grep -Fc 'uses: docker/build-push-action@' \
+  .gitea/workflows/build.yml)"
+if [ "$direct_publish_count" -ne 4 ] || [ "$action_publish_count" -ne 2 ]; then
+  echo "release publishing must use only the audited commit-tag and pair-record paths" >&2
+  exit 1
+fi
+if grep -Eq '(^|[;&|[:space:]])docker[[:space:]]+(push|tag)([[:space:]]|$)' \
+  .gitea/workflows/build.yml build-docker.sh; then
+  echo "unvalidated docker tag or push operations are not release-authorized" >&2
+  exit 1
+fi
+test "$(grep -Fc 'echo "tags=${BASE}:sha-${short_sha}"' \
+  .gitea/workflows/build.yml)" -eq 2
+test "$(grep -Fc 'echo "tags=${BASE}:pr-${short_sha}"' \
+  .gitea/workflows/build.yml)" -eq 2
+test "$(grep -Fc 'tags: ${{ steps.tags.outputs.tags }}' \
+  .gitea/workflows/build.yml)" -eq 2
+grep -Fq 'server_commit_tag="${BASE}:sha-${short_sha}"' build-docker.sh
+grep -Fq 'blender_commit_tag="${BLENDER_BASE}:sha-${short_sha}"' build-docker.sh
+grep -Fq 'pair_ref="${pair_tag}@${pair_digest}"' .gitea/workflows/build.yml
+grep -Fq 'pair_ref="${pair_commit_tag}@${pair_digest}"' build-docker.sh
+grep -Fq 'scripts/registry-manifest-digest "$pair_channel"' .gitea/workflows/build.yml
+grep -Fq 'org.printable.server.digest' .gitea/workflows/build.yml
+grep -Fq 'org.printable.blender.digest' .gitea/workflows/build.yml
+pair_verify_line="$(grep -nF 'index .Config.Labels "org.printable.blender.digest" }}' \
+  .gitea/workflows/build.yml | sed -n '1p' | cut -d: -f1)"
+pair_channel_line="$(grep -nF 'docker buildx imagetools create --prefer-index=false' \
+  .gitea/workflows/build.yml | cut -d: -f1)"
+deploy_job_line="$(grep -nF '  trigger-komodo-deploy:' .gitea/workflows/build.yml | cut -d: -f1)"
+if [ "$pair_verify_line" -ge "$pair_channel_line" ] || \
+  [ "$pair_channel_line" -ge "$deploy_job_line" ]; then
+  echo "production pair discovery must follow record verification and precede deployment" >&2
+  exit 1
+fi
+if grep -En 'SERVER_LATEST|BLENDER_LATEST|LATEST_TAG' \
+  .gitea/workflows/build.yml build-docker.sh; then
+  echo "mutable server or Blender aliases cannot represent a compatible release pair" >&2
+  exit 1
+fi
+
+if [ "${PRINTABLE_RELEASE_POLICY_SELF_TEST:-0}" != 1 ]; then
+  PRINTABLE_RELEASE_POLICY_SELF_TEST=1 sh scripts/test-release-target-policy
+fi

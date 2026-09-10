@@ -1,0 +1,24 @@
+[package]
+name = "printable-workspace"
+description = "Confined workspace I/O: O_NOFOLLOW-anchored directory access, atomic no-overwrite artifact writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+getrandom = "0.4"
+# rustix gives safe openat/statat/renameat/linkat/mkdirat/readdir with
+# O_NOFOLLOW — kernel-atomic symlink refusal at every path component, with no
+# check-then-open window. cap-std is deliberately not used: its sandbox model
+# permits symlinks that stay in-root, whereas this confinement must refuse all
+# caller-controlled symlinks.
+rustix = { version = "1", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+thiserror = "2"
+
+[dev-dependencies]
+# mkfifo, for the FIFO-does-not-block regression test only.
+libc = "0.2"
+proptest = "1"

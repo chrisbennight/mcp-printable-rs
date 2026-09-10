@@ -1,0 +1,14 @@
+# Complete public workflow catalog, verified by the external MCP smoke.
+status
+inspect
+edit
+blender_execute
+scene
+scad_build
+view
+render
+compare_renders
+validate_mesh
+analyze_assembly
+job
+artifact

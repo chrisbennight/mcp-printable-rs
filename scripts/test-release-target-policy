@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+fixture="$(mktemp -d)"
+trap 'rm -rf "$fixture"' EXIT
+cp -R .gitea blender build-docker.sh Dockerfile release scripts "$fixture/"
+
+(
+  cd "$fixture"
+  PRINTABLE_RELEASE_POLICY_SELF_TEST=1 sh scripts/check-release-target
+)
+
+assert_rejected() {
+  name="$1"
+  if (
+    cd "$fixture"
+    PRINTABLE_RELEASE_POLICY_SELF_TEST=1 sh scripts/check-release-target >/dev/null 2>&1
+  ); then
+    echo "release policy accepted forbidden ${name}" >&2
+    exit 1
+  fi
+}
+
+printf '\nserver_channel="${BASE}:stable"\ndocker buildx imagetools create --tag "$server_channel" "$verified_server"\n' \
+  >> "$fixture/build-docker.sh"
+assert_rejected "server imagetools channel"
+cp build-docker.sh "$fixture/build-docker.sh"
+
+printf '\ndocker buildx build --push --tag gitea.cacahuate.org/bennight/mcp-printable-blender:production .\n' \
+  >> "$fixture/build-docker.sh"
+assert_rejected "literal Blender production tag"
+cp build-docker.sh "$fixture/build-docker.sh"
+
+printf '\nmutable_server="${BASE}:stable"\ndocker push "$mutable_server"\n' \
+  >> "$fixture/build-docker.sh"
+assert_rejected "differently named server channel"

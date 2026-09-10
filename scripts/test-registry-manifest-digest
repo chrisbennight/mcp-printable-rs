@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/printable-digest-test.XXXXXX")"
+trap 'rm -rf "$test_root"' 0 HUP INT TERM
+
+cat > "$test_root/docker" <<'EOF'
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 5 ] ||
+  [ "$1" != "buildx" ] ||
+  [ "$2" != "imagetools" ] ||
+  [ "$3" != "inspect" ] ||
+  [ "$4" != "registry.example/printable:test" ] ||
+  [ "$5" != "--raw" ]; then
+  echo "unexpected docker arguments" >&2
+  exit 2
+fi
+
+printf '%s' '{"schemaVersion":2}'
+EOF
+chmod +x "$test_root/docker"
+
+actual="$(PATH="$test_root:$PATH" "$repo_root/scripts/registry-manifest-digest" \
+  registry.example/printable:test)"
+expected="sha256:bafebd36189ad3688b7b3915ea55d461e0bfcfbdde11e54b0a123999fb6be50f"
+
+if [ "$actual" != "$expected" ]; then
+  echo "manifest digest mismatch: got $actual" >&2
+  exit 1
+fi

@@ -1,0 +1,10 @@
+{
+  "scanner_version": "0.110.0",
+  "fail_on_severities": [
+    "critical",
+    "high"
+  ],
+  "severity_requires_fix": true,
+  "fail_on_kev": true,
+  "ignored_vulnerabilities": []
+}

@@ -1,0 +1,62 @@
+[package]
+name = "printable-server"
+description = "Printable MCP server binary: streamable HTTP transport, tool dispatch, resources"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "printable-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "printable-geometry-worker"
+path = "src/bin/printable-geometry-worker.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.7", features = ["trace", "limit"] }
+rmcp = { version = "3.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+# Used only by the --healthcheck self-probe (a plain loopback GET).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps response object keys in declared/insertion order for
+# stable wire output; schemars is rmcp's (same major) for #[derive(JsonSchema)].
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "1"
+base64 = "0.23"
+# Chunked-upload staging: per-upload private tempdir + CSPRNG upload ids
+# (getrandom::fill, matching printable-workspace's temp-name generation).
+tempfile = "3"
+getrandom = "0.4"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+printable-workspace = { path = "../printable-workspace" }
+printable-blender = { path = "../printable-blender" }
+printable-scad = { path = "../printable-scad" }
+printable-imaging = { path = "../printable-imaging" }
+printable-geom = { path = "../printable-geom" }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+quick-xml = "=0.41.0"
+libc = "=0.2.189"
+# Product renders bind the bridge response to the server's confined snapshot.
+sha2 = "=0.11.0"
+# Constant-time comparison for the single long-lived gateway credential.
+subtle = "=2.6.1"
+
+jsonschema = { version = "0.52", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+crc32fast = "=1.5.0"
+# The in-process fake addon backs the printable_status tests without a real
+# Blender, mirroring printable-blender's own self dev-dependency.
+printable-blender = { path = "../printable-blender", features = ["fake-addon"] }

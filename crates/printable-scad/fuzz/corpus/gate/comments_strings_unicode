@@ -1,0 +1,4 @@
+a /* block comment */ b // line comment
+echo("a string \"with\" \\ escapes");
+éimport("unicode.stl");
+café_variable = 3;

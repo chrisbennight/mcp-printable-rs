@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/printable-server",
+    "crates/printable-blender",
+    "crates/printable-geom",
+    "crates/printable-scad",
+    "crates/printable-workspace",
+    "crates/printable-imaging",
+]
+# The cargo-fuzz crate needs a nightly toolchain + sanitizer runtime; keep it
+# out of the default workspace build (it has its own detached [workspace]).
+exclude = ["crates/printable-scad/fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://gitea.cacahuate.org/bennight/mcp-printable-rs"

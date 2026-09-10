@@ -1,0 +1,12 @@
+[package]
+name = "printable-imaging"
+description = "Render compositing: labeled tile grids and before/after panels with a bundled font"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+imageproc = "0.27.0"

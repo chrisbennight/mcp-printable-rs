@@ -1,0 +1,18 @@
+[package]
+name = "printable-scad"
+description = "OpenSCAD subprocess backend: CLI discovery, confined-source gate, compile/render/cross-section"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+logos = "0.16.1"
+rustix = { version = "=1.1.4", features = ["process"] }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

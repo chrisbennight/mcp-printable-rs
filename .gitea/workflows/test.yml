@@ -1,0 +1,186 @@
+name: test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  test-amd64:
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-tags depName=rust-lang/rustup
+      RUSTUP_INIT_VERSION: "1.29.0"
+      RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      CARGO_TERM_COLOR: always
+    steps:
+      # Bare ref resolves to the instance's local action mirror (Gitea
+      # DEFAULT_ACTIONS_URL=self), commit-pinned so an upstream tag move can't
+      # alter what runs — matching the other checkouts in this repo.
+      # persist-credentials: false so the checkout token is not left in
+      # .git/config where a PR's cargo build scripts / test binaries could
+      # read and reuse it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enforce Linux/amd64 release target
+        run: sh scripts/check-release-target
+
+      - name: Compile Python runtime and release modules
+        run: python3 -m compileall -q addon scripts/verify_release_image.py scripts/release_security.py
+
+      - name: Validate shell entrypoints
+        run: bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu
+
+      - name: Test the pure Blender bridge
+        run: PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
+
+      - name: Test release image policy and scan evaluation
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
+
+      - name: Validate documentation links
+        run: python3 scripts/docgate
+
+      - name: Ensure cargo is available (pinned rustup-init)
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/rustup-init \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c -
+            chmod +x /tmp/rustup-init
+            # Installs a minimal stable toolchain to bootstrap rustup; the
+            # first cargo invocation then installs the toolchain pinned in
+            # rust-toolchain.toml (with its declared components).
+            /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path
+            rm -f /tmp/rustup-init
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup component add rustfmt clippy
+          fi
+
+      - name: Install native build deps for manifold3d (cmake, C++)
+        run: |
+          # printable-geom's manifold-csg dependency clones and compiles the
+          # manifold3d C++ library from source on first build (cmake + a C++
+          # compiler + git). git is already present from the checkout; install
+          # cmake and g++.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ git
+          cmake --version
+
+      - name: rustc / cargo versions
+        run: |
+          rustc --version
+          cargo --version
+
+      # These cargo commands run on the runner rather than in an image, so they
+      # see the job environment - but cargo reads no environment variable for a
+      # mirror, so the address still has to become a config file. Written here
+      # rather than committed: a checked-in mirror would be a hard dependency on
+      # a host that resolves only on the LAN.
+      - name: Point cargo at the crate proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured; cargo will use crates.io"
+            exit 0
+          fi
+          mkdir -p .cargo
+          printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+            "${CRATES_INDEX_URL}" >> .cargo/config.toml
+          echo "cargo source replacement written"
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-features --locked
+
+      - name: Reclaim runner space
+        if: always()
+        shell: bash
+        run: |
+          # Free space on the Gitea Actions DinD runner by pruning every
+          # image, stopped container, dangling volume, and build-cache
+          # entry the job left behind. Non-fatal — must not gate the
+          # workflow verdict.
+          set +e
+          before_kb=$(df -P / | awk 'NR==2{print $4}')
+          sudo docker system prune -af --volumes 2>&1 | tail -3 || true
+          after_kb=$(df -P / | awk 'NR==2{print $4}')
+          echo "[runner-cleanup] free KB ${before_kb} -> ${after_kb}"
+          exit 0
+
+  fuzz:
+    # A short cargo-fuzz smoke on the confined-source gate. amd64 only: it needs
+    # a nightly toolchain and the sanitizer runtime (installed via rustup), which
+    # the production source gate requires. A discovered crash surfaces as a
+    # failed job here.
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-tags depName=rust-lang/rustup
+      RUSTUP_INIT_VERSION: "1.29.0"
+      RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      # Pin the nightly toolchain and cargo-fuzz so a fuzz run reproduces from the
+      # reviewed commit; the fuzz crate's own dependency graph is pinned by its
+      # committed Cargo.lock.
+      RUST_NIGHTLY: "nightly-2026-07-01"
+      # renovate: datasource=crate depName=cargo-fuzz
+      CARGO_FUZZ_VERSION: "0.13.2"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A separate job on its own runner: the config file written for the
+      # workspace tests cannot carry here. Written at the repository root, which
+      # covers both the toolchain install below and the fuzz targets under
+      # crates/, since cargo reads config from every parent directory.
+      - name: Point cargo at the crate proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured; cargo will use crates.io"
+            exit 0
+          fi
+          mkdir -p .cargo
+          printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+            "${CRATES_INDEX_URL}" >> .cargo/config.toml
+          echo "cargo source replacement written"
+
+      - name: Ensure rustup + pinned nightly + cargo-fuzz
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/rustup-init \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c -
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path
+            rm -f /tmp/rustup-init
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install "${RUST_NIGHTLY}" --profile minimal
+          cargo install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
+
+      - name: Fuzz the source gate (bounded)
+        run: |
+          cd crates/printable-scad
+          cargo "+${RUST_NIGHTLY}" fuzz build gate
+          cargo "+${RUST_NIGHTLY}" fuzz run gate -- -max_total_time=30 -rss_limit_mb=2048
+
+      - name: Reclaim runner space
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sudo docker system prune -af --volumes 2>&1 | tail -2 || true
+          exit 0

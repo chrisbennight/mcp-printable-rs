@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+# OpenSCAD needs an X display even for headless PNG/STL rendering. Run it under a
+# throwaway virtual framebuffer (xvfb-run -a auto-allocates a free display), so
+# the confined container has no real X server. OPENSCAD_BIN points the app here.
+exec xvfb-run -a /usr/bin/openscad "$@"

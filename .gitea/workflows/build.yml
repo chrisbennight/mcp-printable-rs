@@ -1,0 +1,967 @@
+name: build
+
+# Release authority. Pull requests run the workspace tests, build the
+# Linux/amd64 production images, exercise each image independently, and run a
+# generic product compile/validation/presentation plus certified mechanical
+# video through the paired containers on one isolated network and shared
+# workspace. A push to `main` publishes matching commit-scoped
+# `sha-<commit>` tags,
+# smoke-tests them, proves the exact Blender registry digest on the production
+# GPU host, publishes a digest-pinned release-pair record, and moves the single
+# production pair pointer to that verified record. The Komodo webhook runs only
+# after that pointer is durable when KOMODO_STACK_ID is configured.
+# build-docker.sh must preserve the same ordering; publishing is opt-in.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-printable-rs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-tags depName=rust-lang/rustup
+      RUSTUP_INIT_VERSION: "1.29.0"
+      RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enforce Linux/amd64 release target
+        run: sh scripts/check-release-target
+      - name: Compile Python runtime and release modules
+        run: python3 -m compileall -q addon scripts/verify_release_image.py scripts/release_security.py
+      - name: Validate shell entrypoints
+        run: bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu
+      - name: Test the pure Blender bridge
+        run: PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
+
+      - name: Test release image policy and scan evaluation
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
+      - name: Validate documentation links
+        run: python3 scripts/docgate
+      - name: Ensure cargo is available (pinned rustup-init)
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/rustup-init \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c -
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path
+            rm -f /tmp/rustup-init
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install native build deps for manifold3d (cmake, C++)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ git
+      # These cargo commands run on the runner rather than in an image, so they
+      # see the job environment - but cargo reads no environment variable for a
+      # mirror, so the address still has to become a config file. Written here
+      # rather than committed: a checked-in mirror would be a hard dependency on
+      # a host that resolves only on the LAN.
+      - name: Point cargo at the crate proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured; cargo will use crates.io"
+            exit 0
+          fi
+          mkdir -p .cargo
+          printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+            "${CRATES_INDEX_URL}" >> .cargo/config.toml
+          echo "cargo source replacement written"
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace --all-features --locked
+      - name: Reclaim runner space
+        if: always()
+        run: |
+          set +e
+          sudo docker system prune -af --volumes 2>&1 | tail -3 || true
+
+  blender-image:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    env:
+      BASE: gitea.cacahuate.org/bennight/mcp-printable-blender
+    outputs:
+      pushed: ${{ steps.gate.outputs.push }}
+      commit_tag: ${{ steps.tags.outputs.tags }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["registry.cacahuate.org"]
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "tags=${BASE}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${BASE}:pr-${short_sha}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch registry credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: |
+            REGISTRY_USER
+            REGISTRY_TOKEN
+
+      - name: Decide whether to push
+        id: gate
+        env:
+          REGISTRY_USER: ${{ env.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ] \
+             && [ -n "${REGISTRY_USER}" ] && [ -n "${REGISTRY_TOKEN}" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to Gitea registry
+        if: steps.gate.outputs.push == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: gitea.cacahuate.org
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Build and optionally publish pinned Blender image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: blender/Dockerfile
+          platforms: linux/amd64
+          push: ${{ steps.gate.outputs.push == 'true' }}
+          load: ${{ steps.gate.outputs.push != 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: ${{ steps.gate.outputs.push == 'true' && 'type=registry,ref=gitea.cacahuate.org/bennight/mcp-printable-blender:buildcache' || '' }}
+          cache-to: ${{ steps.gate.outputs.push == 'true' && 'type=registry,ref=gitea.cacahuate.org/bennight/mcp-printable-blender:buildcache,mode=max' || '' }}
+          provenance: false
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+
+      - name: Resolve the published Blender digest
+        id: digest
+        if: steps.gate.outputs.push == 'true'
+        env:
+          COMMIT_TAG: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          digest="$(scripts/registry-manifest-digest "$COMMIT_TAG")"
+          case "$digest" in sha256:*) ;; *) echo "invalid Blender digest" >&2; exit 1 ;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise headless bridge capabilities and lifecycle
+        shell: bash
+        env:
+          TAG: ${{ steps.tags.outputs.tags }}
+          PUSHED: ${{ steps.gate.outputs.push }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          smoke_ref="$TAG"
+          if [ "$PUSHED" = "true" ]; then
+            case "$DIGEST" in sha256:*) ;; *) echo "published Blender digest is unavailable" >&2; exit 1 ;; esac
+            smoke_ref="${TAG}@${DIGEST}"
+            docker pull --platform linux/amd64 "$smoke_ref"
+          fi
+          name="blender-smoke-${GITHUB_RUN_ID}"
+          busy_name="blender-busy-${GITHUB_RUN_ID}"
+          edge_name="blender-edge-${GITHUB_RUN_ID}"
+          ui_name="blender-ui-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker rm -f "$name" "$busy_name" "$edge_name" "$ui_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          run_blender() {
+            local container_name="$1"
+            local request_timeout="${2:-120}"
+            local heartbeat="${3:-1}"
+            local shutdown_timeout="${4:-10}"
+            local blender_mode="${5:-background}"
+            docker run -d --name "$container_name" --platform linux/amd64 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 512 \
+              --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770 \
+              --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
+              --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
+              --tmpfs /workspace:rw,uid=10001,gid=10001,mode=1770 \
+              -e PRINTABLE_BLENDER_ENABLE_TEST_COMMANDS=true \
+              -e "PRINTABLE_BLENDER_MODE=${blender_mode}" \
+              -e "PRINTABLE_BLENDER_REQUEST_TIMEOUT_SECONDS=${request_timeout}" \
+              -e "PRINTABLE_BLENDER_HEARTBEAT_SECONDS=${heartbeat}" \
+              -e "PRINTABLE_BLENDER_SHUTDOWN_TIMEOUT_SECONDS=${shutdown_timeout}" \
+              "$smoke_ref" >/dev/null
+          }
+
+          wait_healthy() {
+            local container_name="$1"
+            for _ in $(seq 1 90); do
+              local state
+              state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name")"
+              if [ "$state" = healthy ]; then return 0; fi
+              if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != true ]; then
+                docker logs "$container_name" || true
+                return 1
+              fi
+              sleep 2
+            done
+            docker logs "$container_name" || true
+            return 1
+          }
+
+          run_blender "$name" 120 60 1
+          wait_healthy "$name"
+          blender_pid="$(docker exec "$name" sh -c '
+            for comm in /proc/[0-9]*/comm; do
+              if [ "$(cat "$comm")" = blender ]; then
+                process="${comm%/comm}"
+                printf "%s\n" "${process##*/}"
+                exit 0
+              fi
+            done
+            exit 1
+          ')"
+          file_limit="$(docker exec "$name" cat "/proc/${blender_pid}/limits" |
+            awk '$1 == "Max" && $2 == "file" && $3 == "size" { print $4 }')"
+          test "$file_limit" = 1073741824
+          ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name")"
+          if ! python3 addon/integration_smoke.py --host "$ip" --mode capabilities; then
+            docker logs "$name" || true
+            crash_report="${RUNNER_TEMP}/blender-smoke-crash.txt"
+            if docker cp "$name:/tmp/blender.crash.txt" "$crash_report"; then
+              cat "$crash_report"
+            fi
+            exit 1
+          fi
+          docker exec "$name" test -s /workspace/smoke/cube.stl
+          docker exec "$name" test -s /workspace/smoke/scene.blend
+          docker exec "$name" test -s /workspace/smoke/render.png
+          test "$(docker inspect --format '{{.Config.User}}' "$name")" = "10001:10001"
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$name")" = true
+          test -z "$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" | sed -n 's/^DISPLAY=//p')"
+          python3 addon/integration_smoke.py --host "$ip" \
+            --mode unresponsive-execute &
+          unresponsive_pid=$!
+          for _ in $(seq 1 100); do
+            if docker exec "$name" test -s /workspace/shutdown-smoke.started; then
+              break
+            fi
+            if ! kill -0 "$unresponsive_pid" 2>/dev/null; then
+              wait "$unresponsive_pid"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          docker exec "$name" test -s /workspace/shutdown-smoke.started
+          docker stop --timeout 10 "$name" >/dev/null
+          wait "$unresponsive_pid"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
+
+          run_blender "$busy_name"
+          wait_healthy "$busy_name"
+          busy_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$busy_name")"
+          python3 addon/integration_smoke.py --host "$busy_ip" --mode busy-wait &
+          smoke_pid=$!
+          sleep 1
+          docker stop --timeout 10 "$busy_name" >/dev/null
+          wait "$smoke_pid"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$busy_name")" = 0
+
+          run_blender "$edge_name" 1
+          wait_healthy "$edge_name"
+          edge_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$edge_name")"
+          python3 addon/integration_smoke.py --host "$edge_ip" --mode overdue-wait &
+          overdue_pid=$!
+          unhealthy=""
+          for _ in $(seq 1 50); do
+            if ! docker exec "$edge_name" \
+              python3 /opt/printable/addon/printable_bridge/healthcheck.py; then
+              unhealthy=1
+              break
+            fi
+            sleep 0.1
+          done
+          test -n "$unhealthy"
+          wait "$overdue_pid"
+          recovered=""
+          for _ in $(seq 1 50); do
+            if docker exec "$edge_name" \
+              python3 /opt/printable/addon/printable_bridge/healthcheck.py; then
+              recovered=1
+              break
+            fi
+            sleep 0.1
+          done
+          test -n "$recovered"
+          python3 addon/integration_smoke.py --host "$edge_ip" --mode partial-frame &
+          partial_pid=$!
+          sleep 1
+          docker stop --timeout 10 "$edge_name" >/dev/null
+          wait "$partial_pid"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$edge_name")" = 0
+
+          run_blender "$ui_name" 120 1 10 ui
+          wait_healthy "$ui_name"
+          ui_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ui_name")"
+          if ! python3 addon/integration_smoke.py --host "$ui_ip" --mode ui ||
+             ! python3 addon/integration_smoke.py --host "$ui_ip" --mode capabilities; then
+            docker logs "$ui_name" || true
+            crash_report="${RUNNER_TEMP}/blender-ui-smoke-crash.txt"
+            if docker cp "$ui_name:/tmp/blender.crash.txt" "$crash_report"; then
+              cat "$crash_report"
+            fi
+            exit 1
+          fi
+          docker stop --timeout 10 "$ui_name" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$ui_name")" = 0
+
+      - name: Reclaim runner space
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sudo docker system prune -af --volumes 2>&1 | tail -3 || true
+
+  gpu-smoke-blender:
+    needs: blender-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.blender-image.outputs.pushed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      blender_digest: ${{ steps.gpu.outputs.blender_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Fetch registry and server validation credentials
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: |
+            REGISTRY_USER
+            REGISTRY_TOKEN
+            DEPLOY_SSH_KEY
+            SSH_KNOWN_HOSTS
+
+      - name: Log in to Gitea registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: gitea.cacahuate.org
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Pin server SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ env.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ env.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/mcp-printable-deploy-key"
+          known_hosts_path="${RUNNER_TEMP}/mcp-printable-known-hosts"
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "server GPU validation credentials are unavailable" >&2
+            exit 1
+          fi
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          if ! printf '%s\n' "$SSH_KNOWN_HOSTS" \
+            | grep -F 'server.cacahuate.org ssh-' > "$known_hosts_path"; then
+            echo "no pinned host key found for server.cacahuate.org" >&2
+            exit 1
+          fi
+          chmod 600 "$known_hosts_path"
+
+      - name: Prove the exact published Blender digest on the server GPU
+        id: gpu
+        env:
+          BLENDER_IMAGE: ${{ needs.blender-image.outputs.commit_tag }}
+          BLENDER_DIGEST: ${{ needs.blender-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          current_digest="$(scripts/registry-manifest-digest "$BLENDER_IMAGE")"
+          if [ "$current_digest" != "$BLENDER_DIGEST" ]; then
+            echo "Blender tag changed after its CPU smoke" >&2
+            exit 1
+          fi
+          verified_ref="${BLENDER_IMAGE}@${BLENDER_DIGEST}"
+          if [[ ! "$verified_ref" =~ ^gitea\.cacahuate\.org/bennight/mcp-printable-blender:sha-[0-9a-f]{12}@sha256:[0-9a-f]{64}$ ]]; then
+            echo "refusing an unexpected Blender release reference" >&2
+            exit 1
+          fi
+          run_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf -v remote_command \
+            'PRINTABLE_GPU_SMOKE_RUN_ID=%q bash -s -- %q' "$run_id" "$verified_ref"
+          ssh \
+            -i "${RUNNER_TEMP}/mcp-printable-deploy-key" \
+            -o IdentitiesOnly=yes \
+            -o IdentityAgent=none \
+            -o UserKnownHostsFile="${RUNNER_TEMP}/mcp-printable-known-hosts" \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            bennight@server.cacahuate.org "$remote_command" \
+            < scripts/smoke-blender-gpu \
+            | tee "${RUNNER_TEMP}/mcp-printable-gpu-smoke.txt"
+          grep -Fxq 'GPU_SMOKE_OK' "${RUNNER_TEMP}/mcp-printable-gpu-smoke.txt"
+          grep -Fxq "image=${verified_ref}" "${RUNNER_TEMP}/mcp-printable-gpu-smoke.txt"
+          {
+            echo "### Printable production GPU proof"
+            echo
+            cat "${RUNNER_TEMP}/mcp-printable-gpu-smoke.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "blender_digest=$BLENDER_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Remove server SSH credentials
+        if: always()
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/mcp-printable-deploy-key" \
+            "${RUNNER_TEMP}/mcp-printable-known-hosts"
+
+  image:
+    needs: [verify, blender-image]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    env:
+      BASE: gitea.cacahuate.org/bennight/mcp-printable-rs
+    outputs:
+      pushed: ${{ steps.gate.outputs.push }}
+      commit_tag: ${{ steps.tags.outputs.tags }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["registry.cacahuate.org"]
+
+      # Export the smoke driver from the production image's pinned Bookworm
+      # builder. The driver is not shipped, and running it inside the paired
+      # server image cannot acquire a newer host glibc than production has.
+      - name: Build the smoke driver
+        run: |
+          mkdir -p target/release
+          # Forwarded by value; the daemon never sees the job environment.
+          # Omitted entirely when nothing is configured, so the build falls
+          # back to crates.io rather than pinning an empty registry.
+          index_build_args=()
+          if [ -n "${CRATES_INDEX_URL:-}" ]; then
+            index_build_args=(--build-arg "CRATES_INDEX_URL=${CRATES_INDEX_URL}")
+          fi
+          docker buildx build --platform linux/amd64 --provenance=false \
+            "${index_build_args[@]}" \
+            --target smoke-export --output type=local,dest=target/release .
+          test -x target/release/printable-smoke
+
+      # A build argument that is declared but never reaches cargo looks exactly
+      # like one that works: both leave a green build, because the fallback
+      # resolves from crates.io either way. Pointing it at a closed port
+      # separates them - the builder stage has to fail, and the captured output
+      # has to name that endpoint, so a missing base image or a compile error
+      # cannot pass as proof.
+      - name: Check the crate index argument is load-bearing
+        shell: bash
+        env:
+          PROBE_INDEX_URL: "sparse+http://127.0.0.1:9/index/"
+        run: |
+          set -euo pipefail
+          probe_log="$(mktemp)"
+          # Bounded, because cargo retries an unreachable index once per crate
+          # and this workspace has many. The bound cannot weaken the conclusion:
+          # whether the build errors or the clock runs out, the run only counts
+          # if the log shows cargo talking to that endpoint, and a build that
+          # *succeeds* is the one outcome that fails this step.
+          if timeout 120 docker buildx build --platform linux/amd64 --provenance=false \
+              --build-arg "CRATES_INDEX_URL=${PROBE_INDEX_URL}" \
+              --target build --output type=cacheonly . >"$probe_log" 2>&1; then
+            echo "the build resolved crates without consulting CRATES_INDEX_URL" >&2
+            exit 1
+          fi
+          if ! grep -q "127.0.0.1:9" "$probe_log"; then
+            echo "the probe build failed for an unrelated reason:" >&2
+            tail -40 "$probe_log" >&2
+            exit 1
+          fi
+          echo "cargo reached only the unreachable index, as required"
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "tags=${BASE}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${BASE}:pr-${short_sha}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch registry credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: |
+            REGISTRY_USER
+            REGISTRY_TOKEN
+
+      - name: Decide whether to push
+        id: gate
+        env:
+          REGISTRY_USER: ${{ env.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ] \
+             && [ -n "${REGISTRY_USER}" ] && [ -n "${REGISTRY_TOKEN}" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to Gitea registry
+        if: steps.gate.outputs.push == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: gitea.cacahuate.org
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      # A pull request may build without the proxy - it publishes nothing. A run
+      # that does publish must not: an absent address means the fleet's
+      # injection regressed, and the pushed image would carry crates that
+      # bypassed the proxy's cache, audit, and blocklist.
+      - name: Require the crate proxy when publishing
+        if: steps.gate.outputs.push == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "CRATES_INDEX_URL is unset; refusing to publish an image built outside the artifact proxy" >&2
+            exit 1
+          fi
+
+      # The requirement above reads the process environment; the build argument
+      # below is filled from the `env` expression context. On this runner they
+      # agree - a published run's command line carries the injected address, and
+      # its crates arrive from the mirror - but nothing in the workflow language
+      # promises that, and a divergence would let the requirement pass while the
+      # build received nothing. Compared here so that fails the run instead of
+      # publishing an image whose crates came from crates.io.
+      - name: Confirm the address reaches the build argument
+        if: steps.gate.outputs.push == 'true'
+        shell: bash
+        env:
+          FROM_EXPRESSION: ${{ env.CRATES_INDEX_URL }}
+        run: |
+          set -euo pipefail
+          if [ "${FROM_EXPRESSION:-}" != "${CRATES_INDEX_URL:-}" ]; then
+            echo "the expression context and the process environment disagree;" >&2
+            echo "the build argument would not carry the address just required" >&2
+            exit 1
+          fi
+          echo "the required address is what the build will receive"
+
+      - name: Build and optionally publish
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ steps.gate.outputs.push == 'true' }}
+          load: ${{ steps.gate.outputs.push != 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: ${{ steps.gate.outputs.push == 'true' && 'type=registry,ref=gitea.cacahuate.org/bennight/mcp-printable-rs:buildcache' || '' }}
+          cache-to: ${{ steps.gate.outputs.push == 'true' && 'type=registry,ref=gitea.cacahuate.org/bennight/mcp-printable-rs:buildcache,mode=max' || '' }}
+          provenance: false
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            CRATES_INDEX_URL=${{ env.CRATES_INDEX_URL }}
+
+      - name: Resolve the published server digest
+        id: digest
+        if: steps.gate.outputs.push == 'true'
+        env:
+          COMMIT_TAG: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          digest="$(scripts/registry-manifest-digest "$COMMIT_TAG")"
+          case "$digest" in sha256:*) ;; *) echo "invalid server digest" >&2; exit 1 ;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test image(s)
+        env:
+          TAG: ${{ steps.tags.outputs.tags }}
+          PUSHED: ${{ steps.gate.outputs.push }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          smoke_ref="$TAG"
+          if [ "$PUSHED" = "true" ]; then
+            case "$DIGEST" in sha256:*) ;; *) echo "published server digest is unavailable" >&2; exit 1 ;; esac
+            smoke_ref="${TAG}@${DIGEST}"
+            docker pull --platform linux/amd64 "$smoke_ref"
+          fi
+          smoke_one() {
+            local platform="$1"
+            # A non-default port proves the image does not mask the env setting.
+            local internal_port=8123
+            local name="smoke-${platform//\//-}-${GITHUB_RUN_ID}"
+            local bearer
+            bearer="$(printf '%064d' 0)"
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            # The Gitea job itself runs in a container, so its 127.0.0.1 cannot
+            # reach ports published on the outer Docker host. Dial the sibling
+            # container's bridge IP and send a stable allowed Host header for
+            # the DNS-rebinding guard on /mcp.
+            docker run -d --name "$name" --platform "$platform" \
+              -e PRINTABLE_HTTP_HOST=0.0.0.0 \
+              -e "PRINTABLE_HTTP_PORT=${internal_port}" \
+              -e PRINTABLE_WORKSPACE_ROOT=/workspace \
+              -e "PRINTABLE_MCP_BEARER=${bearer}" \
+              -e "PRINTABLE_ALLOWED_HOSTS=printable-smoke,printable-smoke:${internal_port}" \
+              --tmpfs /workspace:rw,uid=10001,gid=10001,mode=1770 \
+              "$smoke_ref" >/dev/null
+            local container_ip
+            container_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name")"
+            if [ -z "$container_ip" ]; then
+              echo "::error::[$platform] container has no bridge IP"
+              docker inspect "$name" || true
+              docker rm -f "$name" >/dev/null 2>&1 || true
+              return 1
+            fi
+            local base="http://${container_ip}:${internal_port}"
+            local up=""
+            for _ in $(seq 1 60); do
+              if curl -fsS "${base}/healthz" >/dev/null 2>&1; then up=1; break; fi
+              sleep 2
+            done
+            if [ -z "$up" ]; then
+              echo "::error::[$platform] /healthz never came up"
+              docker logs "$name" || true; docker rm -f "$name" >/dev/null 2>&1 || true; return 1
+            fi
+            if ! PRINTABLE_SMOKE_HOST="printable-smoke:${internal_port}" \
+              PRINTABLE_SMOKE_BEARER="$bearer" \
+              ./target/release/printable-smoke "$base" smoke/expected-tools.txt; then
+              echo "::error::[$platform] MCP smoke failed"
+              docker logs "$name" || true; docker rm -f "$name" >/dev/null 2>&1 || true; return 1
+            fi
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            echo "[$platform] smoke OK"
+          }
+          smoke_one linux/amd64
+
+      - name: Smoke paired server and headless Blender durable rendering
+        shell: bash
+        env:
+          SERVER_TAG: ${{ steps.tags.outputs.tags }}
+          SERVER_PUSHED: ${{ steps.gate.outputs.push }}
+          SERVER_DIGEST: ${{ steps.digest.outputs.digest }}
+          BLENDER_TAG: ${{ needs.blender-image.outputs.commit_tag }}
+          BLENDER_PUSHED: ${{ needs.blender-image.outputs.pushed }}
+          BLENDER_DIGEST: ${{ needs.blender-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          server_ref="$SERVER_TAG"
+          if [ "$SERVER_PUSHED" = true ]; then
+            case "$SERVER_DIGEST" in sha256:*) ;; *) echo "published server digest is unavailable" >&2; exit 1 ;; esac
+            server_ref="${SERVER_TAG}@${SERVER_DIGEST}"
+            docker pull --platform linux/amd64 "$server_ref"
+          fi
+          blender_ref="$BLENDER_TAG"
+          if [ "$BLENDER_PUSHED" = true ]; then
+            case "$BLENDER_DIGEST" in sha256:*) ;; *) echo "published Blender digest is unavailable" >&2; exit 1 ;; esac
+            blender_ref="${BLENDER_TAG}@${BLENDER_DIGEST}"
+            docker pull --platform linux/amd64 "$blender_ref"
+          else
+            docker buildx build --platform linux/amd64 --provenance=false --load \
+              --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+              --file blender/Dockerfile --tag "$blender_ref" .
+          fi
+
+          PRINTABLE_PAIR_SMOKE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}" \
+            scripts/smoke-release-pair \
+              "$server_ref" "$blender_ref" \
+              ./target/release/printable-smoke smoke/expected-tools.txt
+
+  release-security:
+    needs: [image, blender-image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.image.outputs.pushed == 'true' && needs.blender-image.outputs.pushed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GRYPE_VERSION: "0.110.0"
+      GRYPE_CHECKSUM: "aaa98d27d2d7efd9317c6a1ad6d9b15f3e65bab320e7d03bde41e251387bb71c"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the fleet-pinned Grype release
+        run: |
+          set -euo pipefail
+          tarball="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/${tarball}"
+          curl -sSfL \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 120 \
+            -o "$tarball" "$url"
+          echo "${GRYPE_CHECKSUM}  ${tarball}" | sha256sum --check --strict
+          sudo tar -xzf "$tarball" -C /usr/local/bin grype
+          rm -f "$tarball"
+          grype version
+
+      - name: Fetch registry credentials
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: |
+            REGISTRY_USER
+            REGISTRY_TOKEN
+
+      - name: Log in to Gitea registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: gitea.cacahuate.org
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Verify and scan the exact release images
+        env:
+          SERVER_TAG: ${{ needs.image.outputs.commit_tag }}
+          SERVER_DIGEST: ${{ needs.image.outputs.digest }}
+          BLENDER_TAG: ${{ needs.blender-image.outputs.commit_tag }}
+          BLENDER_DIGEST: ${{ needs.blender-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$(scripts/registry-manifest-digest "$SERVER_TAG")" = "$SERVER_DIGEST"
+          test "$(scripts/registry-manifest-digest "$BLENDER_TAG")" = "$BLENDER_DIGEST"
+          server_ref="${SERVER_TAG}@${SERVER_DIGEST}"
+          blender_ref="${BLENDER_TAG}@${BLENDER_DIGEST}"
+          docker pull --platform linux/amd64 "$server_ref"
+          docker pull --platform linux/amd64 "$blender_ref"
+          python3 scripts/verify_release_image.py server "$server_ref" "$GITHUB_SHA"
+          python3 scripts/verify_release_image.py blender "$blender_ref" "$GITHUB_SHA"
+          python3 scripts/release_security.py "$server_ref" "$blender_ref"
+
+      - name: Reclaim runner space
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sudo docker system prune -af --volumes 2>&1 | tail -3 || true
+
+  publish-release-pair:
+    needs: [image, blender-image, gpu-smoke-blender, release-security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.image.outputs.pushed == 'true' && needs.blender-image.outputs.pushed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Fetch registry credentials
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: |
+            REGISTRY_USER
+            REGISTRY_TOKEN
+
+      - name: Log in to Gitea registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: gitea.cacahuate.org
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Verify the commit tags still identify the smoke-tested digests
+        env:
+          SERVER_COMMIT_TAG: ${{ needs.image.outputs.commit_tag }}
+          BLENDER_COMMIT_TAG: ${{ needs.blender-image.outputs.commit_tag }}
+          SERVER_DIGEST: ${{ needs.image.outputs.digest }}
+          BLENDER_DIGEST: ${{ needs.gpu-smoke-blender.outputs.blender_digest }}
+        run: |
+          set -euo pipefail
+          if [ "$(scripts/registry-manifest-digest "$SERVER_COMMIT_TAG")" != "$SERVER_DIGEST" ]; then
+            echo "server tag changed after its CPU smoke" >&2
+            exit 1
+          fi
+          if [ "$(scripts/registry-manifest-digest "$BLENDER_COMMIT_TAG")" != "$BLENDER_DIGEST" ]; then
+            echo "Blender tag changed after production GPU validation" >&2
+            exit 1
+          fi
+
+      - name: Publish the digest-pinned release-pair record
+        env:
+          SERVER_IMAGE: ${{ needs.image.outputs.commit_tag }}
+          SERVER_DIGEST: ${{ needs.image.outputs.digest }}
+          BLENDER_IMAGE: ${{ needs.blender-image.outputs.commit_tag }}
+          BLENDER_DIGEST: ${{ needs.gpu-smoke-blender.outputs.blender_digest }}
+        run: |
+          set -euo pipefail
+          pair_tag="gitea.cacahuate.org/bennight/mcp-printable-release:sha-${GITHUB_SHA::12}"
+          docker buildx build --platform linux/amd64 --provenance=false --push \
+            --file release/Dockerfile \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --build-arg "SERVER_IMAGE=${SERVER_IMAGE}" \
+            --build-arg "SERVER_DIGEST=${SERVER_DIGEST}" \
+            --build-arg "BLENDER_IMAGE=${BLENDER_IMAGE}" \
+            --build-arg "BLENDER_DIGEST=${BLENDER_DIGEST}" \
+            --tag "$pair_tag" release
+          pair_digest="$(scripts/registry-manifest-digest "$pair_tag")"
+          case "$pair_digest" in sha256:*) ;; *) echo "invalid release-pair digest" >&2; exit 1 ;; esac
+          pair_ref="${pair_tag}@${pair_digest}"
+          docker pull --platform linux/amd64 "$pair_ref"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$pair_ref")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.server.digest" }}' "$pair_ref")" = "$SERVER_DIGEST"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.blender.digest" }}' "$pair_ref")" = "$BLENDER_DIGEST"
+
+          pair_channel="gitea.cacahuate.org/bennight/mcp-printable-release:production"
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$pair_channel" "$pair_ref"
+          test "$(scripts/registry-manifest-digest "$pair_channel")" = "$pair_digest"
+          docker pull --platform linux/amd64 "$pair_channel"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$pair_channel")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.server.digest" }}' "$pair_channel")" = "$SERVER_DIGEST"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.blender.digest" }}' "$pair_channel")" = "$BLENDER_DIGEST"
+          {
+            echo "### Printable immutable release pair"
+            echo
+            echo "- Pair: \`${pair_ref}\`"
+            echo "- Server: \`${SERVER_IMAGE}@${SERVER_DIGEST}\`"
+            echo "- Blender: \`${BLENDER_IMAGE}@${BLENDER_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trigger-komodo-deploy:
+    needs: publish-release-pair
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Komodo webhook secret
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-printable-rs
+          secrets: KOMODO_WEBHOOK_SECRET
+      - name: Force-deploy Printable stack on Komodo
+        env:
+          KOMODO_WEBHOOK_SECRET: ${{ env.KOMODO_WEBHOOK_SECRET }}
+          STACK_ID: ${{ vars.KOMODO_STACK_ID }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          REPO_SERVER_URL: ${{ github.server_url }}
+          GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
+          GIT_ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KOMODO_WEBHOOK_SECRET}" ] || [ -z "${STACK_ID}" ]; then
+            echo "::warning::KOMODO_WEBHOOK_SECRET or KOMODO_STACK_ID unset; skipping deploy trigger"
+            exit 0
+          fi
+          # Komodo's GitHub listener expects a push-style body with a top-level
+          # `ref` and an HMAC-SHA256 over the exact body bytes. Build BOTH the JSON
+          # and the HMAC in one python3 heredoc so the signed bytes match the body
+          # bytes exactly, and so the secret is read from env — never argv, which
+          # is process-visible on the shared runner.
+          read -r PAYLOAD SIG < <(python3 - <<'PY'
+          import hmac, hashlib, json, os
+          repo = os.environ.get("REPO_FULL_NAME", "")
+          server = os.environ.get("REPO_SERVER_URL", "").rstrip("/")
+          repository_url = f"{server}/{repo}" if server and repo else ""
+          actor = os.environ.get("GIT_ACTOR", "gitea-actions")
+          payload = {
+              "ref": os.environ.get("GIT_REF", ""),
+              "after": os.environ.get("GIT_SHA", ""),
+              "repository": {"full_name": repo, "html_url": repository_url},
+              "pusher": {"name": actor},
+              "sender": {"login": actor},
+          }
+          body = json.dumps(payload, separators=(",", ":"))
+          key = os.environ.get("KOMODO_WEBHOOK_SECRET", "").encode("utf-8")
+          sig = hmac.new(key, body.encode("utf-8"), hashlib.sha256).hexdigest()
+          print(body, sig)
+          PY
+          )
+          URL="https://komodo.cacahuate.org/listener/github/stack/${STACK_ID}/deploy"
+          echo "POST ${URL}"
+          RESP=$(curl -sS -w '\n%{http_code}' -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: push" \
+            -H "X-GitHub-Delivery: ${RUN_ID}-${RUN_ATTEMPT}" \
+            -H "X-Hub-Signature-256: sha256=${SIG}" \
+            -d "$PAYLOAD" \
+            "$URL")
+          CODE=$(printf '%s' "$RESP" | tail -n1)
+          BODY=$(printf '%s' "$RESP" | sed '$d')
+          echo "response: HTTP ${CODE} ${BODY}"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "::error::Komodo deploy webhook returned HTTP ${CODE}"
+            exit 1
+          fi
