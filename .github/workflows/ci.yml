@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Source checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ git
+      - name: Activate the repository Rust toolchain
+        run: rustup show active-toolchain
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test Rust
+        run: cargo test --workspace --all-features --locked
+      - name: Check Python syntax
+        run: python3 -m compileall -q addon scripts
+      - name: Test the Blender bridge without Blender
+        run: PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
+      - name: Test release policy and dependency routing
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
+      - name: Validate documentation
+        run: python3 scripts/docgate
+      - name: Validate shell scripts and retained release policy
+        run: |
+          bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair
+          sh scripts/check-release-target
+
+  workflow:
+    name: Workflow validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned actionlint
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 10 --max-time 120 \
+            --output "${RUNNER_TEMP}/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "${RUNNER_TEMP}/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
+      - name: Validate GitHub workflows
+        run: '"${RUNNER_TEMP}/actionlint"'
+
+  fuzz:
+    name: Confined-source fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUST_NIGHTLY: nightly-2026-07-01
+      # renovate: datasource=crate depName=cargo-fuzz
+      CARGO_FUZZ_VERSION: "0.13.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned fuzz tooling
+        run: |
+          rustup toolchain install "${RUST_NIGHTLY}" --profile minimal
+          cargo install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
+      - name: Exercise the confined OpenSCAD source gate
+        working-directory: crates/printable-scad
+        run: |
+          cargo "+${RUST_NIGHTLY}" fuzz build gate
+          cargo "+${RUST_NIGHTLY}" fuzz run gate -- -max_total_time=30 -rss_limit_mb=2048
+
+  containers:
+    name: Container integration (software graphics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+      - name: Build the server and matching external smoke driver
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --tag printable-server:ci .
+          docker buildx build --platform linux/amd64 \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --target smoke-export --output type=local,dest=target/release .
+          test -x target/release/printable-smoke
+      - name: Build Blender
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --file blender/Dockerfile --tag printable-blender:ci .
+      - name: Check Blender capabilities and shutdown recovery
+        run: scripts/smoke-blender-cpu printable-blender:ci
+      - name: Exercise native views, product workflows, and isolated render jobs
+        env:
+          PRINTABLE_PAIR_SMOKE_RUN_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          scripts/smoke-release-pair \
+            printable-server:ci printable-blender:ci \
+            target/release/printable-smoke smoke/expected-tools.txt

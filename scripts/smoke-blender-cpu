@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# CPU/software integration evidence; NVIDIA release qualification is separate.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: smoke-blender-cpu <blender-image>" >&2
+  exit 2
+fi
+smoke_ref="$1"
+docker image inspect "$smoke_ref" >/dev/null
+scratch="$(mktemp -d -t printable-cpu-XXXXXXXX)"
+run_id="${scratch##*/}"
+
+name="blender-smoke-${run_id}"
+busy_name="blender-busy-${run_id}"
+edge_name="blender-edge-${run_id}"
+ui_name="blender-ui-${run_id}"
+cleanup() {
+  docker rm -f "$name" "$busy_name" "$edge_name" "$ui_name" >/dev/null 2>&1 || true
+}
+trap 'cleanup; rm -rf -- "$scratch"' EXIT
+
+run_blender() {
+  local container_name="$1"
+  local request_timeout="${2:-120}"
+  local heartbeat="${3:-1}"
+  local shutdown_timeout="${4:-10}"
+  local blender_mode="${5:-background}"
+  docker run -d --name "$container_name" --platform linux/amd64 \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --pids-limit 512 \
+    --tmpfs /tmp:rw,uid=10001,gid=10001,mode=1770 \
+    --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
+    --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
+    --tmpfs /workspace:rw,uid=10001,gid=10001,mode=1770 \
+    -e PRINTABLE_BLENDER_ENABLE_TEST_COMMANDS=true \
+    -e "PRINTABLE_BLENDER_MODE=${blender_mode}" \
+    -e "PRINTABLE_BLENDER_REQUEST_TIMEOUT_SECONDS=${request_timeout}" \
+    -e "PRINTABLE_BLENDER_HEARTBEAT_SECONDS=${heartbeat}" \
+    -e "PRINTABLE_BLENDER_SHUTDOWN_TIMEOUT_SECONDS=${shutdown_timeout}" \
+    "$smoke_ref" >/dev/null
+}
+
+wait_healthy() {
+  local container_name="$1"
+  for _ in $(seq 1 90); do
+    local state
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name")"
+    if [ "$state" = healthy ]; then return 0; fi
+    if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != true ]; then
+      docker logs "$container_name" || true
+      return 1
+    fi
+    sleep 2
+  done
+  docker logs "$container_name" || true
+  return 1
+}
+
+run_blender "$name" 120 60 1
+wait_healthy "$name"
+blender_pid="$(docker exec "$name" sh -c '
+  for comm in /proc/[0-9]*/comm; do
+    if [ "$(cat "$comm")" = blender ]; then
+      process="${comm%/comm}"
+      printf "%s\n" "${process##*/}"
+      exit 0
+    fi
+  done
+  exit 1
+')"
+file_limit="$(docker exec "$name" cat "/proc/${blender_pid}/limits" |
+  awk '$1 == "Max" && $2 == "file" && $3 == "size" { print $4 }')"
+test "$file_limit" = 1073741824
+ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name")"
+if ! python3 addon/integration_smoke.py --host "$ip" --mode capabilities; then
+  docker logs "$name" || true
+  crash_report="${scratch}/blender-smoke-crash.txt"
+  if docker cp "$name:/tmp/blender.crash.txt" "$crash_report"; then
+    cat "$crash_report"
+  fi
+  exit 1
+fi
+docker exec "$name" test -s /workspace/smoke/cube.stl
+docker exec "$name" test -s /workspace/smoke/scene.blend
+docker exec "$name" test -s /workspace/smoke/render.png
+test "$(docker inspect --format '{{.Config.User}}' "$name")" = "10001:10001"
+test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$name")" = true
+test -z "$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" | sed -n 's/^DISPLAY=//p')"
+python3 addon/integration_smoke.py --host "$ip" \
+  --mode unresponsive-execute &
+unresponsive_pid=$!
+for _ in $(seq 1 100); do
+  if docker exec "$name" test -s /workspace/shutdown-smoke.started; then
+    break
+  fi
+  if ! kill -0 "$unresponsive_pid" 2>/dev/null; then
+    wait "$unresponsive_pid"
+    exit 1
+  fi
+  sleep 0.1
+done
+docker exec "$name" test -s /workspace/shutdown-smoke.started
+docker stop --timeout 10 "$name" >/dev/null
+wait "$unresponsive_pid"
+test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
+
+run_blender "$busy_name"
+wait_healthy "$busy_name"
+busy_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$busy_name")"
+python3 addon/integration_smoke.py --host "$busy_ip" --mode busy-wait &
+smoke_pid=$!
+sleep 1
+docker stop --timeout 10 "$busy_name" >/dev/null
+wait "$smoke_pid"
+test "$(docker inspect --format '{{.State.ExitCode}}' "$busy_name")" = 0
+
+run_blender "$edge_name" 1
+wait_healthy "$edge_name"
+edge_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$edge_name")"
+python3 addon/integration_smoke.py --host "$edge_ip" --mode overdue-wait &
+overdue_pid=$!
+unhealthy=""
+for _ in $(seq 1 50); do
+  if ! docker exec "$edge_name" \
+    python3 /opt/printable/addon/printable_bridge/healthcheck.py; then
+    unhealthy=1
+    break
+  fi
+  sleep 0.1
+done
+test -n "$unhealthy"
+wait "$overdue_pid"
+recovered=""
+for _ in $(seq 1 50); do
+  if docker exec "$edge_name" \
+    python3 /opt/printable/addon/printable_bridge/healthcheck.py; then
+    recovered=1
+    break
+  fi
+  sleep 0.1
+done
+test -n "$recovered"
+python3 addon/integration_smoke.py --host "$edge_ip" --mode partial-frame &
+partial_pid=$!
+sleep 1
+docker stop --timeout 10 "$edge_name" >/dev/null
+wait "$partial_pid"
+test "$(docker inspect --format '{{.State.ExitCode}}' "$edge_name")" = 0
+
+run_blender "$ui_name" 120 1 10 ui
+wait_healthy "$ui_name"
+ui_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ui_name")"
+if ! python3 addon/integration_smoke.py --host "$ui_ip" --mode ui ||
+   ! python3 addon/integration_smoke.py --host "$ui_ip" --mode capabilities; then
+  docker logs "$ui_name" || true
+  crash_report="${scratch}/blender-ui-smoke-crash.txt"
+  if docker cp "$ui_name:/tmp/blender.crash.txt" "$crash_report"; then
+    cat "$crash_report"
+  fi
+  exit 1
+fi
+docker stop --timeout 10 "$ui_name" >/dev/null
+test "$(docker inspect --format '{{.State.ExitCode}}' "$ui_name")" = 0
+
+echo "CPU_SMOKE_OK"
