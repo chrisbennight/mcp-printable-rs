@@ -123,7 +123,7 @@ jobs:
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --file blender/Dockerfile --tag printable-blender:ci .
       - name: Exercise the independent installation and direct client
-        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci
+        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --recovery
       - name: Check Blender capabilities and shutdown recovery
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Verify packaged license notices
