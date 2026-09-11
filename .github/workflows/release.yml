@@ -47,8 +47,8 @@ jobs:
           command -v g++
           release_namespace="${GITHUB_REPOSITORY_OWNER,,}"
           printf 'PRINTABLE_IMAGE_NAMESPACE=%s\n' "$release_namespace" >> "$GITHUB_ENV"
-          docker_config="${RUNNER_TEMP}/printable-docker-${GITHUB_RUN_ID}"
-          mkdir -m 0700 -p "$docker_config"
+          docker_config="${RUNNER_TEMP}/printable-docker-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 0700 "$docker_config"
           printf 'DOCKER_CONFIG=%s\n' "$docker_config" >> "$GITHUB_ENV"
       - name: Install policy tooling in temporary directories
         run: |
