@@ -106,6 +106,8 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           cache-binary: false
+      - name: Verify private local files stay outside the build context
+        run: scripts/test-build-context
       - name: Build the server and matching external smoke driver
         run: |
           docker buildx build --platform linux/amd64 --load \

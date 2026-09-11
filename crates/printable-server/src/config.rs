@@ -81,6 +81,8 @@ pub struct Settings {
     /// DNS-rebinding guard). The default covers loopback only; a container
     /// deployment must add its service DNS name.
     pub allowed_hosts: Vec<String>,
+    /// Exact serialized browser origins; empty rejects every Origin header.
+    pub allowed_origins: Vec<String>,
 }
 
 /// Stable operator-facing settings errors; the offending variable name is the
@@ -91,6 +93,10 @@ pub enum SettingsError {
     McpBearerMissing,
     #[error("PRINTABLE_MCP_BEARER must contain exactly 64 lowercase hexadecimal characters")]
     McpBearerInvalid,
+    #[error(
+        "PRINTABLE_ALLOWED_ORIGINS must list exact HTTP(S) origins without paths, credentials, or wildcards"
+    )]
+    AllowedOriginsInvalid,
     #[error("{0} must be an integer")]
     PortNotInteger(&'static str),
     #[error("{0} must be between 1 and 65535")]
@@ -141,6 +147,7 @@ impl Settings {
             geometry_worker_memory_bytes: geometry_worker_memory_bytes(&get)?,
             mcp_bearer: mcp_bearer(&get)?,
             allowed_hosts: allowed_hosts(nonempty(&get, "PRINTABLE_ALLOWED_HOSTS")),
+            allowed_origins: allowed_origins(nonempty(&get, "PRINTABLE_ALLOWED_ORIGINS"))?,
         })
     }
 }
@@ -148,6 +155,25 @@ impl Settings {
 fn mcp_bearer(get: &impl Fn(&str) -> Option<String>) -> Result<BearerSecret, SettingsError> {
     let value = nonempty(get, "PRINTABLE_MCP_BEARER").ok_or(SettingsError::McpBearerMissing)?;
     BearerSecret::parse(value)
+}
+
+fn allowed_origins(raw: Option<String>) -> Result<Vec<String>, SettingsError> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let url =
+                reqwest::Url::parse(value).map_err(|_| SettingsError::AllowedOriginsInvalid)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none_or(|host| host.contains('*'))
+                || url.origin().ascii_serialization() != value
+            {
+                return Err(SettingsError::AllowedOriginsInvalid);
+            }
+            Ok(value.to_owned())
+        })
+        .collect()
 }
 
 /// Host vars: absent uses the default; present values, including empty, are
@@ -312,6 +338,7 @@ mod tests {
         assert_eq!(s.geometry_worker_bin, None);
         assert_eq!(s.geometry_worker_memory_bytes, 1024 * 1024 * 1024);
         assert_eq!(s.allowed_hosts, vec!["localhost", "127.0.0.1", "::1"]);
+        assert!(s.allowed_origins.is_empty());
         assert!(format!("{s:?}").contains("BearerSecret([REDACTED])"));
         assert!(!format!("{s:?}").contains("0123456789abcdef"));
     }
@@ -467,6 +494,39 @@ mod tests {
         assert_eq!(s.allowed_hosts, vec!["a".to_string(), "b".to_string()]);
         let s = Settings::from_lookup(lookup(&[("PRINTABLE_ALLOWED_HOSTS", "  ")])).unwrap();
         assert_eq!(s.allowed_hosts, vec!["localhost", "127.0.0.1", "::1"]);
+    }
+
+    #[test]
+    fn browser_origins_require_exact_serialized_http_origins() {
+        let s = Settings::from_lookup(lookup(&[(
+            "PRINTABLE_ALLOWED_ORIGINS",
+            "https://app.example.com, http://localhost:3000, http://[::1]:3000",
+        )]))
+        .unwrap();
+        assert_eq!(
+            s.allowed_origins,
+            [
+                "https://app.example.com",
+                "http://localhost:3000",
+                "http://[::1]:3000"
+            ]
+        );
+        for value in [
+            "*",
+            "null",
+            "https://*.example.com",
+            "https://app.example.com/",
+            "https://user:password@app.example.com",
+            "https://app.example.com/path",
+            "https://app.example.com?query",
+            "https://app.example.com#fragment",
+            "file:///tmp/page",
+        ] {
+            let error =
+                Settings::from_lookup(lookup(&[("PRINTABLE_ALLOWED_ORIGINS", value)])).unwrap_err();
+            assert_eq!(error, SettingsError::AllowedOriginsInvalid);
+            assert!(!error.to_string().contains(value));
+        }
     }
 
     #[test]
