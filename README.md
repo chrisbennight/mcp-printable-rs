@@ -4,6 +4,12 @@ Production Printable MCP service for AI-driven 3D modeling, rendering,
 animation, and FDM print validation with Blender and OpenSCAD.
 Streamable HTTP at `/mcp`.
 
+Development now continues on [GitHub](https://github.com/chrisbennight/mcp-printable-rs).
+The repository is initially private. See [continuous integration](docs/continuous-integration.md)
+for the GitHub checks and the remaining release-porting boundary. The supported
+deployment target is Linux/amd64 with NVIDIA; software graphics in CI is test
+coverage, not a separate supported distribution.
+
 **Status: active build.** The Rust MCP foundation, confined workspace,
 Blender client, first-party UI/background bridge, pinned Blender image,
 geometry/SCAD primitives, sanitized dependency readiness, digest-paired

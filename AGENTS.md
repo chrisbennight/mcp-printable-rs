@@ -2,13 +2,31 @@
 
 Guidance for working in `mcp-printable-rs`.
 
+## GitHub migration
+
+The maintained source is now `https://github.com/chrisbennight/mcp-printable-rs`,
+initially private. GitHub history begins with a source snapshot; earlier history
+remains on Gitea. Use GitHub MCP for issues, pull requests, and Actions, and local
+Git for checkouts, commits, and pushes. Create worktrees from the freshly fetched
+GitHub `main` branch. Keep changes on branches and preserve the user's checkout.
+
+The [GitHub CI workflow](.github/workflows/ci.yml) is the active verification
+path. The private release and deployment instructions below describe the
+imported pipeline pending its separate port; they do not authorize connecting
+GitHub pull requests to lab runners, secrets, or production deployment. See
+[continuous integration](docs/continuous-integration.md).
+
+The supported deployment is self-hosted Linux/amd64 with NVIDIA. CPU/software
+checks remain useful for CI but do not establish a non-NVIDIA support promise.
+Repository visibility stays private until explicitly authorized otherwise.
+
 ## Overview
 
 Production Printable MCP service for AI-driven 3D modeling, rendering,
 animation, and FDM print validation through headless Blender and OpenSCAD.
 Exposes MCP tools over streamable HTTP at `/mcp`; stdio is not supported.
 
-- Maintained repository: `https://gitea.cacahuate.org/bennight/mcp-printable-rs`
+- Maintained repository: `https://github.com/chrisbennight/mcp-printable-rs`
 - Python is retained only for first-party code that runs inside Blender via
   `bpy`. The authoritative add-on and headless launcher live in `addon/`.
 - The target deployment is Linux/amd64 `server`: a Rust MCP container beside a
