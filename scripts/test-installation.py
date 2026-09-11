@@ -77,6 +77,9 @@ def main():
             if args.recovery:
                 from installation_recovery import exercise
                 exercise(config, compose_file, directory, args.server_image, args.blender_image, credential)
+        except subprocess.CalledProcessError:
+            subprocess.run(compose + ["logs", "--no-color", "--tail", "80", "blender", "render-worker"], check=True)
+            raise
         finally:
             subprocess.run(compose + ["down", "--volumes", "--timeout", "30"], check=True)
             remaining = subprocess.run([
