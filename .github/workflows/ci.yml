@@ -131,3 +131,5 @@ jobs:
           scripts/smoke-release-pair \
             printable-server:ci printable-blender:ci \
             target/release/printable-smoke smoke/expected-tools.txt
+      - name: Exercise the independent installation and direct client
+        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci

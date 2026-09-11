@@ -107,7 +107,7 @@ struct PublishedEntry {
 }
 
 /// Process-wide immutable snapshots awaiting import by the authenticated MCP
-/// gateway. Entries are bounded by count and file size, expire automatically,
+/// client. Entries are bounded by count and file size, expire automatically,
 /// and are consumed by one authorized download.
 pub struct PublishedFiles {
     workspace: Arc<Workspace>,
@@ -189,13 +189,19 @@ impl PublishedFiles {
     pub fn authorize_download(
         &self,
         params: AuthorizeDownloadParams,
-        authority: &str,
+        base_url: &reqwest::Url,
     ) -> Result<serde_json::Value, String> {
         let id = params
             .uri
             .strip_prefix(FILE_URI_PREFIX)
             .filter(|id| !id.is_empty() && !id.contains('/'))
             .ok_or_else(|| "unknown or expired Printable file URI".to_string())?;
+        let url = base_url
+            .join(&format!(
+                "{}{id}",
+                DOWNLOAD_PATH_PREFIX.trim_start_matches('/')
+            ))
+            .map_err(|_| "file authorization unavailable".to_string())?;
         let token = random_token().map_err(|_| "file authorization unavailable".to_string())?;
         let token_hash = Sha256::digest(token.as_bytes()).into();
         let file = {
@@ -219,7 +225,7 @@ impl PublishedFiles {
             download: FileTransferDescriptor {
                 transport: "http",
                 method: "GET",
-                url: format!("http://{authority}{DOWNLOAD_PATH_PREFIX}{id}"),
+                url: url.to_string(),
                 headers: BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
             },
         };

@@ -20,6 +20,12 @@ The supported deployment is self-hosted Linux/amd64 with NVIDIA. CPU/software
 checks remain useful for CI but do not establish a non-NVIDIA support promise.
 Repository visibility stays private until explicitly authorized otherwise.
 
+Independent installations use [Compose and direct HTTP clients](docs/installation.md).
+The gateway-only caller and secret-provider rules below describe the imported
+lab deployment, not a restriction on the independent product. The server also
+supports mounted bearer files and an explicit HTTPS download base; `.env.example`
+is the configuration reference.
+
 ## Overview
 
 Production Printable MCP service for AI-driven 3D modeling, rendering,

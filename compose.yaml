@@ -1,0 +1,104 @@
+name: printable
+
+x-runtime: &runtime
+  platform: linux/amd64
+  user: "10001:10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 512
+  restart: unless-stopped
+  volumes:
+    - workspace:/workspace
+  networks: [control]
+
+x-blender: &blender
+  <<: *runtime
+  image: ${PRINTABLE_BLENDER_IMAGE:?Set PRINTABLE_BLENDER_IMAGE to the matching Blender image}
+  mem_limit: 4g
+  tmpfs:
+    - /tmp:rw,size=1g,uid=10001,gid=10001,mode=1770
+    - /home/printable:rw,size=256m,uid=10001,gid=10001,mode=0750
+    - /run/printable-blender:rw,size=16m,uid=10001,gid=10001,mode=0750
+  depends_on:
+    workspace-init:
+      condition: service_completed_successfully
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${PRINTABLE_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+services:
+  workspace-init:
+    image: ${PRINTABLE_SERVER_IMAGE:?Set PRINTABLE_SERVER_IMAGE to the server image}
+    platform: linux/amd64
+    user: "0:0"
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 16
+    mem_limit: 64m
+    entrypoint: ["/usr/bin/chown", "10001:10001", "/workspace"]
+    volumes:
+      - workspace:/workspace
+
+  blender:
+    <<: *blender
+    environment:
+      PRINTABLE_BLENDER_MODE: ui
+      PRINTABLE_BLENDER_UI_BACKEND: egl
+      PRINTABLE_BLENDER_ROLE: live
+      PRINTABLE_BLENDER_RENDER_DEVICE: OPTIX
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,display
+
+  render-worker:
+    <<: *blender
+    environment:
+      PRINTABLE_BLENDER_MODE: background
+      PRINTABLE_BLENDER_ROLE: render_worker
+      PRINTABLE_BLENDER_RENDER_DEVICE: OPTIX
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,display
+
+  server:
+    <<: *runtime
+    image: ${PRINTABLE_SERVER_IMAGE:?Set PRINTABLE_SERVER_IMAGE to the server image}
+    mem_limit: 2g
+    tmpfs:
+      - /tmp:rw,size=512m,uid=10001,gid=10001,mode=1770
+    ports:
+      - "127.0.0.1:${PRINTABLE_PORT:-8000}:8000"
+    networks: [control, frontend]
+    secrets: [mcp_bearer]
+    environment:
+      PRINTABLE_HTTP_HOST: 0.0.0.0
+      PRINTABLE_HTTP_PORT: "8000"
+      PRINTABLE_MCP_BEARER_FILE: /run/secrets/mcp_bearer
+      PRINTABLE_ALLOWED_HOSTS: ${PRINTABLE_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}
+      PRINTABLE_ALLOWED_ORIGINS: ${PRINTABLE_ALLOWED_ORIGINS:-}
+      PRINTABLE_DOWNLOAD_BASE_URL: ${PRINTABLE_DOWNLOAD_BASE_URL:-}
+      PRINTABLE_WORKSPACE_ROOT: /workspace
+      PRINTABLE_BLENDER_WORKSPACE_ROOT: /workspace
+      BLENDER_HOST: blender
+      PRINTABLE_RENDER_WORKER_HOST: render-worker
+    depends_on:
+      blender:
+        condition: service_healthy
+      render-worker:
+        condition: service_healthy
+
+networks:
+  control:
+    internal: true
+  frontend: {}
+
+volumes:
+  workspace: {}
+
+secrets:
+  mcp_bearer:
+    file: ./.dev/mcp-bearer

@@ -10,6 +10,11 @@ for the GitHub checks and the remaining release-porting boundary. The supported
 deployment target is Linux/amd64 with NVIDIA; software graphics in CI is test
 coverage, not a separate supported distribution.
 
+For an independent host, follow the [Compose installation and direct-client
+tutorial](docs/installation.md). It includes local credential setup, a live
+Blender service, an isolated render worker, and verified artifact downloads
+without a gateway.
+
 **Status: active build.** The Rust MCP foundation, confined workspace,
 Blender client, first-party UI/background bridge, pinned Blender image,
 geometry/SCAD primitives, sanitized dependency readiness, digest-paired
@@ -29,11 +34,11 @@ mechanical-rotation jobs retain restart-recoverable frame sequences and
 artifact-backed MP4 output. The shipped acceptance corpus composes the public
 generic contracts into an enclosure, bracket, grip, and articulated fixture.
 Any supported workspace artifact can be published as an immutable structured
-file reference; Printable streams its raw bytes directly to the gateway under a
+file reference; Printable streams its raw bytes directly to a compatible client under a
 short-lived one-use authorization, without placing artifact bytes in base64 MCP
 content.
-`/mcp` requires the single shared gateway bearer configured through
-`PRINTABLE_MCP_BEARER`; Printable validates it directly without a reverse
+`/mcp` requires the shared bearer configured through
+`PRINTABLE_MCP_BEARER` or `PRINTABLE_MCP_BEARER_FILE`; Printable validates it directly without a reverse
 proxy sidecar.
 Requests carrying a browser `Origin` header are rejected by default. To allow
 a trusted browser origin, set `PRINTABLE_ALLOWED_ORIGINS` to its exact serialized

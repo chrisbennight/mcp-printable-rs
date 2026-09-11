@@ -328,10 +328,16 @@ impl ServerHandler for PrintableServer {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.headers.get(axum::http::header::HOST))
             .and_then(|host| host.to_str().ok())
+            .filter(|host| !host.contains('@'))
             .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
+        let base_url = match &self.settings.download_base_url {
+            Some(base) => base.clone(),
+            None => reqwest::Url::parse(&format!("http://{authority}/"))
+                .map_err(|_| McpError::invalid_params("invalid HTTP host authority", None))?,
+        };
         let result = self
             .published_files
-            .authorize_download(params, authority)
+            .authorize_download(params, &base_url)
             .map_err(|message| McpError::invalid_params(message, None))?;
         Ok(CustomResult::new(result))
     }
