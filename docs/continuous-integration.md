@@ -30,7 +30,7 @@ and NVIDIA qualification are ported separately. Do not use the old publisher
 as a GitHub release command. Production deployment remains outside this
 repository's GitHub CI.
 
-For local source checks, use the commands in the [README](../README.md#development).
+For local source checks, use the [contributor commands](../CONTRIBUTING.md#development-setup).
 The new standalone `scripts/smoke-blender-cpu <image>` requires Linux, Docker,
 Python 3, and an already built Blender image. It creates temporary containers
 and exercises the existing integration modes, including busy shutdown and

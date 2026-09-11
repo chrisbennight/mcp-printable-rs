@@ -1,5 +1,7 @@
 # Blender GPU smoke — 2026-07-18
 
+This is historical lab evidence, not qualification of a GitHub release pair.
+
 The controlled smoke passed on production host `server` against the
 Linux/amd64 candidate image built from this change.
 
