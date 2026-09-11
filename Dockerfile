@@ -80,7 +80,8 @@ COPY crates/printable-imaging/assets/LICENSE-Fira-OFL.txt /usr/share/doc/printab
 RUN chmod 0755 /usr/local/bin/openscad-headless
 
 ARG SOURCE_REVISION
-LABEL org.opencontainers.image.source="https://gitea.cacahuate.org/bennight/mcp-printable-rs" \
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="server"
 

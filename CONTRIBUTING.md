@@ -15,11 +15,15 @@ repeats implementation details is not.
 ## Development setup
 
 Install Rust through rustup and use the checked-in `rust-toolchain.toml`.
-Native builds need a C++ compiler and CMake. Python 3 runs the bridge unit tests
+Native builds need a C++ compiler and CMake. Python 3.11 or newer runs the bridge unit tests
 and repository tooling. Docker is needed for container integration. Ordinary
 unit tests use fakes and need neither Blender nor a GPU.
 
 ```sh
+install -d -m 0700 .dev
+python3 -m venv .dev/tooling
+.dev/tooling/bin/python -m pip install -r requirements-tooling.txt
+. .dev/tooling/bin/activate
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked

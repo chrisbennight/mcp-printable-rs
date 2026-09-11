@@ -4,11 +4,12 @@ import copy
 import unittest
 
 import verify_release_image
+from release_identity import ReleaseIdentity
 
 
 REVISION = "a" * 40
 SERVER_IMAGE = (
-    "gitea.cacahuate.org/bennight/mcp-printable-rs:"
+    "ghcr.io/chrisbennight/mcp-printable-rs:"
     f"sha-{REVISION[:12]}@sha256:{'b' * 64}"
 )
 
@@ -33,6 +34,21 @@ def server_document() -> dict:
 
 
 class VerifyReleaseImageTests(unittest.TestCase):
+    def test_custom_registry_preserves_source_role_and_revision_checks(self):
+        identity = ReleaseIdentity("registry.example:5443", "team/tools", "https://example.com/team/tools")
+        image = identity.repository("server") + f":sha-{REVISION[:12]}@sha256:{'b' * 64}"
+        document = server_document()
+        document["Config"]["Labels"]["org.opencontainers.image.source"] = identity.source
+        self.assertEqual(verify_release_image.verify("server", image, REVISION, document, [], identity), [])
+        for wrong_image in (image.replace("mcp-printable-rs", "mcp-printable-blender"), image.split("@")[0], SERVER_IMAGE):
+            self.assertIn("reference is not an immutable server release image",
+                          verify_release_image.verify("server", wrong_image, REVISION, document, [], identity))
+        document["Config"]["Labels"]["org.opencontainers.image.source"] = ReleaseIdentity.source
+        self.assertIn("image label org.opencontainers.image.source does not match the release contract",
+                      verify_release_image.verify("server", image, REVISION, document, [], identity))
+        self.assertIn("image label org.opencontainers.image.revision does not match the release contract",
+                      verify_release_image.verify("server", image, "c" * 40, document, [], identity))
+
     def test_valid_exact_server_image_passes(self) -> None:
         self.assertEqual(
             verify_release_image.verify(

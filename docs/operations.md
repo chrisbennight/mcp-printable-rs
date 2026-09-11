@@ -98,9 +98,13 @@ pressure. Restart and verify readiness and representative downloads afterward.
 The [job regression tests](../crates/printable-server/src/jobs.rs) cover isolated
 recovery without live-scene replacement, next-frame restart, cancellation,
 legacy restoration, unreadable history, and serialized metadata writes. The
-installation test additionally checks a real completed job after server
-restart. These are distinct from a host backup/restore drill or a measured
-out-of-space trial; neither of those is claimed completed by the unit tests.
+installation integration additionally checks a completed job after server
+restart. Its recovery option restores a real workspace into a fresh volume,
+verifies the video digest, isolates damaged metadata, and exercises a full
+dedicated filesystem followed by a successful write after space is freed.
+See [the recorded recovery evidence](../evidence/installation-recovery.md).
+These are controlled software-container checks, not a claim about arbitrary
+host corruption or NVIDIA performance.
 
 Record backup/restore and disk-pressure trials on an isolated volume before
 depending on an installation. Never perform them on a live user's workspace.

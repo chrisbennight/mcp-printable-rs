@@ -10,7 +10,7 @@ network, or GPU host. Dependencies resolve from their public upstreams.
 | Source checks | Rust formatting, lint, locked tests; Python bridge and release-policy tests; documentation and shell validation |
 | Workflow validation | GitHub Actions syntax and expression checks with pinned actionlint |
 | Confined-source fuzz smoke | A bounded run against the OpenSCAD source gate with pinned tooling |
-| Container integration (software graphics) | Both built images, Blender capabilities and shutdown recovery, native views, product artifacts, and checkpoint rendering while live editing continues |
+| Container integration (software graphics) | Both built images, packaged notices, standalone installation and verified downloads, workspace restoration and storage failures, Blender shutdown recovery, native views, and checkpoint rendering while live editing continues |
 
 The container job uses the same Dockerfiles and product smoke as release
 qualification. It builds the smoke driver in the server's build environment;
@@ -23,12 +23,11 @@ runner. A passing check does not establish NVIDIA compatibility, performance,
 or safe coexistence with other GPU users. Releases still need those checks
 against their exact image digests on a trusted NVIDIA host.
 
-The imported `.gitea` workflows and `build-docker.sh --push` still describe the
-previous private release pipeline. GitHub does not execute those workflows.
-Their policy tests remain active while image publication, registry identity,
-and NVIDIA qualification are ported separately. Do not use the old publisher
-as a GitHub release command. Production deployment remains outside this
-repository's GitHub CI.
+The separate [manual release workflow](releases.md) uses a trusted NVIDIA
+runner and temporary package publishing authority. It is disabled pending
+runner, environment, registry, and release-material verification. Pull-request
+jobs cannot select that runner or publish images. The imported `.gitea`
+directory is historical; production deployment remains outside GitHub CI.
 
 For local source checks, use the [contributor commands](../CONTRIBUTING.md#development-setup).
 The new standalone `scripts/smoke-blender-cpu <image>` requires Linux, Docker,

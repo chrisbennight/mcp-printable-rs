@@ -13,16 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from release_identity import ReleaseIdentity
+
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = ROOT / "release" / "security-policy.json"
 KEV_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/"
     "known_exploited_vulnerabilities.json"
-)
-IMAGE_RE = re.compile(
-    r"^gitea\.cacahuate\.org/bennight/"
-    r"mcp-printable-(?:rs|blender):sha-[0-9a-f]{12}"
-    r"@sha256:[0-9a-f]{64}$"
 )
 GRYPE_TIMEOUT_SECONDS = 900
 GRYPE_VERSION_RE = re.compile(r"(?m)^Version:\s*(\S+)\s*$")
@@ -254,7 +251,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if any(not IMAGE_RE.fullmatch(image) for image in images):
+    try:
+        identity = ReleaseIdentity.from_environment()
+    except ValueError:
+        print("release registry or source identity is invalid", file=sys.stderr)
+        return 2
+    patterns = [identity.reference_pattern(role) for role in ("server", "blender")]
+    if any(not any(pattern.fullmatch(image) for pattern in patterns) for image in images):
         print("every release scan target must be an exact Printable digest", file=sys.stderr)
         return 2
 

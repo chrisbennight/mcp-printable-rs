@@ -36,6 +36,9 @@ disposition for every review finding.
 
 ## Validation
 
+Use the isolated Python tooling environment from the contributor setup before
+running these commands. Release-policy tests require `requirements-tooling.txt`.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -69,6 +72,11 @@ Do not promote software-rendered test results as NVIDIA qualification. Keep
 pull requests off persistent GPU runners and away from release credentials.
 Do not couple the general installation to a private registry, secret provider,
 or deployment controller. Site-specific production wiring belongs downstream.
+
+The [manual release workflow](docs/releases.md) is disabled until its trusted
+runner, environment protections, private package destinations, and release
+materials are verified. Publishing retains the approved crate-proxy gate;
+ordinary local source builds do not require that proxy.
 
 Write plain English. Documentation should state current behavior, give runnable
 commands, and distinguish measured evidence from assumptions. Keep design

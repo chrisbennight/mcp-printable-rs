@@ -8,6 +8,7 @@ or binaries.
 | Component | Distribution boundary and notice location |
 | --- | --- |
 | Rust dependencies | Versions are recorded in `Cargo.lock`; each crate retains its declared license and upstream notices. Native dependencies linked by crates are also part of the binary inventory. |
+| PyYAML | MIT-licensed repository policy tooling, installed from `requirements-tooling.txt`; not a runtime or direct-client dependency. |
 | Fira font | Embedded by `printable-imaging`; SIL Open Font License 1.1, with the Mozilla Foundation and Telefonica attribution in the [bundled notice](crates/printable-imaging/assets/LICENSE-Fira-OFL.txt). |
 | Blender | The official archive is checksum-pinned in `blender/Dockerfile`; retain its bundled licenses and corresponding source for the exact redistributed version. See [Blender's licensing guidance](https://www.blender.org/about/license/). |
 | Blender add-on | First-party MIT source is included in the image. Use with Blender must also respect Blender's GPL distribution requirements; this does not relicense unrelated Rust source. |

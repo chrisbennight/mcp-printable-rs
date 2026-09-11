@@ -15,6 +15,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && curl --fail --location --proto '=https' --tlsv1.2 \
+       --retry 3 --retry-all-errors --connect-timeout 15 --max-time 600 --retry-max-time 1200 \
        --output /tmp/blender.tar.xz \
        "https://download.blender.org/release/Blender5.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
     && echo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum --check --strict \
@@ -22,6 +23,7 @@ RUN apt-get update \
     && tar --extract --xz --file /tmp/blender.tar.xz \
        --directory /opt/blender --strip-components=1 \
     && curl --fail --location --proto '=https' --tlsv1.2 \
+       --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
        --output /tmp/urllib3-2.7.0-py3-none-any.whl "${URLLIB3_WHEEL_URL}" \
     && echo "${URLLIB3_SHA256}  /tmp/urllib3-2.7.0-py3-none-any.whl" | sha256sum --check --strict \
     && /opt/blender/5.2/python/bin/python3.13 -m pip install \
@@ -33,6 +35,7 @@ RUN apt-get update \
        /opt/blender/5.2/python/lib/python3.13/site-packages/setuptools*
 
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
+       --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
        --output /tmp/virtualgl.deb "${VIRTUALGL_URL}" \
     && echo "${VIRTUALGL_SHA256}  /tmp/virtualgl.deb" | sha256sum --check --strict
 
@@ -83,7 +86,8 @@ COPY --chown=10001:10001 addon /opt/printable/addon
 COPY --chown=10001:10001 scripts/run-headless-blender /opt/printable/scripts/run-headless-blender
 
 ARG SOURCE_REVISION
-LABEL org.opencontainers.image.source="https://gitea.cacahuate.org/bennight/mcp-printable-rs" \
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="blender"
 
