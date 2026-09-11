@@ -38,6 +38,29 @@ changing visibility rather than silently rewriting someone else's authorship.
 
 ## Checks before a visibility change
 
+On 11 September 2026, Gitleaks 8.30.1 scanned candidate commit
+`14240e74b8bdb18528235f5e205eb1cfbe95b42a` and its reachable GitHub history,
+then separately scanned every tracked file exported from its unchanged index.
+Both scans exited successfully with no findings. The
+[redacted scan record](../evidence/publication-secret-scan.json) identifies the
+revision, tool version, scope, and outcomes. No custom exclusions were added;
+the scanner's built-in rules and allowlists still apply. Other forge references,
+ignored files, and untracked local files were outside that selected publication
+set. The original Gitea history was not scanned by this check.
+
+The executed scanner commands were:
+
+```sh
+gitleaks git . --log-opts=HEAD --redact=100 --report-format=json --report-path=- --no-banner --no-color --log-level=error
+gitleaks dir TRACKED_SOURCE_EXPORT --redact=100 --report-format=json --report-path=- --no-banner --no-color --log-level=error
+```
+
+The source export used `git checkout-index --all --prefix=TEMPORARY_DIRECTORY/`
+after verifying that both the worktree and index matched the recorded commit.
+Scanner output was captured and projected to redacted finding metadata; no
+credential values were included in the record. Repeat the checks for later
+changes before publication.
+
 Scan the exact selected Git history and tracked source, recording the scanner
 version, revision, exclusions, and redacted findings. A secret scanner is a
 heuristic check; no findings does not prove that every sensitive value is absent.
