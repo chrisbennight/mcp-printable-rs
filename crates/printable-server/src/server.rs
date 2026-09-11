@@ -56,7 +56,7 @@ const MAX_INFLIGHT_REQUESTS: usize = 32;
 const DUPLICATE_JSON_MEMBER: &str = "duplicate JSON object member";
 
 /// Build the router. `/mcp` is the stateful streamable-HTTP transport, guarded
-/// by the shared gateway bearer and `Host` allowlist (DNS-rebinding protection),
+/// by browser Origin policy, the shared bearer, and the `Host` allowlist,
 /// and wired to `cancel` so graceful shutdown tears sessions down; `/healthz`
 /// is static liveness and `/readyz` is a sanitized live dependency probe.
 ///
@@ -97,6 +97,10 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
     // read (bounding aggregate retained request memory). The JSON boundary
     // enforces the per-request body limit before rebuilding the request for rmcp.
     let mcp = ServiceBuilder::new()
+        .layer(middleware::from_fn_with_state(
+            settings.allowed_origins.clone(),
+            require_allowed_origin,
+        ))
         .layer(middleware::from_fn_with_state(
             settings.mcp_bearer.clone(),
             require_mcp_bearer,
@@ -155,6 +159,23 @@ async fn require_mcp_bearer(
         .is_some_and(|candidate| expected.matches(candidate));
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    next.run(request).await
+}
+
+async fn require_allowed_origin(
+    State(allowed): State<Vec<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut origins = request.headers().get_all(header::ORIGIN).iter();
+    if let Some(origin) = origins.next()
+        && (origins.next().is_some()
+            || !allowed
+                .iter()
+                .any(|value| origin.as_bytes() == value.as_bytes()))
+    {
+        return StatusCode::FORBIDDEN.into_response();
     }
     next.run(request).await
 }

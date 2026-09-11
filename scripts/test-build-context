@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scratch="$(mktemp -d -t printable-build-context-XXXXXXXX)"
+trap 'rm -rf -- "$scratch"' EXIT
+context="$scratch/context"
+output="$scratch/output"
+mkdir -p "$context/.dev" "$context/.cargo" "$context/nested/.dev" "$context/addon" "$context/crates"
+cp .dockerignore "$context/.dockerignore"
+for path in .dev/model.blend .cargo/config.toml .env .env.production nested/.env nested/.env.local nested/.dev/state; do
+  printf 'harmless private-state fixture\n' > "$context/$path"
+done
+for path in .env.example nested/.env.example addon/bridge.py crates/Cargo.toml README.md; do
+  printf 'required source fixture\n' > "$context/$path"
+done
+printf 'FROM scratch\nCOPY . /\n' > "$scratch/Dockerfile"
+docker buildx build --file "$scratch/Dockerfile" --output "type=local,dest=$output" "$context"
+for path in .dev .cargo .env .env.production nested/.env nested/.env.local nested/.dev; do
+  test ! -e "$output/$path"
+done
+for path in .env.example nested/.env.example addon/bridge.py crates/Cargo.toml README.md; do
+  test -s "$output/$path"
+done
+echo "BUILD_CONTEXT_OK"

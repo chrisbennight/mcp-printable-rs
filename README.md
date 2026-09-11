@@ -35,6 +35,11 @@ content.
 `/mcp` requires the single shared gateway bearer configured through
 `PRINTABLE_MCP_BEARER`; Printable validates it directly without a reverse
 proxy sidecar.
+Requests carrying a browser `Origin` header are rejected by default. To allow
+a trusted browser origin, set `PRINTABLE_ALLOWED_ORIGINS` to its exact serialized
+HTTP(S) origin, such as `https://app.example.com`. This does not enable CORS or
+replace bearer and Host validation. Desktop and gateway clients without Origin
+continue to work with their existing authentication.
 `/healthz` is process liveness; `/readyz` distinguishes ready, healthy busy
 work, and blocked product dependencies without exposing backend configuration.
 The capability roadmap lives in [`PLAN.md`](PLAN.md);

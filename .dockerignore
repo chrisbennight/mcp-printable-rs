@@ -11,4 +11,9 @@ target
 **/*.pyc
 evals
 .claude
-.env
+.dev
+**/.dev
+.cargo
+**/.env
+**/.env.*
+!**/.env.example

@@ -21,7 +21,7 @@ axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.7", features = ["trace", "limit"] }
 rmcp = { version = "3.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-# Used only by the --healthcheck self-probe (a plain loopback GET).
+# HTTP self-probe and validated HTTP URL parsing.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps response object keys in declared/insertion order for

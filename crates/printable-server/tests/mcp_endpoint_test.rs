@@ -63,6 +63,7 @@ fn test_settings(blender_port: u16) -> Settings {
         geometry_worker_memory_bytes: 1024 * 1024 * 1024,
         mcp_bearer: BearerSecret::parse(TEST_MCP_BEARER.to_string()).expect("test bearer is valid"),
         allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
+        allowed_origins: Vec::new(),
     }
 }
 
@@ -200,6 +201,117 @@ async fn rpc_result(resp: reqwest::Response) -> Value {
         .get("result")
         .cloned()
         .unwrap_or_else(|| panic!("response has neither result nor error: {envelope}"))
+}
+
+#[tokio::test]
+async fn origin_policy_rejects_browser_requests_by_default_on_every_mcp_method() {
+    let server = start().await;
+    let http = reqwest::Client::new();
+    let unauthenticated = http
+        .get(format!("{}/mcp", server.base))
+        .header("Origin", "https://app.example.com")
+        .send()
+        .await
+        .expect("origin rejection before authentication");
+    assert_eq!(unauthenticated.status().as_u16(), 403);
+    for method in [
+        reqwest::Method::POST,
+        reqwest::Method::GET,
+        reqwest::Method::DELETE,
+        reqwest::Method::OPTIONS,
+    ] {
+        for origin in ["https://app.example.com", "null", "", "not-an-origin"] {
+            let response = http
+                .request(method.clone(), format!("{}/mcp", server.base))
+                .bearer_auth(TEST_MCP_BEARER)
+                .header("Origin", origin)
+                .send()
+                .await
+                .expect("origin request");
+            assert_eq!(response.status().as_u16(), 403, "{method}: {origin:?}");
+        }
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn allowed_origin_does_not_bypass_host_or_bearer_and_must_be_single_and_exact() {
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.allowed_origins = vec!["https://app.example.com".to_string()];
+    let server = start_with_settings(settings).await;
+    let http = reqwest::Client::new();
+    let request = || {
+        http.post(format!("{}/mcp", server.base))
+            .header("Accept", "application/json, text/event-stream")
+            .json(
+                &json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+                    "protocolVersion": protocol_version(), "capabilities":{},
+                    "clientInfo":{"name":"origin-test","version":"1"}
+                }}),
+            )
+    };
+    for origin in [None, Some("https://app.example.com")] {
+        let mut req = request().bearer_auth(TEST_MCP_BEARER);
+        if let Some(origin) = origin {
+            req = req.header("Origin", origin);
+        }
+        assert_eq!(req.send().await.expect("initialize").status().as_u16(), 200);
+    }
+    for origin in [
+        "http://app.example.com",
+        "https://app.example.com:444",
+        "https://app.example.com.evil.test",
+        "https://app.example.com/path",
+        "https://app.example.com https://evil.test",
+        "null",
+    ] {
+        assert_eq!(
+            request()
+                .bearer_auth(TEST_MCP_BEARER)
+                .header("Origin", origin)
+                .send()
+                .await
+                .expect("disallowed origin")
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    assert_eq!(
+        request()
+            .bearer_auth(TEST_MCP_BEARER)
+            .header("Origin", "https://app.example.com")
+            .header("Origin", "https://evil.test")
+            .send()
+            .await
+            .expect("duplicate origins")
+            .status()
+            .as_u16(),
+        403
+    );
+    assert_eq!(
+        request()
+            .header("Origin", "https://app.example.com")
+            .send()
+            .await
+            .expect("missing bearer")
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        request()
+            .bearer_auth(TEST_MCP_BEARER)
+            .header("Origin", "https://app.example.com")
+            .header("Host", "evil.test")
+            .send()
+            .await
+            .expect("bad host")
+            .status()
+            .as_u16(),
+        403
+    );
+    server.shutdown().await;
 }
 
 #[tokio::test]

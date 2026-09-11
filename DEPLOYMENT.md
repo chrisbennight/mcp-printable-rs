@@ -182,6 +182,7 @@ signals, stops, or inspects the owning container of the peer workload.
 | `PRINTABLE_HTTP_PORT` | `8000` | Streamable HTTP MCP and liveness port. |
 | `PRINTABLE_MCP_BEARER` | shared Infisical secret | Exact bearer required on `/mcp`; the gateway is the only remote caller. |
 | `PRINTABLE_ALLOWED_HOSTS` | actual gateway host forms | DNS-rebinding guard for `/mcp`. |
+| `PRINTABLE_ALLOWED_ORIGINS` | empty | Reject requests carrying Origin unless it exactly matches a configured HTTP(S) origin. Requests without Origin still require the bearer and allowed Host. |
 | `BLENDER_HOST` | `blender` | Internal service DNS name. |
 | `BLENDER_PORT` | `9876` | Private bridge port. |
 | `PRINTABLE_BLENDER_BIND` | `0.0.0.0` | Listen only inside the private Blender control network. |
