@@ -148,7 +148,7 @@ CONTRACTS = {
 
 
 def expected_reference(role: str, identity: ReleaseIdentity | None = None) -> re.Pattern[str]:
-    return (identity or ReleaseIdentity.from_environment()).reference_pattern(role)
+    return (identity or ReleaseIdentity()).reference_pattern(role)
 
 
 def verify(
@@ -159,7 +159,7 @@ def verify(
     history: list[str],
     identity: ReleaseIdentity | None = None,
 ) -> list[str]:
-    identity = identity or ReleaseIdentity.from_environment()
+    identity = identity or ReleaseIdentity()
     contract = CONTRACTS[role]
     failures: list[str] = []
     config = document.get("Config")
