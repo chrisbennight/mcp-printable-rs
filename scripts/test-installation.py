@@ -73,6 +73,9 @@ def main():
                 if recovered["state"] != "succeeded":
                     raise ValueError("Completed render was not recovered after restart")
             print("INSTALLATION_OK: direct modeling, four verified downloads, completed-job restart")
+        except subprocess.CalledProcessError:
+            subprocess.run(compose + ["logs", "--no-color", "--tail", "80", "blender", "render-worker"], check=True)
+            raise
         finally:
             subprocess.run(compose + ["down", "--volumes", "--timeout", "30"], check=True)
 
