@@ -71,9 +71,17 @@ class PrivateDisplay:
             write_descriptor = -1
             with selectors.DefaultSelector() as selector:
                 selector.register(read_descriptor, selectors.EVENT_READ)
-                if not selector.select(max(0, deadline - time.monotonic())):
-                    raise DisplayError("private display did not become ready")
-                if os.read(read_descriptor, 16) != b"99\n" or self.pid is None:
+                readiness = bytearray()
+                # Xvfb writes the display number and newline separately.
+                while readiness != b"99\n":
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise DisplayError("private display did not become ready")
+                    chunk = os.read(read_descriptor, 16)
+                    readiness.extend(chunk)
+                    if not chunk or not b"99\n".startswith(readiness):
+                        raise DisplayError("private display readiness was invalid")
+                if self.pid is None:
                     raise DisplayError("private display readiness was invalid")
         finally:
             os.close(read_descriptor)
