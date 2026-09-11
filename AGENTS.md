@@ -11,10 +11,15 @@ Git for checkouts, commits, and pushes. Create worktrees from the freshly fetche
 GitHub `main` branch. Keep changes on branches and preserve the user's checkout.
 
 The [GitHub CI workflow](.github/workflows/ci.yml) is the active verification
-path. The private release and deployment instructions below describe the
-imported pipeline pending its separate port; they do not authorize connecting
+path. The private deployment instructions below describe the
+imported pipeline; they do not authorize connecting
 GitHub pull requests to lab runners, secrets, or production deployment. See
 [continuous integration](docs/continuous-integration.md).
+
+The maintained manual publisher and its disabled-by-default GitHub workflow
+are documented in [releases](docs/releases.md). Use `requirements-tooling.txt`
+in an isolated Python environment for release-policy tests. The old Gitea
+workflow and deployment descriptions below are historical, not release commands.
 
 The supported deployment is self-hosted Linux/amd64 with NVIDIA. CPU/software
 checks remain useful for CI but do not establish a non-NVIDIA support promise.

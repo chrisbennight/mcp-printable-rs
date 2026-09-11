@@ -23,12 +23,11 @@ runner. A passing check does not establish NVIDIA compatibility, performance,
 or safe coexistence with other GPU users. Releases still need those checks
 against their exact image digests on a trusted NVIDIA host.
 
-The imported `.gitea` workflows and `build-docker.sh --push` still describe the
-previous private release pipeline. GitHub does not execute those workflows.
-Their policy tests remain active while image publication, registry identity,
-and NVIDIA qualification are ported separately. Do not use the old publisher
-as a GitHub release command. Production deployment remains outside this
-repository's GitHub CI.
+The separate [manual release workflow](releases.md) uses a trusted NVIDIA
+runner and temporary package publishing authority. It is disabled pending
+runner, environment, registry, and release-material verification. Pull-request
+jobs cannot select that runner or publish images. The imported `.gitea`
+directory is historical; production deployment remains outside GitHub CI.
 
 For local source checks, use the commands in the [README](../README.md#development).
 The new standalone `scripts/smoke-blender-cpu <image>` requires Linux, Docker,

@@ -82,7 +82,8 @@ COPY --chown=10001:10001 addon /opt/printable/addon
 COPY --chown=10001:10001 scripts/run-headless-blender /opt/printable/scripts/run-headless-blender
 
 ARG SOURCE_REVISION
-LABEL org.opencontainers.image.source="https://gitea.cacahuate.org/bennight/mcp-printable-rs" \
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="blender"
 

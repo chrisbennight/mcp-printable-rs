@@ -4,15 +4,18 @@
 # release invariant: test, push matching commit-scoped Linux/amd64 Rust and
 # Blender tags, smoke both, prove the exact Blender digest on the production GPU
 # host, and only then publish their digest-pinned pair record. The --push path
-# must run on `server`, where the NVIDIA runtime and coexistence workload exist.
+# requires a trusted NVIDIA host, a coexistence workload, and an authenticated registry client.
 set -euo pipefail
-
-BASE="gitea.cacahuate.org/bennight/mcp-printable-rs"
-BLENDER_BASE="gitea.cacahuate.org/bennight/mcp-printable-blender"
-RELEASE_BASE="gitea.cacahuate.org/bennight/mcp-printable-release"
 
 repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_root"
+
+identity_output="$(python3 scripts/release_identity.py)"
+mapfile -t release_identity <<< "$identity_output"
+BASE="${release_identity[0]}"
+BLENDER_BASE="${release_identity[1]}"
+RELEASE_BASE="${release_identity[2]}"
+SOURCE_REPOSITORY="${release_identity[3]}"
 
 push=0
 if [ "${1:-}" = "--push" ]; then
@@ -62,6 +65,7 @@ mkdir -p target/release
 docker buildx build --platform linux/amd64 --provenance=false \
   "${index_build_args[@]}" \
   --build-arg "SOURCE_REVISION=${revision}" \
+  --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" \
   --target smoke-export --output type=local,dest=target/release .
 test -x target/release/printable-smoke
 
@@ -162,7 +166,8 @@ if [ "$push" -eq 0 ]; then
   local_tag="${BASE}:dev"
   echo "==> Building local Linux/amd64 image ${local_tag}"
   docker build --platform linux/amd64 "${index_build_args[@]}" \
-    --build-arg "SOURCE_REVISION=${revision}" -t "$local_tag" .
+    --build-arg "SOURCE_REVISION=${revision}" \
+    --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" -t "$local_tag" .
   echo "==> Smoke test"
   smoke "$local_tag" linux/amd64
   echo "==> OK — local build + smoke passed. Publishing is opt-in: $0 --push"
@@ -181,6 +186,7 @@ bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu \
 PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
 PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
 python3 scripts/docgate
+sh scripts/check-release-target
 cargo fmt --all -- --check
 cargo "${cargo_index_args[@]}" clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo "${cargo_index_args[@]}" test --workspace --all-features --locked
@@ -190,7 +196,8 @@ blender_commit_tag="${BLENDER_BASE}:sha-${short_sha}"
 echo "==> Build + push ${server_commit_tag} (linux/amd64)"
 docker buildx build --platform linux/amd64 --provenance=false --push \
   "${index_build_args[@]}" \
-  --build-arg "SOURCE_REVISION=${revision}" -t "$server_commit_tag" .
+  --build-arg "SOURCE_REVISION=${revision}" \
+  --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" -t "$server_commit_tag" .
 server_digest="$(scripts/registry-manifest-digest "$server_commit_tag")"
 case "$server_digest" in sha256:*) ;; *) echo "invalid server digest" >&2; exit 1 ;; esac
 verified_server="${server_commit_tag}@${server_digest}"
@@ -198,6 +205,7 @@ verified_server="${server_commit_tag}@${server_digest}"
 echo "==> Build + push ${blender_commit_tag} (linux/amd64)"
 docker buildx build --platform linux/amd64 --provenance=false --push \
   --build-arg "SOURCE_REVISION=${revision}" \
+  --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" \
   --file blender/Dockerfile -t "$blender_commit_tag" .
 blender_digest="$(scripts/registry-manifest-digest "$blender_commit_tag")"
 case "$blender_digest" in sha256:*) ;; *) echo "invalid Blender digest" >&2; exit 1 ;; esac

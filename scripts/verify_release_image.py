@@ -10,7 +10,9 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-SOURCE_REPOSITORY = "https://gitea.cacahuate.org/bennight/mcp-printable-rs"
+from release_identity import ReleaseIdentity
+
+SOURCE_REPOSITORY = ReleaseIdentity.source
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 SENSITIVE_KEY_RE = re.compile(
     r"(?:^|[._-])(?:PASSWORD|PASSWD|TOKEN|SECRET|API[._-]?KEY|"
@@ -145,12 +147,8 @@ CONTRACTS = {
 }
 
 
-def expected_reference(role: str) -> re.Pattern[str]:
-    repository = re.escape(CONTRACTS[role].repository)
-    return re.compile(
-        rf"^gitea\.cacahuate\.org/bennight/{repository}:"
-        rf"sha-[0-9a-f]{{12}}@sha256:[0-9a-f]{{64}}$"
-    )
+def expected_reference(role: str, identity: ReleaseIdentity | None = None) -> re.Pattern[str]:
+    return (identity or ReleaseIdentity.from_environment()).reference_pattern(role)
 
 
 def verify(
@@ -159,14 +157,16 @@ def verify(
     expected_revision: str,
     document: dict[str, Any],
     history: list[str],
+    identity: ReleaseIdentity | None = None,
 ) -> list[str]:
+    identity = identity or ReleaseIdentity.from_environment()
     contract = CONTRACTS[role]
     failures: list[str] = []
     config = document.get("Config")
     if not isinstance(config, dict):
         return ["image inspect has no Config object"]
 
-    if not expected_reference(role).fullmatch(image):
+    if not expected_reference(role, identity).fullmatch(image):
         failures.append(f"reference is not an immutable {role} release image")
     if not REVISION_RE.fullmatch(expected_revision):
         failures.append("expected revision is not a full lowercase Git commit")
@@ -189,7 +189,7 @@ def verify(
     labels = config.get("Labels")
     labels = labels if isinstance(labels, dict) else {}
     expected_labels = {
-        "org.opencontainers.image.source": SOURCE_REPOSITORY,
+        "org.opencontainers.image.source": identity.source,
         "org.opencontainers.image.revision": expected_revision,
         "org.printable.role": contract.role,
     }
@@ -289,7 +289,12 @@ def main() -> int:
         )
         return 2
     role, image, expected_revision = sys.argv[1:]
-    if not expected_reference(role).fullmatch(image):
+    try:
+        identity = ReleaseIdentity.from_environment()
+    except ValueError:
+        print("release registry or source identity is invalid", file=sys.stderr)
+        return 2
+    if not expected_reference(role, identity).fullmatch(image):
         print(f"refusing a mutable or unexpected {role} image reference", file=sys.stderr)
         return 2
     if not REVISION_RE.fullmatch(expected_revision):
@@ -302,7 +307,7 @@ def main() -> int:
         print(f"could not inspect immutable {role} image: {error}", file=sys.stderr)
         return 1
 
-    failures = verify(role, image, expected_revision, document, history)
+    failures = verify(role, image, expected_revision, document, history, identity)
     if failures:
         for failure in failures:
             print(f"release image policy: {failure}", file=sys.stderr)

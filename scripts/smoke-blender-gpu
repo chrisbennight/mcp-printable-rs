@@ -16,6 +16,11 @@ if [[ ! "$run_id" =~ ^[A-Za-z0-9_.-]{1,40}$ ]]; then
   echo "PRINTABLE_GPU_SMOKE_RUN_ID must be 1-40 safe name characters" >&2
   exit 2
 fi
+gpu_device="${PRINTABLE_GPU_DEVICE:-0}"
+if [[ ! "$gpu_device" =~ ^([0-9]+|GPU-[a-fA-F0-9-]+)$ ]]; then
+  echo "PRINTABLE_GPU_DEVICE must be one device index or GPU UUID" >&2
+  exit 2
+fi
 gpu_name="printable-blender-gpu-smoke-${run_id}"
 unavailable_name="printable-blender-no-gpu-smoke-${run_id}"
 
@@ -26,8 +31,13 @@ for command_name in docker nvidia-smi; do
   fi
 done
 
+gpu_index="$(nvidia-smi --id="$gpu_device" --query-gpu=index --format=csv,noheader,nounits)"
+if [[ ! "$gpu_index" =~ ^[0-9]+$ ]]; then
+  echo "PRINTABLE_GPU_DEVICE did not resolve to one GPU" >&2
+  exit 1
+fi
 mapfile -t peer_pids < <(
-  nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits |
+  nvidia-smi --id="$gpu_index" --query-compute-apps=pid --format=csv,noheader,nounits |
     awk '$1 ~ /^[0-9]+$/ { print $1 }'
 )
 if [ "${#peer_pids[@]}" -eq 0 ]; then
@@ -37,7 +47,7 @@ fi
 peer_pid="${peer_pids[0]}"
 
 require_peer() {
-  if ! nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits |
+  if ! nvidia-smi --id="$gpu_index" --query-compute-apps=pid --format=csv,noheader,nounits |
     awk -v target="$peer_pid" '$1 + 0 == target { found=1 } END { exit !found }'; then
     echo "pre-existing GPU process ${peer_pid} disappeared during the smoke" >&2
     exit 1
@@ -45,7 +55,7 @@ require_peer() {
 }
 
 process_memory_mib() {
-  nvidia-smi --query-compute-apps=pid,used_memory \
+  nvidia-smi --id="$gpu_index" --query-compute-apps=pid,used_memory \
     --format=csv,noheader,nounits |
     awk -F, -v target="$1" '
       $1 + 0 == target {
@@ -107,9 +117,9 @@ if ! docker logs "$unavailable_name" 2>&1 |
 fi
 require_peer
 
-docker run -d --name "$gpu_name" --gpus all \
+docker run -d --name "$gpu_name" --gpus "device=${gpu_index}" \
   "${common_args[@]}" \
-  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e "NVIDIA_VISIBLE_DEVICES=${gpu_index}" \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display \
   -e PRINTABLE_BLENDER_MODE=ui \
   -e PRINTABLE_BLENDER_UI_BACKEND=egl \
@@ -180,7 +190,7 @@ peak_sm_percent=0
 sample_count=0
 while kill -0 "$smoke_pid" >/dev/null 2>&1; do
   require_peer
-  pmon_sample="$(nvidia-smi pmon -s um -c 1)"
+  pmon_sample="$(nvidia-smi pmon -i "$gpu_index" -s um -c 1)"
   require_peer
   process_sample="$(
     printf '%s\n' "$pmon_sample" |
@@ -218,7 +228,7 @@ docker exec "$gpu_name" test -s /workspace/smoke/gpu-cycles.png
 docker exec "$gpu_name" test -s /workspace/smoke/gpu-cycles-dark.png
 
 gpu_identity="$(
-  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader |
+  nvidia-smi --id="$gpu_index" --query-gpu=name,driver_version --format=csv,noheader |
     awk 'NR == 1 { print; exit }'
 )"
 image_identity="$(docker image inspect --format '{{.Id}}' "$image")"
