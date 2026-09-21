@@ -525,6 +525,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "validate_mesh",
             "analyze_assembly",
             "job",
+            "project",
             "artifact",
         ]),
         "tool catalog: {result}"
@@ -626,13 +627,23 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let resources = result["resources"]
         .as_array()
         .expect("resources/list carries a resources array");
-    assert_eq!(resources.len(), 3, "resource catalog: {result}");
+    assert_eq!(resources.len(), 4, "resource catalog: {result}");
     assert_eq!(
         resources[0]["uri"],
         json!("printable://modeling/blender-v1")
     );
     assert_eq!(resources[1]["uri"], json!("printable://design/product-v1"));
     assert_eq!(resources[2]["uri"], json!("printable://render/product-v1"));
+
+    assert_eq!(resources[3]["uri"], json!("printable://contracts"));
+    let contract_read = json!({"jsonrpc":"2.0","id":79,"method":"resources/read",
+        "params":{"uri":"printable://contracts/view/section"}});
+    let contract_result = rpc_result(post(&http, &mcp, Some(&session), &contract_read).await).await;
+    let contract: serde_json::Value =
+        serde_json::from_str(contract_result["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(contract["tool"], "view");
+    assert_eq!(contract["action"], "section");
+    jsonschema::validator_for(&contract["inputSchema"]).unwrap();
 
     let modeling_read = json!({"jsonrpc":"2.0","id":80,"method":"resources/read",
         "params":{"uri":"printable://modeling/blender-v1"}});
@@ -743,7 +754,7 @@ async fn exercise_file_handoff(download_base: Option<&str>) {
     );
 
     for (index, (suffix, media_type)) in [
-        ("stl", "application/vnd.ms-pki.stl"),
+        ("stl", "model/stl"),
         ("png", "image/png"),
         ("blend", "application/octet-stream"),
         ("mp4", "video/mp4"),

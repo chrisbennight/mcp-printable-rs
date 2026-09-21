@@ -9,9 +9,10 @@ process handles modeling and visual feedback; a separate background worker
 renders saved checkpoints. No model provider or gateway is required by the
 server. You supply the MCP client.
 
-The repository is currently private while independent installation and release
-qualification are completed. Development is maintained on
+Development is maintained publicly on
 [GitHub](https://github.com/chrisbennight/mcp-printable-rs).
+See [continuous integration](docs/continuous-integration.md) for source checks
+and the separate release qualification requirements.
 
 ## Get started
 
@@ -41,7 +42,10 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 - Render previews, product views, galleries, and restart-recoverable video jobs.
 - Transfer workspace artifacts directly without putting file bytes into chat.
 
-The [workflow interface](docs/workflow-interface.md) lists the tools and actions.
+The [workflow interface](docs/workflow-interface.md) lists all fourteen public
+tools and their typed actions. The [product refactor](docs/product-refactor.md)
+records delivery intent and acceptance criteria; deployment verification is
+tracked separately from implementation and merge.
 The [modeling guide](crates/printable-server/resources/blender-modeling-v1.md)
 explains inspection, checkpoints, and safe recovery from uncertain requests.
 [Reference products](acceptance/products) demonstrate the reusable OpenSCAD kit.

@@ -143,6 +143,32 @@ impl Workspace {
         Ok(())
     }
 
+    /// Atomically reserve an ordinary workspace directory. Returns false for
+    /// an existing directory; symlinks and reserved paths remain refused.
+    pub fn create_public_directory(&self, path: &str) -> Result<bool, WsError> {
+        self.require_confined()?;
+        let comps = normalize(path)?;
+        require_mutation_scope(&comps, MutationScope::Public)?;
+        let name = comps.last().ok_or(WsError::ReservedPath)?;
+        let rel = comps.join("/");
+        let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Create)?;
+        match rustix::fs::mkdirat(
+            parent.as_fd(),
+            name.as_str(),
+            Mode::from_bits_truncate(0o755),
+        ) {
+            Ok(()) => {
+                rustix::fs::fsync(parent.as_fd()).map_err(errno_io)?;
+                Ok(true)
+            }
+            Err(Errno::EXIST) => {
+                drop(self.walk_to(&comps, &rel, Missing::Error)?);
+                Ok(false)
+            }
+            Err(error) => Err(errno_io(error)),
+        }
+    }
+
     /// Atomically write `bytes` to the workspace-relative `path`, creating
     /// missing parent directories. `overwrite: false` never replaces an
     /// existing artifact (hard-link commit, first writer wins); `overwrite:
@@ -398,6 +424,29 @@ impl Workspace {
             Ok(st) => Ok(meta_from(rel, suffix, &st)),
             Err(error) => Err(cleanup_temp(parent.as_fd(), &temp_name, error)),
         }
+    }
+
+    /// Inspect a regular artifact without reading its bytes or creating a snapshot.
+    /// The metadata describes a mutable file at the time of the descriptor stat.
+    pub fn stat_artifact(&self, path: &str) -> Result<ArtifactMeta, WsError> {
+        self.require_confined()?;
+        let comps = normalize(path)?;
+        let rel = comps.join("/");
+        let name = comps.last().ok_or(WsError::UnsupportedArtifactType)?;
+        let suffix = allowed_suffix(name).ok_or(WsError::UnsupportedArtifactType)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Error)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+            &rel,
+        )?;
+        let stat = rustix::fs::fstat(&fd).map_err(errno_io)?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(WsError::NotRegularFile);
+        }
+        Ok(meta_from(rel, suffix, &stat))
     }
 
     pub fn read_artifact(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {

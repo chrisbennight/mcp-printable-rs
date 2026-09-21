@@ -1,6 +1,6 @@
 # Publication scope and retained history
 
-The GitHub repository remains private. Its first commit is a snapshot of the
+The GitHub repository is public. Its first commit is a snapshot of the
 selected Gitea source tree; earlier Gitea commits and tags were not imported.
 Later GitHub migration commits have their own history. This is not a claim that
 all historical credentials or metadata have been erased from the original forge.
@@ -22,12 +22,14 @@ The following imported material is deliberately retained as history:
 | `.gitea/` | Imported workflow and template files; GitHub does not execute them |
 | `evidence/blender-gpu-smoke-2026-07-18.md`, `acceptance/agent-workflows.md` | Earlier lab evidence and evaluation context; not qualification of a new GitHub image pair |
 
-These records contain the old forge domain, host and service names, registry
-paths, and references to Infisical, Komodo, and downstream deployment. Such
-metadata is distinct from credential values. It is retained in the private
-repository to preserve provenance. Review its disclosure deliberately before
-making the repository public; replacing a domain in a historical record would
-not make that record evidence for another deployment.
+Imported history may contain deployment metadata that does not belong in a
+public example. Review it separately from credential scanning. New changes
+must not introduce private hostnames, addresses, registry locations, deployment
+identifiers, or site configuration. Preserve detailed operational evidence in
+private records rather than reproducing it in public issues or documentation.
+Removing information from the current tree does not erase earlier Git commits,
+issue edits, or downloaded copies. Replacing a historical hostname with an
+example also does not qualify another deployment.
 
 No production Compose stack, bearer file, local environment file, or private
 Cargo configuration belongs in the published source set. The standalone Compose
@@ -36,7 +38,7 @@ Build-context checks verify that local configuration stays outside image builds.
 Keep author and upstream attribution; assess any personal commit metadata before
 changing visibility rather than silently rewriting someone else's authorship.
 
-## Checks before a visibility change
+## Recorded checks and publication requirements
 
 On 11 September 2026, Gitleaks 8.30.1 scanned candidate commit
 `14240e74b8bdb18528235f5e205eb1cfbe95b42a` and its reachable GitHub history,

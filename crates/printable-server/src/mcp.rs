@@ -37,7 +37,7 @@ use crate::{
     upload::UploadRegistry,
 };
 
-const SERVER_INSTRUCTIONS: &str = "Printable provides thirteen workflow tools for Blender and OpenSCAD modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance.";
+const SERVER_INSTRUCTIONS: &str = "Printable provides fourteen workflow tools for Blender and OpenSCAD modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance.";
 
 /// The MCP request handler. The backend handles are `Arc`-shared so the server
 /// stays `Clone` (the transport builds one per session); the underlying
@@ -146,6 +146,26 @@ impl PrintableServer {
             Ok(call) => (call.name, call.arguments, call.response),
             Err(error) => return Ok(error_result(&params.name, &error)),
         };
+
+        if operation == "printable_project" {
+            let workspace = Arc::clone(&self.workspace);
+            let result = tokio::task::spawn_blocking(move || {
+                let request = serde_json::from_value(args)
+                    .map_err(|error| ToolError::Validation(error.to_string()))?;
+                crate::projects::dispatch(&workspace, request)
+            })
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
 
         if operation == PUBLISH_TOOL {
             let publish: PublishParams = match serde_json::from_value(args) {
@@ -347,7 +367,7 @@ impl ServerHandler for PrintableServer {
         _params: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        let resources = resources::RESOURCES
+        let mut resources: Vec<Resource> = resources::RESOURCES
             .iter()
             .map(|r| {
                 Resource::new(r.uri, r.name)
@@ -355,6 +375,9 @@ impl ServerHandler for PrintableServer {
                     .with_mime_type(r.mime_type)
             })
             .collect();
+        resources.push(Resource::new(resources::contracts::ROOT, "Printable operation contracts")
+            .with_description("Compact tool/action index; read printable://contracts/{tool}/{action} for a selected schema, without loading every engine's contract.")
+            .with_mime_type("application/json"));
         Ok(ListResourcesResult::with_all_items(resources))
     }
 
@@ -363,6 +386,12 @@ impl ServerHandler for PrintableServer {
         params: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if let Some(contract) = resources::contracts::read(&params.uri) {
+            return Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
+                ResourceContents::text(contract.to_string(), params.uri)
+                    .with_mime_type("application/json"),
+            ])));
+        }
         match resources::RESOURCES.iter().find(|r| r.uri == params.uri) {
             Some(resource) => Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
                 ResourceContents::text(resource.body, params.uri)

@@ -214,6 +214,7 @@ impl JobRequest {
 }
 
 workflow!(ArtifactRequest {
+    Stat(StatParams) => "printable_workspace_stat",
     List(ListParams) => "printable_workspace_list",
     Read(ReadParams) => "printable_workspace_read",
     Write(WriteParams) => "printable_workspace_write",
@@ -233,6 +234,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
         "artifact" => de::<ArtifactRequest>(arguments)?.resolve(),
+        "project" => ResolvedCall::new(
+            "printable_project",
+            de::<crate::projects::ProjectRequest>(arguments)?,
+        ),
         "status" => {
             let request = de::<StatusRequest>(arguments)?;
             Ok(ResolvedCall {
@@ -343,8 +348,14 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: write_annotations,
     },
     ToolDef {
+        name: "project",
+        description: "Create and discover durable projects, list their shared files, and resolve project-relative artifact paths for existing backend tools. Each request identifies its project. This does not switch the live Blender scene.",
+        schema: workflow_schema_of::<crate::projects::ProjectRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "artifact",
-        description: "List/read/write workspace files, publish immutable files through governed raw-byte transfer, or upload chunks using upload_id. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
+        description: "Stat/list/read/write workspace files, publish immutable files through governed raw-byte transfer, or upload chunks using upload_id. Stat returns metadata without bytes and supports project-relative paths. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
         schema: workflow_schema_of::<ArtifactRequest>,
         annotations: write_annotations,
     },
@@ -442,6 +453,7 @@ mod tests {
                 "validate_mesh",
                 "analyze_assembly",
                 "job",
+                "project",
                 "artifact",
             ],
         );

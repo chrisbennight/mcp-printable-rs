@@ -1,7 +1,7 @@
 # Workflow interface
 
 The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises exactly thirteen workflow tools. Earlier prefixed
+The public server advertises fourteen workflow tools. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
 public tool calls. The release smoke exercises the combined workflows over MCP;
 deployment and gateway discovery must move together at cutover.
@@ -9,8 +9,21 @@ deployment and gateway discovery must move together at cutover.
 is available when the backend runs normal Blender with a private display.
 Blender operations accept optional [scene preconditions](scene-state.md) and
 return compact scene-state metadata through the shared handlers.
+Presented renders support optional [exposure and illumination controls](presentation-controls.md).
 
 ## Requests
+
+For on-demand contract discovery, read `printable://contracts` for the compact
+tool/action index, then `printable://contracts/{tool}/{action}` for one action
+or `printable://contracts/{tool}` for a direct-parameter tool. For example,
+`printable://contracts/view/section` describes cutaway requests without loading
+native viewport, dimensions, or overhang parameters. Input schemas are derived
+from the advertised tool schemas and include only their reachable definitions.
+The response explicitly identifies its output schema as tool-wide; it does not
+pretend that the current output schema is action-specific. Contract resources
+do not invoke operations or grant authorization, and whole-tool annotations
+remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
+invoke the advertised tool names.
 
 Combined tools take an `action` and an operation-specific `params` object.
 Each action's parameters are derived from the same Rust type used by its handler;
@@ -31,7 +44,8 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `artifact` | `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `project` | `create`, `get`, `list`, `resolve`, `files` |
+| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
 
@@ -59,6 +73,21 @@ read action does not create a separate MCP authorization boundary.
 the migration from temporary live-session rendering to a separate worker.
 
 ## Results and delivery
+
+Use `artifact` with `action: "stat"` to inspect one artifact without reading its
+contents, copying a snapshot, or enumerating a directory. Pass `params.path`
+as a workspace-relative path, or add `params.project_id` to resolve it within
+that existing project. The response retains the normalized workspace `path`,
+size, media type, and modification time; project-scoped requests also return
+`project_id` and `project_path`. This works for supported large files and videos
+without the base64 read limit. It does not contact a modeling backend.
+
+The `identity: "mutable_path"` marker is deliberate: metadata describes the file
+at the time of inspection, not immutable bytes or a promise about later reads.
+Use publication when a preserved byte snapshot is required. Missing files,
+unsupported types, symlinks, non-regular files, and invalid project paths fail
+instead of being reported as empty artifacts. A directory listing remains the
+operation for discovering unknown filenames.
 
 Targeted post-edit feedback uses the existing composition boundary: return
 measurements from `blender_execute`, then optionally call `view` against that
@@ -101,3 +130,29 @@ Rendering retains bounded inline PNG content alongside artifact paths. The
 `render` scene action uses the same image preparation as the legacy preview
 tool. Product/diagnostic preservation and mechanical-certification requirements
 remain those of the underlying delivered operations.
+
+## Shared projects
+
+Use the `project` tool with `action: "create"` and `params` containing
+`project_id`, `name`, and optional `description`. Choose a stable identifier such
+as `sensor-enclosure`. Repeating the same creation returns the existing project;
+conflicting metadata returns an error instead of replacing it. The `get` and
+`list` actions discover projects after a server restart.
+
+If a directory already exists without project metadata, creation requires
+`adopt_existing: true` to deliberately associate its files with the project.
+A failed metadata write can leave the newly reserved directory behind; inspect
+it before retrying with adoption.
+
+Each result contains a workspace-relative `root`, such as
+`projects/sensor-enclosure`. The `resolve` action takes `project_id` and a
+relative artifact `path`, for example `source/enclosure.scad`, and returns the
+workspace path accepted by artifact, OpenSCAD, and Blender tools. The `files`
+action lists a project's artifacts. Listings are bounded and report when the
+result limit is reached; get/resolve remain available by identifier.
+
+Project metadata is server-owned under `.printable/projects`. Existing files
+outside projects remain available. Projects organize shared storage; they do not
+isolate scripts that can access the shared volume. Creating or resolving a
+project does not select or replace Blender's live scene. Scene binding and
+CadQuery modeling remain subsequent delivery work.

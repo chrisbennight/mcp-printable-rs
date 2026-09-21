@@ -12,7 +12,10 @@ fn artifact() -> Value {
             "path": {"type": "string"},
             "size_bytes": {"type": "integer", "minimum": 0},
             "media_type": {"type": "string"},
-            "modified_ns": {"type": "integer"}
+            "modified_ns": {"type": "integer"},
+            "identity": {"const": "mutable_path", "description": "Metadata observation, not an immutable byte snapshot."},
+            "project_id": {"type": "string"},
+            "project_path": {"type": "string"}
         }),
         &["path", "size_bytes", "media_type"],
     )
@@ -128,6 +131,12 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             object(json!({"jobs": {"type": "array"}, "next_offset": {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
             }), &["jobs", "next_offset"])
+        ]}),
+        "project" => json!({"type":"object","anyOf":[
+            serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
+            object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
+            object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
+            object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"])
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),

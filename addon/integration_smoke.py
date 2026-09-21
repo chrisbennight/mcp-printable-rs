@@ -929,6 +929,8 @@ def capability_smoke(host: str, port: int) -> None:
             "view": {"azimuth_degrees": 40.0, "elevation_degrees": 22.0},
         }
         if profile == "studio_neutral":
+            presentation["exposure_stops"] = 1.25
+            presentation["light_intensity_scale"] = 0.5
             presentation["materials"] = [
                 {
                     "objects": ["SmokeHollowCoupler"],
@@ -961,6 +963,10 @@ def capability_smoke(host: str, port: int) -> None:
             or product.get("source_state_verified") is not True
             or product.get("cleanup_verified") is not True
             or effective.get("profile") != profile
+            or effective.get("color_management", {}).get("exposure")
+            != presentation.get("exposure_stops", 0.0)
+            or effective.get("light_intensity_scale")
+            != presentation.get("light_intensity_scale", 1.0)
             or effective.get("camera", {}).get("type") != camera_type
             or effective.get("camera", {}).get("azimuth_degrees") != 40.0
             or effective.get("camera", {}).get("elevation_degrees") != 22.0

@@ -1781,7 +1781,8 @@ class BlenderHandlers:
             raise HandlerError("presentation must be an object")
         _only_keys(
             raw_presentation,
-            {"profile", "view", "materials", "surface_shading"},
+            {"profile", "view", "materials", "surface_shading",
+             "exposure_stops", "light_intensity_scale"},
         )
         profile_name = raw_presentation.get("profile")
         if (
@@ -1867,6 +1868,12 @@ class BlenderHandlers:
             )
         return {
             "profile": profile_name,
+            "exposure_stops": _bounded_float(
+                raw_presentation, "exposure_stops", 0.0, -10.0, 10.0
+            ),
+            "light_intensity_scale": _bounded_float(
+                raw_presentation, "light_intensity_scale", 1.0, 0.0, 10.0
+            ),
             "view": {
                 "azimuth_degrees": azimuth,
                 "elevation_degrees": elevation,
@@ -1982,7 +1989,7 @@ class BlenderHandlers:
         scene.display_settings.display_device = "sRGB"
         scene.view_settings.view_transform = profile["view_transform"]
         scene.view_settings.look = "None"
-        scene.view_settings.exposure = 0.0
+        scene.view_settings.exposure = presentation["exposure_stops"]
         scene.view_settings.gamma = 1.0
 
         world = self._bpy.data.worlds.new("PrintableProductWorld")
@@ -1995,7 +2002,8 @@ class BlenderHandlers:
             *self._srgb_to_linear(profile["world_color_srgb"]),
             1.0,
         )
-        background.inputs["Strength"].default_value = profile["world_strength"]
+        world_strength = profile["world_strength"] * presentation["light_intensity_scale"]
+        background.inputs["Strength"].default_value = world_strength
         scene.world = world
 
         override_by_object: dict[str, Any] = {}
@@ -2214,7 +2222,7 @@ class BlenderHandlers:
                 name=f"PrintableProduct{role.title()}", type="AREA"
             )
             assets["light_data"].append(light_data)
-            energy = base_energy * scale * scale
+            energy = base_energy * scale * scale * presentation["light_intensity_scale"]
             if not math.isfinite(energy):
                 raise HandlerError("scene geometry bounds are too large to light")
             light_data.energy = energy
@@ -2260,6 +2268,7 @@ class BlenderHandlers:
                 "profile": presentation["profile"],
                 "camera": camera_metadata,
                 "lighting": light_metadata,
+                "light_intensity_scale": presentation["light_intensity_scale"],
                 "color_management": {
                     "display_device": scene.display_settings.display_device,
                     "view_transform": scene.view_settings.view_transform,
@@ -2269,7 +2278,7 @@ class BlenderHandlers:
                 },
                 "world": {
                     "base_color_srgb": list(profile["world_color_srgb"]),
-                    "strength": profile["world_strength"],
+                    "strength": world_strength,
                 },
                 "ground": ground_metadata
                 if ground_metadata is not None

@@ -30,6 +30,7 @@ The advertised server exposes exactly these unprefixed tool names; the gateway s
 | validate_mesh | Solid defects, dimensions, mass properties, bed contact, and overhang evidence |
 | analyze_assembly | Interference, clearance, and continuous rigid-motion evidence |
 | job | Submit/list/inspect/cancel durable renders; progress, certificates, and output references |
+| project | Durable project identities, shared file discovery, and project-relative path resolution |
 | artifact | Workspace file listing/read/write/publication and multipart transfer |
 
 Jobs are render execution. Upload handles and chunking belong exclusively to artifact transfer. Mixed-action tools receive conservative whole-tool MCP annotations; an action argument is not an independent authorization boundary.
@@ -63,7 +64,7 @@ Provide compact structured outputs and output schemas, bounded pagination and pr
 - workspace_list/read/write/publish/write_begin/write_chunk/write_commit -> artifact.
 - status, blender_execute, compare_renders, validate_mesh, analyze_assembly retain their distinct responsibilities with unprefixed names.
 
-Verify current consumers and gateway discovery before removing advertised legacy aliases. Temporary adapters may share implementation during migration; the final production catalog is the agreed thirteen tools, not both catalogs indefinitely.
+Verify current consumers and gateway discovery before removing advertised legacy aliases. Temporary adapters may share implementation during migration; production keeps the workflow catalog without retaining both catalogs indefinitely. Later capability delivery can add explicit workflows, including shared projects.
 
 ## Evidence and limits
 
@@ -118,4 +119,4 @@ The links above are the delivery graph. Earlier slices may merge independently, 
 
 ## Current implementation boundary
 
-The source now implements the thirteen-tool catalog, native UI capture, isolated render workers, explicit editor context, scene revision preconditions, and compact structured results. The release smoke checks actual public results against discovered output schemas and exercises native feedback with independent worker rendering. Source implementation is distinct from verified deployment: the completion checklist remains open until coordinated production/gateway cutover and the [agent evaluation plan](../acceptance/agent-workflows.md) have retained delivery evidence.
+The source implements the workflow catalog (now including shared projects), native UI capture, isolated render workers, explicit editor context, scene revision preconditions, and compact structured results. The release smoke checks actual public results against discovered output schemas and exercises native feedback with independent worker rendering. Source implementation is distinct from verified deployment: the completion checklist remains open until coordinated production/gateway cutover and the [agent evaluation plan](../acceptance/agent-workflows.md) have retained delivery evidence.

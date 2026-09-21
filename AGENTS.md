@@ -2,7 +2,8 @@
 
 The maintained repository is https://github.com/chrisbennight/mcp-printable-rs.
 The supported installation is self-hosted Linux/amd64 with NVIDIA. Keep the
-repository and packages private until publication is explicitly authorized.
+repository free of private deployment details. The source repository is public;
+package visibility is a separate decision requiring explicit authorization.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [architecture guide](docs/architecture.md). Current work is tracked in GitHub

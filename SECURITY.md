@@ -12,17 +12,16 @@ Origin and Host allowlists supplement authentication; they do not replace it.
 
 ## Report a vulnerability
 
-This repository is currently private. Existing collaborators should report a
-suspected vulnerability in a restricted repository issue and avoid including
-live secrets. Include affected revisions, a minimal reproduction, impact, and
-any mitigation already applied.
+This repository is public. Do not report sensitive vulnerability details or
+live secrets in public issues. A private report should include affected
+revisions, a minimal reproduction, impact, and any mitigation already applied.
 
-Before public access is enabled, maintainers must enable GitHub private
+Maintainers must enable GitHub private
 vulnerability reporting and verify the **Security → Report a vulnerability**
 path with an external account. That public reporting path is not claimed to be
 available yet. Do not post vulnerability details in a public issue. If no
 verified private reporting path is available, do not submit sensitive details;
-maintainers must establish that path before public release.
+maintainers must establish that path before accepting sensitive reports.
 
 Only the current maintained revision is covered by fixes at this stage; there
 is no long-term support branch or promised response deadline. Security reports

@@ -16,6 +16,55 @@ fn tmp() -> tempfile::TempDir {
     tempfile::TempDir::new().expect("tempdir")
 }
 
+#[test]
+fn stat_inspects_large_artifacts_without_transfer_or_snapshot() {
+    let dir = tmp();
+    let workspace = ws(dir.path());
+    let file = std::fs::File::create(dir.path().join("large.mp4")).unwrap();
+    file.set_len(MAX_TRANSFER_BYTES + 1).unwrap();
+    let meta = workspace.stat_artifact("large.mp4").unwrap();
+    assert_eq!(meta.path, "large.mp4");
+    assert_eq!(meta.size_bytes, MAX_TRANSFER_BYTES + 1);
+    assert_eq!(meta.media_type, "video/mp4");
+    file.set_len(7).unwrap();
+    assert_eq!(workspace.stat_artifact("large.mp4").unwrap().size_bytes, 7);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn stat_refuses_unsafe_or_missing_artifacts() {
+    let dir = tmp();
+    let outside = tmp();
+    let workspace = ws(dir.path());
+    std::fs::write(outside.path().join("model.stl"), b"outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("model.stl"),
+        dir.path().join("link.stl"),
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("directory.stl")).unwrap();
+    for (path, code) in [
+        ("../model.stl", "path_escapes"),
+        ("linked/model.stl", "symlink_refused"),
+        ("link.stl", "symlink_refused"),
+        ("missing.stl", "not_found"),
+        ("directory.stl", "not_regular_file"),
+    ] {
+        assert_eq!(
+            workspace.stat_artifact(path).unwrap_err().code(),
+            code,
+            "{path}"
+        );
+    }
+    assert!(
+        Workspace::open(None, None)
+            .unwrap()
+            .stat_artifact("model.stl")
+            .is_err()
+    );
+}
+
 // --- stable error-string surface -------------------------------------------
 
 #[test]
@@ -94,12 +143,40 @@ fn write_read_roundtrip_with_nested_parents() {
     let meta = ws.write_artifact("a/b/c.stl", b"solid x\n", false).unwrap();
     assert_eq!(meta.path, "a/b/c.stl");
     assert_eq!(meta.size_bytes, 8);
-    assert_eq!(meta.media_type, "application/vnd.ms-pki.stl");
+    assert_eq!(meta.media_type, "model/stl");
     assert!(meta.modified_ns > 0);
 
     let (rmeta, bytes) = ws.read_artifact("a/b/c.stl").unwrap();
     assert_eq!(bytes, b"solid x\n");
     assert_eq!(rmeta, meta);
+}
+
+#[test]
+fn stl_encodings_share_mesh_metadata_across_artifact_operations() {
+    let dir = tmp();
+    let ws = ws(dir.path());
+    let ascii = b"solid triangle\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid triangle\n";
+    let mut binary = vec![0_u8; 80];
+    binary.extend_from_slice(&1_u32.to_le_bytes());
+    for value in [0_f32, 0., 1., 0., 0., 0., 1., 0., 0., 0., 1., 0.] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&0_u16.to_le_bytes());
+    for (name, bytes) in [
+        ("ascii.stl", ascii.as_slice()),
+        ("binary.stl", binary.as_slice()),
+    ] {
+        let written = ws.write_artifact(name, bytes, false).unwrap();
+        assert_eq!(written.media_type, "model/stl");
+        let (read, content) = ws.read_artifact(name).unwrap();
+        assert_eq!(read.media_type, "model/stl");
+        assert_eq!(content, bytes);
+        let snapshot = ws.snapshot_artifact(name).unwrap();
+        assert_eq!(snapshot.meta().media_type, "model/stl");
+    }
+    let listed = ws.list_artifacts(".", 10).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|entry| entry.media_type == "model/stl"));
 }
 
 #[test]
@@ -201,7 +278,7 @@ fn media_type_is_exact_for_every_allowed_suffix() {
         (".ply", "application/octet-stream"),
         (".png", "image/png"),
         (".scad", "application/octet-stream"),
-        (".stl", "application/vnd.ms-pki.stl"),
+        (".stl", "model/stl"),
         (".svg", "image/svg+xml"),
         (".tif", "image/tiff"),
         (".tiff", "image/tiff"),
@@ -484,7 +561,7 @@ fn snapshot_copies_and_detects_mutation() {
     assert_eq!(std::fs::read(snap.path()).unwrap(), b"stable");
     assert_eq!(snap.meta().path, "s.stl");
     assert_eq!(snap.meta().size_bytes, 6);
-    assert_eq!(snap.meta().media_type, "application/vnd.ms-pki.stl");
+    assert_eq!(snap.meta().media_type, "model/stl");
     // The snapshot lives outside the workspace root.
     assert!(!snap.path().starts_with(dir.path()));
 
@@ -741,6 +818,10 @@ fn reading_a_fifo_does_not_block_and_is_rejected() {
 
     // Must return NotRegularFile promptly, not block waiting for a writer.
     let start = std::time::Instant::now();
+    assert_eq!(
+        ws.stat_artifact("pipe.stl").unwrap_err().code(),
+        "not_regular_file"
+    );
     assert_eq!(
         ws.read_artifact("pipe.stl").unwrap_err().code(),
         "not_regular_file"
