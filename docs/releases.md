@@ -1,9 +1,11 @@
 # Build and qualify an image pair
 
 The [release workflow](../.github/workflows/release.yml) is manual, restricted
-to `main` in the private repository, and disabled unless the repository variable
+to `main`, and disabled unless the repository variable
 `PRINTABLE_RELEASE_ENABLED` is `true`. Adding this workflow does not register a
 runner, configure environment protection, publish an image, or deploy a service.
+Source visibility does not authorize release execution or package publication.
+Public pull requests continue to use hosted runners without release credentials.
 
 ## Runner and registry prerequisites
 

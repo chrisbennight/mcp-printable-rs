@@ -16,7 +16,7 @@ defaults:
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == true && vars.PRINTABLE_RELEASE_ENABLED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRINTABLE_RELEASE_ENABLED == 'true'
     runs-on: [self-hosted, Linux, X64, printable-release]
     environment: printable-release
     timeout-minutes: 180
