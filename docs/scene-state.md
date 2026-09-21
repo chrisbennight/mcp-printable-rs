@@ -3,7 +3,10 @@
 Blender observations and synchronous modeling results carry a compact
 `scene_state` object containing `generation` and `revision`. Status exposes it
 under `blender.scene_state`; visual composites retain the state of their source
-render. A missing state from an older backend is not a valid precondition.
+render. Bound scenes also include `project_id`; pass the complete observation.
+A missing state from an older backend is not a valid precondition.
+[Project switching and CAD attachment](project-scenes.md) require that state
+and validate it at the same serialized boundary.
 
 Agents can pass that object as `expected_scene` in Blender inspection, editing,
 Python execution, scene checkpoint/import/export, and synchronous rendering

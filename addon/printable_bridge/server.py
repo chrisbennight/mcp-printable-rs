@@ -28,6 +28,8 @@ def _request_budget_seconds(
     work_defaults = {
         "capture_native_view": DEFAULT_CAPTURE_TIMEOUT_SECONDS,
         "execute_code": DEFAULT_TIMEOUT_SECONDS,
+        "open_project": 600,
+        "attach_cad": 600,
         "job_measure_sequence_bounds": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_prepare_mechanical_rotation": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_frame": DEFAULT_RENDER_TIMEOUT_SECONDS,

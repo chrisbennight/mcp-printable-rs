@@ -232,6 +232,9 @@ struct StatusParams {}
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneExpectation {
+    /// Project identity included in observations of a bound scene.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
     /// Scene generation returned by the latest relevant Blender observation.
     #[schemars(length(min = 36, max = 36))]
     generation: String,
@@ -345,6 +348,47 @@ struct SceneClearParams {
     /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct OpenProjectSceneParams {
+    #[serde(default = "default_project_scene_timeout")]
+    #[schemars(range(min = 1, max = 1800))]
+    timeout_seconds: u64,
+    project_id: String,
+    expected_scene: SceneExpectation,
+    mode: ProjectSceneMode,
+    /// Project-relative checkpoint, required only for checkpoint mode.
+    checkpoint: Option<String>,
+    /// Workspace-relative backup of the current scene before switching.
+    save_current_to: Option<String>,
+    #[serde(default)]
+    discard_current: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ProjectSceneMode {
+    Empty,
+    Checkpoint,
+    Adopt,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AttachCadParams {
+    #[serde(default = "default_project_scene_timeout")]
+    #[schemars(range(min = 1, max = 1800))]
+    timeout_seconds: u64,
+    project_id: String,
+    expected_scene: SceneExpectation,
+    /// Project-relative GLB emitted by cad_build.
+    path: String,
+}
+
+fn default_project_scene_timeout() -> u64 {
+    600
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1897,6 +1941,56 @@ async fn dispatch_value(
             let p: SceneClearParams = de(args)?;
             blender_command(blender, "clear_scene", &p).await
         }
+        "printable_scene_open_project" => {
+            let mut p: OpenProjectSceneParams = de(args)?;
+            crate::projects::get(workspace, &p.project_id)?;
+            if matches!(p.mode, ProjectSceneMode::Checkpoint) != p.checkpoint.is_some() {
+                return Err(ToolError::Validation(
+                    "checkpoint mode requires a checkpoint path; other modes do not accept one"
+                        .into(),
+                ));
+            }
+            if !matches!(p.mode, ProjectSceneMode::Adopt)
+                && p.save_current_to.is_none()
+                && !p.discard_current
+            {
+                return Err(ToolError::Validation(
+                    "switching a scene requires save_current_to or explicit discard_current".into(),
+                ));
+            }
+            if let Some(path) = &mut p.checkpoint {
+                *path = crate::projects::resolve(workspace, &p.project_id, path)?;
+                validate_blender_artifact(workspace, path, ".blend", true)?;
+            }
+            if let Some(path) = &p.save_current_to {
+                validate_blender_artifact(workspace, path, ".blend", false)?;
+                if let Some(current) = &p.expected_scene.project_id {
+                    let root = crate::projects::get(workspace, current)?.root;
+                    if !path.starts_with(&format!("{root}/")) {
+                        return Err(ToolError::Validation(
+                            "save_current_to must belong to the currently bound project".into(),
+                        ));
+                    }
+                }
+                if p.checkpoint.as_ref() == Some(path) {
+                    return Err(ToolError::Validation(
+                        "backup must not replace the checkpoint being restored".into(),
+                    ));
+                }
+            }
+            blender_project_command(blender, "open_project", &p, p.timeout_seconds).await
+        }
+        "printable_scene_attach_cad" => {
+            let mut p: AttachCadParams = de(args)?;
+            if p.expected_scene.project_id.as_deref() != Some(&p.project_id) {
+                return Err(ToolError::Validation(
+                    "CAD attachment requires the intended project's observed scene state".into(),
+                ));
+            }
+            p.path = crate::projects::resolve(workspace, &p.project_id, &p.path)?;
+            validate_blender_artifact(workspace, &p.path, ".glb", true)?;
+            blender_project_command(blender, "attach_cad", &p, p.timeout_seconds).await
+        }
         "printable_scene_checkpoint" => {
             let p: SceneCheckpointParams = de(args)?;
             validate_blender_artifact(workspace, &p.path, ".blend", false)?;
@@ -1993,6 +2087,27 @@ async fn dispatch_value(
         }
         other => Err(ToolError::Validation(format!("unknown tool: {other}"))),
     }
+}
+
+async fn blender_project_command<T: serde::Serialize>(
+    blender: &BlenderClient,
+    command: &str,
+    params: &T,
+    timeout_seconds: u64,
+) -> Result<Value, ToolError> {
+    if !(1..=1800).contains(&timeout_seconds) {
+        return Err(ToolError::Validation(
+            "timeout_seconds must be between 1 and 1800".into(),
+        ));
+    }
+    let Value::Object(params) = serde_json::to_value(params)? else {
+        return Err(ToolError::Validation(
+            "Blender command parameters must be an object".into(),
+        ));
+    };
+    Ok(blender
+        .send_value_with_work_budget(command, params, Duration::from_secs(timeout_seconds))
+        .await?)
 }
 
 async fn blender_command<T: serde::Serialize>(

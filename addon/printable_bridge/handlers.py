@@ -386,6 +386,8 @@ class BlenderHandlers:
             "get_scene_info": self._get_scene_info,
             "capture_native_view": self._capture_native_view,
             "import_stl": self._import_stl,
+            "open_project": self._open_project,
+            "attach_cad": self._attach_cad,
             "job_measure_sequence_bounds": self._job_measure_sequence_bounds,
             "job_render_product": self._job_render_product,
             "job_render_frame": self._job_render_frame,
@@ -437,7 +439,14 @@ class BlenderHandlers:
 
         @handlers.persistent
         def on_load(_unused: Any) -> None:
-            self._scene_state.replaced()
+            self._scene_state.bind_project(self._loaded_project())
+
+        @handlers.persistent
+        def on_save(_unused: Any) -> None:
+            project = self._scene_state.snapshot.get("project_id")
+            if project is not None:
+                for scene in self._bpy.data.scenes:
+                    scene["printable_project_id"] = project
 
         @handlers.persistent
         def on_update(_scene: Any, graph: Any) -> None:
@@ -446,6 +455,7 @@ class BlenderHandlers:
 
         for callbacks, callback in (
             (handlers.load_post, on_load),
+            (handlers.save_pre, on_save),
             (handlers.depsgraph_update_post, on_update),
         ):
             callbacks.append(callback)
@@ -1256,6 +1266,93 @@ class BlenderHandlers:
             self._require_finished(result, "STL import")
         imported = [obj for obj in self._bpy.data.objects if obj not in before]
         return {"objects": [self._object_summary(obj) for obj in imported]}
+
+    def _loaded_project(self) -> str | None:
+        project = self._bpy.context.scene.get("printable_project_id")
+        if isinstance(project, str) and 1 <= len(project) <= 64 and all(
+            character in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
+        ):
+            return project
+        return None
+
+    def _open_project(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"project_id", "mode", "checkpoint", "save_current_to", "discard_current", "timeout_seconds"})
+        project = params.get("project_id")
+        if not isinstance(project, str) or not 1 <= len(project) <= 64 or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
+        ):
+            raise HandlerError("invalid project_id")
+        mode = params.get("mode")
+        if mode not in {"empty", "checkpoint", "adopt"}:
+            raise HandlerError("unsupported project scene mode")
+        checkpoint = params.get("checkpoint")
+        backup = params.get("save_current_to")
+        discard = params.get("discard_current", False)
+        if type(discard) is not bool or ((mode == "checkpoint") != (checkpoint is not None)):
+            raise HandlerError("checkpoint mode requires a checkpoint; other modes do not accept one")
+        current = self._scene_state.snapshot.get("project_id")
+        if mode == "adopt" and current not in {None, project}:
+            raise HandlerError("cannot adopt another project's live scene; checkpoint and switch explicitly")
+        if mode != "adopt" and backup is None and not discard:
+            raise HandlerError("switching requires a backup or explicit discard_current")
+        request = self._workspace.validate(checkpoint, ".blend") if checkpoint is not None else None
+        if request is not None and not request.relative.startswith(f"projects/{project}/"):
+            raise HandlerError("checkpoint belongs to a different project")
+        if backup is not None:
+            destination = self._workspace.validate(backup, ".blend")
+            if current is not None and not destination.relative.startswith(f"projects/{current}/"):
+                raise HandlerError("backup belongs to a different project")
+            if request is not None and destination.relative == request.relative:
+                raise HandlerError("backup must not replace the checkpoint being restored")
+        with ExitStack() as staging:
+            source = staging.enter_context(self._workspace.stage_input(request)) if request is not None else None
+            if backup is not None:
+                self._save_blend({"path": backup})
+            if mode != "adopt":
+                if source is not None:
+                    result = self._bpy.ops.wm.open_mainfile(filepath=str(source), load_ui=False, use_scripts=False)
+                    self._require_finished(result, "project checkpoint restore")
+                    loaded = self._loaded_project()
+                    if loaded not in {None, project}:
+                        self._scene_state.bind_project(loaded)
+                        raise HandlerError("restored checkpoint identifies a different project; inspect before recovery")
+                else:
+                    result = self._bpy.ops.wm.read_factory_settings(use_empty=True)
+                    self._require_finished(result, "empty project initialization")
+            self._bpy.context.scene["printable_project_id"] = project
+            self._scene_state.bind_project(project)
+        return {"project_id": project, "mode": mode, "checkpoint": checkpoint,
+                "saved_previous": backup, "objects": len(self._bpy.context.scene.objects)}
+
+    def _attach_cad(self, params: dict[str, Any]) -> dict[str, Any]:
+        from mathutils import Matrix
+        from .cad_import import prepare_glb
+        _only_keys(params, {"project_id", "path", "timeout_seconds"})
+        project = params.get("project_id")
+        if project is None or self._scene_state.snapshot.get("project_id") != project:
+            raise HandlerError("CAD attachment requires the currently bound project")
+        request = self._workspace.validate(params.get("path"), ".glb")
+        if not request.relative.startswith(f"projects/{project}/"):
+            raise HandlerError("CAD artifact belongs to a different project")
+        before = set(self._bpy.data.objects)
+        inventory = self._workspace.validate(str(Path(request.relative).with_name("components.json")), ".json")
+        with self._workspace.stage_input(request) as source, self._workspace.stage_input(inventory) as names:
+            with prepare_glb(source, names) as (prepared, evidence):
+                result = self._bpy.ops.import_scene.gltf(filepath=str(prepared))
+                self._require_finished(result, "CAD assembly import")
+        imported = [obj for obj in self._bpy.data.objects if obj not in before]
+        imported_set = set(imported)
+        scale = 1000.0 * self._bpy.context.scene.unit_settings.scale_length
+        for obj in imported:
+            if obj.parent not in imported_set:
+                obj.matrix_world = Matrix.Scale(scale, 4) @ obj.matrix_world
+            obj["printable_cad_source"] = request.relative
+            obj["printable_project_id"] = project
+        self._bpy.context.view_layer.update()
+        roots = [obj.name for obj in imported if obj.parent not in imported_set]
+        return {"project_id": project, "source": request.relative, "object_count": len(imported),
+                "roots": roots[:100], "root_count": len(roots), "units": "mm",
+                "cad": evidence}
 
     def _save_blend(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._save_blend_scoped(params, reserved=False)

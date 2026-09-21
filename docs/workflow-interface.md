@@ -36,7 +36,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `inspect` | `scene`, `object`, `node_tree`, `editing_state` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
-| `scene` | `clear`, `checkpoint`, `restore`, `import`, `export` |
+| `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
 | `cad_build` | `model`, `import_step` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |

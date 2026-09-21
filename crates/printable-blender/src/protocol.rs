@@ -10,6 +10,8 @@ pub type Params = Map<String, Value>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub generation: String,
     pub revision: u64,
 }
