@@ -45,7 +45,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files` |
-| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
 
@@ -130,6 +130,40 @@ Rendering retains bounded inline PNG content alongside artifact paths. The
 `render` scene action uses the same image preparation as the legacy preview
 tool. Product/diagnostic preservation and mechanical-certification requirements
 remain those of the underlying delivered operations.
+
+## Incoming files
+
+Upload and download authorization share `PRINTABLE_DOWNLOAD_BASE_URL`, including
+its HTTPS scheme and reverse-proxy path prefix. The existing setting name is
+retained. Without a configured base, both use the request's allowed HTTP Host;
+forwarded headers do not choose the transfer destination.
+
+Use `artifact` with `action: "ingest"` and `params` containing `file` (a
+gateway file URI), `path` (the workspace destination), and optional `overwrite`.
+The file field advertises native upload forwarding. The gateway transfers bytes
+through `files/authorizeUpload` and the authorized HTTP PUT before dispatching
+the artifact request. Bytes do not pass through tool arguments.
+
+Printable stages at most two incoming files, each bounded by
+`PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). It checks the declared size
+and SHA-256 digest before atomic workspace publication. STEP/STP and Python
+source are accepted as stored artifacts; this alone does not execute or convert
+them. The existing base64 chunk operations retain their smaller limits.
+
+An authorized transfer expires after one hour; an idle body times out after one
+minute. The private Printable URI can be queried with `transfer_status` and
+`params.uri`. A successful ingest retains a receipt for the authorization
+lifetime; repeating the same ingest returns that receipt without writing again.
+It records the original commit, not a claim that another request has not since
+changed the destination. Receipts are in memory and bounded; after server
+restart or expiry, inspect the destination before authorizing a fresh upload.
+
+A filesystem publication error leaves the receipt `commit_uncertain`, with its
+destination path. The destination may already exist even though publication
+reported an error. This receipt cannot write again: inspect the destination
+before deciding whether to authorize another transfer. This conservative outcome
+also applies when a filesystem error occurred before publication. Successful
+receipts still return the original result without writing again.
 
 ## Shared projects
 

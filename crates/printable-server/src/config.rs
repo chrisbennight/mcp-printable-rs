@@ -76,6 +76,7 @@ pub struct Settings {
     pub geometry_worker_bin: Option<PathBuf>,
     /// Address-space budget for each isolated exact assembly CSG worker.
     pub geometry_worker_memory_bytes: u64,
+    pub file_upload_max_bytes: u64,
     /// Shared bearer required on every MCP transport request.
     pub mcp_bearer: BearerSecret,
     /// Hostnames accepted in the `Host` header for `/mcp` (the transport's
@@ -92,6 +93,8 @@ pub struct Settings {
 /// payload.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SettingsError {
+    #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
+    FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
     McpBearerMissing,
     #[error("PRINTABLE_MCP_BEARER must contain exactly 64 lowercase hexadecimal characters")]
@@ -176,6 +179,7 @@ impl Settings {
             render_job_queue_depth: render_job_queue_depth(&get)?,
             geometry_worker_bin: nonempty(&get, "PRINTABLE_GEOMETRY_WORKER_BIN").map(PathBuf::from),
             geometry_worker_memory_bytes: geometry_worker_memory_bytes(&get)?,
+            file_upload_max_bytes: file_upload_max_bytes(&get)?,
             mcp_bearer: mcp_bearer(&get)?,
             allowed_hosts: allowed_hosts(nonempty(&get, "PRINTABLE_ALLOWED_HOSTS")),
             allowed_origins: allowed_origins(nonempty(&get, "PRINTABLE_ALLOWED_ORIGINS"))?,
@@ -324,6 +328,17 @@ fn render_job_queue_depth(get: &impl Fn(&str) -> Option<String>) -> Result<usize
             }
         }
     }
+}
+
+fn file_upload_max_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<u64, SettingsError> {
+    const KEY: &str = "PRINTABLE_FILE_UPLOAD_MAX_MIB";
+    let value = nonempty(get, KEY)
+        .unwrap_or_else(|| "1024".into())
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .and_then(|value| value.checked_mul(1024 * 1024));
+    value.ok_or(SettingsError::FileUploadLimitInvalid)
 }
 
 fn geometry_worker_memory_bytes(
@@ -719,6 +734,29 @@ mod tests {
         assert_eq!(
             error,
             SettingsError::GeometryWorkerMemoryOutOfRange("PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB")
+        );
+    }
+}
+
+#[cfg(test)]
+mod file_upload_tests {
+    use super::*;
+
+    #[test]
+    fn incoming_file_budget_rejects_zero_invalid_and_overflow() {
+        assert_eq!(
+            file_upload_max_bytes(&|_| None).unwrap(),
+            1024 * 1024 * 1024
+        );
+        for value in ["0", "-1", "invalid", "18446744073709551615"] {
+            assert_eq!(
+                file_upload_max_bytes(&|_| Some(value.into())),
+                Err(SettingsError::FileUploadLimitInvalid)
+            );
+        }
+        assert_eq!(
+            file_upload_max_bytes(&|_| Some("256".into())).unwrap(),
+            256 * 1024 * 1024
         );
     }
 }

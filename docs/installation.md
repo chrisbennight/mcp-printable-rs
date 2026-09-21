@@ -127,7 +127,8 @@ for example `https://printable.example.com/parts/`. A proxy using that prefix
 must route `/parts/mcp` to `/mcp` and `/parts/file-transfers/` to
 `/file-transfers/`, preserving authorization and session headers. Disable
 response buffering for MCP event streams. Neither forwarded Host nor forwarded
-scheme headers control download links.
+scheme headers control upload or download links. Both transfer directions use
+the configured base URL; the setting retains its existing download-oriented name.
 
 Browser Origin headers are rejected by default. If a trusted browser client is
 needed, set `PRINTABLE_ALLOWED_ORIGINS` to its exact scheme, host, and optional
