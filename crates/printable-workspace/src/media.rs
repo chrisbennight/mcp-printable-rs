@@ -3,7 +3,8 @@
 /// in the unsupported-type error message.
 pub const ALLOWED_ARTIFACT_SUFFIXES: &[&str] = &[
     ".3mf", ".blend", ".bmp", ".dxf", ".glb", ".gltf", ".jpeg", ".jpg", ".json", ".mp4", ".obj",
-    ".off", ".ply", ".png", ".scad", ".stl", ".svg", ".tif", ".tiff", ".webp",
+    ".off", ".ply", ".png", ".py", ".scad", ".step", ".stl", ".stp", ".svg", ".tif", ".tiff",
+    ".webp",
 ];
 
 /// Stable media type per allowed suffix. The explicit table prevents host MIME
@@ -19,6 +20,8 @@ pub fn media_type_for(suffix: &str) -> &'static str {
         ".mp4" => "video/mp4",
         ".obj" => "application/x-tgif",
         ".png" => "image/png",
+        ".py" => "text/x-python",
+        ".step" | ".stp" => "model/step",
         ".stl" => "model/stl",
         ".svg" => "image/svg+xml",
         ".tif" | ".tiff" => "image/tiff",

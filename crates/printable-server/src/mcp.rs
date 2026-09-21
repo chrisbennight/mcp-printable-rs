@@ -37,7 +37,7 @@ use crate::{
     upload::UploadRegistry,
 };
 
-const SERVER_INSTRUCTIONS: &str = "Printable provides fourteen workflow tools for Blender and OpenSCAD modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance.";
+const SERVER_INSTRUCTIONS: &str = "Printable provides fifteen workflow tools for Blender, OpenSCAD, and CadQuery modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance.";
 
 /// The MCP request handler. The backend handles are `Arc`-shared so the server
 /// stays `Clone` (the transport builds one per session); the underlying
@@ -156,6 +156,29 @@ impl PrintableServer {
             })
             .await
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
+
+        if operation == "printable_cad_build" {
+            let result = match serde_json::from_value(args) {
+                Ok(request) => {
+                    crate::cad::forward(
+                        &self.workspace,
+                        self.settings.cad_endpoint.as_deref(),
+                        request,
+                    )
+                    .await
+                }
+                Err(error) => Err(ToolError::Validation(error.to_string())),
+            };
             return Ok(match result {
                 Ok(value) => {
                     let mut result =

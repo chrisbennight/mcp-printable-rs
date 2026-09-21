@@ -2,8 +2,8 @@
 # Local image build + MCP container smoke. Default: build the Linux/amd64 Rust
 # image and smoke it without publishing. The opt-in --push path preserves the
 # release invariant: test, push matching commit-scoped Linux/amd64 Rust and
-# Blender tags, smoke both, prove the exact Blender digest on the production GPU
-# host, and only then publish their digest-pinned pair record. The --push path
+# Blender and CAD tags, smoke each, prove the exact Blender digest on the NVIDIA
+# host, and only then publish their digest-pinned release record. The --push path
 # requires a trusted NVIDIA host, a coexistence workload, and an authenticated registry client.
 set -euo pipefail
 
@@ -16,6 +16,7 @@ BASE="${release_identity[0]}"
 BLENDER_BASE="${release_identity[1]}"
 RELEASE_BASE="${release_identity[2]}"
 SOURCE_REPOSITORY="${release_identity[3]}"
+CAD_BASE="${release_identity[4]}"
 
 push=0
 if [ "${1:-}" = "--push" ]; then
@@ -180,7 +181,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 echo "==> Tests (test-before-publish)"
-python3 -m compileall -q addon scripts/verify_release_image.py scripts/release_security.py
+python3 -m compileall -q addon cad scripts/verify_release_image.py scripts/release_security.py
 bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu \
   scripts/smoke-release-pair
 PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
@@ -193,6 +194,7 @@ cargo "${cargo_index_args[@]}" test --workspace --all-features --locked
 
 server_commit_tag="${BASE}:sha-${short_sha}"
 blender_commit_tag="${BLENDER_BASE}:sha-${short_sha}"
+cad_commit_tag="${CAD_BASE}:sha-${short_sha}"
 echo "==> Build + push ${server_commit_tag} (linux/amd64)"
 docker buildx build --platform linux/amd64 --provenance=false --push \
   "${index_build_args[@]}" \
@@ -211,12 +213,33 @@ blender_digest="$(scripts/registry-manifest-digest "$blender_commit_tag")"
 case "$blender_digest" in sha256:*) ;; *) echo "invalid Blender digest" >&2; exit 1 ;; esac
 verified_blender="${blender_commit_tag}@${blender_digest}"
 
+echo "==> Build + push ${cad_commit_tag} (linux/amd64)"
+docker buildx build --platform linux/amd64 --provenance=false --push \
+  "${index_build_args[@]}" \
+  --build-arg "SOURCE_REVISION=${revision}" \
+  --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" \
+  --target cad-runtime -t "$cad_commit_tag" .
+cad_digest="$(scripts/registry-manifest-digest "$cad_commit_tag")"
+case "$cad_digest" in sha256:*) ;; *) echo "invalid CAD digest" >&2; exit 1 ;; esac
+verified_cad="${cad_commit_tag}@${cad_digest}"
+
 echo "==> Smoke the pushed amd64 images"
 docker pull --platform linux/amd64 "$verified_server"
 docker pull --platform linux/amd64 "$verified_blender"
+docker pull --platform linux/amd64 "$verified_cad"
 python3 scripts/verify_release_image.py server "$verified_server" "$revision"
 python3 scripts/verify_release_image.py blender "$verified_blender" "$revision"
-python3 scripts/release_security.py "$verified_server" "$verified_blender"
+python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"
+python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad"
+cad_smoke_tag="${CAD_BASE}:smoke-${short_sha}"
+docker buildx build --platform linux/amd64 --load \
+  --build-arg "CAD_IMAGE=${verified_cad}" \
+  --file cad/Dockerfile.smoke --tag "$cad_smoke_tag" .
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
+  --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
+  --entrypoint /opt/cad/bin/python "$cad_smoke_tag" \
+  /opt/printable/cad/smoke.py --worker
 smoke "$verified_server" linux/amd64 8000
 smoke_blender "$verified_blender"
 smoke_blender "$verified_blender" ui
@@ -240,6 +263,8 @@ docker buildx build --platform linux/amd64 --provenance=false --push \
   --build-arg "SERVER_DIGEST=${server_digest}" \
   --build-arg "BLENDER_IMAGE=${blender_commit_tag}" \
   --build-arg "BLENDER_DIGEST=${blender_digest}" \
+  --build-arg "CAD_IMAGE=${cad_commit_tag}" \
+  --build-arg "CAD_DIGEST=${cad_digest}" \
   --tag "$pair_commit_tag" release
 pair_digest="$(scripts/registry-manifest-digest "$pair_commit_tag")"
 case "$pair_digest" in sha256:*) ;; *) echo "invalid release-pair digest" >&2; exit 1 ;; esac
@@ -248,4 +273,5 @@ docker pull --platform linux/amd64 "$pair_ref"
 test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$pair_ref")" = "$revision"
 test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.server.digest" }}' "$pair_ref")" = "$server_digest"
 test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.blender.digest" }}' "$pair_ref")" = "$blender_digest"
-echo "==> Published ${server_commit_tag}, ${blender_commit_tag}, and ${pair_ref}"
+test "$(docker image inspect --format '{{ index .Config.Labels "org.printable.cad.digest" }}' "$pair_ref")" = "$cad_digest"
+echo "==> Published ${server_commit_tag}, ${blender_commit_tag}, ${cad_commit_tag}, and ${pair_ref}"

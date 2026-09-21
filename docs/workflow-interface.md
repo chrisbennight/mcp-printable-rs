@@ -1,7 +1,7 @@
 # Workflow interface
 
 The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises fourteen workflow tools. Earlier prefixed
+The public server advertises fifteen workflow tools. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
 public tool calls. The release smoke exercises the combined workflows over MCP;
 deployment and gateway discovery must move together at cutover.
@@ -38,6 +38,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
+| `cad_build` | `model`, `import_step` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |
 | `compare_renders` | Existing direct image-comparison parameters |
@@ -73,6 +74,9 @@ read action does not create a separate MCP authorization boundary.
 the migration from temporary live-session rendering to a separate worker.
 
 ## Results and delivery
+
+[Project CAD builds](cad-build.md) retain source inputs, assembly structure and
+numerical reports without replacing the live Blender scene.
 
 Use `artifact` with `action: "stat"` to inspect one artifact without reading its
 contents, copying a snapshot, or enumerating a directory. Pass `params.path`

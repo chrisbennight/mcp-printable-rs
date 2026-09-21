@@ -52,7 +52,7 @@ repository conventions in [`AGENTS.md`](AGENTS.md).
 
 The [product refactor](docs/product-refactor.md) records the complete delivery
 intent and acceptance criteria. The [workflow interface](docs/workflow-interface.md)
-lists all fourteen public tools and their typed actions. Public calls use these
+lists all fifteen public tools and their typed actions. Public calls use these
 unprefixed names; prior operation names are internal implementation details.
 Deployment and gateway discovery are updated together, with live verification
 tracked separately from implementation and merge.

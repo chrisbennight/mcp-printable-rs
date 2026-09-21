@@ -14,6 +14,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_cad_release_gates_cannot_be_removed(self):
+        markers = (
+            'python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"',
+            'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad"',
+            '  /opt/printable/cad/smoke.py --worker',
+        )
+        for marker in markers:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shutil.copytree(ROOT / ".github", root / ".github")
+                script = (ROOT / "build-docker.sh").read_text()
+                self.assertEqual(script.count(marker), 1)
+                (root / "build-docker.sh").write_text(script.replace(marker, ""))
+                self.assertTrue(validate(root))
+
     def test_current_workflows(self):
         self.assertEqual(validate(ROOT), [])
 

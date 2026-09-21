@@ -20,8 +20,8 @@ Provision a dedicated filesystem or host quota and monitor its free space.
 
 ## Build and configure
 
-Start from a clean checkout of an approved commit. Until a qualified image pair
-is published, build both images from that same checkout:
+Start from a clean checkout of an approved commit. Until a qualified image set
+is published, build the server, Blender, and CAD images from that same checkout:
 
 ```sh
 git clone https://github.com/chrisbennight/mcp-printable-rs.git
@@ -31,22 +31,25 @@ git diff --cached --exit-code
 revision=$(git rev-parse HEAD)
 docker build --build-arg SOURCE_REVISION="$revision" -t printable-server:local .
 docker build --build-arg SOURCE_REVISION="$revision" -f blender/Dockerfile -t printable-blender:local .
+docker build --build-arg SOURCE_REVISION="$revision" --target cad-runtime -t printable-cad:local .
 python3 scripts/create-local-secret
 docker image inspect --format '{{.Id}}' printable-server:local
 docker image inspect --format '{{.Id}}' printable-blender:local
+docker image inspect --format '{{.Id}}' printable-cad:local
 ```
 
-Create `.dev/compose.env` with the two image IDs printed above:
+Create `.dev/compose.env` with the three image IDs printed above:
 
 ```dotenv
 PRINTABLE_SERVER_IMAGE=sha256:REPLACE_WITH_SERVER_IMAGE_ID
 PRINTABLE_BLENDER_IMAGE=sha256:REPLACE_WITH_BLENDER_IMAGE_ID
+PRINTABLE_CAD_IMAGE=sha256:REPLACE_WITH_CAD_IMAGE_ID
 PRINTABLE_GPU_DEVICE=0
 PRINTABLE_PORT=8000
 ```
 
-The image IDs prevent a later local tag change from silently replacing one half
-of the pair. A published pair instead uses its two registry references with
+The image IDs prevent a later local tag change from silently replacing a component.
+A published image set instead uses its verified registry references with
 `@sha256:` digests. Do not combine images from different revisions.
 
 The secret helper creates `.dev` with mode `0700` and a cryptographically random

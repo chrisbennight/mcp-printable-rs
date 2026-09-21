@@ -230,6 +230,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
         "edit" => de::<EditRequest>(arguments)?.resolve(),
         "scene" => de::<SceneRequest>(arguments)?.resolve(),
         "scad_build" => de::<ScadRequest>(arguments)?.resolve(),
+        "cad_build" => ResolvedCall::new(
+            "printable_cad_build",
+            de::<crate::cad::CadRequest>(arguments)?,
+        ),
         "view" => de::<ViewRequest>(arguments)?.resolve(),
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
@@ -310,6 +314,12 @@ pub const TOOLS: &[ToolDef] = &[
         description: "Build confined OpenSCAD source as validated STL, PNG, or SVG section with typed definitions and an optional explicit product profile. Read printable://design/product-v1 for modules and manufacturing evidence limits.",
         schema: workflow_schema_of::<ScadRequest>,
         annotations: write_annotations,
+    },
+    ToolDef {
+        name: "cad_build",
+        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
+        schema: workflow_schema_of::<crate::cad::CadRequest>,
+        annotations: code_annotations,
     },
     ToolDef {
         name: "view",
@@ -447,6 +457,7 @@ mod tests {
                 "blender_execute",
                 "scene",
                 "scad_build",
+                "cad_build",
                 "view",
                 "render",
                 "compare_renders",

@@ -1,0 +1,3 @@
+ARG CAD_IMAGE
+FROM ${CAD_IMAGE}
+COPY cad/smoke.py /opt/printable/cad/smoke.py

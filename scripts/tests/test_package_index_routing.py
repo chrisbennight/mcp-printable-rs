@@ -156,21 +156,18 @@ class PackageIndexRoutingTests(unittest.TestCase):
         self.assertEqual(refused_calls, [])
 
     def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
-        """Three of its five builds compile Rust; the other two must not change.
+        """Root-image builds compile Rust, including the native CAD worker.
 
-        The Blender image installs a hash-pinned wheel by direct URL and the
-        release-pair image is `FROM scratch`; neither resolves from a crate
-        index, so forwarding there would be noise.
+        Blender, the CAD test overlay, and the release record do not resolve
+        crates and must not receive the Rust index setting.
         """
-        rust_sites = [
-            line
-            for line in self.script.splitlines()
-            if '"${index_build_args[@]}"' in line
-        ]
-
-        self.assertEqual(len(rust_sites), 3)
-        self.assertNotIn('"${index_build_args[@]}"',
-                         self.script[self.script.index("--file blender/Dockerfile"):])
+        commands = [line.strip() for line in self.script.replace("\\\n", " ").splitlines()
+                    if line.strip().startswith(("docker build ", "docker buildx build "))]
+        self.assertEqual(len(commands), 7)
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual('"${index_build_args[@]}"' in command,
+                                 "--file " not in command)
 
 
     def test_a_local_build_forwards_by_value_and_omits_an_unset_name(self) -> None:

@@ -38,7 +38,7 @@ RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
-RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker
+RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
 
 # CI exports the MCP smoke driver from the same Trixie build environment as
@@ -49,6 +49,28 @@ RUN strip target/release/printable-smoke || true
 
 FROM scratch AS smoke-export
 COPY --from=smoke-build /app/target/release/printable-smoke /printable-smoke
+
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cad-runtime
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends python3-venv libgl1 libxrender1 libglib2.0-0 libgomp1 tini ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/cad
+COPY cad/requirements.txt /opt/printable/cad/requirements.txt
+RUN /opt/cad/bin/pip install --no-cache-dir -r /opt/printable/cad/requirements.txt
+COPY cad/build.py cad/step.py /opt/printable/cad/
+COPY --from=build /app/target/release/printable-cad-worker /usr/local/bin/printable-cad-worker
+COPY LICENSE /usr/share/licenses/printable/LICENSE
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.printable.role="cad-worker"
+USER 10001
+EXPOSE 8001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/printable-cad-worker", "--healthcheck"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 
 # Runtime: debian-slim (not distroless — OpenSCAD, Xvfb, and FFmpeg need apt).
 # OpenSCAD renders under a virtual framebuffer via the openscad-headless

@@ -7,10 +7,14 @@ ARG SERVER_IMAGE
 ARG SERVER_DIGEST
 ARG BLENDER_IMAGE
 ARG BLENDER_DIGEST
+ARG CAD_IMAGE
+ARG CAD_DIGEST
 
-LABEL org.opencontainers.image.title="Printable compatible image pair" \
+LABEL org.opencontainers.image.title="Printable compatible image set" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.server.image="${SERVER_IMAGE}" \
       org.printable.server.digest="${SERVER_DIGEST}" \
       org.printable.blender.image="${BLENDER_IMAGE}" \
-      org.printable.blender.digest="${BLENDER_DIGEST}"
+      org.printable.blender.digest="${BLENDER_DIGEST}" \
+      org.printable.cad.image="${CAD_IMAGE}" \
+      org.printable.cad.digest="${CAD_DIGEST}"

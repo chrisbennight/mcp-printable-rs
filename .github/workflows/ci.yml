@@ -126,8 +126,21 @@ jobs:
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --file blender/Dockerfile --tag printable-blender:ci .
+      - name: Build and verify native CAD
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --target cad-runtime --tag printable-cad:ci .
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg CAD_IMAGE=printable-cad:ci \
+            --file cad/Dockerfile.smoke --tag printable-cad-smoke:ci .
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
+            --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
+            --entrypoint /opt/cad/bin/python printable-cad-smoke:ci \
+            /opt/printable/cad/smoke.py --worker
       - name: Exercise the independent installation and direct client
-        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci
+        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci
       - name: Check Blender capabilities and shutdown recovery
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Exercise native views, product workflows, and isolated render jobs
