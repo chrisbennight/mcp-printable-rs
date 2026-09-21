@@ -121,6 +121,7 @@ macro_rules! workflow {
 
 workflow!(InspectRequest {
     Scene(SceneInfoParams) => "printable_scene_get",
+    Dependencies(ProjectDependenciesParams) => "printable_project_dependencies",
     Object(ObjectInfoParams) => "printable_object_get",
     NodeTree(NodeTreeInfoParams) => "printable_node_tree_get",
     EditingState(EditingStateParams) => "printable_editing_state_get",
@@ -363,7 +364,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create and discover durable projects, list their shared files, and resolve project-relative artifact paths for existing backend tools. Each request identifies its project. This does not switch the live Blender scene.",
+        description: "Create and discover durable projects, list shared files, resolve project-relative artifact paths, or export explicitly selected files into a new ZIP with a hash manifest. File export does not inspect native dependencies or claim portability. Each request identifies its project; this does not switch the live Blender scene.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

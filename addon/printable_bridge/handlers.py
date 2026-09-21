@@ -15,6 +15,7 @@ from .native_view import DEFAULT_CAPTURE_TIMEOUT_SECONDS, NativeViewError, captu
 from .state import SceneState
 from .editor_context import EditorContextError, context_summary, editing_state, execution_context
 from .inspection import InspectionError, node_tree_info, object_details, page_arguments
+from .project_dependencies import inspect_dependencies
 from .execution import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_OUTPUT_BYTES,
@@ -384,6 +385,7 @@ class BlenderHandlers:
             "get_node_tree_info": self._get_node_tree_info,
             "get_editing_state": self._get_editing_state,
             "get_scene_info": self._get_scene_info,
+            "get_project_dependencies": self._get_project_dependencies,
             "capture_native_view": self._capture_native_view,
             "import_stl": self._import_stl,
             "open_project": self._open_project,
@@ -586,6 +588,16 @@ class BlenderHandlers:
             "next_offset": next_offset if next_offset < object_count else None,
             "objects": objects,
         }
+
+    def _get_project_dependencies(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"project_id", "offset", "limit"})
+        project = _string(params, "project_id")
+        if project != self._scene_state.snapshot.get("project_id"):
+            raise HandlerError("dependency inspection requires the bound project scene")
+        try:
+            return inspect_dependencies(self._bpy, self._config.workspace_root, project, params)
+        except InspectionError as error:
+            raise HandlerError(str(error)) from error
 
     def _get_object_info(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"name", "section", "offset", "limit"})

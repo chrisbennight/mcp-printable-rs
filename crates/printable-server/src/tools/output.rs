@@ -32,6 +32,39 @@ fn scene_state() -> Value {
     )
 }
 
+fn selected_bundle() -> Value {
+    let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
+    let file = object(
+        json!({
+            "path":{"type":"string"},
+            "size_bytes":{"type":"integer","minimum":0},
+            "media_type":{"type":"string"},
+            "sha256":digest
+        }),
+        &["path", "size_bytes", "media_type", "sha256"],
+    );
+    let manifest = object(
+        json!({
+            "format_version":{"const":1},
+            "project_id":{"type":"string"},
+            "scope":{"const":"selected_files"},
+            "dependencies_inspected":{"const":false},
+            "files":{"type":"array","items":file,"minItems":1,"maxItems":256}
+        }),
+        &[
+            "format_version",
+            "project_id",
+            "scope",
+            "dependencies_inspected",
+            "files",
+        ],
+    );
+    object(
+        json!({"artifact":artifact(),"sha256":digest,"manifest":manifest}),
+        &["artifact", "sha256", "manifest"],
+    )
+}
+
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
         "status" => object(
@@ -147,7 +180,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
-            object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"])
+            object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
+            selected_bundle()
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),

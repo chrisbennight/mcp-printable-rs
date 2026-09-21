@@ -15,7 +15,7 @@ from typing import Iterator
 MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 RESERVED_WORKSPACE_ROOT = ".printable"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
 class WorkspaceError(ValueError):
@@ -167,6 +167,22 @@ class SecureWorkspace:
                     self._remove_stage(stage_path)
             finally:
                 os.close(source_fd)
+
+    def input_identity(self, request: WorkspacePath) -> tuple[int, int, int, int, int]:
+        """Observe a confined regular input for later source-change checks."""
+        with self._open_parent(request.parts, create=False) as (parent_fd, leaf):
+            try:
+                descriptor = os.open(leaf, FILE_READ_FLAGS, dir_fd=parent_fd)
+            except OSError as error:
+                raise WorkspaceError("input artifact is unavailable or unsafe") from error
+            try:
+                current = os.fstat(descriptor)
+                if not stat.S_ISREG(current.st_mode):
+                    raise WorkspaceError("input artifact must be a regular file")
+                return (current.st_dev, current.st_ino, current.st_size,
+                        current.st_mtime_ns, current.st_ctime_ns)
+            finally:
+                os.close(descriptor)
 
     @contextmanager
     def stage_output(self, request: WorkspacePath) -> Iterator[StagedOutput]:

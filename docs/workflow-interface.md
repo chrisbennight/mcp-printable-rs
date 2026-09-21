@@ -33,7 +33,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | Tool | Actions or direct parameters |
 | --- | --- |
 | `status` | Optional direct `detail` (default false) |
-| `inspect` | `scene`, `object`, `node_tree`, `editing_state` |
+| `inspect` | `scene`, `object`, `node_tree`, `editing_state`, `dependencies` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
@@ -45,7 +45,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
@@ -193,4 +193,46 @@ Project metadata is server-owned under `.printable/projects`. Existing files
 outside projects remain available. Projects organize shared storage; they do not
 isolate scripts that can access the shared volume. Creating or resolving a
 project does not select or replace Blender's live scene. Scene binding and
-CadQuery modeling remain subsequent delivery work.
+CadQuery modeling use their separate workflow actions.
+
+### Selected file bundles
+
+Before collecting a Blender project, `inspect.dependencies` accepts `project_id`,
+the latest `expected_scene`, and optional `offset`/`limit`. It inspects the bound
+scene without changing it. Follow `next_offset` with the same scene observation.
+The result includes Blender version, scene unit settings and registered external
+file references. References within the project have a `project_path` and
+`state: "requires_snapshot"`; other references are marked `external` without
+returning their absolute paths. Existence, safe containment through symlinks,
+and packed contents are not inferred from this metadata.
+
+The inventory uses [Blender's native file-reference list](https://docs.blender.org/api/current/bpy.utils.html#bpy.utils.blend_paths),
+including linked libraries and excluding packed data. It does not inspect
+arbitrary script, driver, add-on or network dependencies. Sequences and caches
+can require further native preparation. These limitations remain in the result;
+an empty list is not a general portability certificate.
+
+`project.export_files` takes `project_id`, an explicit `files` array of
+project-relative paths, and a new `.zip` `output_path` in the same project.
+It preserves the selected hierarchy under `files/` and writes `manifest.json`
+with paths, sizes, media types, and SHA-256 hashes. Sources are copied into
+confined snapshots and checked for changes before the archive is assembled.
+An existing output is never overwritten. The selection is limited to 256 files
+and 1 GiB total source bytes; bytes are streamed rather than buffered in chat.
+
+This action exports exactly the selected files, not a verified portable native
+project. Its manifest reports `scope: "selected_files"` and
+`dependencies_inspected: false`. It does not discover or pack Blender external
+libraries, textures, caches, OpenSCAD imports, or CAD dependencies. Include the
+necessary sources, inputs and settings deliberately; native dependency packing
+requires a separate verified preparation step.
+
+Hidden paths, common credential filenames, traversal, symlinks, duplicate
+selections and the output itself are rejected. Nothing is collected from other
+projects, server metadata, or environment configuration. File contents are not
+a secret-detection boundary: do not select files containing credentials, private
+service configuration, or transient transfer grants for delivery.
+
+Use the returned artifact path with `artifact.publish` for existing governed
+download or service-to-service delivery. Export does not render again, sign S3
+URLs, embed credentials, or initiate printing.

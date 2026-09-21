@@ -97,7 +97,7 @@ fn error_strings_are_stable() {
         (
             WsError::UnsupportedArtifactType,
             "unsupported artifact type; allowed: .3mf, .blend, .bmp, .dxf, .glb, .gltf, \
-             .jpeg, .jpg, .json, .mp4, .obj, .off, .ply, .png, .py, .scad, .step, .stl, .stp, .svg, .tif, .tiff, .webp",
+             .jpeg, .jpg, .json, .mp4, .obj, .off, .ply, .png, .py, .scad, .step, .stl, .stp, .svg, .tif, .tiff, .webp, .zip",
         ),
         (
             WsError::NotRegularFile,
@@ -286,6 +286,7 @@ fn media_type_is_exact_for_every_allowed_suffix() {
         (".tif", "image/tiff"),
         (".tiff", "image/tiff"),
         (".webp", "image/webp"),
+        (".zip", "application/zip"),
     ];
     // Guard: the table under test and this expectation cover the same suffixes.
     let expected_suffixes: Vec<&str> = expected.iter().map(|(s, _)| *s).collect();
@@ -585,6 +586,54 @@ fn snapshot_refuses_symlink() {
     std::os::unix::fs::symlink(dir.path().join("real.stl"), dir.path().join("lnk.stl")).unwrap();
     assert_eq!(
         ws.snapshot_artifact("lnk.stl").unwrap_err().code(),
+        "symlink_refused"
+    );
+}
+
+#[test]
+fn snapshot_source_verification_detects_replacement_and_in_place_changes() {
+    let dir = tmp();
+    let ws = ws(dir.path());
+    ws.write_artifact("part.stl", b"original", false).unwrap();
+    let original = ws.snapshot_artifact("part.stl").unwrap();
+    ws.verify_snapshot_source(&original).unwrap();
+    ws.write_artifact("part.stl", b"original", true).unwrap();
+    assert_eq!(
+        ws.verify_snapshot_source(&original).unwrap_err().code(),
+        "changed_while_reading"
+    );
+    let replaced = ws.snapshot_artifact("part.stl").unwrap();
+    // Equal length ensures the check does not rely on size alone.
+    std::fs::write(dir.path().join("part.stl"), b"modified").unwrap();
+    assert_eq!(
+        ws.verify_snapshot_source(&replaced).unwrap_err().code(),
+        "changed_while_reading"
+    );
+    assert_eq!(std::fs::read(original.path()).unwrap(), b"original");
+}
+
+#[test]
+fn snapshot_source_verification_refuses_removed_or_redirected_sources() {
+    let dir = tmp();
+    let other = tmp();
+    let workspace = ws(dir.path());
+    workspace
+        .write_artifact("part.stl", b"original", false)
+        .unwrap();
+    let original = workspace.snapshot_artifact("part.stl").unwrap();
+    let unrelated = ws(other.path());
+    unrelated
+        .write_artifact("part.stl", b"original", false)
+        .unwrap();
+    assert!(unrelated.verify_snapshot_source(&original).is_err());
+    std::fs::remove_file(dir.path().join("part.stl")).unwrap();
+    assert!(workspace.verify_snapshot_source(&original).is_err());
+    std::os::unix::fs::symlink(other.path().join("part.stl"), dir.path().join("part.stl")).unwrap();
+    assert_eq!(
+        workspace
+            .verify_snapshot_source(&original)
+            .unwrap_err()
+            .code(),
         "symlink_refused"
     );
 }

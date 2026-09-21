@@ -40,6 +40,7 @@ pub struct Snapshot {
     _tempdir: tempfile::TempDir,
     path: PathBuf,
     meta: ArtifactMeta,
+    source_stat: Stat,
 }
 
 impl Snapshot {
@@ -687,7 +688,35 @@ impl Workspace {
             _tempdir: tempdir,
             path: dst,
             meta: meta_from(rel, suffix, &before),
+            source_stat: before,
         })
+    }
+
+    /// Verify that the original path still identifies the snapshotted regular
+    /// file without modification. Check every source after collecting a group
+    /// of snapshots to detect changes while the group was being assembled.
+    pub fn verify_snapshot_source(&self, snapshot: &Snapshot) -> Result<(), WsError> {
+        self.require_confined()?;
+        let path = &snapshot.meta.path;
+        let comps = normalize(path)?;
+        let name = comps.last().ok_or(WsError::UnsupportedArtifactType)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], path, Missing::Error)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+            path,
+        )?;
+        let current = rustix::fs::fstat(&fd).map_err(errno_io)?;
+        if FileType::from_raw_mode(current.st_mode) != FileType::RegularFile
+            || current.st_ino != snapshot.source_stat.st_ino
+            || current.st_dev != snapshot.source_stat.st_dev
+            || !stat_unchanged(&current, &snapshot.source_stat)
+        {
+            return Err(WsError::ChangedWhileReading);
+        }
+        Ok(())
     }
 
     /// Resolve a workspace-relative path to a local absolute path for display

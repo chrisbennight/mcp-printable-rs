@@ -50,6 +50,8 @@ libc = "=0.2.189"
 sha2 = "=0.11.0"
 # Constant-time comparison for the single long-lived gateway credential.
 subtle = "=2.6.1"
+# Store project bundles without optional archive codecs or encryption.
+zip = { version = "8.6", default-features = false }
 
 jsonschema = { version = "0.52", default-features = false }
 
