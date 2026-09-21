@@ -480,7 +480,7 @@ unsaved scene state is lost on recovery. This is not a language sandbox, so
 production relies on the container having no credentials, runtime socket,
 privileged mode, broad host mount, or public network path.
 
-CI and production target Linux/amd64 `server`.
+The historical release target was Linux/amd64.
 
 ## License
 

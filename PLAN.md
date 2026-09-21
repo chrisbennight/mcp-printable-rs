@@ -8,15 +8,15 @@
 ## Objective
 
 The next approved product cycle is the [agent-driven interface and native
-Blender feedback refactor](docs/product-refactor.md), tracked by
-[epic #93](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/93).
+Blender feedback refactor](docs/product-refactor.md). Current reconciliation is
+tracked in the [GitHub migration tracker](https://github.com/chrisbennight/mcp-printable-rs/issues/14).
 Its target architecture replaces the background-only live runtime with one
 authoritative GUI-backed Blender scene and immutable-checkpoint render workers.
 The delivery history below describes the existing foundation; target behavior
 is not a claim that the refactor is already deployed.
 
 Deliver a fast, reliable, secure 3D-modeling and rendering MCP service backed
-by persistent headless Blender on `server`. Product quality and useful
+by persistent Blender on a dedicated host. Product quality and useful
 workflows define correctness.
 
 Python remains only where Blender requires it: the in-process add-on and
@@ -56,10 +56,10 @@ local MCP gateway -> printable-server (Rust)
                          v
                Blender 5.2.0 headless
                          |
-               NVIDIA RTX 4060 Ti
+                  NVIDIA GPU
 ```
 
-- Production host: Linux/amd64 `server`.
+- Supported host architecture: Linux/amd64.
 - `printable-server` and Blender are separate containers.
 - Blender is persistent; it is not started once per request.
 - Blender is attached only to an internal control network. No Blender or MCP
@@ -89,7 +89,7 @@ local MCP gateway -> printable-server (Rust)
 - Persistent first-party Blender 5.2.0 headless bridge and digest-addressed image.
 - Paired Linux/amd64 Rust and Blender image build, product smoke, exact-image
   policy/Grype gates, and promotion pipeline.
-- Recorded NVIDIA EEVEE and Cycles/OptiX proof on production `server`.
+- NVIDIA EEVEE and Cycles/OptiX qualification scripts for candidate images.
 - Production tools: confined artifact transfer, typed Blender scene
   inspection and mutation, primitive/boolean modeling, checkpoint/restore,
   rigid pivot-axis animation authoring, STL import/export, `.blend` save,
@@ -141,7 +141,7 @@ add-on and launcher and runs non-root under tini with a read-only root and
 explicit writable paths.
 
 CI proves CPU background startup, bridge traffic, scene mutation, render
-output, and SIGTERM handling. A controlled smoke on `server` proves:
+output, and SIGTERM handling. A controlled smoke on the intended NVIDIA host must prove:
 
 - EEVEE rendering with the NVIDIA graphics stack;
 - Cycles OptiX rendering with observable GPU use;
@@ -469,20 +469,20 @@ gate. Main CI then moves one production discovery pointer to the verified pair
 record; deployment resolves both digest-qualified runtime images from that
 record before it starts either service.
 
-Linux/amd64 is the sole release and CI target, matching production `server`.
+Linux/amd64 is the sole release and CI target.
 
 Exit: repeatable builds, compatible image promotion, and actionable failures.
 
-### 12. Paired private deployment on `server`
+### 12. Isolated deployment
 
-Add the production Compose/Komodo wiring in `docker-home`:
+Maintain site-specific deployment wiring in a private downstream repository:
 
 - internal Blender control and MCP gateway networks;
 - dedicated workspace volume;
 - NVIDIA runtime for Blender only;
 - non-root, dropped capabilities, no-new-privileges, read-only roots, bounded
   memory/process settings, and no host application ports;
-- one Infisical-backed gateway bearer validated by the Rust service without
+- one protected MCP bearer validated by the Rust service without
   copying its value;
 - health/readiness checks that distinguish busy from dead.
 
@@ -549,7 +549,7 @@ recoverable history is discarded.
   the dedicated container/workspace blast radius.
 - Still and animation artifacts are useful, reproducible, and discoverable;
   large media never travels as base64.
-- CI, release promotion, Komodo deployment, and gateway integration are
+- CI, release qualification, deployment, and gateway integration are
   reproducible from committed configuration with no embedded secrets.
 
 ## Ordering

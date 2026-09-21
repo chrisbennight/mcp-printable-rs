@@ -12,18 +12,18 @@ add-on, checksum-pinned image recipes, workflow/tool contracts, tests, examples,
 standalone installation, and contributor and operator documentation. The
 first-party license and upstream notices remain part of that content.
 
-The following imported material is deliberately retained as history:
+Historical design context is retained without site-specific operating details:
 
 | Material | Disposition |
 | --- | --- |
-| `PLAN.md`, `DECISIONS.md`, `docs/product-refactor.md` | Historical design and delivery decisions; private issue links are provenance, not contribution requirements |
-| `DEPLOYMENT.md` | Former site-specific deployment; the standalone installation guide governs new hosts |
+| `PLAN.md`, `DECISIONS.md`, `docs/product-refactor.md` | Historical design decisions with current GitHub tracking; not evidence of current deployment |
+| `DEPLOYMENT.md` | Links to maintained installation and operation guides |
 | `docs/history/imported-readme.md` | Preserved detailed earlier README, clearly marked as historical |
-| `.gitea/` | Imported workflow and template files; GitHub does not execute them |
-| `evidence/blender-gpu-smoke-2026-07-18.md`, `acceptance/agent-workflows.md` | Earlier lab evidence and evaluation context; not qualification of a new GitHub image pair |
+| `.gitea/` | Historical template and retirement note; obsolete workflows removed |
+| `evidence/blender-gpu-smoke-2026-07-18.md`, `acceptance/agent-workflows.md` | Qualification guidance and evaluation contracts without site-specific observations |
 
-Imported history may contain deployment metadata that does not belong in a
-public example. Review it separately from credential scanning. New changes
+Earlier commits may contain deployment metadata that does not belong in a
+public example. Review them separately from credential scanning. New changes
 must not introduce private hostnames, addresses, registry locations, deployment
 identifiers, or site configuration. Preserve detailed operational evidence in
 private records rather than reproducing it in public issues or documentation.

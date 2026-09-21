@@ -9,8 +9,8 @@ multi-tenant service or a Python sandbox.
 Use Linux/amd64, Python 3.11 or newer for the supplied client and test scripts,
 Docker Engine with the Compose plugin, an NVIDIA GPU supported
 by Blender, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-Check `nvidia-smi` on the host before starting. The project has used an RTX 4060
-Ti; other cards require qualification. NVIDIA remains required for this
+Check `nvidia-smi` on the host before starting and qualify the intended GPU
+against the exact image set. NVIDIA remains required for this
 installation. Software graphics tests in CI do not establish GPU compatibility.
 
 The supplied container limits allow 10 GiB of RAM across the three application

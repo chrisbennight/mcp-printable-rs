@@ -67,9 +67,9 @@ come from trusted configuration, not forwarded request headers.
 
 The [workflow interface](workflow-interface.md), [native observations](native-observation.md),
 and [render-worker guide](render-worker.md) describe current behavior.
-`PLAN.md`, `DECISIONS.md`, the imported deployment notes, and the
+`PLAN.md`, `DECISIONS.md`, and the
 [imported README](history/imported-readme.md) retain the project's earlier
-delivery and lab deployment history. They are not standalone installation
+design and delivery context. They are not standalone installation
 instructions. New work is tracked in GitHub issues.
 
 Do not split modules solely to reduce their line count. Extract a boundary when
