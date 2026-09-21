@@ -131,7 +131,8 @@ jobs:
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --target cad-runtime --tag printable-cad:ci .
-          docker buildx build --platform linux/amd64 --load \
+          # The Docker driver can resolve the runtime just loaded into the local image store.
+          docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg CAD_IMAGE=printable-cad:ci \
             --file cad/Dockerfile.smoke --tag printable-cad-smoke:ci .
           docker run --rm --network none --read-only --cap-drop ALL \
