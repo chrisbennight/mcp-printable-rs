@@ -87,6 +87,7 @@ struct PrintStatus {
 #[derive(Serialize, JsonSchema)]
 struct Compatibility {
     status: CompatibilityStatus,
+    model_lookup_unavailable: Option<Unavailable>,
     sliced_for_model: Option<String>,
     printer_model: Option<String>,
 }

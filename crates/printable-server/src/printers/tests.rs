@@ -186,6 +186,36 @@ fn validate(name: &str, value: &Value) {
         .collect::<Vec<_>>();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn unavailable_model_aliases_do_not_certify_incompatibility() {
+    use super::review::{MatchResult, model_finding};
+    let aliases = std::collections::BTreeMap::from([("Bambu Lab P1S".into(), "P1S".into())]);
+    for (source, target, models, expected) in [
+        (
+            Some("Bambu Lab P1S"),
+            Some("P1S"),
+            None,
+            MatchResult::Unknown,
+        ),
+        (Some(" P1S "), Some("p1s"), None, MatchResult::Match),
+        (None, Some("P1S"), None, MatchResult::Unknown),
+        (
+            Some("Bambu Lab P1S"),
+            Some("P1S"),
+            Some(&aliases),
+            MatchResult::Match,
+        ),
+        (
+            Some("Bambu Lab P1S"),
+            Some("A1"),
+            Some(&aliases),
+            MatchResult::Mismatch,
+        ),
+    ] {
+        assert_eq!(model_finding(source, target, models).result, expected);
+    }
+}
 fn status() -> Value {
     json!({"id":1,"name":"Workshop","connected":true,"state":"IDLE","tray_now":0,
     "ams":[{"id":0,"humidity":3,"temp":29.1,"tray":[{"id":0,"tray_type":"PLA","tray_sub_brands":"PLA Basic","tray_info_idx":"GFA00","tray_color":"FFFFFFFF","remain":-1,"state":11}]},

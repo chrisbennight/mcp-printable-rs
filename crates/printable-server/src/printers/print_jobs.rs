@@ -117,26 +117,26 @@ impl PrinterService {
         if file_type.as_deref().is_some_and(|kind| kind != "gcode.3mf") {
             return Err(invalid("select a printer-ready .gcode.3mf file"));
         }
-        let models = self.read.printer_models().await.unwrap_or_default();
+        let models = super::materials::Observation::from_result(self.read.printer_models().await);
         let sliced_for = model.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let target = printer
             .model
             .as_deref()
             .map(str::trim)
             .filter(|model| !model.is_empty());
-        let compatibility = match (sliced_for, target) {
-            (Some(source), Some(target))
-                if super::review::canon(source, &models)
-                    != super::review::canon(target, &models) =>
-            {
-                return Err(invalid(
-                    "slice and selected printer declare different models",
-                ));
-            }
-            (Some(_), Some(_)) => super::schema::CompatibilityStatus::Matched,
-            _ => super::schema::CompatibilityStatus::Unknown,
-        };
-        Ok(json!({"status":compatibility,"sliced_for_model":sliced_for,"printer_model":target}))
+        let compatibility =
+            match super::review::model_finding(sliced_for, target, models.data.as_ref()).result {
+                super::review::MatchResult::Mismatch => {
+                    return Err(invalid(
+                        "slice and selected printer declare different models",
+                    ));
+                }
+                super::review::MatchResult::Match => super::schema::CompatibilityStatus::Matched,
+                super::review::MatchResult::Unknown => super::schema::CompatibilityStatus::Unknown,
+            };
+        Ok(
+            json!({"status":compatibility,"sliced_for_model":sliced_for,"printer_model":target,"model_lookup_unavailable":models.unavailable}),
+        )
     }
 
     pub(super) async fn dispatch_job(

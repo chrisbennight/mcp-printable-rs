@@ -137,6 +137,25 @@ pub(super) fn canon(value: &str, models: &BTreeMap<String, String>) -> String {
         .trim()
         .to_ascii_lowercase()
 }
+pub(super) fn model_finding(
+    source: Option<&str>,
+    target: Option<&str>,
+    models: Option<&BTreeMap<String, String>>,
+) -> Finding {
+    if let Some(models) = models {
+        return compare(
+            "printer_model",
+            source.map(|s| canon(s, models)).as_deref(),
+            target.map(|s| canon(s, models)).as_deref(),
+        );
+    }
+    let mut finding = compare("printer_model", source, target);
+    if finding.result == MatchResult::Mismatch {
+        finding.result = MatchResult::Unknown;
+        finding.explanation = "Printer model aliases are unavailable; unequal reported names are not proof of incompatibility".into();
+    }
+    finding
+}
 fn material_findings(request: &MaterialRequirement, material: Option<&Material>) -> Vec<Finding> {
     let detail = material.and_then(|m| m.detail.as_ref());
     let spool = detail
@@ -298,15 +317,11 @@ impl PrinterService {
             .find(|p| p.id == printer_id)
             .ok_or_else(|| ToolError::Validation("printer not found".into()))?;
         let loaded = self.loaded_materials(printer_id, true).await?;
-        let models = models.unwrap_or_default();
-        let mut findings = vec![compare(
-            "printer_model",
-            model.as_deref().map(|s| canon(s, &models)).as_deref(),
-            target
-                .model
-                .as_deref()
-                .map(|s| canon(s, &models))
-                .as_deref(),
+        let models = super::materials::Observation::from_result(models);
+        let mut findings = vec![model_finding(
+            model.as_deref(),
+            target.model.as_deref(),
+            models.data.as_ref(),
         )];
         findings.push(compare(
             "source_format",
@@ -412,6 +427,7 @@ impl PrinterService {
             ));
         }
         let mut sources = loaded.sources;
+        sources.insert("printer_models".into(), models.unavailable);
         sources.insert("plates".into(), plates.unavailable);
         let requirements = super::materials::Observation::from_result(requirements);
         sources.insert("slice_requirements".into(), requirements.unavailable);
