@@ -33,6 +33,7 @@ fn scene_state() -> Value {
 
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
+        "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(
             json!({
                 "server_version": {"type": "string"}, "transport": {"const": "streamable-http"},
@@ -42,7 +43,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "native_observation": {"type": "object"}
                 }, "required": ["available"]},
                 "openscad": {"type": "object"}, "workspace": {"type": "object"},
-                "render_jobs": {"type": "object"}
+                "render_jobs": {"type": "object"},
+                "printers": {"type": "object", "properties": {"configured": {"type": "boolean"}}, "required": ["configured"]}
             }),
             &[
                 "server_version",

@@ -186,6 +186,41 @@ impl PrintableServer {
             });
         }
 
+        if operation == "printable_printer" || operation == "printable_print" {
+            let result: Result<Value, ToolError> = async {
+                let service = self.settings.printers.as_ref().ok_or_else(|| {
+                    ToolError::Validation("printer integration is not configured".into())
+                })?;
+                if operation == "printable_printer" {
+                    service
+                        .observe(
+                            serde_json::from_value(args)
+                                .map_err(|error| ToolError::Validation(error.to_string()))?,
+                            &self.workspace,
+                        )
+                        .await
+                } else {
+                    service
+                        .control(
+                            serde_json::from_value(args)
+                                .map_err(|error| ToolError::Validation(error.to_string()))?,
+                            &self.workspace,
+                        )
+                        .await
+                }
+            }
+            .await;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
+
         if operation == "printable_project" {
             let workspace = Arc::clone(&self.workspace);
             let result = tokio::task::spawn_blocking(move || {
@@ -502,6 +537,10 @@ fn error_result(tool: &str, err: &ToolError) -> CallToolResult {
         && let Some(state) = error.scene_state()
     {
         payload["error"]["scene_state"] = serde_json::json!(state);
+    }
+    if let ToolError::Printer(bambuddy_api::ApiError::Rejected(details)) = err {
+        payload["error"]["details"] = serde_json::json!(details);
+        payload["error"]["outcome"] = serde_json::json!("rejected");
     }
     let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);

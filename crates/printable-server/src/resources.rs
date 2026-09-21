@@ -37,4 +37,11 @@ pub static RESOURCES: &[ResourceDef] = &[
         mime_type: "text/markdown",
         body: include_str!("../resources/product-render-v1.md"),
     },
+    ResourceDef {
+        uri: "printable://printing/workflow-v1",
+        name: "Printer observation and physical printing",
+        description: "Physical setup, typed observations, prepared-file review, staging, control and honest failure recovery.",
+        mime_type: "text/markdown",
+        body: include_str!("../resources/printing-workflow-v1.md"),
+    },
 ];
