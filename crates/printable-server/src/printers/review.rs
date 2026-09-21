@@ -464,6 +464,7 @@ impl PrinterService {
             let req=slice.iter().find(|r|r.slot_id==slot).cloned();
             let mut findings=p.requirements.iter().filter(|r|r.slot_id==slot).flat_map(|r|material_findings(r,material.as_ref())).collect::<Vec<_>>();
             if let Some(r)=&req {
+                findings.push(compare("slice_color",r.color.as_deref(),material.as_ref().and_then(|m|m.color.as_deref())));
                 if let Some(polymer)=&r.material_type{findings.push(compare("slice_material",Some(polymer),material.as_ref().and_then(|m|m.material_type.as_deref())));}
                 if let Some(filament)=r.tray_info_idx.as_ref().filter(|s|!s.is_empty()){findings.push(compare("slice_filament_id",Some(filament),material.as_ref().and_then(|m|m.filament_id.as_deref())));}
             }

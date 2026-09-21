@@ -257,7 +257,7 @@ async fn review_distinguishes_exact_variants_and_explicit_transparency_without_m
     )
     .await;
     get(&server,"/api/v1/library/files/9",json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","metadata":{"sliced_for_model":"Bambu Lab P1S","nozzle_diameter":0.4}})).await;
-    get(&server,"/api/v1/library/files/9/filament-requirements",json!({"plate_id":1,"filaments":[{"slot_id":1,"type":"PLA","used_grams":10},{"slot_id":2,"type":"PETG","used_grams":20}]})).await;
+    get(&server,"/api/v1/library/files/9/filament-requirements",json!({"plate_id":1,"filaments":[{"slot_id":1,"type":"PLA","color":"000000FF","used_grams":10},{"slot_id":2,"type":"PETG","color":"ffffffff","used_grams":20}]})).await;
     get(&server,"/api/v1/inventory/assignments",json!([{"id":1,"ams_id":128,"tray_id":0,"spool_id":8,"fingerprint_type":"PETG","fingerprint_color":"FFFFFFFF","spool":{"id":8,"material":"PETG","subtype":"transparent","brand":"Example"}}])).await;
     get(
         &server,
@@ -292,6 +292,15 @@ async fn review_distinguishes_exact_variants_and_explicit_transparency_without_m
     );
     assert!(selected["$defs"].get("Control").is_none());
     assert!(selected["$defs"].get("QueueItem").is_none());
+    for (index, expected) in [(0, "mismatch"), (1, "match")] {
+        let finding = review["materials"][index]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["check"] == "slice_color")
+            .unwrap();
+        assert_eq!(finding["result"], expected);
+    }
     assert!(
         review["materials"][0]["findings"]
             .as_array()
