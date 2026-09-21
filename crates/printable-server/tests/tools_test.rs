@@ -3145,6 +3145,10 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     let mut duplicate_objects = base();
     duplicate_objects["objects"] = json!(["Body", "Body"]);
     let mut invalid_azimuth = base();
+    let mut invalid_exposure = base();
+    invalid_exposure["presentation"]["exposure_stops"] = json!(10.1);
+    let mut invalid_intensity = base();
+    invalid_intensity["presentation"]["light_intensity_scale"] = json!(-0.1);
     invalid_azimuth["presentation"]["view"] = json!({"azimuth_degrees": 361.0});
     let mut invalid_elevation = base();
     invalid_elevation["presentation"]["view"] = json!({"elevation_degrees": 90.0});
@@ -3174,6 +3178,8 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     let cases = [
         (duplicate_objects, "unique names"),
         (invalid_azimuth, "azimuth_degrees"),
+        (invalid_exposure, "exposure_stops"),
+        (invalid_intensity, "light_intensity_scale"),
         (invalid_elevation, "elevation_degrees"),
         (occluded_studio_view, "ground cannot occlude"),
         (oversized_pixels, "pixel output limit"),
