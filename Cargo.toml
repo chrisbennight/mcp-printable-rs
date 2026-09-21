@@ -16,4 +16,4 @@ exclude = ["crates/printable-scad/fuzz"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://gitea.cacahuate.org/bennight/mcp-printable-rs"
+repository = "https://github.com/chrisbennight/mcp-printable-rs"

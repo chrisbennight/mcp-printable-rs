@@ -75,6 +75,8 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
 COPY --from=build /app/target/release/printable-server /usr/local/bin/printable-server
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY scripts/openscad-headless /usr/local/bin/openscad-headless
+COPY LICENSE /usr/share/doc/printable/LICENSE
+COPY crates/printable-imaging/assets/LICENSE-Fira-OFL.txt /usr/share/doc/printable/LICENSE-Fira-OFL.txt
 RUN chmod 0755 /usr/local/bin/openscad-headless
 
 ARG SOURCE_REVISION

@@ -81,6 +81,7 @@ RUN apt-get update \
     && chown 10001:10001 /run/printable-blender /workspace
 
 COPY --from=fetch /opt/blender /opt/blender
+COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY --chown=10001:10001 addon /opt/printable/addon
 COPY --chown=10001:10001 scripts/run-headless-blender /opt/printable/scripts/run-headless-blender
 

@@ -1,5 +1,10 @@
 # Decisions
 
+> Historical record: this file describes earlier capability delivery or the
+> private lab deployment. Use [the current project guide](README.md) for
+> independent installation and supported behavior. Current work is tracked in
+> GitHub issues.
+
 Running log of active design decisions. The capability and delivery sequence
 is [`PLAN.md`](PLAN.md).
 

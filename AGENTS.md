@@ -1,193 +1,85 @@
-# AGENTS.md
+# Working on Printable
 
-Guidance for working in `mcp-printable-rs`.
+The maintained repository is https://github.com/chrisbennight/mcp-printable-rs.
+The supported installation is self-hosted Linux/amd64 with NVIDIA. Keep the
+repository free of private deployment details. The source repository is public;
+package visibility is a separate decision requiring explicit authorization.
 
-## GitHub migration
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[architecture guide](docs/architecture.md). Current work is tracked in GitHub
+issues. `PLAN.md` and `DECISIONS.md` retain historical delivery context; private
+lab deployment instructions are not prerequisites for contributing.
 
-The maintained source is now `https://github.com/chrisbennight/mcp-printable-rs`,
-initially private. GitHub history begins with a source snapshot; earlier history
-remains on Gitea. Use GitHub MCP for issues, pull requests, and Actions, and local
-Git for checkouts, commits, and pushes. Create worktrees from the freshly fetched
-GitHub `main` branch. Keep changes on branches and preserve the user's checkout.
-
-The [GitHub CI workflow](.github/workflows/ci.yml) is the active verification
-path. The private deployment instructions below describe the
-imported pipeline; they do not authorize connecting
-GitHub pull requests to lab runners, secrets, or production deployment. See
-[continuous integration](docs/continuous-integration.md).
-
-The maintained manual publisher and its disabled-by-default GitHub workflow
-are documented in [releases](docs/releases.md). Use `requirements-tooling.txt`
-in an isolated Python environment for release-policy tests. The old Gitea
-workflow and deployment descriptions below are historical, not release commands.
-
-The supported deployment is self-hosted Linux/amd64 with NVIDIA. CPU/software
-checks remain useful for CI but do not establish a non-NVIDIA support promise.
-Repository visibility stays private until explicitly authorized otherwise.
-
-Independent installations use [Compose and direct HTTP clients](docs/installation.md).
-The gateway-only caller and secret-provider rules below describe the imported
-lab deployment, not a restriction on the independent product. The server also
-supports mounted bearer files and an explicit HTTPS download base; `.env.example`
-is the configuration reference.
-
-## Overview
-
-Production Printable MCP service for AI-driven 3D modeling, rendering,
-animation, and FDM print validation through headless Blender and OpenSCAD.
-Exposes MCP tools over streamable HTTP at `/mcp`; stdio is not supported.
-
-- Maintained repository: `https://github.com/chrisbennight/mcp-printable-rs`
-- Python is retained only for first-party code that runs inside Blender via
-  `bpy`. The authoritative add-on and headless launcher live in `addon/`.
-- The target deployment is Linux/amd64 `server`: a Rust MCP container beside a
-  persistent headless Blender 5.2.0 container using the RTX 4060 Ti
-  non-exclusively. Deploy and gateway wiring live in `../docker-home`; the
-  Blender image source lands here with its delivery slice.
-
-## Plan of record
-
-[`PLAN.md`](PLAN.md) is the approved capability-delivery plan: architecture,
-ordering, and product exit criteria. Running decisions accumulate in
-[`DECISIONS.md`](DECISIONS.md). Read both before starting any slice.
-
-## Product authority
+## Product and code boundaries
 
 User-facing capability, reliability, performance, and security define
-correctness. Test those contracts directly. Preserve a name or wire shape only
-when it protects an active workflow or is deliberately retained as a stable
-product surface.
+correctness. Preserve a wire shape when it protects an active workflow or a
+stable product contract. Make the smallest coherent change and record a
+disposition for every review finding.
 
-## Architecture
+- Rust uses edition 2024, cargo fmt, and clippy with warnings denied.
+- Use thiserror for library errors and tracing for application logs. Redact
+  sensitive fields; do not commit debug prints or stack traces.
+- Keep pure geometry separate from I/O and async code. Exact CSG runs in a
+  disposable worker with a bounded address space.
+- The Blender add-on and supervisor live in addon/. Python repository scripts
+  support builds, verification, and direct-client examples; they do not replace
+  the Rust server.
+- Treat caller paths and OpenSCAD input as untrusted data. Use argv arrays and
+  capability-rooted I/O. Never construct shell commands from caller input.
+- Explicit Blender Python is an authorized capability, not a language sandbox.
+  Do not give the containers credentials, a Docker socket, privileged mode,
+  host PID access, broad host mounts, or a public Blender bridge.
+- Preserve immutable checkpoints, one-use file grants, scene preconditions,
+  and honest unknown outcomes after a delivered mutation times out.
+- Update .env.example for implemented settings. The server reads process
+  environment; do not claim a file is automatically loaded.
 
-Cargo workspace, one crate per concern:
+## Validation
 
-- `crates/printable-server` — binary: streamable HTTP at `/mcp`, `/healthz`,
-  hand-rolled `ServerHandler` (house style), tool dispatch, resources.
-- `crates/printable-blender` — TCP client for the Blender addon bridge
-  (length-prefixed JSON, deadlines, version handshake, FakeAddon test harness).
-- `crates/printable-geom` — pure mesh geometry/printability (parry3d +
-  Manifold); no I/O, no async; property- and mutation-tested.
-- `crates/printable-scad` — OpenSCAD subprocess backend + confined-source gate.
-- `crates/printable-workspace` — capability-rooted confined artifact I/O.
-- `crates/printable-imaging` — render compositing with a bundled font.
-- `addon/` — first-party Blender add-on, pure bridge support, and headless
-  main-thread launcher.
-- `blender/` — checksum-pinned headless Blender image; release promotion is
-  gated on the exact published digest passing the production GPU smoke.
-
-## Commands
+Use the isolated Python tooling environment from the contributor setup before
+running these commands. Release-policy tests require `requirements-tooling.txt`.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
+PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
+PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
 python3 scripts/docgate
 ```
 
-CI and release artifacts target Linux/amd64 on `ubuntu-latest`, matching the
-production `server` host. A PR is not done until every required context
-configured for that PR is green.
+Unit tests use fakes and must not contact production systems. Dedicated
+container integration is the live software test boundary; trusted NVIDIA
+qualification is separate. Read an explicit successful exit status before
+claiming a gate passed. Reuse valid evidence for an unchanged candidate.
 
-## Code style
+## Git and release workflow
 
-- Rust 2024 edition; `cargo fmt` is the formatter; `cargo clippy -- -D
-  warnings` is the lint gate — no allow-by-default.
-- `thiserror` for library-level errors (with a machine-readable `.code()`),
-  `anyhow` only at the binary boundary.
-- `tracing` for logs; never `println!` outside the bin entry point/CLI help.
-- Default to no comments; names should be self-explanatory. A comment states a
-  constraint the code cannot show.
-- Untrusted input (OpenSCAD source, caller paths) never reaches a shell or
-  escapes the workspace root — argv arrays and capability-rooted I/O only.
+Work in a branch worktree under a gitignored .worktrees/ directory, based on a
+freshly fetched GitHub main. Preserve the primary checkout and other people's
+changes. Stage specific paths and review the staged diff. Never push directly
+to main, rewrite history, publish images, or change visibility without the
+applicable authorization. Existing task authorization remains valid; do not
+ask again for actions the user has already approved.
 
-## Configuration
+A pull request is ready only when required GitHub checks pass and review
+findings have dispositions. Maintainer automation uses AERB when available;
+contributors do not need access to that private review service. Automated
+review does not replace human responsibility for the change.
 
-`.env.example` is the canonical list for implemented Rust settings. Core names
-are `PRINTABLE_HTTP_HOST`, `PRINTABLE_HTTP_PORT`, `BLENDER_HOST`,
-`BLENDER_PORT`, `PRINTABLE_WORKSPACE_ROOT`,
-`PRINTABLE_BLENDER_WORKSPACE_ROOT`, `OPENSCAD_BIN`,
-`PRINTABLE_SCAD_CONCURRENCY`, `FFMPEG_BIN`,
-`PRINTABLE_RENDER_JOB_QUEUE_DEPTH`, `PRINTABLE_GEOMETRY_WORKER_BIN`,
-`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`, `PRINTABLE_MCP_BEARER`,
-`PRINTABLE_ALLOWED_HOSTS`, and `PRINTABLE_ALLOWED_ORIGINS`. Container deployments must allow the actual
-gateway Host header forms.
+Images form a matching pair identified by immutable digests and source revision.
+Do not promote software-rendered test results as NVIDIA qualification. Keep
+pull requests off persistent GPU runners and away from release credentials.
+Do not couple the general installation to a private registry, secret provider,
+or deployment controller. Site-specific production wiring belongs downstream.
 
-## Homelab infrastructure
+The [manual release workflow](docs/releases.md) is disabled until its trusted
+runner, environment protections, private package destinations, and release
+materials are verified. Publishing retains the approved crate-proxy gate;
+ordinary local source builds do not require that proxy.
 
-- **Secrets**: Infisical only, fetched at workflow runtime
-  (`infisical-secrets-action`); never commit credentials or bearer values.
-- **Deployment**: build here, deploy in `../docker-home` as a Komodo stack on
-  `server`. Printable validates the one shared Infisical-backed bearer on
-  `/mcp`; the gateway is the only supported remote caller.
-- **CI runners**: `ubuntu-latest` fleet (amd64, DinD, on the server host).
-
-## Image and release flow
-
-`.gitea/workflows/build.yml` releases the Rust and Blender images. Pull requests
-run workspace tests, build both amd64 images, and exercise their container
-smokes. Main publishes matching commit-scoped image tags plus a release-pair
-record containing both immutable registry digests before Komodo deployment;
-tags are discovery pointers, not the compatibility contract.
-`build-docker.sh` preserves test-before-publish,
-CPU-and-production-GPU-smoke-before-pair ordering; publishing is opt-in
-(`--push`) and runs on `server`.
-
-Crates reach every build through whatever `CRATES_INDEX_URL` names. Cargo reads
-no environment variable for a mirror, so that address becomes a source
-replacement three ways, one per execution context: a `.cargo/config.toml`
-written inside the image for the Rust Dockerfile, the same file written in the
-checkout by each workflow job that compiles on the runner, and cargo's own
-`--config` assignments for the publishing script's host-side commands — which
-must not write a file, because that path refuses to publish from a dirty
-worktree. A job's file cannot carry to another job; each one writes its own.
-
-Nothing is committed: an address that resolves only on one network would stop
-these images building anywhere else. Unset, cargo resolves from crates.io;
-`--push` and the publishing workflow refuse instead, because an image that
-skipped the proxy skipped its cache, audit, and blocklist.
-
-- The runtime image is `debian:trixie-slim` (not distroless — OpenSCAD, Xvfb,
-  and FFmpeg need apt); OpenSCAD renders under a virtual framebuffer via
-  `scripts/openscad-headless`, and the image pins both subprocess paths.
-- The container smoke is driven by the `printable-smoke` binary, which speaks the
-  MCP wire protocol from outside the application container — it is never shipped
-  in the runtime image. `smoke/expected-tools.txt` is the release catalog: the
-  smoke compares the exact advertised names against it, executes the packaged
-  geometry and OpenSCAD workflows, verifies the packaged FFmpeg encoder, and
-  later releases update that file alongside the server catalog.
-- Rust and Blender production images are Linux/amd64 and receive real NVIDIA
-  validation on `server`, not a pretend GPU CI result.
-- Registry and Komodo material come from the repo-scoped Infisical path
-  `/bennight/mcp-printable-rs` at workflow runtime. Production compose/stack files
-  belong in `../docker-home`, not this repo.
-
-## Git workflow
-
-- Every task starts in a worktree created from a freshly fetched
-  `origin/main`. Do not edit the primary checkout.
-- Ask before committing, pushing, or opening a PR unless the user directly
-  invoked `/pr-and-monitor`; that invocation authorizes the complete loop.
-- Never push directly to `main`. Stage specific paths, never `git add .`.
-- Use `tea` for Gitea operations (never `gh` against Gitea). Treat PR
-  descriptions as immutable; post corrections as comments.
-- Merge only when required CI statuses are green and AERB has no unresolved
-  findings.
-
-## Boundaries
-
-Do not:
-
-- commit secrets, or add production compose files (those belong in
-  `docker-home`);
-- make live calls to Blender, OpenSCAD binaries, or the network from unit tests
-  — use fakes there; dedicated container integration and server GPU smokes are
-  the sanctioned live boundaries;
-- give Printable a Docker socket, privileged mode, host PID namespace, broad
-  NAS mount, public Blender port, or control path to unrelated workloads.
-
-## Safety
-
-Ask before commit/push/PR (see Git workflow). Treat destructive operations —
-force-push, branch deletion, registry tag changes, prunes — as requiring
-explicit say-so. Never paste secret material into commits, PR bodies, or chat.
+Write plain English. Documentation should state current behavior, give runnable
+commands, and distinguish measured evidence from assumptions. Keep design
+history out of user-visible errors and source comments. Preserve license and
+attribution notices for bundled components.

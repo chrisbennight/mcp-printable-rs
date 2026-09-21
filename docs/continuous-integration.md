@@ -10,7 +10,7 @@ network, or GPU host. Dependencies resolve from their public upstreams.
 | Source checks | Rust formatting, lint, locked tests; Python bridge and release-policy tests; documentation and shell validation |
 | Workflow validation | GitHub Actions syntax and expression checks with pinned actionlint |
 | Confined-source fuzz smoke | A bounded run against the OpenSCAD source gate with pinned tooling |
-| Container integration (software graphics) | Both built images, Blender capabilities and shutdown recovery, native views, product artifacts, and checkpoint rendering while live editing continues |
+| Container integration (software graphics) | Both built images, packaged notices, standalone installation and verified downloads, workspace restoration and storage failures, Blender shutdown recovery, native views, and checkpoint rendering while live editing continues |
 
 The container job uses the same Dockerfiles and product smoke as release
 qualification. It builds the smoke driver in the server's build environment;
@@ -29,7 +29,7 @@ runner, environment, registry, and release-material verification. Pull-request
 jobs cannot select that runner or publish images. The imported `.gitea`
 directory is historical; production deployment remains outside GitHub CI.
 
-For local source checks, use the commands in the [README](../README.md#development).
+For local source checks, use the [contributor commands](../CONTRIBUTING.md#development-setup).
 The new standalone `scripts/smoke-blender-cpu <image>` requires Linux, Docker,
 Python 3, and an already built Blender image. It creates temporary containers
 and exercises the existing integration modes, including busy shutdown and
