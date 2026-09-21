@@ -81,13 +81,13 @@ class StagedOutput:
         self.committed = False
         self.committed_identity = None
 
-    def commit_new(self) -> None:
+    def commit_new(self, *, check_budget=lambda: None) -> None:
         """Publish only if the destination is still absent at the atomic write."""
         if self.committed:
             raise WorkspaceError("staged output was already committed")
         self.committed_identity = self.workspace._commit_output(
             self.path, self.parent_fd, self.leaf,
-            rollback_on_failure=True, create_only=True,
+            rollback_on_failure=False, create_only=True, check_budget=check_budget,
         )
         self.committed = True
 
@@ -151,7 +151,7 @@ class SecureWorkspace:
         )
 
     @contextmanager
-    def stage_input(self, request: WorkspacePath) -> Iterator[Path]:
+    def stage_input(self, request: WorkspacePath, *, check_budget=lambda: None) -> Iterator[Path]:
         with self._open_parent(request.parts, create=False) as (parent_fd, leaf):
             try:
                 source_fd = os.open(leaf, FILE_READ_FLAGS, dir_fd=parent_fd)
@@ -166,9 +166,10 @@ class SecureWorkspace:
                     with os.fdopen(os.dup(source_fd), "rb") as source, stage_path.open(
                         "wb"
                     ) as destination:
-                        self._copy_limited(source, destination)
+                        self._copy_limited(source, destination, check_budget=check_budget)
                         destination.flush()
                         os.fsync(destination.fileno())
+                        check_budget()
                     after = os.fstat(source_fd)
                     if self._changed_during_copy(before, after):
                         raise WorkspaceError("input artifact changed while being staged")
@@ -219,24 +220,16 @@ class SecureWorkspace:
             raise WorkspaceError(
                 "artifact batch requires new uncommitted workspace outputs"
             )
-        committed: list[StagedOutput] = []
         try:
             for output in outputs:
                 output.commit_new()
-                committed.append(output)
-        except Exception:
-            rollback_error: Exception | None = None
-            for output in reversed(committed):
-                try:
-                    output.rollback()
-                except Exception as error:
-                    if rollback_error is None:
-                        rollback_error = error
-            if rollback_error is not None:
-                raise WorkspaceError(
-                    "artifact batch commit and rollback both failed"
-                ) from rollback_error
-            raise
+        except (WorkspaceError, OSError) as error:
+            # A pathname cannot be conditionally unlinked by inode. Retain published
+            # files rather than risk deleting another writer's replacement.
+            raise WorkspaceError(
+                f"artifact batch publication failed: {error}; earlier outputs may remain; "
+                "inspect requested paths before retrying"
+            ) from error
 
     @contextmanager
     def _open_parent(
@@ -306,6 +299,7 @@ class SecureWorkspace:
         *,
         rollback_on_failure: bool,
         create_only: bool = False,
+        check_budget=lambda: None,
     ) -> tuple[int, int]:
         try:
             source_fd = os.open(stage_path, FILE_READ_FLAGS)
@@ -334,9 +328,10 @@ class SecureWorkspace:
                 with os.fdopen(os.dup(source_fd), "rb") as source, os.fdopen(
                     destination_fd, "wb", closefd=False
                 ) as destination:
-                    self._copy_limited(source, destination)
+                    self._copy_limited(source, destination, check_budget=check_budget)
                     destination.flush()
                     os.fsync(destination.fileno())
+                    check_budget()
                 prepared = os.fstat(destination_fd)
                 prepared_identity = (prepared.st_dev, prepared.st_ino)
                 os.close(destination_fd)
@@ -389,6 +384,10 @@ class SecureWorkspace:
                     raise WorkspaceError(
                         "artifact commit and destination rollback both failed"
                     ) from rollback_error
+                if create_only and committed_identity is not None:
+                    raise WorkspaceError(
+                        "artifact publication outcome is uncertain; inspect requested path before retrying"
+                    )
                 raise
         finally:
             os.close(source_fd)
@@ -418,9 +417,10 @@ class SecureWorkspace:
             ) from error
 
     @staticmethod
-    def _copy_limited(source: object, destination: object) -> None:
+    def _copy_limited(source: object, destination: object, *, check_budget=lambda: None) -> None:
         copied = 0
         while True:
+            check_budget()
             chunk = source.read(1024 * 1024)
             if not chunk:
                 return

@@ -609,7 +609,6 @@ class BlenderHandlers:
                 or not math.isfinite(timeout) or not 1 <= timeout <= 120):
             raise HandlerError("native export timeout must be between 1 and 120 seconds")
         try:
-            self._execution_watchdog.arm(time.monotonic() + timeout + 5)
             return export_blender_bundle(
                 self._workspace, self._config.workspace_root, self._bpy.app.binary_path,
                 project_id=_string(params, "project_id"), files=params.get("files"),
@@ -618,9 +617,6 @@ class BlenderHandlers:
             )
         except ProjectPackingError as error:
             raise HandlerError(str(error)) from error
-        finally:
-            self._execution_watchdog.disarm()
-
     def _get_object_info(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"name", "section", "offset", "limit"})
         name = _string(params, "name")

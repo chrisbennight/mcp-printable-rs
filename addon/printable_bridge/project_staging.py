@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
-import shutil
 import tempfile
 
 from .workspace import WorkspaceError
@@ -30,7 +29,7 @@ def validate_project_file(name):
 
 
 @contextmanager
-def stage_project_inputs(workspace, project_id: str, files: list[str]):
+def stage_project_inputs(workspace, project_id: str, files: list[str], *, check_budget=lambda: None):
     """Commit outputs only after this context exits with source checks intact.
 
     Preparation may change its private copies, never the original project files.
@@ -55,23 +54,28 @@ def stage_project_inputs(workspace, project_id: str, files: list[str]):
         root = Path(directory)
         metadata = []
         for name, request in sorted(requests.items()):
+            check_budget()
             identity = workspace.input_identity(request)
             if identity[2] > remaining:
                 raise WorkspaceError("project export inputs exceed the 1 GiB budget")
-            with workspace.stage_input(request) as source:
+            with workspace.stage_input(request, check_budget=check_budget) as source:
                 if workspace.input_identity(request) != identity:
                     raise WorkspaceError("project export source changed while staging")
                 destination = root / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-                with destination.open("rb") as content:
-                    digest = hashlib.file_digest(content, "sha256").hexdigest()
+                digest = hashlib.sha256()
+                with source.open("rb") as content, destination.open("wb") as copied:
+                    while chunk := content.read(65536):
+                        check_budget()
+                        digest.update(chunk)
+                        copied.write(chunk)
             identities[name] = identity
             remaining -= identity[2]
-            metadata.append({"path": name, "size_bytes": identity[2], "sha256": digest})
+            metadata.append({"path": name, "size_bytes": identity[2], "sha256": digest.hexdigest()})
 
         def verify_sources():
             for name, request in requests.items():
+                check_budget()
                 if workspace.input_identity(request) != identities[name]:
                     raise WorkspaceError("project export source changed during preparation")
 

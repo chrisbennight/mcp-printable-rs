@@ -807,7 +807,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
             self.assertFalse((outside / "artifact.stl").exists())
             workspace.close()
 
-    def test_batch_commit_rolls_back_prior_outputs_when_a_later_commit_fails(
+    def test_batch_commit_retains_prior_outputs_when_a_later_commit_fails(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -827,6 +827,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                 *,
                 rollback_on_failure: bool,
                 create_only: bool = False,
+                check_budget=lambda: None,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -838,6 +839,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                     leaf,
                     rollback_on_failure=rollback_on_failure,
                     create_only=create_only,
+                    check_budget=check_budget,
                 )
 
             with (
@@ -856,7 +858,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                 second.path.write_bytes(b"second")
                 workspace.commit_batch([first, second])
 
-            self.assertFalse((root / "batch" / "first.png").exists())
+            self.assertEqual((root / "batch" / "first.png").read_bytes(), b"first")
             self.assertFalse((root / "batch" / "second.png").exists())
             workspace.close()
 
@@ -1325,7 +1327,7 @@ class HandlerValidationTests(unittest.TestCase):
             )
             handlers.close()
 
-    def test_presented_view_batch_rolls_back_when_later_promotion_fails(
+    def test_presented_view_batch_retains_outputs_when_later_promotion_fails(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1364,6 +1366,7 @@ class HandlerValidationTests(unittest.TestCase):
                 *,
                 rollback_on_failure: bool,
                 create_only: bool = False,
+                check_budget=lambda: None,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -1375,6 +1378,7 @@ class HandlerValidationTests(unittest.TestCase):
                     leaf,
                     rollback_on_failure=rollback_on_failure,
                     create_only=create_only,
+                    check_budget=check_budget,
                 )
 
             def render_to_stage(
@@ -1438,8 +1442,8 @@ class HandlerValidationTests(unittest.TestCase):
                     None,
                 )
 
-            self.assertFalse((root / "renders" / "first.png").exists())
-            self.assertFalse((root / "renders" / "second.png").exists())
+            self.assertEqual((handlers._config.workspace_root / "renders" / "first.png").read_bytes(), b"product-png")
+            self.assertFalse((handlers._config.workspace_root / "renders" / "second.png").exists())
             self.assertEqual(
                 list(handlers._workspace._staging_root.iterdir()), []
             )

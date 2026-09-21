@@ -6,13 +6,13 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 from printable_bridge.project_bundle import export_blender_bundle
-from printable_bridge.handlers import BlenderHandlers
+from printable_bridge.handlers import BlenderHandlers, HandlerError
+from printable_bridge.project_packing import ProjectPackingError
 from printable_bridge.state import SceneState
-from printable_bridge.watchdog import NoopExecutionWatchdog
 from printable_bridge.workspace import SecureWorkspace, WorkspaceError
 
 
@@ -91,7 +91,7 @@ class BundleTests(unittest.TestCase):
         handler._bpy = NS(app=NS(binary_path="/opt/blender/blender"))
         handler._workspace = self.workspace
         handler._shutdown_requested = lambda: False
-        handler._execution_watchdog = NoopExecutionWatchdog()
+        handler._execution_watchdog = Mock()
         handler._scene_state = SceneState()
         handler._scene_state.bind_project("another-live-project")
         handler._state_callbacks = []
@@ -104,3 +104,56 @@ class BundleTests(unittest.TestCase):
             })
         self.assertEqual(result["manifest"]["scope"], "native_blender")
         self.assertEqual(handler.scene_state, before)
+        handler._execution_watchdog.arm.assert_not_called()
+        handler._execution_watchdog.disarm.assert_not_called()
+
+    def test_staging_deadline_preserves_live_scene_without_arming_process_watchdog(self):
+        handler = BlenderHandlers.__new__(BlenderHandlers)
+        handler._config = NS(workspace_root=self.root)
+        handler._bpy = NS(app=NS(binary_path="/opt/blender/blender"))
+        handler._workspace = self.workspace
+        handler._shutdown_requested = lambda: False
+        handler._execution_watchdog = Mock()
+        clock = [0.0]
+        original_copy = self.workspace._copy_limited
+
+        def slow_copy(source, destination, **kwargs):
+            clock[0] = 10.0
+            return original_copy(source, destination, **kwargs)
+
+        with patch("printable_bridge.project_bundle.time.monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.workspace, "_copy_limited", side_effect=slow_copy), \
+                patch("printable_bridge.project_bundle.prepare_in_child") as prepare, \
+                self.assertRaisesRegex(HandlerError, "deadline"):
+            handler._export_project_blender({
+                "project_id": "organic", "files": ["model.blend"],
+                "entrypoint": "model.blend", "output_path": "exports/project.zip", "timeout_seconds": 1,
+            })
+        prepare.assert_not_called()
+        handler._execution_watchdog.arm.assert_not_called()
+        handler._execution_watchdog.disarm.assert_not_called()
+        self.assertFalse((self.project / "exports/project.zip").exists())
+        self.assertEqual((self.project / "model.blend").read_bytes(), b"original source")
+
+    def test_publication_copy_checks_budget_before_linking_destination(self):
+        original_copy = self.workspace._copy_limited
+        clock = [0.0]
+
+        def expire_during_publication(source, destination, **kwargs):
+            # Staging the selected inputs finishes before native preparation.
+            if prepared[0]:
+                clock[0] = 40.0
+            return original_copy(source, destination, **kwargs)
+
+        prepared = [False]
+        def prepare(*args):
+            result = self.prepare(*args)
+            prepared[0] = True
+            return result
+
+        with patch("printable_bridge.project_bundle.time.monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.workspace, "_copy_limited", side_effect=expire_during_publication), \
+                patch("printable_bridge.project_bundle.prepare_in_child", side_effect=prepare), \
+                self.assertRaisesRegex(ProjectPackingError, "deadline"):
+            self.export()
+        self.assertFalse((self.project / "exports/project.zip").exists())

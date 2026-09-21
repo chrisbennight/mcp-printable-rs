@@ -38,7 +38,7 @@ def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
 
     # Source checks run when staging exits, before the single archive commit.
     with ExitStack() as publication:
-        with stage_project_inputs(workspace, project_id, files) as staged:
+        with stage_project_inputs(workspace, project_id, files, check_budget=check_budget) as staged:
             check_budget()
             request = workspace.validate(f"projects/{project_id}/{output_path}", ".zip")
             output = publication.enter_context(workspace.stage_output(request))
@@ -88,8 +88,12 @@ def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
             if size > MAX_ARTIFACT_BYTES:
                 raise WorkspaceError("native bundle exceeds the 1 GiB artifact limit")
             with output.path.open("rb") as prepared:
-                digest = hashlib.file_digest(prepared, "sha256").hexdigest()
+                archive_digest = hashlib.sha256()
+                while chunk := prepared.read(65536):
+                    check_budget()
+                    archive_digest.update(chunk)
+                digest = archive_digest.hexdigest()
         check_budget()
-        output.commit_new()
+        output.commit_new(check_budget=check_budget)
     return {"project_id": project_id, "path": request.relative,
             "size_bytes": size, "sha256": digest, "manifest": manifest}

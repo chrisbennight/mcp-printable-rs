@@ -255,6 +255,9 @@ URLs, embed credentials, or initiate printing.
 `files`, a selected `.blend` `entrypoint`, a new `.zip` `output_path`, and
 `timeout_seconds` from 1 to 120. Save the intended scene first: this operation
 reads project files, not unsaved live changes, and never switches the live scene.
+The work budget is checked during source copying, hashing and publication;
+an individual filesystem operation can delay cancellation. Export does not arm
+the live Blender process watchdog, so its deadline does not restart the live scene.
 
 The bundle retains the exact source hierarchy under `sources/` and a prepared,
 editable entrypoint under `prepared/`. Its `manifest.json` records each retained
@@ -282,3 +285,12 @@ rejects both an existing destination and one created during preparation. If a
 transport timeout leaves the outcome unknown, inspect the requested output
 before retrying. Reuse the returned artifact through `artifact.publish` and the
 existing delivery service; export does not upload, sign URLs, or print.
+
+### Publication failures
+
+New artifacts are published without replacing existing destinations. A batch
+is not a filesystem transaction: if a later destination conflicts or a write
+fails, earlier outputs can remain. Errors report this partial or uncertain
+outcome. Inspect the requested paths before retrying, and use new paths where
+needed. Published paths are not deleted during batch rollback because another
+writer can replace them between an identity check and deletion.

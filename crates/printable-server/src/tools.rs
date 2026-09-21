@@ -1661,7 +1661,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_render_gallery",
-        description: "Render selected model views in one caller-budgeted Blender operation and create a labeled gallery PNG plus individual confined artifacts. An optional product presentation applies the same engineering, studio-neutral, or studio-dark profile, material, shading, cleanup, and source-verification contract as printable_render_product; omission preserves the legacy orthographic review output. No view is promoted unless the complete batch succeeds. The composite can be returned inline up to 1 MiB.",
+        description: "Render selected model views in one caller-budgeted Blender operation and create a labeled gallery PNG plus individual confined artifacts. An optional product presentation applies the same engineering, studio-neutral, or studio-dark profile, material, shading, cleanup, and source-verification contract as printable_render_product; omission preserves the legacy orthographic review output. Publication starts after all views render and scene cleanup succeeds; a publication failure can leave earlier outputs, so inspect requested paths before retrying. The composite can be returned inline up to 1 MiB.",
         schema: schema_of::<RenderGalleryParams>,
         annotations: write_annotations,
     },
