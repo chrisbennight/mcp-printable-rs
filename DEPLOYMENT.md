@@ -1,5 +1,10 @@
 # Deployment
 
+These are imported private lab deployment notes. For an independent host and
+direct HTTP clients, use the [installation guide](docs/installation.md). Its
+credential and proxy configuration supersedes the gateway-only assumptions
+below for that deployment.
+
 **Status:** the paired private stack, dedicated NFS workspace, and governed MCP
 gateway catalog are deployed on `server`. The Rust foundation image,
 first-party Blender bridge, headless image, and paired image promotion exist in

@@ -5,6 +5,7 @@
 //! tested without racing the process-global environment.
 
 use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
 
 use subtle::ConstantTimeEq;
@@ -21,7 +22,7 @@ const DEFAULT_GEOMETRY_WORKER_MEMORY_MIB: u64 = 1024;
 const DEFAULT_ALLOWED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 const MCP_BEARER_BYTES: usize = 64;
 
-/// The single gateway-to-Printable bearer. Debug output is always redacted.
+/// The shared MCP client bearer. Debug output is always redacted.
 #[derive(Clone)]
 pub struct BearerSecret(String);
 
@@ -83,6 +84,8 @@ pub struct Settings {
     pub allowed_hosts: Vec<String>,
     /// Exact serialized browser origins; empty rejects every Origin header.
     pub allowed_origins: Vec<String>,
+    /// Trusted external base, including any reverse-proxy prefix and trailing slash.
+    pub download_base_url: Option<reqwest::Url>,
 }
 
 /// Stable operator-facing settings errors; the offending variable name is the
@@ -97,6 +100,14 @@ pub enum SettingsError {
         "PRINTABLE_ALLOWED_ORIGINS must list exact HTTP(S) origins without paths, credentials, or wildcards"
     )]
     AllowedOriginsInvalid,
+    #[error("configure only one of PRINTABLE_MCP_BEARER and PRINTABLE_MCP_BEARER_FILE")]
+    McpBearerConflict,
+    #[error("PRINTABLE_MCP_BEARER_FILE could not be read")]
+    McpBearerFileUnreadable,
+    #[error(
+        "PRINTABLE_DOWNLOAD_BASE_URL must be HTTPS (or loopback HTTP), end with /, and contain no credentials, query, or fragment"
+    )]
+    DownloadBaseInvalid,
     #[error("{0} must be an integer")]
     PortNotInteger(&'static str),
     #[error("{0} must be between 1 and 65535")]
@@ -116,7 +127,27 @@ pub enum SettingsError {
 impl Settings {
     /// Read and validate settings from the process environment.
     pub fn from_env() -> Result<Self, SettingsError> {
-        Self::from_lookup(|k| std::env::var(k).ok())
+        Self::from_sources(|key| std::env::var(key).ok(), read_bearer_file)
+    }
+
+    fn from_sources(
+        get: impl Fn(&str) -> Option<String>,
+        read: impl Fn(&str) -> Result<String, SettingsError>,
+    ) -> Result<Self, SettingsError> {
+        let inline = get("PRINTABLE_MCP_BEARER");
+        let file = nonempty(&get, "PRINTABLE_MCP_BEARER_FILE");
+        let bearer = match (inline, file) {
+            (Some(_), Some(_)) => return Err(SettingsError::McpBearerConflict),
+            (None, Some(path)) => Some(read(&path)?.trim_end_matches(['\r', '\n']).to_owned()),
+            (value, None) => value,
+        };
+        Self::from_lookup(|key| {
+            if key == "PRINTABLE_MCP_BEARER" {
+                bearer.clone()
+            } else {
+                get(key)
+            }
+        })
     }
 
     /// Pure parse/validate core over an arbitrary lookup, so the settings table
@@ -148,8 +179,47 @@ impl Settings {
             mcp_bearer: mcp_bearer(&get)?,
             allowed_hosts: allowed_hosts(nonempty(&get, "PRINTABLE_ALLOWED_HOSTS")),
             allowed_origins: allowed_origins(nonempty(&get, "PRINTABLE_ALLOWED_ORIGINS"))?,
+            download_base_url: download_base_url(nonempty(&get, "PRINTABLE_DOWNLOAD_BASE_URL"))?,
         })
     }
+}
+
+fn read_bearer_file(path: &str) -> Result<String, SettingsError> {
+    let mut value = String::new();
+    std::fs::File::open(path)
+        .map_err(|_| SettingsError::McpBearerFileUnreadable)?
+        .take((MCP_BEARER_BYTES + 3) as u64)
+        .read_to_string(&mut value)
+        .map_err(|_| SettingsError::McpBearerFileUnreadable)?;
+    if value.len() > MCP_BEARER_BYTES + 2 {
+        return Err(SettingsError::McpBearerInvalid);
+    }
+    Ok(value)
+}
+
+fn download_base_url(raw: Option<String>) -> Result<Option<reqwest::Url>, SettingsError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let url = reqwest::Url::parse(&raw).map_err(|_| SettingsError::DownloadBaseInvalid)?;
+    let host = url.host_str().ok_or(SettingsError::DownloadBaseInvalid)?;
+    let loopback = host == "localhost"
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
+        || host.contains('*')
+        || url.port() == Some(0)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.path().ends_with('/')
+    {
+        return Err(SettingsError::DownloadBaseInvalid);
+    }
+    Ok(Some(url))
 }
 
 fn mcp_bearer(get: &impl Fn(&str) -> Option<String>) -> Result<BearerSecret, SettingsError> {
@@ -399,6 +469,64 @@ mod tests {
             ),
         ] {
             assert!(!secret.matches(mismatch));
+        }
+    }
+
+    #[test]
+    fn bearer_file_is_bounded_and_exclusive_with_inline_configuration() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("bearer");
+        std::fs::write(&path, format!("{}\n", "a".repeat(MCP_BEARER_BYTES))).unwrap();
+        let path = path.to_str().unwrap();
+        let get = |key: &str| (key == "PRINTABLE_MCP_BEARER_FILE").then(|| path.to_owned());
+        let settings = Settings::from_sources(get, read_bearer_file).unwrap();
+        assert!(settings.mcp_bearer.matches(&"a".repeat(MCP_BEARER_BYTES)));
+        assert!(!format!("{settings:?}").contains(&"a".repeat(MCP_BEARER_BYTES)));
+        assert_eq!(
+            Settings::from_sources(lookup(&[("PRINTABLE_MCP_BEARER_FILE", path)]), |_| panic!(
+                "must not read conflicting source"
+            ))
+            .unwrap_err(),
+            SettingsError::McpBearerConflict
+        );
+        std::fs::write(path, "a".repeat(1024)).unwrap();
+        assert_eq!(
+            Settings::from_sources(get, read_bearer_file).unwrap_err(),
+            SettingsError::McpBearerInvalid
+        );
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            Settings::from_sources(get, read_bearer_file).unwrap_err(),
+            SettingsError::McpBearerFileUnreadable
+        );
+    }
+
+    #[test]
+    fn download_base_requires_trusted_https_or_loopback_http_and_safe_prefix() {
+        for value in [
+            "https://files.example.com/",
+            "https://files.example.com/printable/",
+            "http://localhost:8000/",
+            "http://127.0.0.1:8000/",
+            "http://[::1]:8000/",
+        ] {
+            let settings =
+                Settings::from_lookup(lookup(&[("PRINTABLE_DOWNLOAD_BASE_URL", value)])).unwrap();
+            assert_eq!(settings.download_base_url.unwrap().as_str(), value);
+        }
+        for value in [
+            "http://files.example.com/",
+            "ftp://files.example.com/",
+            "https://user:password@files.example.com/",
+            "https://files.example.com/prefix",
+            "https://files.example.com/?token=value",
+            "https://files.example.com/#fragment",
+            "https://*.example.com/",
+        ] {
+            let error = Settings::from_lookup(lookup(&[("PRINTABLE_DOWNLOAD_BASE_URL", value)]))
+                .unwrap_err();
+            assert_eq!(error, SettingsError::DownloadBaseInvalid);
+            assert!(!error.to_string().contains(value));
         }
     }
 

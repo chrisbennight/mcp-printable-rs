@@ -64,6 +64,7 @@ fn test_settings(blender_port: u16) -> Settings {
         mcp_bearer: BearerSecret::parse(TEST_MCP_BEARER.to_string()).expect("test bearer is valid"),
         allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
         allowed_origins: Vec::new(),
+        download_base_url: None,
     }
 }
 
@@ -706,12 +707,22 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
 
 #[tokio::test]
 async fn published_artifacts_stream_as_immutable_raw_bytes_with_one_use_authority() {
+    exercise_file_handoff(None).await;
+}
+
+#[tokio::test]
+async fn configured_https_downloads_preserve_proxy_prefix_and_one_use_authority() {
+    exercise_file_handoff(Some("https://downloads.example.test/printable/")).await;
+}
+
+async fn exercise_file_handoff(download_base: Option<&str>) {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use sha2::{Digest as _, Sha256};
 
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let mut settings = test_settings(closed_blender_port().await);
     settings.workspace_root = Some(workspace.path().to_path_buf());
+    settings.download_base_url = download_base.map(|base| reqwest::Url::parse(base).unwrap());
     let server = start_with_settings(settings).await;
     let http = reqwest::Client::new();
     let mcp = format!("{}/mcp", server.base);
@@ -860,12 +871,20 @@ async fn published_artifacts_stream_as_immutable_raw_bytes_with_one_use_authorit
         let download_url = authorization["download"]["url"]
             .as_str()
             .expect("download URL");
+        let expected_base = download_base
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{}/", server.base));
+        let route = download_url
+            .strip_prefix(&expected_base)
+            .expect("configured URL base and prefix");
+        assert!(route.starts_with("file-transfers/download/"));
+        let upstream_url = format!("{}/{route}", server.base);
         let bearer = authorization["download"]["headers"]["Authorization"]
             .as_str()
             .expect("download bearer");
 
         let response = http
-            .get(download_url)
+            .get(&upstream_url)
             .header(reqwest::header::AUTHORIZATION, bearer)
             .send()
             .await
@@ -884,7 +903,7 @@ async fn published_artifacts_stream_as_immutable_raw_bytes_with_one_use_authorit
         );
 
         let replay = http
-            .get(download_url)
+            .get(&upstream_url)
             .header(reqwest::header::AUTHORIZATION, bearer)
             .send()
             .await
