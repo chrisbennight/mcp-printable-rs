@@ -121,6 +121,7 @@ macro_rules! workflow {
 
 workflow!(InspectRequest {
     Scene(SceneInfoParams) => "printable_scene_get",
+    Dependencies(ProjectDependenciesParams) => "printable_project_dependencies",
     Object(ObjectInfoParams) => "printable_object_get",
     NodeTree(NodeTreeInfoParams) => "printable_node_tree_get",
     EditingState(EditingStateParams) => "printable_editing_state_get",
@@ -246,10 +247,12 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
         "artifact" => de::<ArtifactRequest>(arguments)?.resolve(),
-        "project" => ResolvedCall::new(
-            "printable_project",
-            de::<crate::projects::ProjectRequest>(arguments)?,
-        ),
+        "project" => match de::<crate::projects::ProjectRequest>(arguments)? {
+            crate::projects::ProjectRequest::ExportBlender(params) => {
+                ResolvedCall::new("printable_project_export_blender", params)
+            }
+            request => ResolvedCall::new("printable_project", request),
+        },
         "printer" => ResolvedCall::new(
             "printable_printer",
             de::<crate::printers::PrinterRequest>(arguments)?,
@@ -393,7 +396,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create and discover durable projects, list their shared files, and resolve project-relative artifact paths for existing backend tools. Each request identifies its project. This does not switch the live Blender scene.",
+        description: "Create/discover projects, resolve shared paths, export selected files, or export_blender with explicitly selected inputs and a saved entrypoint. Native export packs supported dependencies in an isolated child and retains original sources, engine/units metadata and hashes in a new ZIP. Unsupported dependencies fail explicitly; scripts are not inspected. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

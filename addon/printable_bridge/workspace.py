@@ -15,7 +15,7 @@ from typing import Iterator
 MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 RESERVED_WORKSPACE_ROOT = ".printable"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
 class WorkspaceError(ValueError):
@@ -81,6 +81,16 @@ class StagedOutput:
         self.committed = False
         self.committed_identity = None
 
+    def commit_new(self, *, check_budget=lambda: None) -> None:
+        """Publish only if the destination is still absent at the atomic write."""
+        if self.committed:
+            raise WorkspaceError("staged output was already committed")
+        self.committed_identity = self.workspace._commit_output(
+            self.path, self.parent_fd, self.leaf,
+            rollback_on_failure=False, create_only=True, check_budget=check_budget,
+        )
+        self.committed = True
+
 
 class SecureWorkspace:
     def __init__(self, root: Path, staging_root: Path):
@@ -141,7 +151,7 @@ class SecureWorkspace:
         )
 
     @contextmanager
-    def stage_input(self, request: WorkspacePath) -> Iterator[Path]:
+    def stage_input(self, request: WorkspacePath, *, check_budget=lambda: None) -> Iterator[Path]:
         with self._open_parent(request.parts, create=False) as (parent_fd, leaf):
             try:
                 source_fd = os.open(leaf, FILE_READ_FLAGS, dir_fd=parent_fd)
@@ -156,9 +166,10 @@ class SecureWorkspace:
                     with os.fdopen(os.dup(source_fd), "rb") as source, stage_path.open(
                         "wb"
                     ) as destination:
-                        self._copy_limited(source, destination)
+                        self._copy_limited(source, destination, check_budget=check_budget)
                         destination.flush()
                         os.fsync(destination.fileno())
+                        check_budget()
                     after = os.fstat(source_fd)
                     if self._changed_during_copy(before, after):
                         raise WorkspaceError("input artifact changed while being staged")
@@ -167,6 +178,22 @@ class SecureWorkspace:
                     self._remove_stage(stage_path)
             finally:
                 os.close(source_fd)
+
+    def input_identity(self, request: WorkspacePath) -> tuple[int, int, int, int, int]:
+        """Observe a confined regular input for later source-change checks."""
+        with self._open_parent(request.parts, create=False) as (parent_fd, leaf):
+            try:
+                descriptor = os.open(leaf, FILE_READ_FLAGS, dir_fd=parent_fd)
+            except OSError as error:
+                raise WorkspaceError("input artifact is unavailable or unsafe") from error
+            try:
+                current = os.fstat(descriptor)
+                if not stat.S_ISREG(current.st_mode):
+                    raise WorkspaceError("input artifact must be a regular file")
+                return (current.st_dev, current.st_ino, current.st_size,
+                        current.st_mtime_ns, current.st_ctime_ns)
+            finally:
+                os.close(descriptor)
 
     @contextmanager
     def stage_output(self, request: WorkspacePath) -> Iterator[StagedOutput]:
@@ -193,24 +220,16 @@ class SecureWorkspace:
             raise WorkspaceError(
                 "artifact batch requires new uncommitted workspace outputs"
             )
-        committed: list[StagedOutput] = []
         try:
             for output in outputs:
-                output.commit()
-                committed.append(output)
-        except Exception:
-            rollback_error: Exception | None = None
-            for output in reversed(committed):
-                try:
-                    output.rollback()
-                except Exception as error:
-                    if rollback_error is None:
-                        rollback_error = error
-            if rollback_error is not None:
-                raise WorkspaceError(
-                    "artifact batch commit and rollback both failed"
-                ) from rollback_error
-            raise
+                output.commit_new()
+        except (WorkspaceError, OSError) as error:
+            # A pathname cannot be conditionally unlinked by inode. Retain published
+            # files rather than risk deleting another writer's replacement.
+            raise WorkspaceError(
+                f"artifact batch publication failed: {error}; earlier outputs may remain; "
+                "inspect requested paths before retrying"
+            ) from error
 
     @contextmanager
     def _open_parent(
@@ -279,6 +298,8 @@ class SecureWorkspace:
         leaf: str,
         *,
         rollback_on_failure: bool,
+        create_only: bool = False,
+        check_budget=lambda: None,
     ) -> tuple[int, int]:
         try:
             source_fd = os.open(stage_path, FILE_READ_FLAGS)
@@ -307,20 +328,30 @@ class SecureWorkspace:
                 with os.fdopen(os.dup(source_fd), "rb") as source, os.fdopen(
                     destination_fd, "wb", closefd=False
                 ) as destination:
-                    self._copy_limited(source, destination)
+                    self._copy_limited(source, destination, check_budget=check_budget)
                     destination.flush()
                     os.fsync(destination.fileno())
+                    check_budget()
                 prepared = os.fstat(destination_fd)
                 prepared_identity = (prepared.st_dev, prepared.st_ino)
                 os.close(destination_fd)
                 destination_fd = None
-                os.replace(
-                    temporary,
-                    leaf,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                committed_identity = prepared_identity
+                if create_only:
+                    try:
+                        os.link(temporary, leaf, src_dir_fd=parent_fd,
+                                dst_dir_fd=parent_fd, follow_symlinks=False)
+                    except FileExistsError as error:
+                        raise WorkspaceError("output artifact already exists") from error
+                    committed_identity = prepared_identity
+                    os.unlink(temporary, dir_fd=parent_fd)
+                else:
+                    os.replace(
+                        temporary,
+                        leaf,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                    committed_identity = prepared_identity
                 committed = os.stat(
                     leaf, dir_fd=parent_fd, follow_symlinks=False
                 )
@@ -353,6 +384,10 @@ class SecureWorkspace:
                     raise WorkspaceError(
                         "artifact commit and destination rollback both failed"
                     ) from rollback_error
+                if create_only and committed_identity is not None:
+                    raise WorkspaceError(
+                        "artifact publication outcome is uncertain; inspect requested path before retrying"
+                    )
                 raise
         finally:
             os.close(source_fd)
@@ -382,9 +417,10 @@ class SecureWorkspace:
             ) from error
 
     @staticmethod
-    def _copy_limited(source: object, destination: object) -> None:
+    def _copy_limited(source: object, destination: object, *, check_budget=lambda: None) -> None:
         copied = 0
         while True:
+            check_budget()
             chunk = source.read(1024 * 1024)
             if not chunk:
                 return

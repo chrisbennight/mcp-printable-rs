@@ -807,7 +807,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
             self.assertFalse((outside / "artifact.stl").exists())
             workspace.close()
 
-    def test_batch_commit_rolls_back_prior_outputs_when_a_later_commit_fails(
+    def test_batch_commit_retains_prior_outputs_when_a_later_commit_fails(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -826,6 +826,8 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                 leaf: str,
                 *,
                 rollback_on_failure: bool,
+                create_only: bool = False,
+                check_budget=lambda: None,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -836,6 +838,8 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                     parent_fd,
                     leaf,
                     rollback_on_failure=rollback_on_failure,
+                    create_only=create_only,
+                    check_budget=check_budget,
                 )
 
             with (
@@ -854,7 +858,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                 second.path.write_bytes(b"second")
                 workspace.commit_batch([first, second])
 
-            self.assertFalse((root / "batch" / "first.png").exists())
+            self.assertEqual((root / "batch" / "first.png").read_bytes(), b"first")
             self.assertFalse((root / "batch" / "second.png").exists())
             workspace.close()
 
@@ -1323,7 +1327,7 @@ class HandlerValidationTests(unittest.TestCase):
             )
             handlers.close()
 
-    def test_presented_view_batch_rolls_back_when_later_promotion_fails(
+    def test_presented_view_batch_retains_outputs_when_later_promotion_fails(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1361,6 +1365,8 @@ class HandlerValidationTests(unittest.TestCase):
                 leaf: str,
                 *,
                 rollback_on_failure: bool,
+                create_only: bool = False,
+                check_budget=lambda: None,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -1371,6 +1377,8 @@ class HandlerValidationTests(unittest.TestCase):
                     parent_fd,
                     leaf,
                     rollback_on_failure=rollback_on_failure,
+                    create_only=create_only,
+                    check_budget=check_budget,
                 )
 
             def render_to_stage(
@@ -1434,8 +1442,8 @@ class HandlerValidationTests(unittest.TestCase):
                     None,
                 )
 
-            self.assertFalse((root / "renders" / "first.png").exists())
-            self.assertFalse((root / "renders" / "second.png").exists())
+            self.assertEqual((handlers._config.workspace_root / "renders" / "first.png").read_bytes(), b"product-png")
+            self.assertFalse((handlers._config.workspace_root / "renders" / "second.png").exists())
             self.assertEqual(
                 list(handlers._workspace._staging_root.iterdir()), []
             )
@@ -4383,6 +4391,23 @@ class RuntimeShutdownTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_native_export_can_complete_after_the_ordinary_bridge_timeout(self) -> None:
+        export = parse_request({
+            "id": str(uuid.uuid4()), "command": "export_project_blender",
+            "params": {"project_id": "organic", "files": ["model.blend"],
+                       "entrypoint": "model.blend", "output_path": "export.zip",
+                       "timeout_seconds": 120},
+        })
+        item = WorkItem(request=export, deadline=30.0,
+                        run_budget_seconds=_request_budget_seconds(30.0, export))
+        self.assertTrue(item.start(now=1.0))
+        response = success(export.request_id, {"path": "projects/organic/export.zip"})
+        self.assertTrue(item.complete(response, now=100.0))
+        self.assertEqual(item.await_response(), response)
+        queued = WorkItem(request=export, deadline=30.0,
+                          run_budget_seconds=_request_budget_seconds(30.0, export))
+        self.assertFalse(queued.start(now=31.0))
+
     def test_caller_work_time_is_added_to_long_running_request_budgets(self) -> None:
         for params, expected in (({}, 35.0), ({"timeout_seconds": 30.0}, 35.0),
                                  ({"timeout_seconds": 120.0}, 125.0)):

@@ -4,7 +4,7 @@
 pub const ALLOWED_ARTIFACT_SUFFIXES: &[&str] = &[
     ".3mf", ".blend", ".bmp", ".dxf", ".gcode", ".glb", ".gltf", ".jpeg", ".jpg", ".json", ".mp4",
     ".obj", ".off", ".ply", ".png", ".py", ".scad", ".step", ".stl", ".stp", ".svg", ".tif",
-    ".tiff", ".webp",
+    ".tiff", ".webp", ".zip",
 ];
 
 /// Stable media type per allowed suffix. The explicit table prevents host MIME
@@ -27,6 +27,7 @@ pub fn media_type_for(suffix: &str) -> &'static str {
         ".svg" => "image/svg+xml",
         ".tif" | ".tiff" => "image/tiff",
         ".webp" => "image/webp",
+        ".zip" => "application/zip",
         _ => "application/octet-stream",
     }
 }

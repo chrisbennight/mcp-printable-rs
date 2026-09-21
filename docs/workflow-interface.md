@@ -37,7 +37,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | Tool | Actions or direct parameters |
 | --- | --- |
 | `status` | Optional direct `detail` (default false) |
-| `inspect` | `scene`, `object`, `node_tree`, `editing_state` |
+| `inspect` | `scene`, `object`, `node_tree`, `editing_state`, `dependencies` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
@@ -50,7 +50,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files`, `export_blender` |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
@@ -204,5 +204,93 @@ result limit is reached; get/resolve remain available by identifier.
 Project metadata is server-owned under `.printable/projects`. Existing files
 outside projects remain available. Projects organize shared storage; they do not
 isolate scripts that can access the shared volume. Creating or resolving a
-project does not select or replace Blender's live scene. CAD builds use the
-project files through `cad_build`; scene binding is separate delivery work.
+project does not select or replace Blender's live scene. Scene binding and
+CadQuery modeling use their separate workflow actions.
+
+### Selected file bundles
+
+Before collecting a Blender project, `inspect.dependencies` accepts `project_id`,
+the latest `expected_scene`, and optional `offset`/`limit`. It inspects the bound
+scene without changing it. Follow `next_offset` with the same scene observation.
+The result includes Blender version, scene unit settings and registered external
+file references. References within the project have a `project_path` and
+`state: "requires_snapshot"`; other references are marked `external` without
+returning their absolute paths. Existence, safe containment through symlinks,
+and packed contents are not inferred from this metadata.
+
+The inventory uses [Blender's native file-reference list](https://docs.blender.org/api/current/bpy.utils.html#bpy.utils.blend_paths),
+including linked libraries and excluding packed data. It does not inspect
+arbitrary script, driver, add-on or network dependencies. Sequences and caches
+can require further native preparation. These limitations remain in the result;
+an empty list is not a general portability certificate.
+
+`project.export_files` takes `project_id`, an explicit `files` array of
+project-relative paths, and a new `.zip` `output_path` in the same project.
+It preserves the selected hierarchy under `files/` and writes `manifest.json`
+with paths, sizes, media types, and SHA-256 hashes. Sources are copied into
+confined snapshots and checked for changes before the archive is assembled.
+An existing output is never overwritten. The selection is limited to 256 files
+and 1 GiB total source bytes; bytes are streamed rather than buffered in chat.
+
+This action exports exactly the selected files, not a verified portable native
+project. Its manifest reports `scope: "selected_files"` and
+`dependencies_inspected: false`. It does not discover or pack Blender external
+libraries, textures, caches, OpenSCAD imports, or CAD dependencies. Include the
+necessary sources, inputs and settings deliberately; native dependency packing
+requires a separate verified preparation step.
+
+Hidden paths, common credential filenames, traversal, symlinks, duplicate
+selections and the output itself are rejected. Nothing is collected from other
+projects, server metadata, or environment configuration. File contents are not
+a secret-detection boundary: do not select files containing credentials, private
+service configuration, or transient transfer grants for delivery.
+
+Use the returned artifact path with `artifact.publish` for existing governed
+download or service-to-service delivery. Export does not render again, sign S3
+URLs, embed credentials, or initiate printing.
+
+### Native Blender bundles
+
+`project.export_blender` takes `project_id`, explicitly selected project-relative
+`files`, a selected `.blend` `entrypoint`, a new `.zip` `output_path`, and
+`timeout_seconds` from 1 to 120. Save the intended scene first: this operation
+reads project files, not unsaved live changes, and never switches the live scene.
+The work budget is checked during source copying, hashing and publication;
+an individual filesystem operation can delay cancellation. Export does not arm
+the live Blender process watchdog, so its deadline does not restart the live scene.
+
+The bundle retains the exact source hierarchy under `sources/` and a prepared,
+editable entrypoint under `prepared/`. Its `manifest.json` records each retained
+file's size and SHA-256, Blender version, unit settings, library count, and
+dependency limitations. Follow the manifest's `entrypoint` when reopening.
+Original source files remain unchanged. The selection is limited to 256 files;
+both input staging and the final ZIP have a 1 GiB limit. Keeping originals and
+packed data can therefore exceed the output budget even when the inputs fit.
+The isolated child's request metadata is limited to 64 KiB, including selected
+path names; large path lists can reach that limit before the file-count limit.
+
+Preparation runs in a disposable Blender child with script autoexecution
+disabled, fixed argv arguments, CPU/address-space limits, cancellation, and a
+deadline. It packs supported assets and linked libraries in dependency order,
+resolving selected absolute and relative references to their staged copies.
+Cycles, missing or unselected dependencies, image sequences, tiled images and
+remaining unsupported external data fail without publishing a partial bundle.
+Arbitrary script, driver, add-on, and network dependencies are not inspected;
+zero registered external references is not a claim that these can run elsewhere.
+The child uses the existing Blender container boundary, not a new Python or
+filesystem sandbox. Keep credentials and unrelated mounts out of that container.
+
+Source identity checks complete before publication. A create-only atomic commit
+rejects both an existing destination and one created during preparation. If a
+transport timeout leaves the outcome unknown, inspect the requested output
+before retrying. Reuse the returned artifact through `artifact.publish` and the
+existing delivery service; export does not upload, sign URLs, or print.
+
+### Publication failures
+
+New artifacts are published without replacing existing destinations. A batch
+is not a filesystem transaction: if a later destination conflicts or a write
+fails, earlier outputs can remain. Errors report this partial or uncertain
+outcome. Inspect the requested paths before retrying, and use new paths where
+needed. Published paths are not deleted during batch rollback because another
+writer can replace them between an identity check and deletion.

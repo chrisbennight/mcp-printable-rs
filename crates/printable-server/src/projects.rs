@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 
 use crate::error::ToolError;
 
+mod export;
+pub use export::NativeExportParams;
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CreateParams {
@@ -66,6 +69,8 @@ pub enum ProjectRequest {
     List(ListParams),
     Resolve(PathParams),
     Files(FilesParams),
+    ExportFiles(export::ExportFilesParams),
+    ExportBlender(NativeExportParams),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -181,6 +186,12 @@ fn existing_project(
 
 pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value, ToolError> {
     match request {
+        ProjectRequest::ExportBlender(_) => Err(ToolError::Validation(
+            "native export requires the Blender command dispatcher".into(),
+        )),
+        ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(
+            workspace, params,
+        )?)?),
         ProjectRequest::Create(params) => Ok(serde_json::to_value(create(workspace, params)?)?),
         ProjectRequest::Get(params) => {
             Ok(serde_json::to_value(get(workspace, &params.project_id)?)?)

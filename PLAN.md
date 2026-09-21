@@ -514,7 +514,9 @@ Exercise representative assemblies, high-resolution galleries, OptiX scenes,
 frame sequences, concurrent clients, restarts, Blender crashes, full queues,
 workspace pressure, GPU contention, and GPU OOM. Record cold/warm render times,
 peak RAM/VRAM, output size, and recovery results. Fix demonstrated defects and
-keep failures bounded, actionable, and free of partially promoted artifacts.
+keep failures bounded and actionable. Rendering and cleanup failures occur before
+publication; filesystem failures during batch publication may retain earlier
+outputs and must report the partial outcome without deleting concurrent writes.
 
 Exit: all product acceptance criteria below pass through the real gateway.
 

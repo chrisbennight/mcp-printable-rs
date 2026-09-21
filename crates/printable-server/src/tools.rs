@@ -272,6 +272,20 @@ struct SceneInfoParams {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectDependenciesParams {
+    project_id: String,
+    /// Require the observed scene identity for stable dependency pagination.
+    expected_scene: SceneExpectation,
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 1000000))]
+    offset: u32,
+    #[serde(default = "default_inspection_limit")]
+    #[schemars(range(min = 1, max = 100))]
+    limit: u16,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum ObjectSection {
     Summary,
@@ -1520,6 +1534,18 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_project_dependencies",
+        description: "Inspect registered external file dependencies of the bound Blender project, with engine and units metadata. Bounded pages omit absolute external paths. This is an inventory, not a portability or packed-content guarantee.",
+        schema: schema_of::<ProjectDependenciesParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "printable_project_export_blender",
+        description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using a bounded isolated child without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
+        schema: schema_of::<crate::projects::NativeExportParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_object_get",
         description: "Inspect one Blender object: summary transforms/mesh counts, or bounded materials, modifiers, and hierarchy sections. Follow each section's next_offset for more details.",
         schema: schema_of::<ObjectInfoParams>,
@@ -1635,7 +1661,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_render_gallery",
-        description: "Render selected model views in one caller-budgeted Blender operation and create a labeled gallery PNG plus individual confined artifacts. An optional product presentation applies the same engineering, studio-neutral, or studio-dark profile, material, shading, cleanup, and source-verification contract as printable_render_product; omission preserves the legacy orthographic review output. No view is promoted unless the complete batch succeeds. The composite can be returned inline up to 1 MiB.",
+        description: "Render selected model views in one caller-budgeted Blender operation and create a labeled gallery PNG plus individual confined artifacts. An optional product presentation applies the same engineering, studio-neutral, or studio-dark profile, material, shading, cleanup, and source-verification contract as printable_render_product; omission preserves the legacy orthographic review output. Publication starts after all views render and scene cleanup succeeds; a publication failure can leave earlier outputs, so inspect requested paths before retrying. The composite can be returned inline up to 1 MiB.",
         schema: schema_of::<RenderGalleryParams>,
         annotations: write_annotations,
     },
@@ -1920,6 +1946,30 @@ async fn dispatch_value(
             let p: SceneInfoParams = de(args)?;
             validate_scene_page(&p)?;
             blender_command(blender, "get_scene_info", &p).await
+        }
+        "printable_project_dependencies" => {
+            let p: ProjectDependenciesParams = de(args)?;
+            validate_inspection_page(p.offset, p.limit)?;
+            crate::projects::get(workspace, &p.project_id)?;
+            blender_command(blender, "get_project_dependencies", &p).await
+        }
+        "printable_project_export_blender" => {
+            let p: crate::projects::NativeExportParams = de(args)?;
+            let path = p.validate(workspace)?;
+            let result =
+                blender_project_command(blender, "export_project_blender", &p, p.timeout_seconds)
+                    .await?;
+            if result["path"].as_str() != Some(&path)
+                || result["project_id"].as_str() != Some(&p.project_id)
+            {
+                return Err(ToolError::Validation(
+                    "native export returned an inconsistent project artifact".into(),
+                ));
+            }
+            let artifact = workspace.stat_artifact(&path)?;
+            Ok(
+                json!({"artifact": artifact, "sha256": result["sha256"], "manifest": result["manifest"]}),
+            )
         }
         "printable_object_get" => {
             let p: ObjectInfoParams = de(args)?;
@@ -5097,7 +5147,7 @@ fn validate_scad_svg(bytes: &[u8]) -> Result<(), ToolError> {
             }
             XmlEvent::CData(_) if depth == 0 => return Err(invalid_scad_svg()),
             XmlEvent::GeneralRef(reference) => {
-                let reference = reference.as_ref();
+                let reference: &[u8] = reference.as_ref();
                 if depth == 0 || !matches!(reference, b"amp" | b"lt" | b"gt" | b"apos" | b"quot") {
                     return Err(invalid_scad_svg());
                 }

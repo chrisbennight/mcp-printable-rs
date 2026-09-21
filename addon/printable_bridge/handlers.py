@@ -15,6 +15,9 @@ from .native_view import DEFAULT_CAPTURE_TIMEOUT_SECONDS, NativeViewError, captu
 from .state import SceneState
 from .editor_context import EditorContextError, context_summary, editing_state, execution_context
 from .inspection import InspectionError, node_tree_info, object_details, page_arguments
+from .project_dependencies import inspect_dependencies
+from .project_bundle import export_blender_bundle
+from .project_packing import ProjectPackingError
 from .execution import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_OUTPUT_BYTES,
@@ -384,6 +387,8 @@ class BlenderHandlers:
             "get_node_tree_info": self._get_node_tree_info,
             "get_editing_state": self._get_editing_state,
             "get_scene_info": self._get_scene_info,
+            "get_project_dependencies": self._get_project_dependencies,
+            "export_project_blender": self._export_project_blender,
             "capture_native_view": self._capture_native_view,
             "import_stl": self._import_stl,
             "open_project": self._open_project,
@@ -587,6 +592,31 @@ class BlenderHandlers:
             "objects": objects,
         }
 
+    def _get_project_dependencies(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"project_id", "offset", "limit"})
+        project = _string(params, "project_id")
+        if project != self._scene_state.snapshot.get("project_id"):
+            raise HandlerError("dependency inspection requires the bound project scene")
+        try:
+            return inspect_dependencies(self._bpy, self._config.workspace_root, project, params)
+        except InspectionError as error:
+            raise HandlerError(str(error)) from error
+
+    def _export_project_blender(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"project_id", "files", "entrypoint", "output_path", "timeout_seconds"})
+        timeout = params.get("timeout_seconds")
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or not 1 <= timeout <= 120):
+            raise HandlerError("native export timeout must be between 1 and 120 seconds")
+        try:
+            return export_blender_bundle(
+                self._workspace, self._config.workspace_root, self._bpy.app.binary_path,
+                project_id=_string(params, "project_id"), files=params.get("files"),
+                entrypoint=_string(params, "entrypoint"), output_path=_string(params, "output_path"),
+                timeout_seconds=timeout, cancelled=self._shutdown_requested,
+            )
+        except ProjectPackingError as error:
+            raise HandlerError(str(error)) from error
     def _get_object_info(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"name", "section", "offset", "limit"})
         name = _string(params, "name")

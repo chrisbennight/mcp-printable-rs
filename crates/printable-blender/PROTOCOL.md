@@ -192,11 +192,17 @@ sample metadata. The same response includes evaluated world-space bounds used
 by dimensioned review workflows.
 When `presentation` is omitted, this behavior and response remain unchanged.
 When it is present, the batch uses the same typed profiles, evaluated-geometry
-copying, material precedence, application-handler isolation, cleanup checks,
-and all-or-nothing promotion as `render_product`; each direction becomes the
+copying, material precedence, application-handler isolation, and cleanup checks
+as `render_product`; each direction becomes the
 profile camera view and the response reports the effective presentation for
 every image. Grounded profiles reject below-ground directions before scene
 mutation.
+
+Publication starts only after every view renders and scene cleanup succeeds.
+Each presented view uses create-only atomic publication. A filesystem failure
+or destination conflict during publication can leave earlier views in place;
+the error reports the partial outcome. Inspect the requested paths before a
+retry. Published paths are not removed because another writer may replace them.
 
 Durable jobs use `job_save_checkpoint`, `job_restore_checkpoint`,
 `job_render_still`, `job_render_frame`, `job_render_views`,
