@@ -524,6 +524,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "validate_mesh",
             "analyze_assembly",
             "job",
+            "project",
             "artifact",
         ]),
         "tool catalog: {result}"
