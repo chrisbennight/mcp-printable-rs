@@ -5,11 +5,12 @@ installation candidate and the matching Blender source. Both images used
 software graphics for this test. This is recovery evidence, not NVIDIA release
 qualification or a trial by someone unfamiliar with the project.
 
-Run the same checks against a server image and Blender image built from the
-same checkout:
+The current test also covers CAD and slicing. Run it against all component
+images built from the same checkout; the dated result above predates those
+additional checks:
 
 ```sh
-python3 scripts/test-installation.py SERVER_IMAGE BLENDER_IMAGE --recovery
+python3 scripts/test-installation.py SERVER_IMAGE BLENDER_IMAGE --cad-image CAD_IMAGE --slicer-image SLICER_IMAGE --recovery
 ```
 
 The test creates a unique Compose project and dedicated disposable volumes. It

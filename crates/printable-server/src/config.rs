@@ -67,6 +67,8 @@ pub struct Settings {
     pub openscad_bin: Option<PathBuf>,
     /// Dedicated credential-free CAD worker on the private backend network.
     pub cad_endpoint: Option<String>,
+    /// Credential-free native slicer worker on the private backend network.
+    pub slicer_endpoint: Option<String>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
     /// FFmpeg binary used to encode durable animation frame sequences.
@@ -175,6 +177,7 @@ impl Settings {
             blender_workspace_root: blender_workspace_root.map(PathBuf::from),
             openscad_bin: nonempty(&get, "OPENSCAD_BIN").map(PathBuf::from),
             cad_endpoint: nonempty(&get, "PRINTABLE_CAD_ENDPOINT"),
+            slicer_endpoint: nonempty(&get, "PRINTABLE_SLICER_ENDPOINT"),
             scad_concurrency: scad_concurrency(&get)?,
             ffmpeg_bin: nonempty(&get, "FFMPEG_BIN")
                 .map(PathBuf::from)

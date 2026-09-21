@@ -17,5 +17,6 @@ pub mod mcp;
 pub mod projects;
 pub mod resources;
 pub mod server;
+pub mod slicing;
 pub mod tools;
 pub mod upload;

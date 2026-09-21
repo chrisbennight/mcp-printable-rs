@@ -38,7 +38,8 @@ Never put a credential-bearing URL into a build argument.
 
 Images default to `ghcr.io/chrisbennight/mcp-printable-rs`,
 `ghcr.io/chrisbennight/mcp-printable-blender`,
-`ghcr.io/chrisbennight/mcp-printable-cad`, and
+`ghcr.io/chrisbennight/mcp-printable-cad`,
+`ghcr.io/chrisbennight/mcp-printable-slicer`, and
 `ghcr.io/chrisbennight/mcp-printable-release`. The workflow derives the namespace
 from the repository owner. GitHub documents that newly published container
 packages are private by default; an existing public package remains a separate
@@ -48,22 +49,26 @@ first dispatch. See [GitHub's container registry guidance](https://docs.github.c
 ## Qualification and consumption
 
 The publisher runs source tests before publishing commit-scoped server,
-Blender, and CAD images, obtains their registry digests, and inspects the immutable
+Blender, CAD, and slicer images, obtains their registry digests, and inspects the immutable
 images for the expected source revision, role, architecture, runtime settings,
 and embedded credentials. The existing vulnerability policy rejects applicable
 fixed high/critical vulnerabilities and known-exploited vulnerabilities.
 Container and paired-render tests run against those digests. The CAD worker
 also runs native geometry, STEP import, and export tests in a restricted
-container based on its exact digest. NVIDIA tests
+container based on its exact digest. The slicer runs native preparation, toolpath
+review and restart recovery against its packaged Orca release. The installation
+test also verifies CAD-to-slice requests and downloaded hashes through public MCP;
+packaged first-party and font notices are checked. NVIDIA tests
 require EGL, Eevee, OptiX/Cycles activity, a visible failure without the required
 GPU, and continued presence of the existing GPU workload on the selected device.
 
 Only after those checks pass does the script publish a record identifying the
 compatible image set, including the CAD image and digest in
-`org.printable.cad.image` and `org.printable.cad.digest`. The existing server
+`org.printable.cad.image` and `org.printable.cad.digest`, and the slicer in
+`org.printable.slicer.image` and `org.printable.slicer.digest`. The existing server
 and Blender labels remain unchanged. A failed qualification can leave candidate
 images in the registry; their existence is not release approval. Consume the
-verified server, Blender, and CAD digest references together. Keep the previous set and a
+verified server, Blender, CAD, and slicer digest references together. Keep the previous set and a
 workspace backup for rollback; image rollback does not reverse saved data.
 There is no mutable production channel or automatic deployment in this flow.
 

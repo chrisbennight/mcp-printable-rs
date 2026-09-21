@@ -13,6 +13,9 @@ pub enum ToolError {
     /// The arguments failed to deserialize into the tool's typed parameters.
     #[error("invalid arguments: {0}")]
     Validation(String),
+    /// Native slice preparation, lifecycle or toolpath review failed.
+    #[error("{0}")]
+    Slice(String),
     /// `data_base64` was not valid base64.
     #[error("data_base64 is not valid base64")]
     InvalidBase64,
@@ -69,6 +72,7 @@ impl ToolError {
         match self {
             ToolError::Cad(_) => "cad_build",
             ToolError::Validation(_) => "validation",
+            ToolError::Slice(_) => "slice",
             ToolError::InvalidBase64 => "invalid_base64",
             ToolError::PayloadTooLarge(_) => "payload_too_large",
             ToolError::UploadNotFound => "upload_not_found",

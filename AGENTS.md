@@ -68,7 +68,7 @@ findings have dispositions. Maintainer automation uses AERB when available;
 contributors do not need access to that private review service. Automated
 review does not replace human responsibility for the change.
 
-Server, Blender, and CAD images form a matching set identified by immutable digests and source revision.
+Server, Blender, CAD, and slicer images form a matching set identified by immutable digests and source revision.
 Do not promote software-rendered test results as NVIDIA qualification. Keep
 pull requests off persistent GPU runners and away from release credentials.
 Do not couple the general installation to a private registry, secret provider,

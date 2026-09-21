@@ -156,14 +156,14 @@ class PackageIndexRoutingTests(unittest.TestCase):
         self.assertEqual(refused_calls, [])
 
     def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
-        """Root-image builds compile Rust, including the native CAD worker.
+        """Root-image builds compile Rust, including CAD and slicer workers.
 
-        Blender, the CAD test overlay, and the release record do not resolve
+        Blender, the native test overlays, and the release record do not resolve
         crates and must not receive the Rust index setting.
         """
         commands = [line.strip() for line in self.script.replace("\\\n", " ").splitlines()
                     if line.strip().startswith(("docker build ", "docker buildx build "))]
-        self.assertEqual(len(commands), 7)
+        self.assertEqual(len(commands), 9)
         for command in commands:
             with self.subTest(command=command):
                 self.assertEqual('"${index_build_args[@]}"' in command,

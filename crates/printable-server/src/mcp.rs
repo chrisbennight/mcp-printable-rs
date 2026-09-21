@@ -186,6 +186,24 @@ impl PrintableServer {
             });
         }
 
+        if operation == "printable_slice" {
+            let result = match serde_json::from_value(args) {
+                Ok(request) => {
+                    crate::slicing::forward(self.settings.slicer_endpoint.as_deref(), request).await
+                }
+                Err(error) => Err(ToolError::Validation(error.to_string())),
+            };
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
+
         if operation == "printable_project" {
             let workspace = Arc::clone(&self.workspace);
             let result = tokio::task::spawn_blocking(move || {

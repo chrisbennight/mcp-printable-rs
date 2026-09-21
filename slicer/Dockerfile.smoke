@@ -1,0 +1,6 @@
+ARG SLICER_IMAGE
+FROM ${SLICER_IMAGE}
+USER 0
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+COPY slicer/smoke.py /opt/printable/slicer-smoke.py
+USER 10001

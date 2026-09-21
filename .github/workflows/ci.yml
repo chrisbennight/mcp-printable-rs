@@ -140,12 +140,25 @@ jobs:
             --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
             --entrypoint /opt/cad/bin/python printable-cad-smoke:ci \
             /opt/printable/cad/smoke.py --worker
+      - name: Build and verify native slicing
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --target slicer-runtime --tag printable-slicer:ci .
+          docker buildx build --builder default --platform linux/amd64 --load \
+            --build-arg SLICER_IMAGE=printable-slicer:ci \
+            --file slicer/Dockerfile.smoke --tag printable-slicer-smoke:ci .
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
+            --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
+            --entrypoint /usr/bin/python3 printable-slicer-smoke:ci \
+            /opt/printable/slicer-smoke.py
       - name: Exercise the independent installation and direct client
-        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --recovery
+        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recovery
       - name: Check Blender capabilities and shutdown recovery
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Verify packaged license notices
-        run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci
+        run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci
       - name: Exercise native views, product workflows, and isolated render jobs
         env:
           PRINTABLE_PAIR_SMOKE_RUN_ID: github-${{ github.run_id }}-${{ github.run_attempt }}

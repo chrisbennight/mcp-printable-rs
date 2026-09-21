@@ -1,7 +1,7 @@
 # Workflow interface
 
 The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises fifteen workflow tools. Earlier prefixed
+The public server advertises the workflow tools listed below. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
 public tool calls. The release smoke exercises the combined workflows over MCP;
 deployment and gateway discovery must move together at cutover.
@@ -39,6 +39,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `scene` | `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
 | `cad_build` | `model`, `import_step` |
+| `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |
 | `compare_renders` | Existing direct image-comparison parameters |
@@ -77,6 +78,8 @@ the migration from temporary live-session rendering to a separate worker.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
+[Native slicing](slicing.md) converts project meshes or 3MF inputs into retained
+printer-ready packages and previews the actual generated toolpaths.
 
 Use `artifact` with `action: "stat"` to inspect one artifact without reading its
 contents, copying a snapshot, or enumerating a directory. Pass `params.path`
