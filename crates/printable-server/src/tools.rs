@@ -5245,6 +5245,19 @@ fn scad_definition_metadata(definitions: &printable_scad::SerializedDefinitions)
     })
 }
 
+fn bind_scad_variant(
+    source: String,
+    definitions: &printable_scad::SerializedDefinitions,
+) -> String {
+    // OpenSCAD's -D override needs a source binding for indirect references.
+    // Values stay in typed argv entries; only a fixed declaration is added.
+    if definitions.variant_applied() {
+        format!("pbl_variant = undef;\n{source}")
+    } else {
+        source
+    }
+}
+
 fn insert_design_profile(result: &mut Value, profile: Option<&ProductDesignProfile>) {
     if let Some(profile) = profile {
         result["design_profile"] =
@@ -5297,10 +5310,11 @@ async fn scad_compile(
         density_g_cm3: None,
     };
     let definition_metadata = scad_definition_metadata(&definitions);
+    let source = bind_scad_variant(params.source, &definitions);
     let (permit, job) = prepare_scad_job(
         Arc::clone(&workspace),
         runner,
-        params.source,
+        source,
         ".stl",
         None,
         false,
@@ -5359,10 +5373,11 @@ async fn scad_render(
         product_profile.as_ref(),
     )?;
     let definition_metadata = scad_definition_metadata(&definitions);
+    let source = bind_scad_variant(params.source, &definitions);
     let (permit, job) = prepare_scad_job(
         Arc::clone(&workspace),
         runner,
-        params.source,
+        source,
         ".png",
         None,
         false,
@@ -5431,10 +5446,11 @@ async fn scad_cross_section(
     )?;
     let definition_metadata = scad_definition_metadata(&definitions);
     let materialize_cross_section = !definitions.argv().is_empty();
+    let source = bind_scad_variant(params.source, &definitions);
     let (permit, job) = prepare_scad_job(
         Arc::clone(&workspace),
         runner,
-        params.source,
+        source,
         ".svg",
         Some(params.z_mm),
         materialize_cross_section,

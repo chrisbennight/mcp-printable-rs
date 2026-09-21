@@ -181,6 +181,21 @@ before deciding whether to authorize another transfer. This conservative outcome
 also applies when a filesystem error occurred before publication. Successful
 receipts still return the original result without writing again.
 
+## OpenSCAD variants
+
+The `scad_build` actions `mesh`, `image`, and `section` accept a `variant`
+string exposed to source as `pbl_variant`. The server supplies a fixed binding
+when a variant is selected, so indirect expressions such as
+`part = is_undef(pbl_variant) ? "assembly" : pbl_variant;` use that selection
+without requiring a declaration in the caller's source. The selected value
+remains a typed `-D` argument. Omitting `variant` preserves source defaults.
+
+Existing source declarations still receive the selected override; OpenSCAD can
+report a duplicate-assignment warning, which remains in compiler diagnostics.
+`variant_applied` records selection, while the generated geometry and validation
+report establish what was built. Parameterized sections project the fully
+compiled model so the selected geometry is consistent with mesh output.
+
 ## Shared projects
 
 Use the `project` tool with `action: "create"` and `params` containing
