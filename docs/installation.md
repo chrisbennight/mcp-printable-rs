@@ -1,7 +1,8 @@
 # Install on a Linux NVIDIA host
 
 Printable runs an authenticated HTTP MCP server, a live Blender process with a
-private display, and a separate Blender render worker. This installation is for
+private display, a separate Blender render worker, and native CAD and slicer
+workers. This installation is for
 one trusted person or team. Everyone holding the bearer can modify the shared
 scene, read workspace files, and execute Python inside Blender. It is not a
 multi-tenant service or a Python sandbox.
@@ -13,7 +14,7 @@ Check `nvidia-smi` on the host before starting and qualify the intended GPU
 against the exact image set. NVIDIA remains required for this
 installation. Software graphics tests in CI do not establish GPU compatibility.
 
-The supplied container limits allow 10 GiB of RAM across the three application
+The supplied container limits allow 18 GiB of RAM across the five application
 services. Leave additional memory for the host and image builds. This is a
 configured budget, not a measured minimum. Workspace storage grows with saved
 models and render frames; Docker named volumes have no capacity limit here.
@@ -22,7 +23,7 @@ Provision a dedicated filesystem or host quota and monitor its free space.
 ## Build and configure
 
 Start from a clean checkout of an approved commit. Until a qualified image set
-is published, build the server, Blender, and CAD images from that same checkout:
+is published, build the server, Blender, CAD, and slicer images from that same checkout:
 
 ```sh
 git clone https://github.com/chrisbennight/mcp-printable-rs.git
@@ -33,18 +34,21 @@ revision=$(git rev-parse HEAD)
 docker build --build-arg SOURCE_REVISION="$revision" -t printable-server:local .
 docker build --build-arg SOURCE_REVISION="$revision" -f blender/Dockerfile -t printable-blender:local .
 docker build --build-arg SOURCE_REVISION="$revision" --target cad-runtime -t printable-cad:local .
+docker build --build-arg SOURCE_REVISION="$revision" --target slicer-runtime -t printable-slicer:local .
 python3 scripts/create-local-secret
 docker image inspect --format '{{.Id}}' printable-server:local
 docker image inspect --format '{{.Id}}' printable-blender:local
 docker image inspect --format '{{.Id}}' printable-cad:local
+docker image inspect --format '{{.Id}}' printable-slicer:local
 ```
 
-Create `.dev/compose.env` with the three image IDs printed above:
+Create `.dev/compose.env` with the four image IDs printed above:
 
 ```dotenv
 PRINTABLE_SERVER_IMAGE=sha256:REPLACE_WITH_SERVER_IMAGE_ID
 PRINTABLE_BLENDER_IMAGE=sha256:REPLACE_WITH_BLENDER_IMAGE_ID
 PRINTABLE_CAD_IMAGE=sha256:REPLACE_WITH_CAD_IMAGE_ID
+PRINTABLE_SLICER_IMAGE=sha256:REPLACE_WITH_SLICER_IMAGE_ID
 PRINTABLE_GPU_DEVICE=0
 PRINTABLE_PORT=8000
 ```

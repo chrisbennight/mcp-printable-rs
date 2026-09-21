@@ -94,6 +94,14 @@ class ImageContract:
 
 
 CONTRACTS = {
+    "slicer": ImageContract(
+        repository="mcp-printable-slicer",
+        role="slicer-worker",
+        user="10001",
+        healthcheck=["CMD", "/usr/local/bin/printable-slicer-worker", "--healthcheck"],
+        entrypoint=["/usr/bin/tini", "--", "/usr/local/bin/printable-slicer-worker"],
+        environment=("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",),
+    ),
     "cad": ImageContract(
         repository="mcp-printable-cad",
         role="cad-worker",
@@ -291,7 +299,7 @@ def inspect_image(image: str) -> tuple[dict[str, Any], list[str]]:
 def main() -> int:
     if len(sys.argv) != 4 or sys.argv[1] not in CONTRACTS:
         print(
-            "usage: verify_release_image.py <server|blender|cad> "
+            "usage: verify_release_image.py <server|blender|cad|slicer> "
             "<tag@sha256:digest> <source-revision>",
             file=sys.stderr,
         )

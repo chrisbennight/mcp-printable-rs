@@ -62,8 +62,8 @@ def validate(root):
             "publisher must not change mutable image channels")
     require(not re.search(r"\bdocker\s+(?:tag|push)\b", script),
             "publisher contains an unaudited tag or push")
-    require(len(re.findall(r"docker buildx build[^\n]*--push", script)) == 4,
-            "publisher must have only the server, Blender, CAD, and release-record publication paths")
+    require(len(re.findall(r"docker buildx build[^\n]*--push", script)) == 5,
+            "publisher must have only the server, Blender, CAD, slicer, and release-record publication paths")
     markers = [
         'cargo "${cargo_index_args[@]}" test',
         'server_commit_tag="${BASE}:sha-${short_sha}"',
@@ -71,10 +71,14 @@ def validate(root):
         'python3 scripts/verify_release_image.py server "$verified_server" "$revision"',
         'python3 scripts/verify_release_image.py blender "$verified_blender" "$revision"',
         'python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"',
-        'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad"',
+        'python3 scripts/verify_release_image.py slicer "$verified_slicer" "$revision"',
+        'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad" "$verified_slicer"',
+        '  /opt/printable/slicer-smoke.py',
         '  /opt/printable/cad/smoke.py --worker',
         'smoke "$verified_server" linux/amd64 8000',
         '  scripts/smoke-release-pair \\' ,
+        'python3 scripts/test-image-notices.py "$verified_server" "$verified_blender"',
+        'python3 scripts/test-installation.py "$verified_server" "$verified_blender"',
         '  scripts/smoke-blender-gpu "$verified_blender"',
         'pair_commit_tag="${RELEASE_BASE}:sha-${short_sha}"',
         'pair_ref="${pair_commit_tag}@${pair_digest}"',

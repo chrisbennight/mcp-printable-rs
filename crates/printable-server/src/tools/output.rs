@@ -67,6 +67,13 @@ fn selected_bundle() -> Value {
 
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
+        "slice" => json!({"type":"object","anyOf":[
+            {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
+            {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"}}},
+            {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
+            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]}}}
+        ]}),
+        "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(
             json!({
                 "server_version": {"type": "string"}, "transport": {"const": "streamable-http"},
@@ -76,7 +83,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "native_observation": {"type": "object"}
                 }, "required": ["available"]},
                 "openscad": {"type": "object"}, "workspace": {"type": "object"},
-                "render_jobs": {"type": "object"}
+                "render_jobs": {"type": "object"},
+                "printers": {"type": "object", "properties": {"configured": {"type": "boolean"}}, "required": ["configured"]}
             }),
             &[
                 "server_version",

@@ -1,7 +1,7 @@
 # Workflow interface
 
 The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises fifteen workflow tools. Earlier prefixed
+The public server advertises the workflow tools listed below. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
 public tool calls. The release smoke exercises the combined workflows over MCP;
 deployment and gateway discovery must move together at cutover.
@@ -19,9 +19,13 @@ or `printable://contracts/{tool}` for a direct-parameter tool. For example,
 `printable://contracts/view/section` describes cutaway requests without loading
 native viewport, dimensions, or overhang parameters. Input schemas are derived
 from the advertised tool schemas and include only their reachable definitions.
-The response explicitly identifies its output schema as tool-wide; it does not
-pretend that the current output schema is action-specific. Contract resources
-do not invoke operations or grant authorization, and whole-tool annotations
+The response explicitly identifies its output schema scope. Printer and print
+action contracts include only their selected action's output variants; other
+workflows currently retain tool-wide output schemas. Contract resources
+for printer workflows also describe the rejected-call envelope, including typed
+filament deficits and validation fields. Rejections retain the MCP `isError`
+flag; other failures may use the general error envelope.
+Contract resources do not invoke operations or grant authorization, and whole-tool annotations
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
 
@@ -39,6 +43,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
 | `cad_build` | `model`, `import_step` |
+| `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |
 | `compare_renders` | Existing direct image-comparison parameters |
@@ -46,6 +51,8 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files` |
+| `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
+| `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
@@ -75,8 +82,13 @@ the migration from temporary live-session rendering to a separate worker.
 
 ## Results and delivery
 
+[Optional printer integration](printer-integration.md) provides typed device and
+print workflows. Read `printable://printing/workflow-v1` before physical printing.
+
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
+[Native slicing](slicing.md) converts project meshes or 3MF inputs into retained
+printer-ready packages and previews the actual generated toolpaths.
 
 Use `artifact` with `action: "stat"` to inspect one artifact without reading its
 contents, copying a snapshot, or enumerating a directory. Pass `params.path`

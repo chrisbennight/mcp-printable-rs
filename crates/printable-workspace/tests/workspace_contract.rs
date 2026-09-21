@@ -96,7 +96,7 @@ fn error_strings_are_stable() {
         ),
         (
             WsError::UnsupportedArtifactType,
-            "unsupported artifact type; allowed: .3mf, .blend, .bmp, .dxf, .glb, .gltf, \
+            "unsupported artifact type; allowed: .3mf, .blend, .bmp, .dxf, .gcode, .glb, .gltf, \
              .jpeg, .jpg, .json, .mp4, .obj, .off, .ply, .png, .py, .scad, .step, .stl, .stp, .svg, .tif, .tiff, .webp, .zip",
         ),
         (
@@ -267,6 +267,7 @@ fn media_type_is_exact_for_every_allowed_suffix() {
         (".blend", "application/octet-stream"),
         (".bmp", "image/bmp"),
         (".dxf", "image/vnd.dxf"),
+        (".gcode", "text/plain"),
         (".glb", "model/gltf-binary"),
         (".gltf", "model/gltf+json"),
         (".jpeg", "image/jpeg"),

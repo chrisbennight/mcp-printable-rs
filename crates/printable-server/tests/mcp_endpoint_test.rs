@@ -57,6 +57,8 @@ fn test_settings(blender_port: u16) -> Settings {
         blender_workspace_root: None,
         openscad_bin: Some(std::path::PathBuf::from("/bin/false")),
         cad_endpoint: None,
+        slicer_endpoint: None,
+        printers: None,
         scad_concurrency: 2,
         ffmpeg_bin: std::path::PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,
@@ -701,6 +703,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "scene",
             "scad_build",
             "cad_build",
+            "slice",
             "view",
             "render",
             "compare_renders",
@@ -709,6 +712,8 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "job",
             "project",
             "artifact",
+            "printer",
+            "print",
         ]),
         "tool catalog: {result}"
     );
@@ -809,7 +814,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let resources = result["resources"]
         .as_array()
         .expect("resources/list carries a resources array");
-    assert_eq!(resources.len(), 4, "resource catalog: {result}");
+    assert_eq!(resources.len(), 5, "resource catalog: {result}");
     assert_eq!(
         resources[0]["uri"],
         json!("printable://modeling/blender-v1")
@@ -817,7 +822,11 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     assert_eq!(resources[1]["uri"], json!("printable://design/product-v1"));
     assert_eq!(resources[2]["uri"], json!("printable://render/product-v1"));
 
-    assert_eq!(resources[3]["uri"], json!("printable://contracts"));
+    assert_eq!(
+        resources[3]["uri"],
+        json!("printable://printing/workflow-v1")
+    );
+    assert_eq!(resources[4]["uri"], json!("printable://contracts"));
     let contract_read = json!({"jsonrpc":"2.0","id":79,"method":"resources/read",
         "params":{"uri":"printable://contracts/view/section"}});
     let contract_result = rpc_result(post(&http, &mcp, Some(&session), &contract_read).await).await;

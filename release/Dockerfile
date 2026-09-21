@@ -9,6 +9,8 @@ ARG BLENDER_IMAGE
 ARG BLENDER_DIGEST
 ARG CAD_IMAGE
 ARG CAD_DIGEST
+ARG SLICER_IMAGE
+ARG SLICER_DIGEST
 
 LABEL org.opencontainers.image.title="Printable compatible image set" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
@@ -17,4 +19,6 @@ LABEL org.opencontainers.image.title="Printable compatible image set" \
       org.printable.blender.image="${BLENDER_IMAGE}" \
       org.printable.blender.digest="${BLENDER_DIGEST}" \
       org.printable.cad.image="${CAD_IMAGE}" \
-      org.printable.cad.digest="${CAD_DIGEST}"
+      org.printable.cad.digest="${CAD_DIGEST}" \
+      org.printable.slicer.image="${SLICER_IMAGE}" \
+      org.printable.slicer.digest="${SLICER_DIGEST}"

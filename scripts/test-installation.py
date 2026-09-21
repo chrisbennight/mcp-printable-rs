@@ -14,6 +14,7 @@ import uuid
 from printable_client import Client
 from quickstart import run
 from cad_client_smoke import run as run_cad
+from slicer_client_smoke import run as run_slicer, verify_restored as verify_slicer
 
 
 def main():
@@ -21,6 +22,7 @@ def main():
     parser.add_argument("server_image")
     parser.add_argument("blender_image")
     parser.add_argument("--cad-image", required=True)
+    parser.add_argument("--slicer-image", required=True)
     parser.add_argument("--evidence-dir", type=Path, help="new directory for the tutorial's verified artifacts")
     parser.add_argument("--recovery", action="store_true", help="also test backup restore, damaged metadata, and bounded storage exhaustion")
     args = parser.parse_args()
@@ -29,7 +31,8 @@ def main():
     root = Path(__file__).resolve().parent.parent
     environment = dict(os.environ, PRINTABLE_SERVER_IMAGE=args.server_image,
                        PRINTABLE_BLENDER_IMAGE=args.blender_image,
-                       PRINTABLE_CAD_IMAGE=args.cad_image)
+                       PRINTABLE_CAD_IMAGE=args.cad_image,
+                       PRINTABLE_SLICER_IMAGE=args.slicer_image)
     rendered = subprocess.run(
         ["docker", "compose", "-f", str(root / "compose.yaml"), "config", "--format", "json"],
         env=environment, check=True, capture_output=True, text=True,
@@ -67,16 +70,18 @@ def main():
             with Client(endpoint(), credential) as client:
                 run(client, directory / "bracket")
                 run_cad(client, directory / "cad")
+                run_slicer(client, directory / "slicer")
             if args.evidence_dir is not None:
                 for artifact in (directory / "bracket").iterdir():
                     shutil.copyfile(artifact, args.evidence_dir / artifact.name)
-            subprocess.run(compose + ["restart", "server"], check=True)
+            subprocess.run(compose + ["restart", "server", "slicer-worker"], check=True)
             subprocess.run(compose + ["up", "-d", "--wait", "--wait-timeout", "600"], check=True)
             job = json.loads((directory / "bracket" / "job.json").read_text())
             with Client(endpoint(), credential) as client:
                 recovered = client.call("job", {"action": "get", "params": {"job_id": job["job_id"]}})
                 if recovered["state"] != "succeeded":
                     raise ValueError("Completed render was not recovered after restart")
+                verify_slicer(client, directory / "slicer")
             print("INSTALLATION_OK: direct modeling, four verified downloads, completed-job restart")
             if args.recovery:
                 from installation_recovery import exercise

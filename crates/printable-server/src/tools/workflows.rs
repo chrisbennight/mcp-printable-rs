@@ -240,12 +240,24 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             de::<crate::cad::CadRequest>(arguments)?,
         ),
         "view" => de::<ViewRequest>(arguments)?.resolve(),
+        "slice" => ResolvedCall::new(
+            "printable_slice",
+            de::<crate::slicing::SliceRequest>(arguments)?,
+        ),
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
         "artifact" => de::<ArtifactRequest>(arguments)?.resolve(),
         "project" => ResolvedCall::new(
             "printable_project",
             de::<crate::projects::ProjectRequest>(arguments)?,
+        ),
+        "printer" => ResolvedCall::new(
+            "printable_printer",
+            de::<crate::printers::PrinterRequest>(arguments)?,
+        ),
+        "print" => ResolvedCall::new(
+            "printable_print",
+            de::<crate::printers::PrintRequest>(arguments)?,
         ),
         "status" => {
             let request = de::<StatusRequest>(arguments)?;
@@ -284,6 +296,24 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 }
 
 pub const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "slice",
+        description: "Discover native printer, process and filament profiles/settings; prepare a project STL or 3MF with an explicit physical build surface; inspect or cancel retained slices; render selected actual toolpath layers to project artifacts. Preparation does not start a physical print. Inspect retained state before retrying an uncertain preparation.",
+        schema: workflow_schema_of::<crate::slicing::SliceRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: "printer",
+        description: "Discover printers and selected typed status, materials and history; request a telemetry refresh or save a camera snapshot as a project artifact. Refresh does not prove fresh telemetry or physical readiness. Read printable://printing/workflow-v1 before physical printing.",
+        schema: workflow_schema_of::<crate::printers::PrinterRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: "print",
+        description: "Import and review printer-ready artifacts, stage manual-start jobs, inspect records and history, or explicitly control printing. Start, resume and plate-clear acknowledgement may cause physical motion. An unknown mutation outcome requires inspection, never automatic retry. Read printable://printing/workflow-v1 first.",
+        schema: workflow_schema_of::<crate::printers::PrintRequest>,
+        annotations: write_annotations,
+    },
     ToolDef {
         name: "status",
         description: "Report backend, workspace, and durable-job readiness without mutation.",
@@ -483,6 +513,9 @@ mod tests {
         assert_eq!(
             TOOLS.iter().map(|tool| tool.name).collect::<Vec<_>>(),
             [
+                "slice",
+                "printer",
+                "print",
                 "status",
                 "inspect",
                 "edit",
@@ -506,7 +539,7 @@ mod tests {
                 Some(true)
             );
         }
-        for name in ["scene", "edit", "job", "artifact"] {
+        for name in ["scene", "edit", "job", "artifact", "printer", "print"] {
             let annotations = (lookup(name).expect("mutating tool").annotations)();
             assert_eq!(annotations.read_only_hint, Some(false));
             assert_eq!(annotations.destructive_hint, Some(true));

@@ -2,7 +2,7 @@
 
 Printable exposes streamable HTTP MCP at `/mcp`. The Rust server validates
 transport authority, resolves a workflow action into typed parameters, and
-dispatches work to geometry code, OpenSCAD, a native CAD worker, or a private Blender bridge. Files
+dispatches work to geometry code, OpenSCAD, native CAD and slicer workers, or a private Blender bridge. Files
 stay under a dedicated workspace root. The MCP client receives bounded results
 and file descriptors rather than whole videos or models encoded into chat.
 
@@ -12,15 +12,17 @@ flowchart LR
     server --> geometry[Isolated geometry worker]
     server --> scad[OpenSCAD subprocess]
     server --> cad[Native CAD worker]
+    server --> slicer[Native slicer worker]
     server --> live[Live Blender with private display]
     server --> worker[Background Blender render worker]
     server --> files[Confined workspace]
     live --> files
     worker --> files
     cad --> files
+    slicer --> files
 ```
 
-The six Cargo crates separate concerns with different failure and testing
+The Cargo crates separate concerns with different failure and testing
 boundaries:
 
 | Crate | Responsibility |
@@ -31,6 +33,7 @@ boundaries:
 | `printable-scad` | Confined source validation and OpenSCAD subprocesses |
 | `printable-workspace` | Capability-rooted artifact I/O and atomic promotion |
 | `printable-imaging` | Bounded image decoding and composition |
+| `bambuddy-api` | Typed printer service requests, bounded responses and honest mutation outcomes |
 
 The first-party code in `addon/` executes inside Blender. Its supervisor and
 main-thread bridge serialize scene operations and recover from a stalled
@@ -57,6 +60,12 @@ runs in a disposable process with an address-space limit. OpenSCAD uses argv
 arguments, restricted source, snapshotted file inputs, and caller work budgets.
 These boundaries contain failures without granting the server control over
 unrelated workloads.
+
+The slicer runs one bounded native preparation or toolpath review at a time.
+It retains source snapshots, resolved profiles, progress and output hashes in
+the same project workspace used by the other engines. Restarted workers retain
+completed results and report unfinished work as interrupted, without replay.
+Slicing does not send files to a printer. See [native slicing](slicing.md).
 
 File publication snapshots an artifact, records its size and digest, and issues
 a short-lived one-use HTTP grant. The MCP bearer is not the download grant.
