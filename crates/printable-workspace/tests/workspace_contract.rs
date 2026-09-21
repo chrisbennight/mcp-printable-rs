@@ -16,6 +16,55 @@ fn tmp() -> tempfile::TempDir {
     tempfile::TempDir::new().expect("tempdir")
 }
 
+#[test]
+fn stat_inspects_large_artifacts_without_transfer_or_snapshot() {
+    let dir = tmp();
+    let workspace = ws(dir.path());
+    let file = std::fs::File::create(dir.path().join("large.mp4")).unwrap();
+    file.set_len(MAX_TRANSFER_BYTES + 1).unwrap();
+    let meta = workspace.stat_artifact("large.mp4").unwrap();
+    assert_eq!(meta.path, "large.mp4");
+    assert_eq!(meta.size_bytes, MAX_TRANSFER_BYTES + 1);
+    assert_eq!(meta.media_type, "video/mp4");
+    file.set_len(7).unwrap();
+    assert_eq!(workspace.stat_artifact("large.mp4").unwrap().size_bytes, 7);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn stat_refuses_unsafe_or_missing_artifacts() {
+    let dir = tmp();
+    let outside = tmp();
+    let workspace = ws(dir.path());
+    std::fs::write(outside.path().join("model.stl"), b"outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("model.stl"),
+        dir.path().join("link.stl"),
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("directory.stl")).unwrap();
+    for (path, code) in [
+        ("../model.stl", "path_escapes"),
+        ("linked/model.stl", "symlink_refused"),
+        ("link.stl", "symlink_refused"),
+        ("missing.stl", "not_found"),
+        ("directory.stl", "not_regular_file"),
+    ] {
+        assert_eq!(
+            workspace.stat_artifact(path).unwrap_err().code(),
+            code,
+            "{path}"
+        );
+    }
+    assert!(
+        Workspace::open(None, None)
+            .unwrap()
+            .stat_artifact("model.stl")
+            .is_err()
+    );
+}
+
 // --- stable error-string surface -------------------------------------------
 
 #[test]
@@ -772,6 +821,10 @@ fn reading_a_fifo_does_not_block_and_is_rejected() {
 
     // Must return NotRegularFile promptly, not block waiting for a writer.
     let start = std::time::Instant::now();
+    assert_eq!(
+        ws.stat_artifact("pipe.stl").unwrap_err().code(),
+        "not_regular_file"
+    );
     assert_eq!(
         ws.read_artifact("pipe.stl").unwrap_err().code(),
         "not_regular_file"

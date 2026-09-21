@@ -43,6 +43,7 @@ pub fn request(operation: &str, mut arguments: Value) -> Result<(&'static str, V
         "printable_render_job_artifacts" => ("job", Some("artifacts")),
         "printable_render_job_cancel" => ("job", Some("cancel")),
         "printable_workspace_list" => ("artifact", Some("list")),
+        "printable_workspace_stat" => ("artifact", Some("stat")),
         "printable_workspace_read" => ("artifact", Some("read")),
         "printable_workspace_write" => ("artifact", Some("write")),
         "printable_workspace_publish" => ("artifact", Some("publish")),

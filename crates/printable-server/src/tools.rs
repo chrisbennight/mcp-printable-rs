@@ -170,6 +170,16 @@ struct ReadParams {
     path: String,
 }
 
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StatParams {
+    /// Existing supported artifact. Workspace-relative unless project_id is supplied.
+    path: String,
+    /// Resolve path relative to this existing project; no bytes are read or returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+}
+
 /// `printable_workspace_write` parameters (single-shot, small artifacts).
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1412,6 +1422,12 @@ fn code_annotations() -> ToolAnnotations {
 /// The tool catalog, in a stable order.
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
+        name: "printable_workspace_stat",
+        description: "Inspect confined artifact metadata without reading bytes. Supports optional project-relative resolution. Describes a mutable filename, not immutable content identity.",
+        schema: schema_of::<StatParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
         name: "printable_workspace_list",
         description: "List supported image, model, video, and metadata artifacts under the confined workspace.",
         schema: schema_of::<ListParams>,
@@ -1810,6 +1826,22 @@ async fn dispatch_value(
 ) -> Result<Value, ToolError> {
     let (scad, jobs) = backends;
     match name {
+        "printable_workspace_stat" => {
+            let p: StatParams = de(args)?;
+            let path = match &p.project_id {
+                Some(id) => crate::projects::resolve(workspace, id, &p.path)?,
+                None => p.path.clone(),
+            };
+            let ws = Arc::clone(workspace);
+            let meta = blocking(move || ws.stat_artifact(&path)).await?;
+            let mut result = serde_json::to_value(meta)?;
+            result["identity"] = json!("mutable_path");
+            if let Some(id) = p.project_id {
+                result["project_id"] = json!(id);
+                result["project_path"] = json!(p.path);
+            }
+            Ok(result)
+        }
         "printable_workspace_list" => {
             let p: ListParams = de(args)?;
             let ws = Arc::clone(workspace);
