@@ -341,7 +341,7 @@ impl ServerHandler for PrintableServer {
         _params: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        let resources = resources::RESOURCES
+        let mut resources: Vec<Resource> = resources::RESOURCES
             .iter()
             .map(|r| {
                 Resource::new(r.uri, r.name)
@@ -349,6 +349,9 @@ impl ServerHandler for PrintableServer {
                     .with_mime_type(r.mime_type)
             })
             .collect();
+        resources.push(Resource::new(resources::contracts::ROOT, "Printable operation contracts")
+            .with_description("Compact tool/action index; read printable://contracts/{tool}/{action} for a selected schema, without loading every engine's contract.")
+            .with_mime_type("application/json"));
         Ok(ListResourcesResult::with_all_items(resources))
     }
 
@@ -357,6 +360,12 @@ impl ServerHandler for PrintableServer {
         params: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if let Some(contract) = resources::contracts::read(&params.uri) {
+            return Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
+                ResourceContents::text(contract.to_string(), params.uri)
+                    .with_mime_type("application/json"),
+            ])));
+        }
         match resources::RESOURCES.iter().find(|r| r.uri == params.uri) {
             Some(resource) => Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
                 ResourceContents::text(resource.body, params.uri)

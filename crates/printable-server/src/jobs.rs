@@ -2265,12 +2265,12 @@ async fn prepare_and_certify_mechanical_rotation(
             fixed_artifact: JobArtifact {
                 path: fixed_snapshot_path,
                 size_bytes: fixed_size_bytes,
-                media_type: "application/vnd.ms-pki.stl".to_string(),
+                media_type: "model/stl".to_string(),
             },
             moving_artifact: JobArtifact {
                 path: moving_snapshot_path,
                 size_bytes: moving_size_bytes,
-                media_type: "application/vnd.ms-pki.stl".to_string(),
+                media_type: "model/stl".to_string(),
             },
             units: "millimetres".to_string(),
             certified,
@@ -4365,8 +4365,10 @@ fn validate_recovered_mechanical_analysis(job: &JobRecord) -> Result<(), ToolErr
     if analysis.generation > job.recovery_count
         || analysis.fixed_artifact.path != mechanical_fixed_path(&job.job_id, analysis.generation)
         || analysis.moving_artifact.path != mechanical_moving_path(&job.job_id, analysis.generation)
-        || analysis.fixed_artifact.media_type != "application/vnd.ms-pki.stl"
-        || analysis.moving_artifact.media_type != "application/vnd.ms-pki.stl"
+        // Older retained jobs used the certificate-list MIME suffix mapping.
+        // Accept that metadata on recovery without changing their evidence.
+        || !matches!(analysis.fixed_artifact.media_type.as_str(), "model/stl" | "application/vnd.ms-pki.stl")
+        || !matches!(analysis.moving_artifact.media_type.as_str(), "model/stl" | "application/vnd.ms-pki.stl")
         || analysis.fixed_artifact.size_bytes == 0
         || analysis.moving_artifact.size_bytes == 0
         || analysis.fixed_artifact.size_bytes > spec.max_analysis_mesh_bytes
@@ -8511,18 +8513,32 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
             fixed_artifact: JobArtifact {
                 path: mechanical_fixed_path(job_id, 0),
                 size_bytes: 10,
-                media_type: "application/vnd.ms-pki.stl".to_string(),
+                media_type: "model/stl".to_string(),
             },
             moving_artifact: JobArtifact {
                 path: mechanical_moving_path(job_id, 0),
                 size_bytes: 10,
-                media_type: "application/vnd.ms-pki.stl".to_string(),
+                media_type: "model/stl".to_string(),
             },
             units: "millimetres".to_string(),
             certified: true,
             report: mechanical_report([0.0, 0.0, 0.0], true, None, Some(0.25)),
         });
         validate_recovered_mechanical_analysis(&job).expect("valid recovered certificate");
+
+        let mut legacy = job.clone();
+        let legacy_analysis = legacy.mechanical_analysis.as_mut().unwrap();
+        legacy_analysis.fixed_artifact.media_type = "application/vnd.ms-pki.stl".into();
+        legacy_analysis.moving_artifact.media_type = "application/vnd.ms-pki.stl".into();
+        validate_recovered_mechanical_analysis(&legacy)
+            .expect("legacy STL metadata is recoverable");
+        legacy
+            .mechanical_analysis
+            .as_mut()
+            .unwrap()
+            .fixed_artifact
+            .media_type = "text/plain".into();
+        assert!(validate_recovered_mechanical_analysis(&legacy).is_err());
 
         let mut stored_coercion = job.clone();
         let stored_report = &mut stored_coercion
