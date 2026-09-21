@@ -233,6 +233,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
         "artifact" => de::<ArtifactRequest>(arguments)?.resolve(),
+        "project" => ResolvedCall::new(
+            "printable_project",
+            de::<crate::projects::ProjectRequest>(arguments)?,
+        ),
         "status" => {
             let request = de::<StatusRequest>(arguments)?;
             Ok(ResolvedCall {
@@ -343,6 +347,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: write_annotations,
     },
     ToolDef {
+        name: "project",
+        description: "Create and discover durable projects, list their shared files, and resolve project-relative artifact paths for existing backend tools. Each request identifies its project. This does not switch the live Blender scene.",
+        schema: workflow_schema_of::<crate::projects::ProjectRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "artifact",
         description: "List/read/write workspace files, publish immutable files through governed raw-byte transfer, or upload chunks using upload_id. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
         schema: workflow_schema_of::<ArtifactRequest>,
@@ -442,6 +452,7 @@ mod tests {
                 "validate_mesh",
                 "analyze_assembly",
                 "job",
+                "project",
                 "artifact",
             ],
         );

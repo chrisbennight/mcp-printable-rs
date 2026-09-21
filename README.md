@@ -5,7 +5,7 @@ animation, and FDM print validation with Blender and OpenSCAD.
 Streamable HTTP at `/mcp`.
 
 Development now continues on [GitHub](https://github.com/chrisbennight/mcp-printable-rs).
-The repository is initially private. See [continuous integration](docs/continuous-integration.md)
+See [continuous integration](docs/continuous-integration.md)
 for the GitHub checks and the remaining release-porting boundary. The supported
 deployment target is Linux/amd64 with NVIDIA; software graphics in CI is test
 coverage, not a separate supported distribution.
@@ -47,7 +47,7 @@ repository conventions in [`AGENTS.md`](AGENTS.md).
 
 The [product refactor](docs/product-refactor.md) records the complete delivery
 intent and acceptance criteria. The [workflow interface](docs/workflow-interface.md)
-lists all thirteen public tools and their typed actions. Public calls use these
+lists all fourteen public tools and their typed actions. Public calls use these
 unprefixed names; prior operation names are internal implementation details.
 Deployment and gateway discovery are updated together, with live verification
 tracked separately from implementation and merge.
