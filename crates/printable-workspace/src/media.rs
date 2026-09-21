@@ -22,7 +22,7 @@ pub fn media_type_for(suffix: &str) -> &'static str {
         ".png" => "image/png",
         ".step" | ".stp" => "model/step",
         ".py" => "text/x-python",
-        ".stl" => "application/vnd.ms-pki.stl",
+        ".stl" => "model/stl",
         ".svg" => "image/svg+xml",
         ".tif" | ".tiff" => "image/tiff",
         ".webp" => "image/webp",

@@ -13,6 +13,18 @@ Presented renders support optional [exposure and illumination controls](presenta
 
 ## Requests
 
+For on-demand contract discovery, read `printable://contracts` for the compact
+tool/action index, then `printable://contracts/{tool}/{action}` for one action
+or `printable://contracts/{tool}` for a direct-parameter tool. For example,
+`printable://contracts/view/section` describes cutaway requests without loading
+native viewport, dimensions, or overhang parameters. Input schemas are derived
+from the advertised tool schemas and include only their reachable definitions.
+The response explicitly identifies its output schema as tool-wide; it does not
+pretend that the current output schema is action-specific. Contract resources
+do not invoke operations or grant authorization, and whole-tool annotations
+remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
+invoke the advertised tool names.
+
 Combined tools take an `action` and an operation-specific `params` object.
 Each action's parameters are derived from the same Rust type used by its handler;
 unknown actions, unrelated fields, and wrong parameter types fail before dispatch.
