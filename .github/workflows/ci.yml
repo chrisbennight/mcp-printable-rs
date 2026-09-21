@@ -46,7 +46,11 @@ jobs:
       - name: Test the Blender bridge without Blender
         run: PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
       - name: Test release policy and dependency routing
-        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/printable-python"
+          "${RUNNER_TEMP}/printable-python/bin/python" -m pip install --disable-pip-version-check -r requirements-tooling.txt
+          printf '%s\n' "${RUNNER_TEMP}/printable-python/bin" >> "$GITHUB_PATH"
+          PYTHONPATH=scripts "${RUNNER_TEMP}/printable-python/bin/python" -m unittest discover -s scripts/tests -v
       - name: Validate documentation
         run: python3 scripts/docgate
       - name: Validate shell scripts and retained release policy
