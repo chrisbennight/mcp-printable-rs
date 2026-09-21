@@ -84,6 +84,7 @@ enum TransferState {
     Receiving,
     Ready(Received),
     Failed,
+    CommitUncertain { path: String },
     Committed(IngestParams, IngestResult),
 }
 
@@ -228,6 +229,10 @@ impl IncomingFiles {
             TransferState::Prepared => serde_json::json!({"state": "prepared"}),
             TransferState::Receiving => serde_json::json!({"state": "receiving"}),
             TransferState::Failed => serde_json::json!({"state": "failed"}),
+            TransferState::CommitUncertain { path } => serde_json::json!({
+                "state": "commit_uncertain", "path": path,
+                "message": "Inspect the destination before authorizing another transfer; this receipt cannot be retried."
+            }),
             TransferState::Ready(received) => serde_json::json!({
                 "state": "ready", "size_bytes": received.size, "sha256": received.sha256
             }),
@@ -252,15 +257,30 @@ impl IncomingFiles {
                     return Ok(result.clone());
                 }
                 TransferState::Ready(_) => {}
+                TransferState::CommitUncertain { .. } => {
+                    return Err(ToolError::Validation(
+                        "previous publication outcome is uncertain; inspect the destination before authorizing another transfer".into(),
+                    ));
+                }
                 _ => {
                     return Err(ToolError::Validation(
                         "file is not ready or was committed to another destination".into(),
                     ));
                 }
             }
-            let TransferState::Ready(received) = &*state else {
+            // Publication can precede a fallible directory sync. Once attempted,
+            // only a successful receipt permits a repeat request to return success.
+            let TransferState::Ready(received) = std::mem::replace(
+                &mut *state,
+                TransferState::CommitUncertain { path: params.path.clone() },
+            ) else {
                 unreachable!()
             };
+            let _permit = transfer
+                .permit
+                .lock()
+                .expect("upload permit poisoned")
+                .take();
             let artifact = workspace.commit_generated_artifact_bounded(
                 &params.path,
                 received.file.path(),
@@ -272,11 +292,6 @@ impl IncomingFiles {
                 sha256: received.sha256.clone(),
             };
             *state = TransferState::Committed(params, result.clone());
-            transfer
-                .permit
-                .lock()
-                .expect("upload permit poisoned")
-                .take();
             Ok(result)
         })
         .await
@@ -429,6 +444,58 @@ async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn publication_error_consumes_receipt_without_overwriting_later_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = Arc::new(IncomingFiles::new(workspace, 1024));
+        let authorization = files
+            .authorize(
+                serde_json::from_value(serde_json::json!({"size": 3})).unwrap(),
+                "localhost",
+            )
+            .unwrap();
+        let uri = authorization["file"]["uri"].as_str().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            authorization["upload"]["headers"]["Authorization"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            upload(
+                State(Arc::clone(&files)),
+                Path(uri.strip_prefix(URI_PREFIX).unwrap().to_owned()),
+                headers,
+                Body::from("old")
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        // Force a filesystem publication error, then model a later destination edit.
+        let destination = root.path().join("result.stl");
+        std::fs::create_dir(&destination).unwrap();
+        let params = IngestParams {
+            file: uri.into(),
+            path: "result.stl".into(),
+            overwrite: true,
+        };
+        assert!(files.ingest(params.clone()).await.is_err());
+        let status = files.status(uri).await.unwrap();
+        assert_eq!(status["state"], "commit_uncertain");
+        assert_eq!(status["path"], "result.stl");
+        assert_eq!(files.capacity.available_permits(), MAX_TRANSFERS);
+        std::fs::remove_dir(&destination).unwrap();
+        std::fs::write(&destination, b"later edit").unwrap();
+        assert!(files.ingest(params).await.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"later edit");
+    }
 
     #[tokio::test]
     async fn partial_oversized_and_expired_transfers_cannot_publish() {

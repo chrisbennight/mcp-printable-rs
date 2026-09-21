@@ -124,3 +124,10 @@ lifetime; repeating the same ingest returns that receipt without writing again.
 It records the original commit, not a claim that another request has not since
 changed the destination. Receipts are in memory and bounded; after server
 restart or expiry, inspect the destination before authorizing a fresh upload.
+
+A filesystem publication error leaves the receipt `commit_uncertain`, with its
+destination path. The destination may already exist even though publication
+reported an error. This receipt cannot write again: inspect the destination
+before deciding whether to authorize another transfer. This conservative outcome
+also applies when a filesystem error occurred before publication. Successful
+receipts still return the original result without writing again.
