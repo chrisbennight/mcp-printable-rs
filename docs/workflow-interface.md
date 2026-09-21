@@ -32,7 +32,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `artifact` | `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `artifact` | `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
 
@@ -102,3 +102,25 @@ Rendering retains bounded inline PNG content alongside artifact paths. The
 `render` scene action uses the same image preparation as the legacy preview
 tool. Product/diagnostic preservation and mechanical-certification requirements
 remain those of the underlying delivered operations.
+
+## Incoming files
+
+Use `artifact` with `action: "ingest"` and `params` containing `file` (a
+gateway file URI), `path` (the workspace destination), and optional `overwrite`.
+The file field advertises native upload forwarding. The gateway transfers bytes
+through `files/authorizeUpload` and the authorized HTTP PUT before dispatching
+the artifact request. Bytes do not pass through tool arguments.
+
+Printable stages at most two incoming files, each bounded by
+`PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). It checks the declared size
+and SHA-256 digest before atomic workspace publication. STEP/STP and Python
+source are accepted as stored artifacts; this alone does not execute or convert
+them. The existing base64 chunk operations retain their smaller limits.
+
+An authorized transfer expires after one hour; an idle body times out after one
+minute. The private Printable URI can be queried with `transfer_status` and
+`params.uri`. A successful ingest retains a receipt for the authorization
+lifetime; repeating the same ingest returns that receipt without writing again.
+It records the original commit, not a claim that another request has not since
+changed the destination. Receipts are in memory and bounded; after server
+restart or expiry, inspect the destination before authorizing a fresh upload.

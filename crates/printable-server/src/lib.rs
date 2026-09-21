@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod error;
+pub mod file_ingest;
 pub mod file_transfer;
 pub mod health;
 pub mod jobs;

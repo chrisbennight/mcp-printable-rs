@@ -48,7 +48,7 @@ fn error_strings_are_stable() {
         (
             WsError::UnsupportedArtifactType,
             "unsupported artifact type; allowed: .3mf, .blend, .bmp, .dxf, .glb, .gltf, \
-             .jpeg, .jpg, .json, .mp4, .obj, .off, .ply, .png, .scad, .stl, .svg, .tif, .tiff, .webp",
+             .jpeg, .jpg, .json, .mp4, .obj, .off, .ply, .png, .py, .scad, .step, .stl, .stp, .svg, .tif, .tiff, .webp",
         ),
         (
             WsError::NotRegularFile,
@@ -200,8 +200,11 @@ fn media_type_is_exact_for_every_allowed_suffix() {
         (".off", "application/octet-stream"),
         (".ply", "application/octet-stream"),
         (".png", "image/png"),
+        (".py", "text/x-python"),
         (".scad", "application/octet-stream"),
+        (".step", "model/step"),
         (".stl", "application/vnd.ms-pki.stl"),
+        (".stp", "model/step"),
         (".svg", "image/svg+xml"),
         (".tif", "image/tiff"),
         (".tiff", "image/tiff"),

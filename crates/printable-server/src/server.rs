@@ -79,6 +79,8 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
     ));
     let server = PrintableServer::new(workspace, blender, Arc::new(settings.clone()));
     let readiness_server = server.clone();
+    let incoming_files = server.incoming_files();
+    incoming_files.spawn_reaper(cancel.child_token());
     let published_files = server.published_files();
     published_files.spawn_reaper(cancel.child_token());
 
@@ -116,8 +118,16 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
         )
         .with_state(published_files);
 
+    let uploads = Router::new()
+        .route(
+            "/file-transfers/upload/{file_id}",
+            axum::routing::put(crate::file_ingest::upload),
+        )
+        .with_state(incoming_files);
+
     Ok(Router::new()
         .merge(downloads)
+        .merge(uploads)
         .route("/healthz", get(healthz))
         .route(
             "/readyz",

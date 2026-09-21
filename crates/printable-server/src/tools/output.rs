@@ -131,6 +131,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
+            object(json!({"state": {"enum": ["prepared", "receiving", "ready", "failed", "committed"]}}), &["state"]),
             object(json!({"entries": {"type": "array", "items": artifact()}}), &["entries"]),
             object(json!({"upload_id": {"type": "string"}}), &["upload_id"]),
             object(json!({"bytes_written": {"type": "integer", "minimum": 0}}), &["bytes_written"]),
