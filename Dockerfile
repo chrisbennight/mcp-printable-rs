@@ -61,7 +61,7 @@ COPY cad/requirements.txt /opt/printable/cad/requirements.txt
 RUN /opt/cad/bin/pip install --no-cache-dir -r /opt/printable/cad/requirements.txt
 COPY cad/build.py cad/step.py /opt/printable/cad/
 COPY --from=build /app/target/release/printable-cad-worker /usr/local/bin/printable-cad-worker
-COPY LICENSE /usr/share/licenses/printable/LICENSE
+COPY LICENSE /usr/share/doc/printable/LICENSE
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
@@ -97,6 +97,8 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
 COPY --from=build /app/target/release/printable-server /usr/local/bin/printable-server
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY scripts/openscad-headless /usr/local/bin/openscad-headless
+COPY LICENSE /usr/share/doc/printable/LICENSE
+COPY crates/printable-imaging/assets/LICENSE-Fira-OFL.txt /usr/share/doc/printable/LICENSE-Fira-OFL.txt
 RUN chmod 0755 /usr/local/bin/openscad-headless
 
 ARG SOURCE_REVISION

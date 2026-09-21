@@ -6,6 +6,10 @@ unexecuted tasks as passes or infer model tokens from JSON or PNG byte counts.
 
 ## Baseline identity and existing evidence
 
+The baseline below is historical. Its unavailable features describe that
+earlier revision, not the current product. Private release links are provenance
+for that comparison and are not required to run the current acceptance corpus.
+
 The starting source revision is
 `c4c0f7c1b3175b71b0bf2921f909fba113461c07`, freshly fetched from `origin/main`.
 Its historical release catalog advertised forty prefixed tools; the

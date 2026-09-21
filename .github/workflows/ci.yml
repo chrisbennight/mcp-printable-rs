@@ -143,6 +143,8 @@ jobs:
         run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --recovery
       - name: Check Blender capabilities and shutdown recovery
         run: scripts/smoke-blender-cpu printable-blender:ci
+      - name: Verify packaged license notices
+        run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci
       - name: Exercise native views, product workflows, and isolated render jobs
         env:
           PRINTABLE_PAIR_SMOKE_RUN_ID: github-${{ github.run_id }}-${{ github.run_attempt }}

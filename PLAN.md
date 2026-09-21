@@ -1,5 +1,10 @@
 # Printable production delivery plan
 
+> Historical record: this file describes earlier capability delivery or the
+> private lab deployment. Use [the current project guide](README.md) for
+> independent installation and supported behavior. Current work is tracked in
+> GitHub issues.
+
 ## Objective
 
 The next approved product cycle is the [agent-driven interface and native

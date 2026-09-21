@@ -1,5 +1,11 @@
 # Agent-driven Printable product refactor
 
+This document records the earlier product refactor and private deployment
+tracking. Its capability contracts remain useful design context; its lab issue
+links and deployment authorization are historical. Use the current
+[architecture](architecture.md), [workflow interface](workflow-interface.md),
+and GitHub issues for independent installation and new work.
+
 ## Product outcome and delivery status
 
 Deliver Printable as one coherent agent-driven modeling, inspection, validation, and rendering product. Agents must be able to create and revise models, investigate the actual Blender editing state, verify manufacturing and motion evidence, and deliver recoverable artifacts without repeatedly loading large tool catalogs or verbose scene dumps.

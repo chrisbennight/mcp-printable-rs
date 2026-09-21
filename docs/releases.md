@@ -80,6 +80,7 @@ does not establish that those distribution obligations are complete.
 ## Local policy checks
 
 ```sh
+install -d -m 0700 .dev
 python3 -m venv .dev/tooling
 .dev/tooling/bin/python -m pip install -r requirements-tooling.txt
 PYTHONPATH=scripts .dev/tooling/bin/python -m unittest discover -s scripts/tests -v
