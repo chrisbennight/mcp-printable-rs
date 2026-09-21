@@ -28,11 +28,20 @@ class SceneState:
         self._lock = threading.RLock()
         self._generation = str(uuid.uuid4())
         self._revision = 0
+        self._project_id: str | None = None
 
     @property
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return {"generation": self._generation, "revision": self._revision}
+            value = {"generation": self._generation, "revision": self._revision}
+            if self._project_id is not None:
+                value["project_id"] = self._project_id
+            return value
+
+    def bind_project(self, project_id: str | None) -> None:
+        with self._lock:
+            self._project_id = project_id
+            self.replaced()
 
     def begin(self, command: str, expected: Any = None) -> None:
         with self._lock:
@@ -51,7 +60,11 @@ class SceneState:
             self._revision = 0
 
     def _check(self, expected: Any) -> None:
-        valid = isinstance(expected, dict) and set(expected) == {"generation", "revision"}
+        valid = (
+            isinstance(expected, dict)
+            and {"generation", "revision"} <= set(expected)
+            and set(expected) <= {"generation", "revision", "project_id"}
+        )
         if valid:
             generation = expected["generation"]
             revision = expected["revision"]

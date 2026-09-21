@@ -1905,6 +1905,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.mode == "capabilities":
         capability_smoke(args.host, args.port)
+        from project_scene_smoke import run as project_scene_smoke
+        project_scene_smoke(args.host, args.port)
     elif args.mode == "gpu-eevee":
         gpu_eevee_smoke(args.host, args.port)
     elif args.mode == "gpu-cycles":

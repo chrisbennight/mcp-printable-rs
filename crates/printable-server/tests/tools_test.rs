@@ -1964,6 +1964,147 @@ async fn status_rejects_unknown_arguments() {
 }
 
 #[tokio::test]
+async fn project_scene_dispatch_confines_paths_and_preserves_observed_identity() {
+    use printable_server::projects::{CreateParams, ProjectRequest};
+
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&captured);
+    let fake = FakeAddon::spawn(move |command, params| {
+        observed.lock().unwrap().push((command, params.clone()));
+        ResponseSpec::Success {
+            result: json!({"scene_state": params["expected_scene"]}),
+            addon_version: Some("0.4.0".into()),
+        }
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    let up = uploads();
+    let blender = client(&fake.host(), fake.port());
+    let cfg = settings(&fake.host(), fake.port());
+    for id in ["alpha", "beta"] {
+        printable_server::projects::dispatch(
+            &ws,
+            ProjectRequest::Create(CreateParams {
+                project_id: id.into(),
+                name: id.into(),
+                description: String::new(),
+                adopt_existing: false,
+            }),
+        )
+        .unwrap();
+    }
+    ws.write_artifact("projects/alpha/model.glb", b"fixture", false)
+        .unwrap();
+    ws.write_artifact("projects/beta/scene.blend", b"fixture", false)
+        .unwrap();
+    let state = json!({
+        "generation": "11111111-1111-4111-8111-111111111111",
+        "revision": 7,
+        "project_id": "alpha",
+    });
+    let attach = json!({"project_id":"alpha", "path":"model.glb", "expected_scene":state});
+    dispatch(
+        &ws,
+        &up,
+        &blender,
+        &cfg,
+        "printable_scene_attach_cad",
+        attach.clone(),
+    )
+    .await
+    .unwrap();
+    let open = json!({"project_id":"beta", "mode":"checkpoint", "checkpoint":"scene.blend",
+        "save_current_to":"projects/alpha/backup.blend", "expected_scene":state});
+    dispatch(
+        &ws,
+        &up,
+        &blender,
+        &cfg,
+        "printable_scene_open_project",
+        open.clone(),
+    )
+    .await
+    .unwrap();
+    {
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "attach_cad");
+        assert_eq!(calls[0].1["path"], "projects/alpha/model.glb");
+        assert_eq!(calls[0].1["expected_scene"], state);
+        assert_eq!(calls[0].1["timeout_seconds"], 600);
+        assert_eq!(calls[1].0, "open_project");
+        assert_eq!(calls[1].1["checkpoint"], "projects/beta/scene.blend");
+        assert_eq!(calls[1].1["save_current_to"], "projects/alpha/backup.blend");
+        assert_eq!(calls[1].1["expected_scene"], state);
+    }
+    for (operation, base, field, value) in [
+        (
+            "printable_scene_attach_cad",
+            &attach,
+            "project_id",
+            json!("beta"),
+        ),
+        (
+            "printable_scene_attach_cad",
+            &attach,
+            "path",
+            json!("../beta/model.glb"),
+        ),
+        (
+            "printable_scene_attach_cad",
+            &attach,
+            "timeout_seconds",
+            json!(0),
+        ),
+        (
+            "printable_scene_open_project",
+            &open,
+            "save_current_to",
+            json!("projects/beta/backup.blend"),
+        ),
+        (
+            "printable_scene_open_project",
+            &open,
+            "save_current_to",
+            Value::Null,
+        ),
+        (
+            "printable_scene_open_project",
+            &open,
+            "mode",
+            json!("adopt"),
+        ),
+        (
+            "printable_scene_open_project",
+            &open,
+            "checkpoint",
+            Value::Null,
+        ),
+        (
+            "printable_scene_open_project",
+            &open,
+            "timeout_seconds",
+            json!(1801),
+        ),
+    ] {
+        let mut invalid = base.clone();
+        invalid[field] = value;
+        assert!(
+            dispatch(&ws, &up, &blender, &cfg, operation, invalid)
+                .await
+                .is_err(),
+            "invalid {field} accepted by {operation}"
+        );
+    }
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        2,
+        "invalid request reached Blender"
+    );
+}
+
+#[tokio::test]
 async fn status_reports_blender_up_via_fake_addon() {
     let fake = FakeAddon::ok(
         "bridge_status",
