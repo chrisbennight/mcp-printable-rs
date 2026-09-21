@@ -75,7 +75,7 @@ def validate(root):
         'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad" "$verified_slicer"',
         '  /opt/printable/slicer-smoke.py',
         '  /opt/printable/cad/smoke.py --worker',
-        'smoke "$verified_server" linux/amd64 8000',
+        'smoke "$verified_server" linux/amd64 "$smoke_port"',
         '  scripts/smoke-release-pair \\' ,
         'python3 scripts/test-image-notices.py "$verified_server" "$verified_blender"',
         'python3 scripts/test-installation.py "$verified_server" "$verified_blender"',

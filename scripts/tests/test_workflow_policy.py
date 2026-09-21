@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class WorkflowPolicyTests(unittest.TestCase):
     def test_native_worker_release_gates_cannot_be_removed(self):
         markers = (
+            'smoke "$verified_server" linux/amd64 "$smoke_port"',
             'python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"',
             'python3 scripts/verify_release_image.py slicer "$verified_slicer" "$revision"',
             'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad" "$verified_slicer"',

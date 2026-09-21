@@ -27,6 +27,12 @@ elif [ -n "${1:-}" ]; then
   exit 2
 fi
 
+smoke_port="${PRINTABLE_SMOKE_PORT:-8000}"
+if [[ ! "$smoke_port" =~ ^[1-9][0-9]{0,4}$ ]] || (( smoke_port > 65535 )); then
+  echo "PRINTABLE_SMOKE_PORT must be a TCP port from 1 to 65535" >&2
+  exit 2
+fi
+
 # A local build may fall back to crates.io; it publishes nothing. A publishing
 # run may not: an absent address there means the fleet's injection regressed,
 # and the pushed image would carry crates that bypassed the proxy's cache,
@@ -75,7 +81,7 @@ test -x target/release/printable-smoke
 smoke() {
   tag="$1"
   platform="$2"
-  port="${3:-8000}"
+  port="$3"
   # A non-default container port proves the image honors the canonical env var.
   internal_port=8123
   name="printable-smoke-local-$$"
@@ -171,7 +177,7 @@ if [ "$push" -eq 0 ]; then
     --build-arg "SOURCE_REVISION=${revision}" \
     --build-arg "SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" -t "$local_tag" .
   echo "==> Smoke test"
-  smoke "$local_tag" linux/amd64
+  smoke "$local_tag" linux/amd64 "$smoke_port"
   echo "==> OK — local build + smoke passed. Publishing is opt-in: $0 --push"
   exit 0
 fi
@@ -263,7 +269,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
   --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
   --entrypoint /opt/cad/bin/python "$cad_smoke_tag" \
   /opt/printable/cad/smoke.py --worker
-smoke "$verified_server" linux/amd64 8000
+smoke "$verified_server" linux/amd64 "$smoke_port"
 smoke_blender "$verified_blender"
 smoke_blender "$verified_blender" ui
 
