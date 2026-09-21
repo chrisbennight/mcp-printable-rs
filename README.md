@@ -1,6 +1,6 @@
 # Printable
 
-Printable lets an HTTP MCP client build 3D models with Blender and OpenSCAD,
+Printable lets an HTTP MCP client build 3D models with Blender, OpenSCAD, and CadQuery,
 inspect dimensions and mesh geometry, and retrieve printable STL files,
 rendered images, Blender checkpoints, and videos.
 
@@ -17,7 +17,7 @@ and the separate release qualification requirements.
 ## Get started
 
 Follow the [installation guide](docs/installation.md) to build the matching
-images, create a local credential, and start the three services with Compose.
+images, create a local credential, and start the four runtime services with Compose.
 Then run the bracket tutorial:
 
 ```sh
@@ -37,12 +37,13 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 ## What you can do
 
 - Model with typed scene operations, OpenSCAD source, or deliberate Blender Python.
+- Build project CAD sources and convert STEP assemblies with a separate native worker.
 - Inspect scene structure and native viewport or editor images before editing.
 - Measure mesh bounds, topology, overhangs, and clearance between rigid parts.
 - Render previews, product views, galleries, and restart-recoverable video jobs.
 - Transfer workspace artifacts directly without putting file bytes into chat.
 
-The [workflow interface](docs/workflow-interface.md) lists all fourteen public
+The [workflow interface](docs/workflow-interface.md) lists all fifteen public
 tools and their typed actions. The [product refactor](docs/product-refactor.md)
 records delivery intent and acceptance criteria; deployment verification is
 tracked separately from implementation and merge.

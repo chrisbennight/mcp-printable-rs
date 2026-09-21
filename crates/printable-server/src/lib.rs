@@ -6,6 +6,7 @@
 //! transport wiring, the resource catalog, and the typed workspace and Blender
 //! modeling/file tool catalog.
 
+pub mod cad;
 pub mod config;
 pub mod error;
 pub mod file_ingest;

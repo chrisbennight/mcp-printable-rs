@@ -13,12 +13,14 @@ import uuid
 
 from printable_client import Client
 from quickstart import run
+from cad_client_smoke import run as run_cad
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("server_image")
     parser.add_argument("blender_image")
+    parser.add_argument("--cad-image", required=True)
     parser.add_argument("--evidence-dir", type=Path, help="new directory for the tutorial's verified artifacts")
     parser.add_argument("--recovery", action="store_true", help="also test backup restore, damaged metadata, and bounded storage exhaustion")
     args = parser.parse_args()
@@ -26,7 +28,8 @@ def main():
         args.evidence_dir.mkdir(mode=0o700)
     root = Path(__file__).resolve().parent.parent
     environment = dict(os.environ, PRINTABLE_SERVER_IMAGE=args.server_image,
-                       PRINTABLE_BLENDER_IMAGE=args.blender_image)
+                       PRINTABLE_BLENDER_IMAGE=args.blender_image,
+                       PRINTABLE_CAD_IMAGE=args.cad_image)
     rendered = subprocess.run(
         ["docker", "compose", "-f", str(root / "compose.yaml"), "config", "--format", "json"],
         env=environment, check=True, capture_output=True, text=True,
@@ -63,6 +66,7 @@ def main():
             subprocess.run(compose + ["up", "-d", "--wait", "--wait-timeout", "600"], check=True)
             with Client(endpoint(), credential) as client:
                 run(client, directory / "bracket")
+                run_cad(client, directory / "cad")
             if args.evidence_dir is not None:
                 for artifact in (directory / "bracket").iterdir():
                     shutil.copyfile(artifact, args.evidence_dir / artifact.name)

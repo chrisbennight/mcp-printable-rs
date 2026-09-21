@@ -24,6 +24,7 @@ The advertised server exposes exactly these unprefixed tool names; the gateway s
 | blender_execute | General Blender Python with bounded output, explicit execution context, and recovery semantics |
 | scene | Clear, checkpoint/save, restore, model import and export |
 | scad_build | OpenSCAD validated STL, PNG, and SVG section output variants |
+| cad_build | Project-scoped CadQuery models and assembly-aware STEP import |
 | view | Native viewport/editor observations and controlled dimension, section, and overhang diagnostics |
 | render | Authored or product-presentation images, single views, galleries, and turntable contact sheets |
 | compare_renders | Compare retained image artifacts |

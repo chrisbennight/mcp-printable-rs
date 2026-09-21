@@ -5,6 +5,7 @@ edit
 blender_execute
 scene
 scad_build
+cad_build
 view
 render
 compare_renders

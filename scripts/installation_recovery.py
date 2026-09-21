@@ -7,6 +7,7 @@ import re
 import subprocess
 
 from printable_client import Client
+from cad_client_smoke import verify_restored as verify_cad_restored
 
 
 def exercise(config, compose_file, fixture_dir, server_image, blender_image, credential):
@@ -57,6 +58,7 @@ def exercise(config, compose_file, fixture_dir, server_image, blender_image, cre
         if recovered["state"] != "succeeded":
             raise ValueError("Restored job did not retain its completed state")
         client.download(artifacts["video"]["path"], restored_video)
+        verify_cad_restored(client, fixture_dir / "cad")
     with restored_video.open("rb") as restored, (fixture_dir / "bracket/turntable.mp4").open("rb") as original:
         if hashlib.file_digest(restored, "sha256").digest() != hashlib.file_digest(original, "sha256").digest():
             raise ValueError("Restored video differs from the verified original")

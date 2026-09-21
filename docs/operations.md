@@ -1,6 +1,6 @@
 # Operate and recover Printable
 
-Keep the image pair, Compose configuration, workspace backup, and credential
+Keep the matching image set, Compose configuration, workspace backup, and credential
 recovery process together in your operational records. Store the bearer
 separately from model archives. Record exact image digests and the source
 revision; a mutable tag is not a rollback record.
@@ -16,6 +16,9 @@ Use `job` actions `list` and `get` to inspect work before maintenance. Cancel
 unneeded jobs explicitly, then wait for their recorded terminal state. Running
 cancellation is cooperative at a frame boundary. A lost connection or timeout
 does not prove that a scene mutation failed; inspect state before retrying.
+CAD builds are synchronous requests, not render jobs in `job.list`. Retain their
+output directories and inspect `report.json` or `failure.json` after an
+interrupted request. Stop the CAD worker with the other services before backup.
 
 ## Back up
 
@@ -28,7 +31,7 @@ from different points in a job.
 With the supplied default project name, the volume is `printable_workspace`.
 Confirm its actual name with `docker volume ls --filter label=com.docker.compose.project=printable`.
 The following example archives the stopped volume through an image from your
-recorded pair. Set `server_image` to its immutable server reference first:
+recorded image set. Set `server_image` to its immutable server reference first:
 
 ```sh
 set -eu
@@ -50,7 +53,7 @@ packed into a `.blend` file. Protect backups containing private models.
 
 ## Restore and roll back
 
-Restore into a new dedicated volume first, using the recorded image pair.
+Restore into a new dedicated volume first, using the recorded image set.
 Initialize its root ownership to UID/GID 10001 as the supplied Compose setup
 does, then extract the trusted archive as UID 10001 with no network and only
 that volume writable. Keep the existing volume unchanged until recovery is
@@ -100,7 +103,7 @@ recovery without live-scene replacement, next-frame restart, cancellation,
 legacy restoration, unreadable history, and serialized metadata writes. The
 installation integration additionally checks a completed job after server
 restart. Its recovery option restores a real workspace into a fresh volume,
-verifies the video digest, isolates damaged metadata, and exercises a full
+verifies the video digest and CAD reports and artifact digests, isolates damaged metadata, and exercises a full
 dedicated filesystem followed by a successful write after space is freed.
 See [the recorded recovery evidence](../evidence/installation-recovery.md).
 These are controlled software-container checks, not a claim about arbitrary

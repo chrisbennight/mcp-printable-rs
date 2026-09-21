@@ -2,7 +2,7 @@
 
 Printable exposes streamable HTTP MCP at `/mcp`. The Rust server validates
 transport authority, resolves a workflow action into typed parameters, and
-dispatches work to geometry code, OpenSCAD, or a private Blender bridge. Files
+dispatches work to geometry code, OpenSCAD, a native CAD worker, or a private Blender bridge. Files
 stay under a dedicated workspace root. The MCP client receives bounded results
 and file descriptors rather than whole videos or models encoded into chat.
 
@@ -11,11 +11,13 @@ flowchart LR
     client[HTTP MCP client] --> server[Rust server]
     server --> geometry[Isolated geometry worker]
     server --> scad[OpenSCAD subprocess]
+    server --> cad[Native CAD worker]
     server --> live[Live Blender with private display]
     server --> worker[Background Blender render worker]
     server --> files[Confined workspace]
     live --> files
     worker --> files
+    cad --> files
 ```
 
 The six Cargo crates separate concerns with different failure and testing

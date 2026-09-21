@@ -88,6 +88,16 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "elapsed_ms",
             ],
         ),
+        "cad_build" => object(
+            json!({
+                "build_directory": {"type": "string"},
+                "report": {"type": "object"},
+                "artifacts": {"type": "array", "items": object(json!({
+                    "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                }), &["artifact", "sha256"])}
+            }),
+            &["build_directory", "report", "artifacts"],
+        ),
         "scad_build" => object(
             json!({
                 "artifact": artifact(), "diagnostics": {"type": "object"},

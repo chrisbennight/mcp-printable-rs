@@ -8,6 +8,7 @@ or binaries.
 | Component | Distribution boundary and notice location |
 | --- | --- |
 | Rust dependencies | Versions are recorded in `Cargo.lock`; each crate retains its declared license and upstream notices. Native dependencies linked by crates are also part of the binary inventory. |
+| CadQuery and native CAD dependencies | Versions are recorded in `cad/requirements.txt`; installed distribution metadata and bundled license files belong to the CAD image inventory. Retain the notices and required source for the exact packages distributed. |
 | PyYAML | MIT-licensed repository policy tooling, installed from `requirements-tooling.txt`; not a runtime or direct-client dependency. |
 | Fira font | Embedded by `printable-imaging`; SIL Open Font License 1.1, with the Mozilla Foundation and Telefonica attribution in the [bundled notice](crates/printable-imaging/assets/LICENSE-Fira-OFL.txt). |
 | Blender | The official archive is checksum-pinned in `blender/Dockerfile`; retain its bundled licenses and corresponding source for the exact redistributed version. See [Blender's licensing guidance](https://www.blender.org/about/license/). |
@@ -22,8 +23,8 @@ FFmpeg explains how optional GPL components affect its license in its
 [official legal guidance](https://www.ffmpeg.org/legal.html).
 
 The server image carries the first-party MIT text and Fira notice under
-`/usr/share/doc/printable/`. The Blender image carries the first-party MIT text
-at the same location and retains the Blender archive's own license material.
+`/usr/share/doc/printable/`. The Blender and CAD images carry the first-party MIT
+text at the same location and retain their dependencies' own license material.
 Do not strip upstream documentation directories when reducing image size.
 
 ## Binary release obligations

@@ -5483,6 +5483,7 @@ async fn status(
             "concurrency": settings.scad_concurrency,
         },
         "render_jobs": render_jobs,
+        "cad": {"configured": settings.cad_endpoint.is_some()},
         "workspace": {
             "confined": ws.confined,
             "workspace_root": ws.root,

@@ -34,6 +34,19 @@ def server_document() -> dict:
 
 
 class VerifyReleaseImageTests(unittest.TestCase):
+    def test_cad_image_requires_its_own_runtime_and_immutable_identity(self):
+        contract = verify_release_image.CONTRACTS["cad"]
+        document = server_document()
+        config = document["Config"]
+        config.update(User=contract.user, Healthcheck={"Test": contract.healthcheck},
+                      Entrypoint=contract.entrypoint, Env=list(contract.environment))
+        config["Labels"]["org.printable.role"] = contract.role
+        image = ReleaseIdentity().repository("cad") + f":sha-{REVISION[:12]}@sha256:{'b' * 64}"
+        self.assertEqual(verify_release_image.verify("cad", image, REVISION, document, []), [])
+        self.assertTrue(verify_release_image.verify("cad", SERVER_IMAGE, REVISION, document, []))
+        config["User"] = "0"
+        self.assertTrue(verify_release_image.verify("cad", image, REVISION, document, []))
+
     def test_custom_registry_preserves_source_role_and_revision_checks(self):
         identity = ReleaseIdentity("registry.example:5443", "team/tools", "https://example.com/team/tools")
         image = identity.repository("server") + f":sha-{REVISION[:12]}@sha256:{'b' * 64}"

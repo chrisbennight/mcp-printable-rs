@@ -64,6 +64,20 @@ services:
       PRINTABLE_BLENDER_RENDER_DEVICE: OPTIX
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,display
 
+  cad-worker:
+    <<: *runtime
+    image: ${PRINTABLE_CAD_IMAGE:?Set PRINTABLE_CAD_IMAGE to the matching CAD image}
+    mem_limit: 4g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770
+    environment:
+      PRINTABLE_WORKSPACE_ROOT: /workspace
+      PRINTABLE_CAD_LISTEN: 0.0.0.0:8001
+    depends_on:
+      workspace-init:
+        condition: service_completed_successfully
+
   server:
     <<: *runtime
     image: ${PRINTABLE_SERVER_IMAGE:?Set PRINTABLE_SERVER_IMAGE to the server image}
@@ -85,10 +99,13 @@ services:
       PRINTABLE_BLENDER_WORKSPACE_ROOT: /workspace
       BLENDER_HOST: blender
       PRINTABLE_RENDER_WORKER_HOST: render-worker
+      PRINTABLE_CAD_ENDPOINT: http://cad-worker:8001
     depends_on:
       blender:
         condition: service_healthy
       render-worker:
+        condition: service_healthy
+      cad-worker:
         condition: service_healthy
 
 networks:

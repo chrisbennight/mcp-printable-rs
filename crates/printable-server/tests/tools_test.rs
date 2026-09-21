@@ -460,6 +460,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         workspace_root: None,
         blender_workspace_root: None,
         openscad_bin: None,
+        cad_endpoint: None,
         scad_concurrency: 2,
         ffmpeg_bin: PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,

@@ -14,6 +14,7 @@ class ReleaseIdentityTests(unittest.TestCase):
 
     def test_default_and_independent_registry(self):
         self.assertEqual(ReleaseIdentity().repository("server"), "ghcr.io/chrisbennight/mcp-printable-rs")
+        self.assertEqual(ReleaseIdentity().repository("cad"), "ghcr.io/chrisbennight/mcp-printable-cad")
         identity = ReleaseIdentity("registry.example.com:5443", "team/models", "https://github.com/team/printable")
         reference = identity.repository("blender") + ":sha-" + "a" * 12 + "@sha256:" + "b" * 64
         self.assertIsNotNone(identity.reference_pattern("blender").fullmatch(reference))

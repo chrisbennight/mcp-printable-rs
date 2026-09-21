@@ -354,7 +354,14 @@ impl Workspace {
             .ok_or(WsError::UnsupportedArtifactType)?
             .clone();
         let suffix = allowed_suffix(&name).ok_or(WsError::UnsupportedArtifactType)?;
-        let mut input = std::fs::File::open(source)?;
+        let mut input = std::fs::File::from(
+            rustix::fs::open(
+                source,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(errno_io)?,
+        );
         let before = input.metadata()?;
         if !before.file_type().is_file() {
             return Err(WsError::NotRegularFile);

@@ -8,6 +8,8 @@
 /// An error from a tool invocation.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
+    #[error("CAD build failed: {0}")]
+    Cad(String),
     /// The arguments failed to deserialize into the tool's typed parameters.
     #[error("invalid arguments: {0}")]
     Validation(String),
@@ -65,6 +67,7 @@ impl ToolError {
     /// A stable machine-readable code for the error envelope.
     pub fn code(&self) -> &'static str {
         match self {
+            ToolError::Cad(_) => "cad_build",
             ToolError::Validation(_) => "validation",
             ToolError::InvalidBase64 => "invalid_base64",
             ToolError::PayloadTooLarge(_) => "payload_too_large",

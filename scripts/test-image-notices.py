@@ -11,17 +11,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("server_image")
     parser.add_argument("blender_image")
+    parser.add_argument("--cad-image")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
-    for image in (args.server_image, args.blender_image):
+    images = [args.server_image, args.blender_image]
+    if args.cad_image is not None:
+        images.append(args.cad_image)
+    for image in images:
         if not image or image.startswith("-"):
             parser.error("an image reference is required")
-    for image, source, destination in (
-        (args.server_image, root / "LICENSE", "/usr/share/doc/printable/LICENSE"),
-        (args.blender_image, root / "LICENSE", "/usr/share/doc/printable/LICENSE"),
-        (args.server_image, root / "crates/printable-imaging/assets/LICENSE-Fira-OFL.txt",
-         "/usr/share/doc/printable/LICENSE-Fira-OFL.txt"),
-    ):
+    notices = [(image, root / "LICENSE", "/usr/share/doc/printable/LICENSE") for image in images]
+    notices.append((args.server_image, root / "crates/printable-imaging/assets/LICENSE-Fira-OFL.txt",
+                    "/usr/share/doc/printable/LICENSE-Fira-OFL.txt"))
+    for image, source, destination in notices:
         expected = hashlib.sha256(source.read_bytes()).hexdigest()
         result = subprocess.run([
             "docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",

@@ -62,15 +62,17 @@ def validate(root):
             "publisher must not change mutable image channels")
     require(not re.search(r"\bdocker\s+(?:tag|push)\b", script),
             "publisher contains an unaudited tag or push")
-    require(len(re.findall(r"docker buildx build[^\n]*--push", script)) == 3,
-            "publisher must have only the server, Blender, and pair publication paths")
+    require(len(re.findall(r"docker buildx build[^\n]*--push", script)) == 4,
+            "publisher must have only the server, Blender, CAD, and release-record publication paths")
     markers = [
         'cargo "${cargo_index_args[@]}" test',
         'server_commit_tag="${BASE}:sha-${short_sha}"',
         'blender_commit_tag="${BLENDER_BASE}:sha-${short_sha}"',
         'python3 scripts/verify_release_image.py server "$verified_server" "$revision"',
         'python3 scripts/verify_release_image.py blender "$verified_blender" "$revision"',
-        'python3 scripts/release_security.py "$verified_server" "$verified_blender"',
+        'python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"',
+        'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad"',
+        '  /opt/printable/cad/smoke.py --worker',
         'smoke "$verified_server" linux/amd64 8000',
         '  scripts/smoke-release-pair \\' ,
         '  scripts/smoke-blender-gpu "$verified_blender"',
