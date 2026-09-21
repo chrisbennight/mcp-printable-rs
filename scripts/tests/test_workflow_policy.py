@@ -14,10 +14,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowPolicyTests(unittest.TestCase):
-    def test_cad_release_gates_cannot_be_removed(self):
+    def test_native_worker_release_gates_cannot_be_removed(self):
         markers = (
             'python3 scripts/verify_release_image.py cad "$verified_cad" "$revision"',
-            'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad"',
+            'python3 scripts/verify_release_image.py slicer "$verified_slicer" "$revision"',
+            'python3 scripts/release_security.py "$verified_server" "$verified_blender" "$verified_cad" "$verified_slicer"',
+            '  /opt/printable/slicer-smoke.py',
+            'python3 scripts/test-image-notices.py "$verified_server" "$verified_blender"',
+            'python3 scripts/test-installation.py "$verified_server" "$verified_blender"',
             '  /opt/printable/cad/smoke.py --worker',
         )
         for marker in markers:

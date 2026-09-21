@@ -2,9 +2,9 @@
 /// The set and its order are a stable tool surface because they appear verbatim
 /// in the unsupported-type error message.
 pub const ALLOWED_ARTIFACT_SUFFIXES: &[&str] = &[
-    ".3mf", ".blend", ".bmp", ".dxf", ".glb", ".gltf", ".jpeg", ".jpg", ".json", ".mp4", ".obj",
-    ".off", ".ply", ".png", ".py", ".scad", ".step", ".stl", ".stp", ".svg", ".tif", ".tiff",
-    ".webp",
+    ".3mf", ".blend", ".bmp", ".dxf", ".gcode", ".glb", ".gltf", ".jpeg", ".jpg", ".json", ".mp4",
+    ".obj", ".off", ".ply", ".png", ".py", ".scad", ".step", ".stl", ".stp", ".svg", ".tif",
+    ".tiff", ".webp",
 ];
 
 /// Stable media type per allowed suffix. The explicit table prevents host MIME
@@ -13,6 +13,7 @@ pub fn media_type_for(suffix: &str) -> &'static str {
     match suffix {
         ".bmp" => "image/bmp",
         ".dxf" => "image/vnd.dxf",
+        ".gcode" => "text/plain",
         ".glb" => "model/gltf-binary",
         ".gltf" => "model/gltf+json",
         ".jpeg" | ".jpg" => "image/jpeg",

@@ -12,11 +12,14 @@ def main():
     parser.add_argument("server_image")
     parser.add_argument("blender_image")
     parser.add_argument("--cad-image")
+    parser.add_argument("--slicer-image")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     images = [args.server_image, args.blender_image]
     if args.cad_image is not None:
         images.append(args.cad_image)
+    if args.slicer_image is not None:
+        images.append(args.slicer_image)
     for image in images:
         if not image or image.startswith("-"):
             parser.error("an image reference is required")

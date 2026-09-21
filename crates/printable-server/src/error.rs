@@ -13,6 +13,9 @@ pub enum ToolError {
     /// The arguments failed to deserialize into the tool's typed parameters.
     #[error("invalid arguments: {0}")]
     Validation(String),
+    /// Native slice preparation, lifecycle or toolpath review failed.
+    #[error("{0}")]
+    Slice(String),
     /// A typed printer service failure; mutation uncertainty must not be retried blindly.
     #[error(transparent)]
     Printer(#[from] bambuddy_api::ApiError),
@@ -72,6 +75,7 @@ impl ToolError {
         match self {
             ToolError::Cad(_) => "cad_build",
             ToolError::Validation(_) => "validation",
+            ToolError::Slice(_) => "slice",
             ToolError::Printer(bambuddy_api::ApiError::AmbiguousOutcome) => {
                 "printer_outcome_unknown"
             }

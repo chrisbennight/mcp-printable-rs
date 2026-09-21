@@ -38,7 +38,7 @@ RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
-RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker
+RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
 
 # CI exports the MCP smoke driver from the same Trixie build environment as
@@ -49,6 +49,29 @@ RUN strip target/release/printable-smoke || true
 
 FROM scratch AS smoke-export
 COPY --from=smoke-build /app/target/release/printable-smoke /printable-smoke
+
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS slicer-runtime
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.4.2/OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.4.2.AppImage \
+ && echo 'd12fb8c8eac1aecd2dfb6377acd48f994f8fa439ed5292fa532dd82880f029fd  /tmp/orca.AppImage' | sha256sum --check \
+ && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
+ && mv squashfs-root orca && rm /tmp/orca.AppImage \
+ && rm -rf /opt/orca/resources/web \
+ && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
+COPY LICENSE /usr/share/doc/printable/LICENSE
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.printable.role="slicer-worker"
+USER 10001
+EXPOSE 8003
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/printable-slicer-worker", "--healthcheck"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-slicer-worker"]
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cad-runtime
 ARG SOURCE_REVISION

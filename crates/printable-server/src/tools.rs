@@ -5599,6 +5599,7 @@ async fn status(
         },
         "render_jobs": render_jobs,
         "cad": {"configured": settings.cad_endpoint.is_some()},
+        "slicer": {"configured": settings.slicer_endpoint.is_some()},
         "printers": {"configured": settings.printers.is_some()},
         "workspace": {
             "confined": ws.confined,

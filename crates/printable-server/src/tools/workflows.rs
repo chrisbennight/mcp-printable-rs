@@ -239,6 +239,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             de::<crate::cad::CadRequest>(arguments)?,
         ),
         "view" => de::<ViewRequest>(arguments)?.resolve(),
+        "slice" => ResolvedCall::new(
+            "printable_slice",
+            de::<crate::slicing::SliceRequest>(arguments)?,
+        ),
         "render" => de::<RenderRequest>(arguments)?.resolve(),
         "job" => de::<JobRequest>(arguments)?.resolve(),
         "artifact" => de::<ArtifactRequest>(arguments)?.resolve(),
@@ -291,6 +295,12 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 }
 
 pub const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "slice",
+        description: "Discover native printer, process and filament profiles/settings; prepare a project STL or 3MF with an explicit physical build surface; inspect or cancel retained slices; render selected actual toolpath layers to project artifacts. Preparation does not start a physical print. Inspect retained state before retrying an uncertain preparation.",
+        schema: workflow_schema_of::<crate::slicing::SliceRequest>,
+        annotations: write_annotations,
+    },
     ToolDef {
         name: "printer",
         description: "Discover printers and selected typed status, materials and history; request a telemetry refresh or save a camera snapshot as a project artifact. Refresh does not prove fresh telemetry or physical readiness. Read printable://printing/workflow-v1 before physical printing.",
@@ -502,6 +512,7 @@ mod tests {
         assert_eq!(
             TOOLS.iter().map(|tool| tool.name).collect::<Vec<_>>(),
             [
+                "slice",
                 "printer",
                 "print",
                 "status",
