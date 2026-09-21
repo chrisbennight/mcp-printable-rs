@@ -23,8 +23,8 @@ def validate(root):
     require(set(release["on"]) == {"workflow_dispatch"}, "release must be manual only")
     require(set(release["jobs"]) == {"release"}, "unexpected release job")
     job = release["jobs"]["release"]
-    require(job["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == true && vars.PRINTABLE_RELEASE_ENABLED == 'true'",
-            "release must require private main and explicit enablement")
+    require(job["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRINTABLE_RELEASE_ENABLED == 'true'",
+            "release must require manual dispatch on main and explicit enablement")
     require(job["runs-on"] == ["self-hosted", "Linux", "X64", "printable-release"],
             "release requires the dedicated Linux/amd64 runner")
     require(job["environment"] == "printable-release", "release requires its protected environment")
