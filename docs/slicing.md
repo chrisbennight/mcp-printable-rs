@@ -30,6 +30,11 @@ an exact G-code artifact from a completed slice, verifies its hash and renders a
 selected layer range as a PNG with retained metadata. These are actual toolpaths,
 not a Blender beauty render. The preview supports the implemented XY motion and
 arc commands; unsupported modes fail rather than yielding a misleading image.
+XYZ origin resets retain physical placement, while extruder resets remain
+independent. Excluded arcs update position without generating preview samples.
+Parsing and drawing have a cooperative 30-second processing deadline; bounded
+native encoding is checked before and after it runs. Full-file layer counts and
+estimates remain available when processing completes within that budget.
 It does not establish adhesion, strength, clearance or a successful physical print.
 
 The worker accepts source artifacts up to 1 GiB, one to sixteen material profiles

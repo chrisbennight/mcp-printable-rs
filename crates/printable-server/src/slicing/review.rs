@@ -8,6 +8,7 @@ use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader},
     path::Path,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -42,6 +43,7 @@ struct Segment {
 
 struct Parser {
     position: [f64; 4],
+    coordinate_offset: [f64; 3],
     relative: bool,
     relative_e: bool,
     layer: u32,
@@ -58,6 +60,7 @@ impl Parser {
     fn new() -> Self {
         Self {
             position: [0.; 4],
+            coordinate_offset: [0.; 3],
             relative: false,
             relative_e: false,
             layer: 0,
@@ -137,16 +140,22 @@ impl Parser {
                 let before = self.position;
                 for (index, axis) in b"XYZE".iter().enumerate() {
                     if let Some(value) = values.get(axis) {
-                        self.position[index] = if command == "G92" {
-                            *value
-                        } else if if index == 3 {
+                        if command == "G92" {
+                            if index == 3 {
+                                self.position[index] = *value;
+                            } else {
+                                self.coordinate_offset[index] = before[index] - value;
+                            }
+                            continue;
+                        }
+                        self.position[index] = if if index == 3 {
                             self.relative_e
                         } else {
                             self.relative
                         } {
                             before[index] + value
                         } else {
-                            *value
+                            value + self.coordinate_offset.get(index).copied().unwrap_or(0.)
                         };
                     }
                 }
@@ -173,6 +182,9 @@ impl Parser {
                     let end_radius = (to[0] - center[0]).hypot(to[1] - center[1]);
                     if radius == 0. || (radius - end_radius).abs() > 0.1 {
                         return Err(slice_error("arc geometry is inconsistent"));
+                    }
+                    if !self.selected(travel, request) {
+                        return Ok(());
                     }
                     let start = (from[1] - center[1]).atan2(from[0] - center[0]);
                     let end = (to[1] - center[1]).atan2(to[0] - center[0]);
@@ -218,6 +230,16 @@ impl Parser {
         Ok(())
     }
 
+    fn selected(&self, travel: bool, request: &ReviewParams) -> bool {
+        self.layer >= request.first_layer
+            && self.layer <= request.last_layer
+            && (!travel || request.include_travel)
+            && request
+                .material
+                .is_none_or(|material| material == self.material)
+            && (request.features.is_empty() || request.features.contains(&self.feature))
+    }
+
     fn segment(
         &mut self,
         from: [f64; 3],
@@ -225,12 +247,7 @@ impl Parser {
         travel: bool,
         request: &ReviewParams,
     ) -> Result<(), ToolError> {
-        if self.layer < request.first_layer
-            || self.layer > request.last_layer
-            || (travel && !request.include_travel)
-            || request.material.is_some_and(|x| x != self.material)
-            || (!request.features.is_empty() && !request.features.contains(&self.feature))
-        {
+        if !self.selected(travel, request) {
             return Ok(());
         }
         if from == to {
@@ -265,6 +282,23 @@ impl Parser {
 }
 
 pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value), ToolError> {
+    render_before(source, request, Instant::now() + Duration::from_secs(30))
+}
+
+fn check_deadline(deadline: Instant) -> Result<(), ToolError> {
+    if Instant::now() >= deadline {
+        return Err(slice_error(
+            "toolpath review exceeded its processing deadline; select fewer layers or features",
+        ));
+    }
+    Ok(())
+}
+
+fn render_before(
+    source: &Path,
+    request: &ReviewParams,
+    deadline: Instant,
+) -> Result<(Vec<u8>, Value), ToolError> {
     if request.first_layer == 0
         || request.last_layer < request.first_layer
         || request.last_layer - request.first_layer > 1000
@@ -279,6 +313,7 @@ pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value),
     let mut reader = BufReader::new(std::fs::File::open(source)?);
     let mut line = String::new();
     loop {
+        check_deadline(deadline)?;
         line.clear();
         let n =
             std::io::Read::take(std::io::Read::by_ref(&mut reader), 65537).read_line(&mut line)?;
@@ -298,6 +333,7 @@ pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value),
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for segment in &parser.segments {
+        check_deadline(deadline)?;
         for point in [segment.from, segment.to] {
             for i in 0..3 {
                 min[i] = min[i].min(point[i]);
@@ -324,6 +360,7 @@ pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value),
     ];
     let mut legend = BTreeMap::new();
     for segment in &parser.segments {
+        check_deadline(deadline)?;
         let key = if segment.travel {
             "travel".into()
         } else {
@@ -338,9 +375,11 @@ pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value),
         draw_line(&mut image, map(segment.from), map(segment.to), Rgb(color));
     }
     let mut output = std::io::Cursor::new(Vec::new());
+    check_deadline(deadline)?;
     image
         .write_to(&mut output, image::ImageFormat::Png)
         .map_err(|_| slice_error("cannot encode toolpath review"))?;
+    check_deadline(deadline)?;
     Ok((
         output.into_inner(),
         json!({"kind":"actual_toolpath","projection":"top_xy","units":"mm","layers":parser.layer_count,
@@ -379,6 +418,90 @@ fn draw_line(image: &mut RgbImage, from: [i32; 2], to: [i32; 2], color: Rgb<u8>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn review_request() -> ReviewParams {
+        ReviewParams {
+            slice: SliceHandle {
+                project_id: "part".into(),
+                output_dir: "slice".into(),
+            },
+            toolpath: "plate_1.gcode".into(),
+            first_layer: 1,
+            last_layer: 1,
+            features: vec![],
+            material: None,
+            include_travel: false,
+            size: 128,
+        }
+    }
+
+    #[test]
+    fn xyz_coordinate_resets_preserve_physical_absolute_and_relative_motion() {
+        let mut parser = Parser::new();
+        let request = review_request();
+        for line in [
+            "; CHANGE_LAYER",
+            "M83",
+            "G1 X10 E1",
+            "G92 X0",
+            "G1 X10 E1",
+            "G91",
+            "G1 X5 E1",
+            "G90",
+            "G1 X20 E1",
+            "G92 E0",
+        ] {
+            parser.line(line, &request).unwrap();
+        }
+        let positions: Vec<_> = parser
+            .segments
+            .iter()
+            .map(|s| (s.from[0], s.to[0]))
+            .collect();
+        assert_eq!(positions, [(0., 10.), (10., 20.), (20., 25.), (25., 30.)]);
+        assert_eq!(parser.position, [30., 0., 0., 0.]);
+    }
+
+    #[test]
+    fn unselected_arcs_skip_interpolation_but_preserve_position_and_validation() {
+        let request = review_request();
+        let mut parser = Parser::new();
+        parser.line("M83", &request).unwrap();
+        // This valid semicircle would exceed the selected-arc sample cap.
+        parser.line("G3 X20000 I10000 E1", &request).unwrap();
+        assert!(parser.segments.is_empty());
+        assert_eq!(parser.position[0], 20000.);
+        parser.line("; CHANGE_LAYER", &request).unwrap();
+        parser.line("G1 X20001 E1", &request).unwrap();
+        assert_eq!(parser.segments[0].from[0], 20000.);
+        assert_eq!(parser.segments[0].to[0], 20001.);
+        assert!(parser.line("G3 X1 R10 E1", &request).is_err());
+        for filter in ["feature", "material", "travel"] {
+            let mut filtered = review_request();
+            if filter == "feature" {
+                filtered.features = vec!["other".into()];
+            } else if filter == "material" {
+                filtered.material = Some(1);
+            }
+            let mut parser = Parser::new();
+            parser.line("; CHANGE_LAYER", &filtered).unwrap();
+            parser.line("M83", &filtered).unwrap();
+            let arc = if filter == "travel" {
+                "G3 X20000 I10000"
+            } else {
+                "G3 X20000 I10000 E1"
+            };
+            parser.line(arc, &filtered).unwrap();
+            assert!(parser.segments.is_empty());
+        }
+    }
+
+    #[test]
+    fn review_processing_deadline_is_enforced_without_sleeping() {
+        let source = tempfile::NamedTempFile::new().unwrap();
+        let error = render_before(source.path(), &review_request(), Instant::now()).unwrap_err();
+        assert!(error.to_string().contains("processing deadline"));
+    }
     #[test]
     fn review_tracks_relative_extrusion_resets_arcs_layers_and_features() {
         let request = ReviewParams {
