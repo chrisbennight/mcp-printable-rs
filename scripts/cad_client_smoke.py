@@ -50,6 +50,33 @@ def run(client, output):
         raise ValueError("Independent CAD build changed the live Blender scene")
     print("CAD_CLIENT_OK: project build, STEP round trip, verified downloads, unchanged live scene")
 
+    saved = project["root"] + "/before-attachment.blend"
+    call("scene", "checkpoint", {"path": saved, "expected_scene": before})
+    state = call("inspect", "scene", {})["scene_state"]
+    call("scene", "open_project", {"project_id": project_id, "mode": "empty",
+        "discard_current": True, "expected_scene": state})
+    state = call("inspect", "scene", {})["scene_state"]
+    if state.get("project_id") != project_id:
+        raise ValueError("Public project scene did not bind the requested identity")
+    attached = call("scene", "attach_cad", {"project_id": project_id,
+        "path": "builds/import/model.glb", "expected_scene": state})
+    if attached["object_count"] < 1 or attached["units"] != "mm":
+        raise ValueError("Public CAD attachment returned no millimetre scene geometry")
+    state = call("inspect", "scene", {})["scene_state"]
+    measured = client.call("blender_execute", {"expected_scene": state, "code":
+        "points = [obj.matrix_world @ vertex.co for obj in bpy.context.scene.objects "
+        "if obj.type == 'MESH' for vertex in obj.data.vertices]\n"
+        "result = [max(point[i] for point in points) - min(point[i] for point in points) "
+        "for i in range(3)]\n"})["result"]
+    if len(measured) != 3 or not all(math.isclose(actual, expected, abs_tol=1e-4)
+                                   for actual, expected in zip(sorted(measured), [20, 30, 42])):
+        raise ValueError("Public CAD attachment changed the native model dimensions")
+    state = call("inspect", "scene", {})["scene_state"]
+    call("scene", "restore", {"path": saved, "expected_scene": state})
+    if call("inspect", "scene", {})["scene_state"].get("project_id") != before.get("project_id"):
+        raise ValueError("Public checkpoint restore lost the original project identity")
+    print("PROJECT_SCENE_CLIENT_OK: guarded CAD attachment, native dimensions, restored scene")
+
 
 def verify_restored(client, output):
     for name in ("model", "import_step"):

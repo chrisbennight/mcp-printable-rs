@@ -24,6 +24,7 @@ fn artifact() -> Value {
 fn scene_state() -> Value {
     object(
         json!({
+            "project_id": {"type": "string"},
             "generation": {"type": "string", "format": "uuid"},
             "revision": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64}
         }),

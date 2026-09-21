@@ -51,8 +51,9 @@ class SceneStateTests(unittest.TestCase):
     def test_file_load_and_outside_updates_are_observed_and_callbacks_removed(self) -> None:
         handlers = self.handlers()
         callbacks = SimpleNamespace(persistent=lambda callback: callback,
-                                    load_post=[], depsgraph_update_post=[])
-        handlers._bpy = SimpleNamespace(app=SimpleNamespace(handlers=callbacks))
+                                    load_post=[], save_pre=[], depsgraph_update_post=[])
+        handlers._bpy = SimpleNamespace(app=SimpleNamespace(handlers=callbacks),
+                                        context=SimpleNamespace(scene={}))
         handlers.install_state_observers()
         before = handlers.scene_state
         callbacks.depsgraph_update_post[0](None, SimpleNamespace(updates=[object()]))
@@ -70,7 +71,7 @@ class SceneStateTests(unittest.TestCase):
     def test_pending_outside_changes_are_evaluated_before_precondition_check(self) -> None:
         handlers = self.handlers()
         callbacks = SimpleNamespace(persistent=lambda callback: callback,
-                                    load_post=[], depsgraph_update_post=[])
+                                    load_post=[], save_pre=[], depsgraph_update_post=[])
         def update() -> None:
             callbacks.depsgraph_update_post[0](None, SimpleNamespace(updates=[object()]))
         handlers._bpy = SimpleNamespace(
@@ -82,6 +83,20 @@ class SceneStateTests(unittest.TestCase):
         with self.assertRaises(SceneStateError):
             handlers.dispatch("rename_object", {"expected_scene": expected})
         handlers._registry["rename_object"].assert_not_called()
+
+    def test_project_binding_rejects_stale_and_cross_project_mutation(self) -> None:
+        state = SceneState()
+        generic = state.snapshot
+        state.bind_project("enclosure")
+        observed = state.snapshot
+        self.assertEqual(observed["project_id"], "enclosure")
+        for stale in (generic, {**observed, "project_id":"fixture"},
+                      {key:value for key,value in observed.items() if key != "project_id"}):
+            with self.assertRaises(SceneStateError):
+                state.begin("attach_cad", stale)
+            self.assertEqual(state.snapshot, observed)
+        state.begin("attach_cad", observed)
+        self.assertEqual(state.snapshot["project_id"], "enclosure")
 
     @staticmethod
     def handlers() -> BlenderHandlers:

@@ -134,6 +134,8 @@ workflow!(EditRequest {
 });
 
 workflow!(SceneRequest {
+    OpenProject(OpenProjectSceneParams) => "printable_scene_open_project",
+    AttachCad(AttachCadParams) => "printable_scene_attach_cad",
     Clear(SceneClearParams) => "printable_scene_clear",
     Checkpoint(SceneCheckpointParams) => "printable_scene_checkpoint",
     Restore(SceneRestoreParams) => "printable_scene_restore",
@@ -307,7 +309,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "scene",
-        description: "Clear, checkpoint/save, restore, import STL, or export STL in the confined workspace. Restore replaces live state with embedded scripts disabled. Artifact transfer is separate.",
+        description: "Open or recover an explicit project, attach CAD GLB assemblies, clear, checkpoint, restore, or import/export STL. Project switching requires current scene state and explicit backup/discard. CAD attachment checks project and scene state and preserves hierarchy in millimetres. Restore disables embedded scripts.",
         schema: workflow_schema_of::<SceneRequest>,
         annotations: write_annotations,
     },
@@ -412,6 +414,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(detailed.response.apply(record.clone()), record);
+    }
+
+    #[test]
+    fn project_scene_actions_require_and_preserve_the_complete_observation() {
+        let observed = json!({
+            "generation": "00000000-0000-4000-8000-000000000001",
+            "revision": 4,
+            "project_id": "model"
+        });
+        for (action, mut params, operation) in [
+            (
+                "open_project",
+                json!({"project_id": "model", "mode": "adopt"}),
+                "printable_scene_open_project",
+            ),
+            (
+                "attach_cad",
+                json!({"project_id": "model", "path": "builds/one/model.glb"}),
+                "printable_scene_attach_cad",
+            ),
+        ] {
+            assert!(resolve("scene", json!({"action": action, "params": params})).is_err());
+            params["expected_scene"] = observed.clone();
+            let resolved = resolve("scene", json!({"action": action, "params": params})).unwrap();
+            assert_eq!(resolved.name, operation);
+            assert_eq!(resolved.arguments["expected_scene"], observed);
+        }
     }
 
     #[test]
