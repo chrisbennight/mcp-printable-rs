@@ -50,7 +50,7 @@ pub struct ExpectedDigest {
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct IngestParams {
-    /// File URI delivered by the gateway's native upload forwarding.
+    /// File URI returned by the native file upload handoff.
     #[schemars(extend("x-mcp-file" = {"transferModes": ["upload"]}))]
     pub file: String,
     /// Destination path relative to the confined workspace.

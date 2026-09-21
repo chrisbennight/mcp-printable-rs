@@ -1499,7 +1499,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_workspace_publish",
-        description: "Publish an immutable confined artifact snapshot through the governed MCP file-transfer handoff. Returns structured file metadata only; artifact bytes are streamed directly to the gateway and are never base64-encoded into tool content.",
+        description: "Publish an immutable confined artifact snapshot through the governed MCP file-transfer handoff. Returns structured file metadata only; artifact bytes are streamed directly to the client and are never base64-encoded into tool content.",
         schema: schema_of::<PublishParams>,
         annotations: publish_annotations,
     },
