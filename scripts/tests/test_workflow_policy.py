@@ -36,6 +36,8 @@ class WorkflowPolicyTests(unittest.TestCase):
         cases = [
             ("release.yml", lambda w: w["on"].update({"pull_request": {}})),
             ("release.yml", lambda w: w["jobs"]["release"].update({"if": "true"})),
+            ("release.yml", lambda w: w["jobs"]["release"].update({"if": "github.event_name == 'workflow_dispatch' && vars.PRINTABLE_RELEASE_ENABLED == 'true'"})),
+            ("release.yml", lambda w: w["jobs"]["release"].update({"if": "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"})),
             ("release.yml", lambda w: w["jobs"]["release"].update({"environment": "unprotected"})),
             ("release.yml", lambda w: w["jobs"]["release"]["env"].update({"CRATES_INDEX_URL": ""})),
             ("release.yml", lambda w: w["jobs"]["release"]["steps"][0].update({"uses": "actions/checkout@main"})),
