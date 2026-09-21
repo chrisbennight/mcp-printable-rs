@@ -575,7 +575,9 @@ mod tests {
 
     #[tokio::test]
     async fn generated_regular_files_cannot_exceed_the_process_limit() {
-        let (directory, script_path) = script("head -c 2048 /dev/zero > \"$1\"");
+        // Exercise the file-size error without waiting for a host crash handler
+        // to process SIGXFSZ. The inherited limit must still bound the output.
+        let (directory, script_path) = script("trap '' XFSZ\nhead -c 2048 /dev/zero > \"$1\"");
         let output_path = directory.path().join("oversized.stl");
         let error = shell_runner()
             .acquire()
