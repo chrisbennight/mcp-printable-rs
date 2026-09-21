@@ -3,6 +3,8 @@
 //! A resource enters this catalog only when its body and the capability it
 //! explains ship together.
 
+pub mod contracts;
+
 /// One resource's static metadata.
 pub struct ResourceDef {
     pub uri: &'static str,

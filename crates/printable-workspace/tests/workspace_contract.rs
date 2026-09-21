@@ -94,12 +94,40 @@ fn write_read_roundtrip_with_nested_parents() {
     let meta = ws.write_artifact("a/b/c.stl", b"solid x\n", false).unwrap();
     assert_eq!(meta.path, "a/b/c.stl");
     assert_eq!(meta.size_bytes, 8);
-    assert_eq!(meta.media_type, "application/vnd.ms-pki.stl");
+    assert_eq!(meta.media_type, "model/stl");
     assert!(meta.modified_ns > 0);
 
     let (rmeta, bytes) = ws.read_artifact("a/b/c.stl").unwrap();
     assert_eq!(bytes, b"solid x\n");
     assert_eq!(rmeta, meta);
+}
+
+#[test]
+fn stl_encodings_share_mesh_metadata_across_artifact_operations() {
+    let dir = tmp();
+    let ws = ws(dir.path());
+    let ascii = b"solid triangle\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid triangle\n";
+    let mut binary = vec![0_u8; 80];
+    binary.extend_from_slice(&1_u32.to_le_bytes());
+    for value in [0_f32, 0., 1., 0., 0., 0., 1., 0., 0., 0., 1., 0.] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&0_u16.to_le_bytes());
+    for (name, bytes) in [
+        ("ascii.stl", ascii.as_slice()),
+        ("binary.stl", binary.as_slice()),
+    ] {
+        let written = ws.write_artifact(name, bytes, false).unwrap();
+        assert_eq!(written.media_type, "model/stl");
+        let (read, content) = ws.read_artifact(name).unwrap();
+        assert_eq!(read.media_type, "model/stl");
+        assert_eq!(content, bytes);
+        let snapshot = ws.snapshot_artifact(name).unwrap();
+        assert_eq!(snapshot.meta().media_type, "model/stl");
+    }
+    let listed = ws.list_artifacts(".", 10).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|entry| entry.media_type == "model/stl"));
 }
 
 #[test]
@@ -201,7 +229,7 @@ fn media_type_is_exact_for_every_allowed_suffix() {
         (".ply", "application/octet-stream"),
         (".png", "image/png"),
         (".scad", "application/octet-stream"),
-        (".stl", "application/vnd.ms-pki.stl"),
+        (".stl", "model/stl"),
         (".svg", "image/svg+xml"),
         (".tif", "image/tiff"),
         (".tiff", "image/tiff"),
@@ -484,7 +512,7 @@ fn snapshot_copies_and_detects_mutation() {
     assert_eq!(std::fs::read(snap.path()).unwrap(), b"stable");
     assert_eq!(snap.meta().path, "s.stl");
     assert_eq!(snap.meta().size_bytes, 6);
-    assert_eq!(snap.meta().media_type, "application/vnd.ms-pki.stl");
+    assert_eq!(snap.meta().media_type, "model/stl");
     // The snapshot lives outside the workspace root.
     assert!(!snap.path().starts_with(dir.path()));
 

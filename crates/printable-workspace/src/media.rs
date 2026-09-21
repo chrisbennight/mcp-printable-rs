@@ -19,7 +19,7 @@ pub fn media_type_for(suffix: &str) -> &'static str {
         ".mp4" => "video/mp4",
         ".obj" => "application/x-tgif",
         ".png" => "image/png",
-        ".stl" => "application/vnd.ms-pki.stl",
+        ".stl" => "model/stl",
         ".svg" => "image/svg+xml",
         ".tif" | ".tiff" => "image/tiff",
         ".webp" => "image/webp",
