@@ -9,6 +9,7 @@ deployment and gateway discovery must move together at cutover.
 is available when the backend runs normal Blender with a private display.
 Blender operations accept optional [scene preconditions](scene-state.md) and
 return compact scene-state metadata through the shared handlers.
+Presented renders support optional [exposure and illumination controls](presentation-controls.md).
 
 ## Requests
 

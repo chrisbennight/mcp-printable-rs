@@ -689,6 +689,15 @@ pub(crate) struct ProductPresentation {
     /// Optional override for the profile's preserve/smooth-by-angle choice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) surface_shading: Option<ProductSurfaceShading>,
+    /// Presentation-only exposure in stops; bounded to -10 through 10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = -10, max = 10))]
+    pub(crate) exposure_stops: Option<f64>,
+    /// Scale all profile area lights and world illumination together (0 through 10).
+    /// Defaults to 1. Zero disables this illumination, not emissive materials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = 10))]
+    pub(crate) light_intensity_scale: Option<f64>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -2177,6 +2186,21 @@ pub(crate) fn validate_product_presentation(
     presentation: &ProductPresentation,
     selected_objects: Option<&[String]>,
 ) -> Result<(), ToolError> {
+    for (name, value, minimum, maximum) in [
+        ("exposure_stops", presentation.exposure_stops, -10.0, 10.0),
+        (
+            "light_intensity_scale",
+            presentation.light_intensity_scale,
+            0.0,
+            10.0,
+        ),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || !(minimum..=maximum).contains(&value)) {
+            return Err(ToolError::Validation(format!(
+                "{name} must be a finite number from {minimum} through {maximum}"
+            )));
+        }
+    }
     if !presentation.view.azimuth_degrees.is_finite()
         || !(-360.0..=360.0).contains(&presentation.view.azimuth_degrees)
     {
@@ -2639,6 +2663,8 @@ async fn render_product(
             elevation: requested_elevation,
             shading: requested_shading,
             materials: &requested_materials,
+            exposure: params.presentation.exposure_stops.unwrap_or(0.0),
+            light_intensity_scale: params.presentation.light_intensity_scale.unwrap_or(1.0),
         },
     )?;
     let bytes = verify_product_png_artifact(
@@ -2659,6 +2685,8 @@ async fn render_product(
 }
 
 struct ProductRenderExpectation<'a> {
+    exposure: f64,
+    light_intensity_scale: f64,
     path: &'a str,
     width: u16,
     height: u16,
@@ -2794,7 +2822,14 @@ fn validate_product_render_response(
                     || light
                         .get("energy_watts")
                         .and_then(Value::as_f64)
-                        .is_none_or(|value| !value.is_finite() || value <= 0.0)
+                        .is_none_or(|value| {
+                            !value.is_finite()
+                                || if expected.light_intensity_scale == 0.0 {
+                                    value != 0.0
+                                } else {
+                                    value <= 0.0
+                                }
+                        })
                     || light
                         .get("size")
                         .and_then(Value::as_f64)
@@ -2811,7 +2846,15 @@ fn validate_product_render_response(
         || color.get("view_transform").and_then(Value::as_str)
             != Some(expected.profile.view_transform())
         || color.get("look").and_then(Value::as_str) != Some("None")
-        || color.get("exposure").and_then(Value::as_f64) != Some(0.0)
+        || color
+            .get("exposure")
+            .and_then(Value::as_f64)
+            .is_none_or(|value| !value.is_finite() || (value - expected.exposure).abs() > 1e-5)
+        || presentation
+            .get("light_intensity_scale")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0)
+            != expected.light_intensity_scale
         || color.get("gamma").and_then(Value::as_f64) != Some(1.0)
     {
         return Err(malformed());
@@ -2892,7 +2935,8 @@ fn validate_product_render_response(
         .ok_or_else(malformed)?;
     let (world_color, world_strength) = expected.profile.world();
     if world.get("base_color_srgb") != Some(&json!(world_color))
-        || world.get("strength").and_then(Value::as_f64) != Some(world_strength)
+        || world.get("strength").and_then(Value::as_f64)
+            != Some(world_strength * expected.light_intensity_scale)
     {
         return Err(malformed());
     }
@@ -2936,6 +2980,21 @@ fn validate_product_render_response(
         return Err(malformed());
     }
     Ok(())
+}
+
+pub(crate) fn product_controls_match(
+    actual: &serde_json::Map<String, Value>,
+    expected: &ProductPresentation,
+) -> bool {
+    expected.exposure_stops.is_none_or(|expected| {
+        actual
+            .get("color_management")
+            .and_then(|color| color.get("exposure"))
+            .and_then(Value::as_f64)
+            .is_some_and(|value| value.is_finite() && (value - expected).abs() <= 1e-5)
+    }) && expected.light_intensity_scale.is_none_or(|expected| {
+        actual.get("light_intensity_scale").and_then(Value::as_f64) == Some(expected)
+    })
 }
 
 pub(crate) fn product_materials_and_shading_match(
@@ -3473,6 +3532,7 @@ fn validate_product_view_presentation(
         || actual.get("source_state_verified").and_then(Value::as_bool) != Some(true)
         || actual.get("cleanup_verified").and_then(Value::as_bool) != Some(true)
         || !product_materials_and_shading_match(actual, &expected.materials, expected_shading)
+        || !product_controls_match(actual, expected)
     {
         return Err(malformed());
     }

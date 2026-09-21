@@ -22,6 +22,20 @@ never hide the selected product. Camera, lights, world, optional ground,
 evaluated mesh copies, and presentation materials exist only in a disposable
 presentation scene.
 
+## Exposure and illumination
+
+The optional `presentation.exposure_stops` adjusts display exposure from -10
+through 10, defaulting to 0. `presentation.light_intensity_scale` multiplies
+profile area lights and world illumination from 0 through 10, defaulting to 1.
+Both require finite numbers. Zero illumination leaves emissive source materials
+active; exposure does not change light energy. These are presentation controls,
+not changes to the source scene, geometry, or camera.
+
+The same controls apply to presented galleries, turntables, and durable jobs.
+Results report effective exposure in `presentation.color_management.exposure`,
+the illumination scale in `presentation.light_intensity_scale`, and the resulting
+light energies and world strength. Omitted controls preserve profile defaults.
+
 ## Galleries, turntables, and durable jobs
 
 `render` with `action: "gallery"` and `render` with `action: "turntable"` accept this same

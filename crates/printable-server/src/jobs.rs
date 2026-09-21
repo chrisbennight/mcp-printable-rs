@@ -28,8 +28,9 @@ use printable_workspace::{ArtifactMeta, Snapshot, Workspace, WsError};
 use crate::error::ToolError;
 use crate::tools::{
     MAX_PRODUCT_RENDER_BYTES, MAX_PRODUCT_RENDER_PIXELS, ProductPresentation, geometry_blocking,
-    geometry_worker_path_from_override, product_materials_and_shading_match,
-    run_geometry_worker_files, validate_product_presentation, verify_product_png_artifact,
+    geometry_worker_path_from_override, product_controls_match,
+    product_materials_and_shading_match, run_geometry_worker_files, validate_product_presentation,
+    verify_product_png_artifact,
 };
 use crate::upload::random_hex_id;
 
@@ -2941,6 +2942,9 @@ fn validate_job_product_response(
     if actual.get("profile").and_then(Value::as_str) != Some(presentation.profile.name()) {
         return Err(invalid());
     }
+    if !product_controls_match(actual, presentation) {
+        return Err(invalid());
+    }
     let expected_shading = presentation
         .surface_shading
         .unwrap_or_else(|| presentation.profile.default_shading());
@@ -4698,6 +4702,29 @@ mod tests {
         });
         validate_job_product_response(&response, &record, 0)
             .expect("exact persisted presentation accepted");
+
+        record
+            .spec
+            .presentation
+            .as_mut()
+            .expect("presentation")
+            .exposure_stops = Some(1.25);
+        record
+            .spec
+            .presentation
+            .as_mut()
+            .expect("presentation")
+            .light_intensity_scale = Some(0.5);
+        assert!(validate_job_product_response(&response, &record, 0).is_err());
+        response["presentation"]["color_management"] = json!({"exposure": 1.25});
+        response["presentation"]["light_intensity_scale"] = json!(0.5);
+        validate_job_product_response(&response, &record, 0).expect("requested controls verified");
+        response["presentation"]["light_intensity_scale"] = json!(1.0);
+        assert!(validate_job_product_response(&response, &record, 0).is_err());
+        response["presentation"]["light_intensity_scale"] = json!(0.5);
+        response["presentation"]["color_management"]["exposure"] = json!(0.0);
+        assert!(validate_job_product_response(&response, &record, 0).is_err());
+        response["presentation"]["color_management"]["exposure"] = json!(1.25);
 
         response["presentation"]["materials"]["overrides"][0]["roughness"] = json!(0.6);
         assert!(validate_job_product_response(&response, &record, 0).is_err());

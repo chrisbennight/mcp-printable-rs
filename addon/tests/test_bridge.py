@@ -1142,6 +1142,24 @@ class HandlerValidationTests(unittest.TestCase):
             )
             handlers.close()
 
+    def test_product_presentation_exposure_and_light_controls(self) -> None:
+        for exposure, intensity in ((-10.0, 0.0), (1.25, 0.5), (10.0, 10.0)):
+            normalized = BlenderHandlers._validate_product_presentation(
+                {"profile": "studio_neutral", "exposure_stops": exposure,
+                 "light_intensity_scale": intensity}, ["Body"]
+            )
+            self.assertEqual(normalized["exposure_stops"], exposure)
+            self.assertEqual(normalized["light_intensity_scale"], intensity)
+        for field, values in (
+            ("exposure_stops", (-10.1, 10.1, float("nan"), float("inf"), True, "1")),
+            ("light_intensity_scale", (-0.1, 10.1, float("nan"), float("inf"), True, "1")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(HandlerError):
+                    BlenderHandlers._validate_product_presentation(
+                        {"profile": "engineering", field: value}, ["Body"]
+                    )
+
     def test_product_presentation_validates_mappings_and_applies_profile_defaults(
         self,
     ) -> None:
@@ -1153,6 +1171,8 @@ class HandlerValidationTests(unittest.TestCase):
             normalized,
             {
                 "profile": "engineering",
+                "exposure_stops": 0.0,
+                "light_intensity_scale": 1.0,
                 "view": {
                     "azimuth_degrees": 45.0,
                     "elevation_degrees": 25.0,
