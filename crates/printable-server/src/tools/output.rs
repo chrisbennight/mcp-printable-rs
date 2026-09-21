@@ -129,6 +129,12 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
             }), &["jobs", "next_offset"])
         ]}),
+        "project" => json!({"type":"object","anyOf":[
+            serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
+            object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
+            object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
+            object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"])
+        ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
             object(json!({"state": {"enum": ["prepared", "receiving", "ready", "failed", "commit_uncertain", "committed"]}}), &["state"]),

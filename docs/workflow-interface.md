@@ -1,7 +1,7 @@
 # Workflow interface
 
 The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises exactly thirteen workflow tools. Earlier prefixed
+The public server advertises fourteen workflow tools. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
 public tool calls. The release smoke exercises the combined workflows over MCP;
 deployment and gateway discovery must move together at cutover.
@@ -44,6 +44,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
+| `project` | `create`, `get`, `list`, `resolve`, `files` |
 | `artifact` | `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
@@ -143,3 +144,29 @@ reported an error. This receipt cannot write again: inspect the destination
 before deciding whether to authorize another transfer. This conservative outcome
 also applies when a filesystem error occurred before publication. Successful
 receipts still return the original result without writing again.
+
+## Shared projects
+
+Use the `project` tool with `action: "create"` and `params` containing
+`project_id`, `name`, and optional `description`. Choose a stable identifier such
+as `sensor-enclosure`. Repeating the same creation returns the existing project;
+conflicting metadata returns an error instead of replacing it. The `get` and
+`list` actions discover projects after a server restart.
+
+If a directory already exists without project metadata, creation requires
+`adopt_existing: true` to deliberately associate its files with the project.
+A failed metadata write can leave the newly reserved directory behind; inspect
+it before retrying with adoption.
+
+Each result contains a workspace-relative `root`, such as
+`projects/sensor-enclosure`. The `resolve` action takes `project_id` and a
+relative artifact `path`, for example `source/enclosure.scad`, and returns the
+workspace path accepted by artifact, OpenSCAD, and Blender tools. The `files`
+action lists a project's artifacts. Listings are bounded and report when the
+result limit is reached; get/resolve remain available by identifier.
+
+Project metadata is server-owned under `.printable/projects`. Existing files
+outside projects remain available. Projects organize shared storage; they do not
+isolate scripts that can access the shared volume. Creating or resolving a
+project does not select or replace Blender's live scene. Scene binding and
+CadQuery modeling remain subsequent delivery work.

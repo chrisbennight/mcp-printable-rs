@@ -13,6 +13,7 @@ pub mod file_transfer;
 pub mod health;
 pub mod jobs;
 pub mod mcp;
+pub mod projects;
 pub mod resources;
 pub mod server;
 pub mod tools;

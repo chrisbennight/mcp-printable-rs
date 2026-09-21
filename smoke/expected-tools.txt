@@ -11,4 +11,5 @@ compare_renders
 validate_mesh
 analyze_assembly
 job
+project
 artifact
