@@ -67,6 +67,8 @@ pub struct Settings {
     pub openscad_bin: Option<PathBuf>,
     /// Dedicated credential-free CAD worker on the private backend network.
     pub cad_endpoint: Option<String>,
+    /// Optional typed printer integration; credentials remain inside its clients.
+    pub printers: Option<std::sync::Arc<crate::printers::PrinterService>>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
     /// FFmpeg binary used to encode durable animation frame sequences.
@@ -95,6 +97,8 @@ pub struct Settings {
 /// payload.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SettingsError {
+    #[error("printer integration setting {0} is missing or invalid")]
+    Printers(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
@@ -175,6 +179,7 @@ impl Settings {
             blender_workspace_root: blender_workspace_root.map(PathBuf::from),
             openscad_bin: nonempty(&get, "OPENSCAD_BIN").map(PathBuf::from),
             cad_endpoint: nonempty(&get, "PRINTABLE_CAD_ENDPOINT"),
+            printers: crate::printers::configure(&get)?,
             scad_concurrency: scad_concurrency(&get)?,
             ffmpeg_bin: nonempty(&get, "FFMPEG_BIN")
                 .map(PathBuf::from)
