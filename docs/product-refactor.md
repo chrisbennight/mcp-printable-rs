@@ -1,8 +1,7 @@
 # Agent-driven Printable product refactor
 
-This document records the earlier product refactor and private deployment
-tracking. Its capability contracts remain useful design context; its lab issue
-links and deployment authorization are historical. Use the current
+This document records the earlier product refactor. Its capability contracts
+remain useful design context; they are not proof of current deployment. Use the current
 [architecture](architecture.md), [workflow interface](workflow-interface.md),
 and GitHub issues for independent installation and new work.
 
@@ -102,20 +101,13 @@ Child issues track reviewable outcomes and dependencies. Every PR must cite its 
 
 External asset providers, general mesh repair, arbitrary GUI mouse automation, and saved-script registries are outside this refactor unless separately authorized. Preserve extension paths without growing the tool catalog speculatively.
 
-## Linked delivery issues
+## Delivery tracking
 
-| Issue | Outcome | Depends on |
-|---|---|---|
-| [#94](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/94) | Define agent workflow acceptance and baseline for the Printable product refactor | — |
-| [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95) | Expose the complete thirteen-tool Printable interface with structured contracts | [#94](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/94) |
-| [#96](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/96) | Bind agent edits and observations to explicit Blender state and execution context | [#94](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/94), [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95) |
-| [#97](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/97) | Run authoritative Blender with a private GPU-backed UI and reliable event loop | [#94](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/94) |
-| [#98](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/98) | Give agents native viewport/editor feedback and flexible diagnostic investigation | [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95), [#96](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/96), [#97](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/97) |
-| [#99](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/99) | Render immutable checkpoints without occupying or replacing the live Blender scene | [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95), [#96](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/96), [#97](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/97) |
-| [#100](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/100) | Prove coherent agent modeling workflows and context efficiency across the refactored product | [#94](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/94), [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95), [#96](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/96), [#97](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/97), [#98](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/98), [#99](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/99) |
-| [#101](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/101) | Cut over Printable to the coherent interface and verify the complete product live | [#95](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/95), [#96](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/96), [#97](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/97), [#98](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/98), [#99](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/99), [#100](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/100) |
-
-The links above are the delivery graph. Earlier slices may merge independently, but the epic stays open until the complete product is live and verified.
+The [GitHub migration tracker](https://github.com/chrisbennight/mcp-printable-rs/issues/14)
+and [efficiency epic](https://github.com/chrisbennight/mcp-printable-rs/issues/16)
+track current reconciliation and delivery. The ordered outcomes above preserve
+the design dependencies without retaining site-specific issue links. A merged
+slice is not evidence that the complete product is live and verified.
 
 ## Current implementation boundary
 

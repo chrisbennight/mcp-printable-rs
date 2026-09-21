@@ -7,8 +7,8 @@ unexecuted tasks as passes or infer model tokens from JSON or PNG byte counts.
 ## Baseline identity and existing evidence
 
 The baseline below is historical. Its unavailable features describe that
-earlier revision, not the current product. Private release links are provenance
-for that comparison and are not required to run the current acceptance corpus.
+earlier revision, not the current product. Site-specific release evidence is
+not retained here and is not required to run the current acceptance corpus.
 
 The starting source revision is
 `c4c0f7c1b3175b71b0bf2921f909fba113461c07`, freshly fetched from `origin/main`.
@@ -28,17 +28,16 @@ the [paired-container smoke](../scripts/smoke-release-pair),
 tools, decoded artifacts, manufactured products, and certified motion. Pure
 tests use fakes and never substitute for these deployed-runtime boundaries.
 
-[Release run 74165](https://gitea.cacahuate.org/bennight/mcp-printable-rs/actions/runs/74165)
-passed the source revision's release gates. The
-[previous delivery evidence](https://gitea.cacahuate.org/bennight/mcp-printable-rs/issues/91#issuecomment-72288)
-records live modeling guide execution, selective scene/object/node inspection,
-rendering, gateway discovery, and restoration of the pre-test scene. These are
-functional baseline observations, not controlled agent-efficiency measurements.
+Historical delivery included modeling guide execution, selective inspection,
+rendering, discovery, and restoration of the pre-test scene. The site-specific
+records are not public qualification evidence. Re-run those workflows against
+the intended image set; do not infer controlled efficiency measurements from
+the historical functional observations.
 
 | Baseline measurement | Recorded status |
 | --- | --- |
-| Existing product/wire regression suite | Available in source and release evidence above |
-| Live selective-modeling workflow | Verified in the prior delivery evidence |
+| Existing product/wire regression suite | Available in source; run against the candidate image set |
+| Live selective-modeling workflow | Historical report only; current qualification required |
 | Native viewport/editor capture | Unavailable in this baseline |
 | Live edits during independent worker rendering | Unavailable in this baseline |
 | Model input/output and image token comparison | Not measured |

@@ -26,8 +26,8 @@ against their exact image digests on a trusted NVIDIA host.
 The separate [manual release workflow](releases.md) uses a trusted NVIDIA
 runner and temporary package publishing authority. It is disabled pending
 runner, environment, registry, and release-material verification. Pull-request
-jobs cannot select that runner or publish images. The imported `.gitea`
-directory is historical; production deployment remains outside GitHub CI.
+jobs cannot select that runner or publish images. Obsolete Gitea workflows
+are not retained in the current tree; production deployment remains downstream.
 
 For local source checks, use the [contributor commands](../CONTRIBUTING.md#development-setup).
 The new standalone `scripts/smoke-blender-cpu <image>` requires Linux, Docker,

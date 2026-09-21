@@ -35,8 +35,8 @@ it does not describe the currently shipped runtime as GUI-backed.
 
 ## 2026-08-31 — Printable validates one shared gateway bearer directly
 
-- The gateway and Printable read the same `PRINTABLE_MCP_BEARER` value from
-  Infisical. Printable requires the exact `Authorization: Bearer` credential
+- An authorized client and Printable receive the same `PRINTABLE_MCP_BEARER`
+  through protected configuration. Printable requires the exact `Authorization: Bearer` credential
   on every `/mcp` request; there are no users, roles, sessions, or secondary
   service credentials in the application.
 - `/healthz` and `/readyz` remain unauthenticated private operator probes.
@@ -639,11 +639,10 @@ it does not describe the currently shipped runtime as GUI-backed.
 - Code that calls Blender's `bpy` API remains Python by necessity, but the
   add-on and headless launcher move directly into this repository as
   first-party product code. There is one authoritative copy.
-- Production runs on Linux/amd64 `server` as separate persistent Rust MCP and
-  Blender 5.2.0 containers. Blender receives the RTX 4060 Ti through the
-  NVIDIA runtime non-exclusively. CI and release artifacts target only
-  Linux/amd64 so the gates exercise production without consuming the shared
-  Mac runner or building unused images.
+- The supported architecture uses separate persistent Rust MCP and Blender
+  containers on Linux/amd64. Blender receives a supported GPU through the
+  NVIDIA runtime non-exclusively. CI and release artifacts target Linux/amd64;
+  exact-image qualification is required on the intended GPU host.
 - The current length-prefixed TCP protocol remains because it is simple,
   bounded, and already implemented. It is an internal versioned boundary and
   may evolve with product needs.
@@ -670,9 +669,9 @@ it does not describe the currently shipped runtime as GUI-backed.
 - GPU pressure queues inside Printable's bounded execution lane or returns a
   visible busy/resource error. Printable never pauses, kills, reprioritizes,
   or reconfigures another workload.
-- The existing service is unused, so cutover is direct after isolated
-  validation on `server`. No compatibility shadow or parallel writable
-  deployment is maintained.
+- Validate cutover in an isolated workspace before replacing a deployed
+  image set. Determine data compatibility and rollback from that deployment's
+  current state; historical assumptions about service usage do not authorize it.
 - Long renders and animations use durable jobs. Frames persist in confined
   job directories; progress is queryable; cancellation is cooperative between
   frames; FFmpeg runs as a bounded Printable subprocess; large media returns
