@@ -5,6 +5,14 @@ mod print_jobs;
 mod records;
 mod review;
 mod schema;
+pub(crate) fn rejection_payload(
+    tool: &str,
+    message: String,
+    details: bambuddy_api::rejection::Rejection,
+) -> Value {
+    schema::rejection_payload(tool, message, details)
+}
+
 pub(crate) fn output_schema(name: &str) -> Value {
     schema::output(name)
 }

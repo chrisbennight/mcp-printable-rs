@@ -22,7 +22,10 @@ from the advertised tool schemas and include only their reachable definitions.
 The response explicitly identifies its output schema scope. Printer and print
 action contracts include only their selected action's output variants; other
 workflows currently retain tool-wide output schemas. Contract resources
-do not invoke operations or grant authorization, and whole-tool annotations
+for printer workflows also describe the rejected-call envelope, including typed
+filament deficits and validation fields. Rejections retain the MCP `isError`
+flag; other failures may use the general error envelope.
+Contract resources do not invoke operations or grant authorization, and whole-tool annotations
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
 

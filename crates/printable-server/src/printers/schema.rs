@@ -162,6 +162,44 @@ struct Update {
     may_start_printing: bool,
 }
 
+#[derive(Serialize, JsonSchema)]
+struct RejectedPrinterCall {
+    tool: String,
+    error: PrinterRejection,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "code")]
+enum PrinterRejection {
+    #[serde(rename = "printer_rejected")]
+    Rejected {
+        message: String,
+        outcome: RejectedOutcome,
+        details: bambuddy_api::rejection::Rejection,
+    },
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RejectedOutcome {
+    Rejected,
+}
+
+pub(super) fn rejection_payload(
+    tool: &str,
+    message: String,
+    details: bambuddy_api::rejection::Rejection,
+) -> Value {
+    serde_json::json!(RejectedPrinterCall {
+        tool: tool.into(),
+        error: PrinterRejection::Rejected {
+            message,
+            outcome: RejectedOutcome::Rejected,
+            details,
+        },
+    })
+}
+
 pub(super) fn output(name: &str) -> Value {
     selected_output(name, None).expect("printer workflow has output variants")
 }
@@ -210,5 +248,11 @@ pub(super) fn selected_output(name: &str, action: Option<&str>) -> Option<Value>
         }
         _ => return None,
     }
-    (!variants.is_empty()).then(|| serde_json::json!({"type":"object","anyOf":variants,"$defs":generator.take_definitions(true)}))
+    if variants.is_empty() {
+        return None;
+    }
+    variants.push(generator.subschema_for::<RejectedPrinterCall>());
+    Some(
+        serde_json::json!({"type":"object","anyOf":variants,"$defs":generator.take_definitions(true)}),
+    )
 }

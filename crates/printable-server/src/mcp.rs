@@ -539,8 +539,7 @@ fn error_result(tool: &str, err: &ToolError) -> CallToolResult {
         payload["error"]["scene_state"] = serde_json::json!(state);
     }
     if let ToolError::Printer(bambuddy_api::ApiError::Rejected(details)) = err {
-        payload["error"]["details"] = serde_json::json!(details);
-        payload["error"]["outcome"] = serde_json::json!("rejected");
+        payload = crate::printers::rejection_payload(tool, err.to_string(), details.clone());
     }
     let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
@@ -554,6 +553,42 @@ mod tests {
     use serde_json::json;
 
     use super::aggregate_readiness;
+
+    #[test]
+    fn printer_rejection_envelope_matches_published_output_contracts() {
+        let details = bambuddy_api::rejection::Rejection {
+            status: 409,
+            code: "insufficient_filament".into(),
+            message: "Assigned filament is insufficient for the print".into(),
+            deficit: vec![bambuddy_api::rejection::FilamentDeficit {
+                slot_id: 1,
+                ams_id: Some(0),
+                tray_id: Some(2),
+                filament_type: "PLA".into(),
+                required_grams: 25.0,
+                remaining_grams: Some(10.0),
+            }],
+            fields: vec![],
+        };
+        let result = super::error_result(
+            "print",
+            &crate::error::ToolError::Printer(bambuddy_api::ApiError::Rejected(details)),
+        );
+        assert_eq!(result.is_error, Some(true));
+        let payload = result.structured_content.unwrap();
+        for schema in [
+            crate::printers::output_schema("print"),
+            crate::resources::contracts::read("printable://contracts/print/start").unwrap()
+                ["outputSchema"].clone(),
+        ] {
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            assert!(validator.is_valid(&payload));
+            assert!(schema["$defs"].get("FilamentDeficit").is_some());
+            let mut invalid = payload.clone();
+            invalid["error"]["details"]["deficit"][0]["required_grams"] = json!("not a number");
+            assert!(!validator.is_valid(&invalid));
+        }
+    }
 
     #[test]
     fn active_job_checkpoint_guard_is_healthy_busy_work() {
