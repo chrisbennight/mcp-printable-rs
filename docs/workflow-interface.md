@@ -19,9 +19,13 @@ or `printable://contracts/{tool}` for a direct-parameter tool. For example,
 `printable://contracts/view/section` describes cutaway requests without loading
 native viewport, dimensions, or overhang parameters. Input schemas are derived
 from the advertised tool schemas and include only their reachable definitions.
-The response explicitly identifies its output schema as tool-wide; it does not
-pretend that the current output schema is action-specific. Contract resources
-do not invoke operations or grant authorization, and whole-tool annotations
+The response explicitly identifies its output schema scope. Printer and print
+action contracts include only their selected action's output variants; other
+workflows currently retain tool-wide output schemas. Contract resources
+for printer workflows also describe the rejected-call envelope, including typed
+filament deficits and validation fields. Rejections retain the MCP `isError`
+flag; other failures may use the general error envelope.
+Contract resources do not invoke operations or grant authorization, and whole-tool annotations
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
 
@@ -47,6 +51,8 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files` |
+| `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
+| `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
@@ -75,6 +81,9 @@ read action does not create a separate MCP authorization boundary.
 the migration from temporary live-session rendering to a separate worker.
 
 ## Results and delivery
+
+[Optional printer integration](printer-integration.md) provides typed device and
+print workflows. Read `printable://printing/workflow-v1` before physical printing.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
@@ -195,5 +204,5 @@ result limit is reached; get/resolve remain available by identifier.
 Project metadata is server-owned under `.printable/projects`. Existing files
 outside projects remain available. Projects organize shared storage; they do not
 isolate scripts that can access the shared volume. Creating or resolving a
-project does not select or replace Blender's live scene. Scene binding and
-CadQuery modeling remain subsequent delivery work.
+project does not select or replace Blender's live scene. CAD builds use the
+project files through `cad_build`; scene binding is separate delivery work.

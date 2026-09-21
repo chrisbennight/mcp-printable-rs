@@ -15,3 +15,5 @@ analyze_assembly
 job
 project
 artifact
+printer
+print

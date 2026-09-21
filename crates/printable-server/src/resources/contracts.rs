@@ -101,15 +101,24 @@ pub fn read(uri: &str) -> Option<Value> {
         Some(action) => selected_schema(&full_schema, action)?,
         None => full_schema,
     };
+    let selected_output =
+        action.and_then(|action| crate::printers::action_output_schema(name, action));
+    let output_scope = if selected_output.is_some() {
+        "action"
+    } else {
+        "tool"
+    };
+    let output_schema =
+        selected_output.unwrap_or_else(|| Value::Object(output::schema(name).as_ref().clone()));
     Some(json!({
         "tool": name,
         "action": action,
         "description": tool.description,
         "inputSchema": input,
-        "outputSchema": output::schema(name),
-        "output_schema_scope": "tool",
+        "outputSchema": output_schema,
+        "output_schema_scope": output_scope,
         "annotations": (tool.annotations)(),
-        "note": "Invoke the advertised tool with this input. Tool-wide annotations are not an action authorization boundary. Output schema covers the tool; failures may set isError."
+        "note": "Invoke the advertised tool with this input. Tool-wide annotations are not an action authorization boundary. output_schema_scope identifies the output selection; failures may set isError."
     }))
 }
 
@@ -126,6 +135,10 @@ mod tests {
             for action in entry["actions"].as_array().unwrap() {
                 let contract = read(&format!("{uri}/{}", action.as_str().unwrap())).unwrap();
                 jsonschema::validator_for(&contract["inputSchema"]).unwrap();
+                jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+                if matches!(entry["tool"].as_str(), Some("printer" | "print")) {
+                    assert_eq!(contract["output_schema_scope"], "action");
+                }
             }
         }
         let render = read("printable://contracts/render/product").unwrap();

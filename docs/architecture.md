@@ -22,7 +22,7 @@ flowchart LR
     slicer --> files
 ```
 
-The six Cargo crates separate concerns with different failure and testing
+The Cargo crates separate concerns with different failure and testing
 boundaries:
 
 | Crate | Responsibility |
@@ -33,6 +33,7 @@ boundaries:
 | `printable-scad` | Confined source validation and OpenSCAD subprocesses |
 | `printable-workspace` | Capability-rooted artifact I/O and atomic promotion |
 | `printable-imaging` | Bounded image decoding and composition |
+| `bambuddy-api` | Typed printer service requests, bounded responses and honest mutation outcomes |
 
 The first-party code in `addon/` executes inside Blender. Its supervisor and
 main-thread bridge serialize scene operations and recover from a stalled

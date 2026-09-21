@@ -16,6 +16,9 @@ pub enum ToolError {
     /// Native slice preparation, lifecycle or toolpath review failed.
     #[error("{0}")]
     Slice(String),
+    /// A typed printer service failure; mutation uncertainty must not be retried blindly.
+    #[error(transparent)]
+    Printer(#[from] bambuddy_api::ApiError),
     /// `data_base64` was not valid base64.
     #[error("data_base64 is not valid base64")]
     InvalidBase64,
@@ -73,6 +76,11 @@ impl ToolError {
             ToolError::Cad(_) => "cad_build",
             ToolError::Validation(_) => "validation",
             ToolError::Slice(_) => "slice",
+            ToolError::Printer(bambuddy_api::ApiError::AmbiguousOutcome) => {
+                "printer_outcome_unknown"
+            }
+            ToolError::Printer(bambuddy_api::ApiError::Rejected(_)) => "printer_rejected",
+            ToolError::Printer(_) => "printer",
             ToolError::InvalidBase64 => "invalid_base64",
             ToolError::PayloadTooLarge(_) => "payload_too_large",
             ToolError::UploadNotFound => "upload_not_found",
