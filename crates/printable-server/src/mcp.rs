@@ -374,15 +374,10 @@ impl ServerHandler for PrintableServer {
                 .params_as::<AuthorizeUploadParams>()
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?
                 .ok_or_else(|| McpError::invalid_params("missing upload parameters", None))?;
-            let authority = context
-                .extensions
-                .get::<axum::http::request::Parts>()
-                .and_then(|parts| parts.headers.get(axum::http::header::HOST))
-                .and_then(|host| host.to_str().ok())
-                .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
+            let base_url = transfer_base_url(&context, self.settings.download_base_url.as_ref())?;
             return self
                 .incoming_files
-                .authorize(params, authority)
+                .authorize(params, &base_url)
                 .map(CustomResult::new)
                 .map_err(|e| McpError::invalid_params(e.to_string(), None));
         }
@@ -405,15 +400,10 @@ impl ServerHandler for PrintableServer {
                 None,
             ));
         }
-        let authority = context
-            .extensions
-            .get::<axum::http::request::Parts>()
-            .and_then(|parts| parts.headers.get(axum::http::header::HOST))
-            .and_then(|host| host.to_str().ok())
-            .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
+        let base_url = transfer_base_url(&context, self.settings.download_base_url.as_ref())?;
         let result = self
             .published_files
-            .authorize_download(params, authority)
+            .authorize_download(params, &base_url)
             .map_err(|message| McpError::invalid_params(message, None))?;
         Ok(CustomResult::new(result))
     }
@@ -457,6 +447,24 @@ impl ServerHandler for PrintableServer {
                 rmcp::model::ReadResourceRequestMethod,
             >()),
         }
+    }
+}
+
+fn transfer_base_url(
+    context: &RequestContext<RoleServer>,
+    configured: Option<&reqwest::Url>,
+) -> Result<reqwest::Url, McpError> {
+    let authority = context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get(axum::http::header::HOST))
+        .and_then(|host| host.to_str().ok())
+        .filter(|host| !host.contains('@'))
+        .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
+    match configured {
+        Some(base) => Ok(base.clone()),
+        None => reqwest::Url::parse(&format!("http://{authority}/"))
+            .map_err(|_| McpError::invalid_params("invalid HTTP host authority", None)),
     }
 }
 

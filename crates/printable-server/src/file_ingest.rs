@@ -117,7 +117,7 @@ impl IncomingFiles {
     pub fn authorize(
         &self,
         params: AuthorizeUploadParams,
-        authority: &str,
+        base_url: &reqwest::Url,
     ) -> Result<serde_json::Value, ToolError> {
         if !self.workspace.confined() {
             return Err(ToolError::Validation(
@@ -188,6 +188,9 @@ impl IncomingFiles {
                 "file identity collision; authorize again".into(),
             ));
         }
+        let upload_url = base_url
+            .join(&format!("file-transfers/upload/{id}"))
+            .map_err(|_| ToolError::Validation("invalid file transfer base URL".into()))?;
         transfers.insert(
             id.clone(),
             Arc::new(Transfer {
@@ -203,7 +206,7 @@ impl IncomingFiles {
             "file": file,
             "upload": {
                 "transport": "http", "method": "PUT",
-                "url": format!("http://{authority}/file-transfers/upload/{id}"),
+                "url": upload_url.as_str(),
                 "headers": BTreeMap::from([("Authorization", format!("Bearer {token}"))])
             }
         }))
@@ -453,7 +456,7 @@ mod tests {
         let authorization = files
             .authorize(
                 serde_json::from_value(serde_json::json!({"size": 3})).unwrap(),
-                "localhost",
+                &reqwest::Url::parse("http://localhost/").unwrap(),
             )
             .unwrap();
         let uri = authorization["file"]["uri"].as_str().unwrap();
@@ -509,7 +512,7 @@ mod tests {
             let authorization = files
                 .authorize(
                     serde_json::from_value(serde_json::json!({"size":declared})).unwrap(),
-                    "localhost",
+                    &reqwest::Url::parse("http://localhost/").unwrap(),
                 )
                 .unwrap();
             let uri = authorization["file"]["uri"].as_str().unwrap();
@@ -545,7 +548,7 @@ mod tests {
         let authorization = files
             .authorize(
                 serde_json::from_value(serde_json::json!({})).unwrap(),
-                "localhost",
+                &reqwest::Url::parse("http://localhost/").unwrap(),
             )
             .unwrap();
         let uri = authorization["file"]["uri"].as_str().unwrap();
@@ -572,7 +575,7 @@ mod tests {
             files
                 .authorize(
                     serde_json::from_value(serde_json::json!({"size":5})).unwrap(),
-                    "localhost"
+                    &reqwest::Url::parse("http://localhost/").unwrap()
                 )
                 .is_err()
         );

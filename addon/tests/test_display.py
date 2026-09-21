@@ -24,9 +24,9 @@ class PrivateDisplayTests(unittest.TestCase):
         self.process = Mock(pid=4242)
         self.process.poll.return_value = None
 
-    def start(self) -> tuple[Mock, Mock]:
+    def start(self, readiness: bytes = b"99\n") -> tuple[Mock, Mock]:
         def ready(*_args: object, **kwargs: object) -> Mock:
-            os.write(kwargs["pass_fds"][0], b"99\n")
+            os.write(kwargs["pass_fds"][0], readiness)
             return self.process
 
         with patch("printable_bridge.display.subprocess.run") as xauth, patch(
@@ -34,6 +34,26 @@ class PrivateDisplayTests(unittest.TestCase):
         ) as xvfb:
             self.display.start()
         return xauth, xvfb
+
+    def test_readiness_can_arrive_in_separate_pipe_reads(self) -> None:
+        read = os.read
+        with patch("printable_bridge.display.os.read",
+                   side_effect=lambda descriptor, size: read(descriptor, min(size, 1))):
+            self.start()
+        self.assertEqual(self.display.environment["DISPLAY"], ":99")
+
+    def test_incomplete_or_unexpected_readiness_cleans_up(self) -> None:
+        for readiness in (b"", b"99", b"98\n", b"99\njunk"):
+            with self.subTest(readiness=readiness), self.assertRaises(DisplayError):
+                self.start(readiness)
+            self.assertIsNone(self.display.pid)
+
+    def test_partial_readiness_does_not_reset_the_startup_deadline(self) -> None:
+        with patch("printable_bridge.display.time.monotonic",
+                   side_effect=[100.0, 100.0, 100.0, 115.0]), self.assertRaises(DisplayError) as raised:
+            self.start(b"99")
+        self.assertEqual(str(raised.exception.__cause__), "private display did not become ready")
+        self.assertIsNone(self.display.pid)
 
     def test_ready_display_has_private_authentication_and_no_tcp_listener(self) -> None:
         xauth, xvfb = self.start()

@@ -478,6 +478,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         .expect("test bearer is valid"),
         allowed_hosts: Vec::new(),
         allowed_origins: Vec::new(),
+        download_base_url: None,
     }
 }
 

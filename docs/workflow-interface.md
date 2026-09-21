@@ -118,6 +118,11 @@ remain those of the underlying delivered operations.
 
 ## Incoming files
 
+Upload and download authorization share `PRINTABLE_DOWNLOAD_BASE_URL`, including
+its HTTPS scheme and reverse-proxy path prefix. The existing setting name is
+retained. Without a configured base, both use the request's allowed HTTP Host;
+forwarded headers do not choose the transfer destination.
+
 Use `artifact` with `action: "ingest"` and `params` containing `file` (a
 gateway file URI), `path` (the workspace destination), and optional `overwrite`.
 The file field advertises native upload forwarding. The gateway transfers bytes
