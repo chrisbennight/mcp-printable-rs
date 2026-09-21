@@ -6,7 +6,8 @@ one trusted person or team. Everyone holding the bearer can modify the shared
 scene, read workspace files, and execute Python inside Blender. It is not a
 multi-tenant service or a Python sandbox.
 
-Use Linux/amd64, Docker Engine with the Compose plugin, an NVIDIA GPU supported
+Use Linux/amd64, Python 3.11 or newer for the supplied client and test scripts,
+Docker Engine with the Compose plugin, an NVIDIA GPU supported
 by Blender, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 Check `nvidia-smi` on the host before starting. The project has used an RTX 4060
 Ti; other cards require qualification. NVIDIA remains required for this
@@ -129,7 +130,8 @@ for example `https://printable.example.com/parts/`. A proxy using that prefix
 must route `/parts/mcp` to `/mcp` and `/parts/file-transfers/` to
 `/file-transfers/`, preserving authorization and session headers. Disable
 response buffering for MCP event streams. Neither forwarded Host nor forwarded
-scheme headers control download links.
+scheme headers control upload or download links. Both transfer directions use
+the configured base URL; the setting retains its existing download-oriented name.
 
 Browser Origin headers are rejected by default. If a trusted browser client is
 needed, set `PRINTABLE_ALLOWED_ORIGINS` to its exact scheme, host, and optional
@@ -154,3 +156,6 @@ local process with the same format and permissions, recreate the server so its
 secret mount uses the new file, and update client credential stores. The server
 reads credentials at startup. Never remove the workspace volume to rotate a
 credential. Avoid `docker compose down --volumes`: it deletes saved work.
+
+See the [automated recovery evidence](../evidence/installation-recovery.md) for
+the tested backup, damaged-metadata, and disk-exhaustion boundaries.

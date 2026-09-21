@@ -466,6 +466,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         render_job_queue_depth: 16,
         geometry_worker_bin: Some(test_geometry_worker()),
         geometry_worker_memory_bytes: 1024 * 1024 * 1024,
+        file_upload_max_bytes: 1024 * 1024 * 1024,
         mcp_bearer: BearerSecret::parse(
             concat!(
                 "0123456789abcdef",

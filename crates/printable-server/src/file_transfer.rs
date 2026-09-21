@@ -64,13 +64,17 @@ pub struct AuthorizeDownloadParams {
 }
 
 pub fn client_supports_http_download(meta: &RequestMetaObject) -> bool {
+    client_supports_http_transfer(meta, "download")
+}
+
+pub fn client_supports_http_transfer(meta: &RequestMetaObject, direction: &str) -> bool {
     let Some(files) = meta
         .get(CLIENT_CAPABILITIES_META_KEY)
         .and_then(|capabilities| capabilities.get("files"))
     else {
         return false;
     };
-    files.get("download").and_then(serde_json::Value::as_bool) == Some(true)
+    files.get(direction).and_then(serde_json::Value::as_bool) == Some(true)
         && files
             .get("transports")
             .and_then(serde_json::Value::as_array)

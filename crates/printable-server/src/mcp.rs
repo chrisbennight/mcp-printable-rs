@@ -27,6 +27,9 @@ use printable_workspace::Workspace;
 use crate::{
     config::Settings,
     error::ToolError,
+    file_ingest::{
+        AuthorizeUploadParams, INGEST_TOOL, IncomingFiles, IngestParams, TransferStatusParams,
+    },
     file_transfer::{
         AuthorizeDownloadParams, PUBLISH_TOOL, PublishParams, PublishedFiles,
         client_supports_http_download,
@@ -53,6 +56,7 @@ pub struct PrintableServer {
     scad: Arc<ScadRunner>,
     jobs: Arc<JobRegistry>,
     published_files: Arc<PublishedFiles>,
+    incoming_files: Arc<IncomingFiles>,
 }
 
 impl PrintableServer {
@@ -83,6 +87,10 @@ impl PrintableServer {
         ));
         Self {
             published_files: Arc::new(PublishedFiles::new(Arc::clone(&workspace))),
+            incoming_files: Arc::new(IncomingFiles::new(
+                Arc::clone(&workspace),
+                settings.file_upload_max_bytes,
+            )),
             workspace,
             uploads: Arc::new(UploadRegistry::new()),
             blender,
@@ -90,6 +98,10 @@ impl PrintableServer {
             scad,
             jobs,
         }
+    }
+
+    pub(crate) fn incoming_files(&self) -> Arc<IncomingFiles> {
+        Arc::clone(&self.incoming_files)
     }
 
     pub(crate) fn published_files(&self) -> Arc<PublishedFiles> {
@@ -146,6 +158,33 @@ impl PrintableServer {
             Ok(call) => (call.name, call.arguments, call.response),
             Err(error) => return Ok(error_result(&params.name, &error)),
         };
+
+        if operation == INGEST_TOOL || operation == "printable_workspace_transfer_status" {
+            let result: Result<Value, ToolError> = async {
+                if operation == INGEST_TOOL {
+                    let request: IngestParams = serde_json::from_value(args)
+                        .map_err(|e| ToolError::Validation(e.to_string()))?;
+                    Ok(
+                        serde_json::to_value(self.incoming_files.ingest(request).await?)
+                            .expect("artifact serializes"),
+                    )
+                } else {
+                    let request: TransferStatusParams = serde_json::from_value(args)
+                        .map_err(|e| ToolError::Validation(e.to_string()))?;
+                    self.incoming_files.status(&request.uri).await
+                }
+            }
+            .await;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
 
         if operation == "printable_project" {
             let workspace = Arc::clone(&self.workspace);
@@ -347,6 +386,24 @@ impl ServerHandler for PrintableServer {
         request: CustomRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, McpError> {
+        if request.method == "files/authorizeUpload" {
+            if !crate::file_transfer::client_supports_http_transfer(&context.meta, "upload") {
+                return Err(McpError::invalid_params(
+                    "file authorization requires declared HTTP upload support",
+                    None,
+                ));
+            }
+            let params = request
+                .params_as::<AuthorizeUploadParams>()
+                .map_err(|e| McpError::invalid_params(e.to_string(), None))?
+                .ok_or_else(|| McpError::invalid_params("missing upload parameters", None))?;
+            let base_url = transfer_base_url(&context, self.settings.download_base_url.as_ref())?;
+            return self
+                .incoming_files
+                .authorize(params, &base_url)
+                .map(CustomResult::new)
+                .map_err(|e| McpError::invalid_params(e.to_string(), None));
+        }
         if request.method != "files/authorizeDownload" {
             return Err(McpError::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -366,18 +423,7 @@ impl ServerHandler for PrintableServer {
                 None,
             ));
         }
-        let authority = context
-            .extensions
-            .get::<axum::http::request::Parts>()
-            .and_then(|parts| parts.headers.get(axum::http::header::HOST))
-            .and_then(|host| host.to_str().ok())
-            .filter(|host| !host.contains('@'))
-            .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
-        let base_url = match &self.settings.download_base_url {
-            Some(base) => base.clone(),
-            None => reqwest::Url::parse(&format!("http://{authority}/"))
-                .map_err(|_| McpError::invalid_params("invalid HTTP host authority", None))?,
-        };
+        let base_url = transfer_base_url(&context, self.settings.download_base_url.as_ref())?;
         let result = self
             .published_files
             .authorize_download(params, &base_url)
@@ -424,6 +470,24 @@ impl ServerHandler for PrintableServer {
                 rmcp::model::ReadResourceRequestMethod,
             >()),
         }
+    }
+}
+
+fn transfer_base_url(
+    context: &RequestContext<RoleServer>,
+    configured: Option<&reqwest::Url>,
+) -> Result<reqwest::Url, McpError> {
+    let authority = context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get(axum::http::header::HOST))
+        .and_then(|host| host.to_str().ok())
+        .filter(|host| !host.contains('@'))
+        .ok_or_else(|| McpError::invalid_params("missing HTTP host authority", None))?;
+    match configured {
+        Some(base) => Ok(base.clone()),
+        None => reqwest::Url::parse(&format!("http://{authority}/"))
+            .map_err(|_| McpError::invalid_params("invalid HTTP host authority", None)),
     }
 }
 

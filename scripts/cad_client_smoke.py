@@ -49,3 +49,20 @@ def run(client, output):
     if call("inspect", "scene", {})["scene_state"] != before:
         raise ValueError("Independent CAD build changed the live Blender scene")
     print("CAD_CLIENT_OK: project build, STEP round trip, verified downloads, unchanged live scene")
+
+
+def verify_restored(client, output):
+    for name in ("model", "import_step"):
+        original = json.loads((output / f"{name}-report.json").read_text())
+        restored_report = output / f"{name}-restored-report.json"
+        client.download(original["build_directory"] + "/report.json", restored_report)
+        if json.loads(restored_report.read_text()) != original:
+            raise ValueError("Restored CAD build report differs from the original")
+        for index, item in enumerate(original["artifacts"]):
+            destination = output / f"{name}-restored-{index}"
+            client.download(item["artifact"]["path"], destination)
+            with destination.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if digest != item["sha256"]:
+                raise ValueError("Restored CAD artifact differs from its recorded digest")
+    print("CAD_RESTORE_OK: retained reports and artifact digests", flush=True)

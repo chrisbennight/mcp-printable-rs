@@ -62,6 +62,7 @@ fn test_settings(blender_port: u16) -> Settings {
         render_job_queue_depth: 16,
         geometry_worker_bin: None,
         geometry_worker_memory_bytes: 1024 * 1024 * 1024,
+        file_upload_max_bytes: 1024 * 1024 * 1024,
         mcp_bearer: BearerSecret::parse(TEST_MCP_BEARER.to_string()).expect("test bearer is valid"),
         allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
         allowed_origins: Vec::new(),
@@ -337,6 +338,185 @@ async fn healthz_returns_the_exact_liveness_body() {
     let body = resp.text().await.expect("healthz body");
     assert_eq!(body, r#"{"status":"ok","server":"printable_blender"}"#);
 
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn incoming_files_cross_legacy_limit_and_commit_only_verified_bytes() {
+    exercise_incoming_files(None).await;
+}
+
+#[tokio::test]
+async fn configured_https_uploads_preserve_proxy_prefix_and_transfer_authority() {
+    exercise_incoming_files(Some("https://uploads.example.test/printable/")).await;
+}
+
+async fn exercise_incoming_files(transfer_base: Option<&str>) {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.workspace_root = Some(workspace.path().into());
+    settings.file_upload_max_bytes = 28 * 1024 * 1024;
+    settings.download_base_url = transfer_base.map(|base| reqwest::Url::parse(base).unwrap());
+    let server = start_with_settings(settings).await;
+    let upstream_url = |advertised: &str| match transfer_base {
+        Some(base) => {
+            let path = advertised
+                .strip_prefix(base)
+                .expect("configured HTTPS prefix");
+            assert!(path.starts_with("file-transfers/upload/"));
+            format!("{}/{path}", server.base)
+        }
+        None => {
+            assert!(advertised.starts_with(&format!("{}/file-transfers/upload/", server.base)));
+            advertised.to_owned()
+        }
+    };
+    let http = reqwest::Client::new();
+    let mcp = format!("{}/mcp", server.base);
+    let response = post(
+        &http,
+        &mcp,
+        None,
+        &json!({
+            "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+                "protocolVersion":protocol_version(), "capabilities":{},
+                "clientInfo":{"name":"incoming-file-test","version":"1"}
+            }
+        }),
+    )
+    .await;
+    let session = response.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    rpc_result(response).await;
+    post(
+        &http,
+        &mcp,
+        Some(&session),
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    let bytes = vec![b'X'; 26 * 1024 * 1024];
+    let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes));
+    let capabilities = json!({"io.modelcontextprotocol/clientCapabilities":{"files":{"upload":true,"transports":["http"]}}});
+    let authorization = rpc_result(
+        post(
+            &http,
+            &mcp,
+            Some(&session),
+            &json!({
+                "jsonrpc":"2.0","id":2,"method":"files/authorizeUpload","params":{
+                    "_meta":capabilities,"name":"board.step","size":bytes.len(),
+                    "digest":{"algorithm":"sha-256","value":digest}
+                }
+            }),
+        )
+        .await,
+    )
+    .await;
+    let uri = authorization["file"]["uri"].as_str().unwrap();
+    let local_url = upstream_url(authorization["upload"]["url"].as_str().unwrap());
+    let url = local_url.as_str();
+    let token = authorization["upload"]["headers"]["Authorization"]
+        .as_str()
+        .unwrap();
+    let ingest = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+        "name":"artifact","arguments":{"action":"ingest","params":{"file":uri,"path":"board.step"}}
+    }});
+    let premature = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
+    assert_eq!(premature["isError"], true);
+    assert!(!workspace.path().join("board.step").exists());
+    assert_eq!(
+        http.put(url)
+            .body("bad authority")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        http.put(url)
+            .header("Authorization", token)
+            .body(bytes.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        201
+    );
+    assert_eq!(
+        http.put(url)
+            .header("Authorization", token)
+            .body("duplicate")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    let committed = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
+    assert_ne!(committed["isError"], true, "{committed}");
+    assert_eq!(committed["structuredContent"]["sha256"], digest);
+    assert_eq!(
+        std::fs::read(workspace.path().join("board.step")).unwrap(),
+        bytes
+    );
+    let repeated = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
+    assert_eq!(repeated, committed);
+
+    // More than two completed transfers must release staging capacity.
+    for index in 0..3 {
+        let authorization = rpc_result(post(&http, &mcp, Some(&session), &json!({
+            "jsonrpc":"2.0","id":10+index,"method":"files/authorizeUpload","params":{
+                "_meta":capabilities,"size":3,"digest":{"algorithm":"sha-256","value":digest}
+            }
+        })).await).await;
+        let local_url = upstream_url(authorization["upload"]["url"].as_str().unwrap());
+        let url = local_url.as_str();
+        let token = authorization["upload"]["headers"]["Authorization"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            http.put(url)
+                .header("Authorization", token)
+                .body("bad")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            422
+        );
+        let failed = rpc_result(
+            post(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc":"2.0","id":20+index,"method":"tools/call","params":{
+                        "name":"artifact","arguments":{"action":"ingest","params":{
+                            "file":authorization["file"]["uri"],"path":"bad.step"}}
+                    }
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(failed["isError"], true);
+        assert!(!workspace.path().join("bad.step").exists());
+    }
+    assert!(
+        http.get(format!("{}/healthz", server.base))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
     server.shutdown().await;
 }
 

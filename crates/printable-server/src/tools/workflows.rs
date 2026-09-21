@@ -219,6 +219,8 @@ workflow!(ArtifactRequest {
     Read(ReadParams) => "printable_workspace_read",
     Write(WriteParams) => "printable_workspace_write",
     Publish(PublishParams) => "printable_workspace_publish",
+    Ingest(crate::file_ingest::IngestParams) => "printable_workspace_ingest",
+    TransferStatus(crate::file_ingest::TransferStatusParams) => "printable_workspace_transfer_status",
     UploadBegin(WriteBeginParams) => "printable_workspace_write_begin",
     UploadChunk(WriteChunkParams) => "printable_workspace_write_chunk",
     UploadCommit(WriteCommitParams) => "printable_workspace_write_commit",
@@ -365,7 +367,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "artifact",
-        description: "Stat/list/read/write workspace files, publish immutable files through governed raw-byte transfer, or upload chunks using upload_id. Stat returns metadata without bytes and supports project-relative paths. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
+        description: "Stat/list/read/write workspace files, publish immutable files through governed raw-byte transfer, ingest gateway files using a file URI, check transfer_status using the private URI, or upload chunks using upload_id. Stat returns metadata without bytes and supports project-relative paths. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
         schema: workflow_schema_of::<ArtifactRequest>,
         annotations: write_annotations,
     },
