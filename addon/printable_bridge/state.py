@@ -11,7 +11,7 @@ MAX_REVISION = 9007199254740991
 READ_COMMANDS = frozenset({
     "bridge_status", "get_scene_info", "get_object_info", "get_node_tree_info", "get_editing_state",
     "save_blend", "job_save_checkpoint", "export_stl", "render_product",
-    "capture_native_view", "get_project_dependencies",
+    "capture_native_view", "get_project_dependencies", "export_project_blender",
     "render_diagnostic", "render_views", "bridge_test_wait",
 })
 REPLACE_COMMANDS = frozenset({"clear_scene", "restore_checkpoint", "job_restore_checkpoint"})

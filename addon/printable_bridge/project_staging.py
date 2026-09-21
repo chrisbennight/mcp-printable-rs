@@ -20,6 +20,15 @@ class StagedProject:
     files: tuple[dict, ...]
 
 
+def validate_project_file(name):
+    if not isinstance(name, str) or len(name.encode("utf-8")) > 1024 or "\\" in name or any(
+        ord(character) < 32 or ord(character) == 127 for character in name
+    ) or any(part in {"", ".", ".."} or part.startswith(".") or part.lower() in {
+        "secrets", "credentials", "secrets.json", "credentials.json"
+    } for part in name.split("/")) or not Path(name).suffix:
+        raise WorkspaceError("export input must be a non-hidden project-relative artifact path")
+
+
 @contextmanager
 def stage_project_inputs(workspace, project_id: str, files: list[str]):
     """Commit outputs only after this context exits with source checks intact.
@@ -35,13 +44,8 @@ def stage_project_inputs(workspace, project_id: str, files: list[str]):
         raise WorkspaceError("select 1–256 project inputs for preparation")
     requests = {}
     for name in files:
-        if not isinstance(name, str) or len(name.encode("utf-8")) > 1024 or "\\" in name or any(
-            ord(character) < 32 or ord(character) == 127 for character in name
-        ) or any(part in {"", ".", ".."} or part.startswith(".") or part.lower() in {
-            "secrets", "credentials", "secrets.json", "credentials.json"
-        } for part in name.split("/")):
-            raise WorkspaceError("export input must be a non-hidden project-relative artifact path")
-        if name in requests or not Path(name).suffix:
+        validate_project_file(name)
+        if name in requests:
             raise WorkspaceError("export inputs must be unique files with an extension")
         requests[name] = workspace.validate(f"projects/{project_id}/{name}", Path(name).suffix)
 

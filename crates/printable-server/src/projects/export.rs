@@ -20,6 +20,41 @@ const MAX_ARCHIVE_BYTES: u64 = MAX_SOURCE_BYTES + 4 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct NativeExportParams {
+    pub project_id: String,
+    /// Explicit project-relative sources and dependencies; no directory collection.
+    pub files: Vec<String>,
+    /// Selected .blend file to prepare in an isolated process, not the live scene.
+    pub entrypoint: String,
+    /// New project-relative ZIP destination, never overwritten.
+    pub output_path: String,
+    /// Complete native export work budget, between 1 and 120 seconds.
+    pub timeout_seconds: u64,
+}
+
+impl NativeExportParams {
+    pub fn validate(&self, workspace: &Workspace) -> Result<String, ToolError> {
+        if !(1..=120).contains(&self.timeout_seconds)
+            || self.files.is_empty()
+            || self.files.len() > MAX_FILES
+            || !self.entrypoint.ends_with(".blend")
+            || !self.output_path.ends_with(".zip")
+            || !self.files.contains(&self.entrypoint)
+            || self.files.contains(&self.output_path)
+            || self.files.iter().collect::<BTreeSet<_>>().len() != self.files.len()
+        {
+            return Err(ToolError::Validation("native export requires 1–256 unique files including a blend entrypoint, a separate ZIP output, and a 1–120 second work budget".into()));
+        }
+        for path in self.files.iter().chain([&self.output_path]) {
+            validate_selection_path(path)?;
+            super::resolve(workspace, &self.project_id, path)?;
+        }
+        super::resolve(workspace, &self.project_id, &self.output_path)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExportFilesParams {
     pub project_id: String,
     /// Explicit project-relative files. Nothing else is collected automatically.
@@ -210,6 +245,85 @@ mod tests {
             files: files.iter().map(|path| (*path).into()).collect(),
             output_path: output.into(),
         }
+    }
+
+    #[test]
+    fn native_export_routes_to_isolated_blender_and_validates_project_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let params = serde_json::json!({
+            "project_id":"model", "files":["model.blend", "texture.png"],
+            "entrypoint":"model.blend", "output_path":"exports/model.zip", "timeout_seconds":60
+        });
+        let resolved = crate::tools::workflows::resolve(
+            "project",
+            serde_json::json!({
+                "action":"export_blender", "params":params
+            }),
+        )
+        .unwrap();
+        assert_eq!(resolved.name, "printable_project_export_blender");
+        let native: NativeExportParams = serde_json::from_value(resolved.arguments).unwrap();
+        assert_eq!(
+            native.validate(&workspace).unwrap(),
+            "projects/model/exports/model.zip"
+        );
+        for (key, value) in [
+            ("project_id", serde_json::json!("missing")),
+            ("files", serde_json::json!(["model.blend", "model.blend"])),
+            (
+                "files",
+                serde_json::json!(["model.blend", "../other/texture.png"]),
+            ),
+            (
+                "files",
+                serde_json::json!(["model.blend", "credentials.json"]),
+            ),
+            ("entrypoint", serde_json::json!("unselected.blend")),
+            ("output_path", serde_json::json!("../escape.zip")),
+            ("timeout_seconds", serde_json::json!(121)),
+        ] {
+            let mut invalid = params.clone();
+            invalid[key] = value;
+            assert!(
+                serde_json::from_value::<NativeExportParams>(invalid)
+                    .unwrap()
+                    .validate(&workspace)
+                    .is_err(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_bundle_schema_requires_dependency_and_hash_evidence() {
+        let mut response = serde_json::json!({
+            "artifact":{"path":"projects/model/export.zip", "size_bytes":123, "media_type":"application/zip"},
+            "sha256":"a".repeat(64),
+            "manifest":{
+                "format_version":1, "project_id":"model", "scope":"native_blender",
+                "entrypoint":"prepared/model.blend",
+                "files":[
+                    {"path":"sources/model.blend", "size_bytes":10, "sha256":"b".repeat(64)},
+                    {"path":"prepared/model.blend", "size_bytes":20, "sha256":"c".repeat(64)}
+                ],
+                "preparation":{
+                    "engine":{"name":"blender", "version":"fixture"},
+                    "entrypoint":"model.blend", "prepared_libraries":0, "registered_external_files":0,
+                    "units":{"system":"METRIC", "length_unit":"MILLIMETERS", "scale_length":0.001},
+                    "limitations":["Scripts are not inspected."]
+                }
+            }
+        });
+        let schema =
+            serde_json::Value::Object(crate::tools::output::schema("project").as_ref().clone());
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&response));
+        response["manifest"]["preparation"]["registered_external_files"] = serde_json::json!(1);
+        assert!(!validator.is_valid(&response));
+        response["manifest"]["preparation"]["registered_external_files"] = serde_json::json!(0);
+        response["manifest"]["files"][0]["sha256"] = serde_json::json!("invalid");
+        assert!(!validator.is_valid(&response));
     }
 
     #[test]

@@ -4,17 +4,17 @@ Run with factory-startup Blender in an isolated container, never a live scene.
 """
 
 import json
+import hashlib
 from pathlib import Path
-import shutil
 import sys
 import tempfile
+import zipfile
 
 import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from printable_bridge.project_dependencies import inspect_dependencies
-from printable_bridge.project_process import prepare_in_child
-from printable_bridge.project_staging import stage_project_inputs
+from printable_bridge.project_bundle import export_blender_bundle
 from printable_bridge.workspace import SecureWorkspace
 
 
@@ -76,12 +76,20 @@ def run(path_remap):
         files = ["organic.blend", "organic-library.blend", "textures/leaf.png"]
         live_filepath = bpy.data.filepath
         try:
-            with stage_project_inputs(workspace, "organic", files) as staged:
-                packed = prepare_in_child(bpy.app.binary_path, project, staged.root,
-                                          files, "organic.blend", 60)
-                if bpy.data.filepath != live_filepath:
-                    raise RuntimeError("isolated preparation changed the caller's live file")
-                shutil.copyfile(staged.root / "organic.blend", exported)
+            result = export_blender_bundle(
+                workspace, root, bpy.app.binary_path, project_id="organic", files=files,
+                entrypoint="organic.blend", output_path="exports/organic.zip", timeout_seconds=60,
+            )
+            if bpy.data.filepath != live_filepath:
+                raise RuntimeError("isolated preparation changed the caller's live file")
+            with zipfile.ZipFile(root / result["path"]) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                for record in manifest["files"]:
+                    content = archive.read(record["path"])
+                    if len(content) != record["size_bytes"] or hashlib.sha256(content).hexdigest() != record["sha256"]:
+                        raise RuntimeError("native bundle manifest does not match its retained files")
+                exported.write_bytes(archive.read("prepared/organic.blend"))
+            packed = manifest["preparation"]
         finally:
             workspace.close()
         # Remove only this fixture's external sources, then reopen the packed file.

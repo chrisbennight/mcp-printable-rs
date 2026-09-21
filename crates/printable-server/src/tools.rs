@@ -1540,6 +1540,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_project_export_blender",
+        description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using a bounded isolated child without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
+        schema: schema_of::<crate::projects::NativeExportParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_object_get",
         description: "Inspect one Blender object: summary transforms/mesh counts, or bounded materials, modifiers, and hierarchy sections. Follow each section's next_offset for more details.",
         schema: schema_of::<ObjectInfoParams>,
@@ -1946,6 +1952,24 @@ async fn dispatch_value(
             validate_inspection_page(p.offset, p.limit)?;
             crate::projects::get(workspace, &p.project_id)?;
             blender_command(blender, "get_project_dependencies", &p).await
+        }
+        "printable_project_export_blender" => {
+            let p: crate::projects::NativeExportParams = de(args)?;
+            let path = p.validate(workspace)?;
+            let result =
+                blender_project_command(blender, "export_project_blender", &p, p.timeout_seconds)
+                    .await?;
+            if result["path"].as_str() != Some(&path)
+                || result["project_id"].as_str() != Some(&p.project_id)
+            {
+                return Err(ToolError::Validation(
+                    "native export returned an inconsistent project artifact".into(),
+                ));
+            }
+            let artifact = workspace.stat_artifact(&path)?;
+            Ok(
+                json!({"artifact": artifact, "sha256": result["sha256"], "manifest": result["manifest"]}),
+            )
         }
         "printable_object_get" => {
             let p: ObjectInfoParams = de(args)?;

@@ -15,6 +15,7 @@ from printable_client import Client
 from quickstart import run
 from cad_client_smoke import run as run_cad
 from slicer_client_smoke import run as run_slicer, verify_restored as verify_slicer
+from export_client_smoke import run as run_export
 
 
 def main():
@@ -71,6 +72,7 @@ def main():
                 run(client, directory / "bracket")
                 run_cad(client, directory / "cad")
                 run_slicer(client, directory / "slicer")
+                run_export(client, directory / "exports")
             if args.evidence_dir is not None:
                 for artifact in (directory / "bracket").iterdir():
                     shutil.copyfile(artifact, args.evidence_dir / artifact.name)

@@ -826,6 +826,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                 leaf: str,
                 *,
                 rollback_on_failure: bool,
+                create_only: bool = False,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -836,6 +837,7 @@ if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
                     parent_fd,
                     leaf,
                     rollback_on_failure=rollback_on_failure,
+                    create_only=create_only,
                 )
 
             with (
@@ -1361,6 +1363,7 @@ class HandlerValidationTests(unittest.TestCase):
                 leaf: str,
                 *,
                 rollback_on_failure: bool,
+                create_only: bool = False,
             ) -> tuple[int, int]:
                 nonlocal attempts
                 attempts += 1
@@ -1371,6 +1374,7 @@ class HandlerValidationTests(unittest.TestCase):
                     parent_fd,
                     leaf,
                     rollback_on_failure=rollback_on_failure,
+                    create_only=create_only,
                 )
 
             def render_to_stage(

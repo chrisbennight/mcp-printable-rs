@@ -50,7 +50,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files`, `export_blender` |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
@@ -248,3 +248,37 @@ service configuration, or transient transfer grants for delivery.
 Use the returned artifact path with `artifact.publish` for existing governed
 download or service-to-service delivery. Export does not render again, sign S3
 URLs, embed credentials, or initiate printing.
+
+### Native Blender bundles
+
+`project.export_blender` takes `project_id`, explicitly selected project-relative
+`files`, a selected `.blend` `entrypoint`, a new `.zip` `output_path`, and
+`timeout_seconds` from 1 to 120. Save the intended scene first: this operation
+reads project files, not unsaved live changes, and never switches the live scene.
+
+The bundle retains the exact source hierarchy under `sources/` and a prepared,
+editable entrypoint under `prepared/`. Its `manifest.json` records each retained
+file's size and SHA-256, Blender version, unit settings, library count, and
+dependency limitations. Follow the manifest's `entrypoint` when reopening.
+Original source files remain unchanged. The selection is limited to 256 files;
+both input staging and the final ZIP have a 1 GiB limit. Keeping originals and
+packed data can therefore exceed the output budget even when the inputs fit.
+The isolated child's request metadata is limited to 64 KiB, including selected
+path names; large path lists can reach that limit before the file-count limit.
+
+Preparation runs in a disposable Blender child with script autoexecution
+disabled, fixed argv arguments, CPU/address-space limits, cancellation, and a
+deadline. It packs supported assets and linked libraries in dependency order,
+resolving selected absolute and relative references to their staged copies.
+Cycles, missing or unselected dependencies, image sequences, tiled images and
+remaining unsupported external data fail without publishing a partial bundle.
+Arbitrary script, driver, add-on, and network dependencies are not inspected;
+zero registered external references is not a claim that these can run elsewhere.
+The child uses the existing Blender container boundary, not a new Python or
+filesystem sandbox. Keep credentials and unrelated mounts out of that container.
+
+Source identity checks complete before publication. A create-only atomic commit
+rejects both an existing destination and one created during preparation. If a
+transport timeout leaves the outcome unknown, inspect the requested output
+before retrying. Reuse the returned artifact through `artifact.publish` and the
+existing delivery service; export does not upload, sign URLs, or print.

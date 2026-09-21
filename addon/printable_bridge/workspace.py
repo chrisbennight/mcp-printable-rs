@@ -81,6 +81,16 @@ class StagedOutput:
         self.committed = False
         self.committed_identity = None
 
+    def commit_new(self) -> None:
+        """Publish only if the destination is still absent at the atomic write."""
+        if self.committed:
+            raise WorkspaceError("staged output was already committed")
+        self.committed_identity = self.workspace._commit_output(
+            self.path, self.parent_fd, self.leaf,
+            rollback_on_failure=True, create_only=True,
+        )
+        self.committed = True
+
 
 class SecureWorkspace:
     def __init__(self, root: Path, staging_root: Path):
@@ -212,7 +222,7 @@ class SecureWorkspace:
         committed: list[StagedOutput] = []
         try:
             for output in outputs:
-                output.commit()
+                output.commit_new()
                 committed.append(output)
         except Exception:
             rollback_error: Exception | None = None
@@ -295,6 +305,7 @@ class SecureWorkspace:
         leaf: str,
         *,
         rollback_on_failure: bool,
+        create_only: bool = False,
     ) -> tuple[int, int]:
         try:
             source_fd = os.open(stage_path, FILE_READ_FLAGS)
@@ -330,13 +341,22 @@ class SecureWorkspace:
                 prepared_identity = (prepared.st_dev, prepared.st_ino)
                 os.close(destination_fd)
                 destination_fd = None
-                os.replace(
-                    temporary,
-                    leaf,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                committed_identity = prepared_identity
+                if create_only:
+                    try:
+                        os.link(temporary, leaf, src_dir_fd=parent_fd,
+                                dst_dir_fd=parent_fd, follow_symlinks=False)
+                    except FileExistsError as error:
+                        raise WorkspaceError("output artifact already exists") from error
+                    committed_identity = prepared_identity
+                    os.unlink(temporary, dir_fd=parent_fd)
+                else:
+                    os.replace(
+                        temporary,
+                        leaf,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                    committed_identity = prepared_identity
                 committed = os.stat(
                     leaf, dir_fd=parent_fd, follow_symlinks=False
                 )

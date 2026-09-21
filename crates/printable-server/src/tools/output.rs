@@ -65,6 +65,52 @@ fn selected_bundle() -> Value {
     )
 }
 
+fn native_bundle() -> Value {
+    let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
+    let file = object(
+        json!({"path":{"type":"string"},"size_bytes":{"type":"integer","minimum":0},"sha256":digest}),
+        &["path", "size_bytes", "sha256"],
+    );
+    let preparation = object(
+        json!({
+            "engine":object(json!({"name":{"const":"blender"},"version":{"type":"string"}}), &["name","version"]),
+            "entrypoint":{"type":"string"},
+            "prepared_libraries":{"type":"integer","minimum":0,"maximum":255},
+            "registered_external_files":{"const":0},
+            "units":object(json!({"system":{"type":"string"},"length_unit":{"type":"string"},"scale_length":{"type":"number","exclusiveMinimum":0}}), &["system","length_unit","scale_length"]),
+            "limitations":{"type":"array","items":{"type":"string"},"minItems":1}
+        }),
+        &[
+            "engine",
+            "entrypoint",
+            "prepared_libraries",
+            "registered_external_files",
+            "units",
+            "limitations",
+        ],
+    );
+    let manifest = object(
+        json!({
+            "format_version":{"const":1},"project_id":{"type":"string"},
+            "scope":{"const":"native_blender"},"entrypoint":{"type":"string"},
+            "files":{"type":"array","items":file,"minItems":2,"maxItems":257},
+            "preparation":preparation
+        }),
+        &[
+            "format_version",
+            "project_id",
+            "scope",
+            "entrypoint",
+            "files",
+            "preparation",
+        ],
+    );
+    object(
+        json!({"artifact":artifact(),"sha256":digest,"manifest":manifest}),
+        &["artifact", "sha256", "manifest"],
+    )
+}
+
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
         "slice" => json!({"type":"object","anyOf":[
@@ -189,7 +235,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
-            selected_bundle()
+            selected_bundle(), native_bundle()
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
