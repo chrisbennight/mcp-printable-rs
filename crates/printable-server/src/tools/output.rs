@@ -12,7 +12,10 @@ fn artifact() -> Value {
             "path": {"type": "string"},
             "size_bytes": {"type": "integer", "minimum": 0},
             "media_type": {"type": "string"},
-            "modified_ns": {"type": "integer"}
+            "modified_ns": {"type": "integer"},
+            "identity": {"const": "mutable_path", "description": "Metadata observation, not an immutable byte snapshot."},
+            "project_id": {"type": "string"},
+            "project_path": {"type": "string"}
         }),
         &["path", "size_bytes", "media_type"],
     )

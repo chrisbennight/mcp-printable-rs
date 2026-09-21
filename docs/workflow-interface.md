@@ -45,7 +45,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files` |
-| `artifact` | `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
 For example, a concise object search is:
 
@@ -73,6 +73,21 @@ read action does not create a separate MCP authorization boundary.
 the migration from temporary live-session rendering to a separate worker.
 
 ## Results and delivery
+
+Use `artifact` with `action: "stat"` to inspect one artifact without reading its
+contents, copying a snapshot, or enumerating a directory. Pass `params.path`
+as a workspace-relative path, or add `params.project_id` to resolve it within
+that existing project. The response retains the normalized workspace `path`,
+size, media type, and modification time; project-scoped requests also return
+`project_id` and `project_path`. This works for supported large files and videos
+without the base64 read limit. It does not contact a modeling backend.
+
+The `identity: "mutable_path"` marker is deliberate: metadata describes the file
+at the time of inspection, not immutable bytes or a promise about later reads.
+Use publication when a preserved byte snapshot is required. Missing files,
+unsupported types, symlinks, non-regular files, and invalid project paths fail
+instead of being reported as empty artifacts. A directory listing remains the
+operation for discovering unknown filenames.
 
 Targeted post-edit feedback uses the existing composition boundary: return
 measurements from `blender_execute`, then optionally call `view` against that
