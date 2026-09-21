@@ -426,6 +426,29 @@ impl Workspace {
         }
     }
 
+    /// Inspect a regular artifact without reading its bytes or creating a snapshot.
+    /// The metadata describes a mutable file at the time of the descriptor stat.
+    pub fn stat_artifact(&self, path: &str) -> Result<ArtifactMeta, WsError> {
+        self.require_confined()?;
+        let comps = normalize(path)?;
+        let rel = comps.join("/");
+        let name = comps.last().ok_or(WsError::UnsupportedArtifactType)?;
+        let suffix = allowed_suffix(name).ok_or(WsError::UnsupportedArtifactType)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Error)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+            &rel,
+        )?;
+        let stat = rustix::fs::fstat(&fd).map_err(errno_io)?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(WsError::NotRegularFile);
+        }
+        Ok(meta_from(rel, suffix, &stat))
+    }
+
     pub fn read_artifact(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
         self.require_confined()?;
         let comps = normalize(path)?;

@@ -2402,6 +2402,7 @@ async fn artifact_workflow_results_match_the_discovered_output_contract() {
     for arguments in [
         json!({"action": "write", "params": {"path": "sample.stl", "data_base64": "c29saWQgZW1wdHlcbiBlbmRzb2xpZCBlbXB0eQ=="}}),
         json!({"action": "read", "params": {"path": "sample.stl"}}),
+        json!({"action": "stat", "params": {"path": "sample.stl"}}),
         json!({"action": "list", "params": {}}),
     ] {
         let result = server
@@ -2420,6 +2421,47 @@ async fn artifact_workflow_results_match_the_discovered_output_contract() {
         );
     }
     assert!(fake.commands().is_empty());
+}
+
+#[tokio::test]
+async fn artifact_stat_resolves_project_paths_without_calling_blender() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    let server = PrintableServer::new(
+        Arc::clone(&ws),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(settings("127.0.0.1", 9)),
+    );
+    let created = server.invoke_tool(CallToolRequestParams::new("project").with_arguments(
+        json!({"action": "create", "params": {"project_id": "organic", "name": "Organic study"}}).as_object().unwrap().clone()
+    )).await.unwrap();
+    assert_eq!(created.is_error, Some(false));
+    ws.write_artifact("projects/organic/source.blend", b"source", false)
+        .unwrap();
+    let query = |path: &str| {
+        CallToolRequestParams::new("artifact").with_arguments(
+            json!({"action": "stat", "params": {"project_id": "organic", "path": path}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    };
+    let result = server.invoke_tool(query("source.blend")).await.unwrap();
+    assert_eq!(result.is_error, Some(false));
+    let value = result.structured_content.unwrap();
+    assert_eq!(value["path"], "projects/organic/source.blend");
+    assert_eq!(value["project_path"], "source.blend");
+    assert_eq!(value["project_id"], "organic");
+    assert_eq!(value["identity"], "mutable_path");
+    assert_eq!(value["size_bytes"], 6);
+    assert!(value.get("data_base64").is_none());
+    assert!(value.get("sha256").is_none());
+    for path in ["../other/source.blend", "/source.blend", "missing.blend"] {
+        assert_eq!(
+            server.invoke_tool(query(path)).await.unwrap().is_error,
+            Some(true)
+        );
+    }
 }
 
 #[tokio::test]
