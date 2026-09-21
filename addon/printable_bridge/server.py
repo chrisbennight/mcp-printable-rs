@@ -30,6 +30,7 @@ def _request_budget_seconds(
         "execute_code": DEFAULT_TIMEOUT_SECONDS,
         "open_project": 600,
         "attach_cad": 600,
+        "export_project_blender": 120,
         "job_measure_sequence_bounds": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_prepare_mechanical_rotation": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_frame": DEFAULT_RENDER_TIMEOUT_SECONDS,

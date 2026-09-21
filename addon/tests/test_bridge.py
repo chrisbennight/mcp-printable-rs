@@ -4391,6 +4391,23 @@ class RuntimeShutdownTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_native_export_can_complete_after_the_ordinary_bridge_timeout(self) -> None:
+        export = parse_request({
+            "id": str(uuid.uuid4()), "command": "export_project_blender",
+            "params": {"project_id": "organic", "files": ["model.blend"],
+                       "entrypoint": "model.blend", "output_path": "export.zip",
+                       "timeout_seconds": 120},
+        })
+        item = WorkItem(request=export, deadline=30.0,
+                        run_budget_seconds=_request_budget_seconds(30.0, export))
+        self.assertTrue(item.start(now=1.0))
+        response = success(export.request_id, {"path": "projects/organic/export.zip"})
+        self.assertTrue(item.complete(response, now=100.0))
+        self.assertEqual(item.await_response(), response)
+        queued = WorkItem(request=export, deadline=30.0,
+                          run_budget_seconds=_request_budget_seconds(30.0, export))
+        self.assertFalse(queued.start(now=31.0))
+
     def test_caller_work_time_is_added_to_long_running_request_budgets(self) -> None:
         for params, expected in (({}, 35.0), ({"timeout_seconds": 30.0}, 35.0),
                                  ({"timeout_seconds": 120.0}, 125.0)):
