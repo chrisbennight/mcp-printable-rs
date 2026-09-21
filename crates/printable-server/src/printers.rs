@@ -8,6 +8,9 @@ mod schema;
 pub(crate) fn output_schema(name: &str) -> Value {
     schema::output(name)
 }
+pub(crate) fn action_output_schema(name: &str, action: &str) -> Option<Value> {
+    schema::selected_output(name, Some(action))
+}
 mod materials;
 mod observations;
 
@@ -215,7 +218,7 @@ impl PrinterService {
     pub async fn control(
         &self,
         request: PrintRequest,
-        workspace: &printable_workspace::Workspace,
+        workspace: &Arc<printable_workspace::Workspace>,
     ) -> Result<Value, ToolError> {
         let (params, action, name) = match request {
             PrintRequest::ClearPlate(params) => {

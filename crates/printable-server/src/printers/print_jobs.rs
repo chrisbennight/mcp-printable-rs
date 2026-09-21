@@ -142,7 +142,7 @@ impl PrinterService {
     pub(super) async fn dispatch_job(
         &self,
         request: PrintRequest,
-        workspace: &Workspace,
+        workspace: &std::sync::Arc<Workspace>,
     ) -> Result<Value, ToolError> {
         match request {
             PrintRequest::Review(params) => self.review(params).await,
@@ -153,7 +153,13 @@ impl PrinterService {
                     return Err(invalid("import requires a printer-ready .gcode.3mf slice"));
                 }
                 let path = projects::resolve(workspace, &params.project_id, &params.path)?;
-                let source = workspace.snapshot_artifact_bounded(&path, 1024 * 1024 * 1024)?;
+                let snapshot_workspace = std::sync::Arc::clone(workspace);
+                let snapshot_path = path.clone();
+                let source = tokio::task::spawn_blocking(move || {
+                    snapshot_workspace.snapshot_artifact_bounded(&snapshot_path, 1024 * 1024 * 1024)
+                })
+                .await
+                .map_err(|_| std::io::Error::other("print source snapshot task failed"))??;
                 let filename = std::path::Path::new(&path)
                     .file_name()
                     .and_then(|v| v.to_str())

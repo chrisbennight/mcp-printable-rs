@@ -114,6 +114,69 @@ fn optional_configuration_does_not_require_a_printer_for_modeling() {
     );
 }
 
+#[tokio::test]
+async fn import_snapshots_project_bytes_and_uploads_once_on_a_current_thread_runtime() {
+    let backend = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/library/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 91, "filename": "part.gcode.3mf", "file_type": "gcode.3mf"
+        })))
+        .expect(1)
+        .mount(&backend)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(directory.path()), None).unwrap());
+    crate::projects::dispatch(
+        &ws,
+        serde_json::from_value(json!({
+            "action":"create", "params":{"project_id":"import-fixture","name":"Import fixture"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    ws.write_artifact(
+        "projects/import-fixture/part.gcode.3mf",
+        b"fixture-print-bytes",
+        false,
+    )
+    .unwrap();
+    let result = service(&backend)
+        .control(
+            serde_json::from_value(json!({
+                "action":"import", "params":{"project_id":"import-fixture","path":"part.gcode.3mf"}
+            }))
+            .unwrap(),
+            &ws,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["starts_printing"], false);
+    assert_eq!(result["library_file"]["id"], 91);
+    let schema = super::action_output_schema("print", "import").unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&result)
+    );
+    let requests = backend.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .body
+            .windows(b"fixture-print-bytes".len())
+            .any(|bytes| bytes == b"fixture-print-bytes")
+    );
+    let (_, association) = ws
+        .read_artifact(".printable/bambuddy-library/91.json")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&association).unwrap()["project_id"],
+        "import-fixture"
+    );
+    backend.verify().await;
+}
+
 fn validate(name: &str, value: &Value) {
     let schema = output_schema(name);
     let validator = jsonschema::validator_for(&schema).unwrap();
@@ -143,7 +206,7 @@ async fn printer_preserves_material_locations_faults_and_selectable_detail() {
     .await;
     let service = service(&server);
     let temp = tempfile::tempdir().unwrap();
-    let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     let summary = service
         .observe(
             serde_json::from_value(json!({"action":"status","params":{"printer_id":1}})).unwrap(),
@@ -216,9 +279,19 @@ async fn review_distinguishes_exact_variants_and_explicit_transparency_without_m
     .await;
     let service = service(&server);
     let temp = tempfile::tempdir().unwrap();
-    let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     let review=service.control(serde_json::from_value(json!({"action":"review","params":{"source":{"kind":"library","id":9},"printer_id":1,"plate":1,"ams_mapping":[0,128],"flow_calibration":false,"options":{"preheat_override":"off"},"requirements":[{"slot_id":1,"product_name":"PLA Matte"},{"slot_id":1,"product_name":"Bambu PLA Basic"},{"slot_id":2,"subtype":"transparent","brand":"Example"}]}})).unwrap(),&ws).await.unwrap();
     validate("print", &review);
+    let contract = crate::resources::contracts::read("printable://contracts/print/review").unwrap();
+    assert_eq!(contract["output_schema_scope"], "action");
+    let selected = &contract["outputSchema"];
+    assert!(
+        jsonschema::validator_for(selected)
+            .unwrap()
+            .is_valid(&review)
+    );
+    assert!(selected["$defs"].get("Control").is_none());
+    assert!(selected["$defs"].get("QueueItem").is_none());
     assert!(
         review["materials"][0]["findings"]
             .as_array()
@@ -359,7 +432,7 @@ async fn pending_edits_remain_staged_and_return_partial_counts() {
         .await;
     let service = service(&server);
     let temp = tempfile::tempdir().unwrap();
-    let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     let result=service.control(serde_json::from_value(json!({"action":"update","params":{"target":{"kind":"queue","print_ids":[8,9]},"patch":{"scheduled_time":null}}})).unwrap(),&ws).await.unwrap();
     validate("print", &result);
     assert_eq!(result["update"]["skipped_count"], 1);
@@ -389,7 +462,7 @@ async fn start_refuses_a_job_changed_during_inspection() {
     .await;
     get(&server, "/api/v1/library/files/9", json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","sliced_for_model":"P1S"})).await;
     let temp = tempfile::tempdir().unwrap();
-    let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     let result = service(&server)
         .control(
             serde_json::from_value(json!({"action":"start","params":{"print_id":7}})).unwrap(),
@@ -437,7 +510,7 @@ async fn print_records_preserve_options_requirements_and_run_identity() {
     get(&server,"/api/v1/archives/8/runs",json!({"items":[{"id":10,"archive_id":8,"printer_id":1,"status":"completed"},{"id":11,"archive_id":8,"printer_id":2,"status":"failed","failure_reason":"user stopped"}],"total":2})).await;
     let service = service(&server);
     let temp = tempfile::tempdir().unwrap();
-    let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     for detail in [false, true] {
         let list = service.control(serde_json::from_value(json!({"action":"list","params":{"collection":"library","detail":detail,"limit":1}})).unwrap(),&ws).await.unwrap();
         validate("print", &list);
@@ -568,7 +641,7 @@ async fn review_never_certifies_conflicting_identity_or_incomplete_shared_spool_
         .await;
         let service = service(&server);
         let temp = tempfile::tempdir().unwrap();
-        let ws = printable_workspace::Workspace::open(Some(temp.path()), None).unwrap();
+        let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
         let review = service.control(serde_json::from_value(json!({"action":"review","params":{"source":{"kind":"library","id":9},"printer_id":1,"ams_mapping":[0,0],"use_ams":(case != "ams_disabled"),"requirements":[{"slot_id":1,"product_name":product,"subtype":"matte"}]}})).unwrap(),&ws).await.unwrap();
         assert_eq!(review["materials"].as_array().unwrap().len(), 2);
         assert!(

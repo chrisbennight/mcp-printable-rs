@@ -163,37 +163,52 @@ struct Update {
 }
 
 pub(super) fn output(name: &str) -> Value {
+    selected_output(name, None).expect("printer workflow has output variants")
+}
+
+pub(super) fn selected_output(name: &str, action: Option<&str>) -> Option<Value> {
     let mut generator = SchemaGenerator::default();
-    let variants = if name == "printer" {
-        vec![
-            generator.subschema_for::<PrinterObservation>(),
-            generator.subschema_for::<RefreshStatus>(),
-            generator.subschema_for::<PrinterList>(),
-            generator.subschema_for::<Snapshot>(),
-            generator.subschema_for::<Materials<Material>>(),
-            generator.subschema_for::<Materials<Spool>>(),
-            generator.subschema_for::<Materials<Preset>>(),
-            generator.subschema_for::<Materials<FilamentName>>(),
-            generator.subschema_for::<SensorHistory>(),
-            generator.subschema_for::<Page<MaintenanceHistoryResponse>>(),
-            generator.subschema_for::<Page<SpoolUsageHistoryResponse>>(),
-        ]
-    } else {
-        vec![
-            generator.subschema_for::<PrintStatus>(),
-            generator.subschema_for::<LibraryStatus>(),
-            generator.subschema_for::<ArchiveStatus>(),
-            generator.subschema_for::<BatchStatus>(),
-            generator.subschema_for::<QueueList>(),
-            generator.subschema_for::<ArchiveList>(),
-            generator.subschema_for::<Page<FileListResponse>>(),
-            generator.subschema_for::<Page<PrintBatch>>(),
-            generator.subschema_for::<Page<PrintRun>>(),
-            generator.subschema_for::<PrintReview>(),
-            generator.subschema_for::<Control>(),
-            generator.subschema_for::<Cancel>(),
-            generator.subschema_for::<Update>(),
-        ]
-    };
-    serde_json::json!({"type":"object","anyOf":variants,"$defs":generator.take_definitions(true)})
+    let mut variants = Vec::new();
+    macro_rules! variant {
+        ($actions:pat, $type:ty) => {
+            if action.is_none() || matches!(action, Some($actions)) {
+                variants.push(generator.subschema_for::<$type>());
+            }
+        };
+    }
+    match name {
+        "printer" => {
+            variant!("status", PrinterObservation);
+            variant!("refresh_status", RefreshStatus);
+            variant!("list", PrinterList);
+            variant!("snapshot", Snapshot);
+            variant!("materials", Materials<Material>);
+            variant!("materials", Materials<Spool>);
+            variant!("materials", Materials<Preset>);
+            variant!("materials", Materials<FilamentName>);
+            variant!("history", SensorHistory);
+            variant!("history", Page<MaintenanceHistoryResponse>);
+            variant!("history", Page<SpoolUsageHistoryResponse>);
+        }
+        "print" => {
+            variant!("status" | "stage" | "start", PrintStatus);
+            variant!("status" | "import", LibraryStatus);
+            variant!("status", ArchiveStatus);
+            variant!("status", BatchStatus);
+            variant!("list", QueueList);
+            variant!("history", ArchiveList);
+            variant!("list", Page<FileListResponse>);
+            variant!("list", Page<PrintBatch>);
+            variant!("history", Page<PrintRun>);
+            variant!("review", PrintReview);
+            variant!(
+                "control" | "pause" | "resume" | "stop" | "clear_plate",
+                Control
+            );
+            variant!("cancel", Cancel);
+            variant!("update", Update);
+        }
+        _ => return None,
+    }
+    (!variants.is_empty()).then(|| serde_json::json!({"type":"object","anyOf":variants,"$defs":generator.take_definitions(true)}))
 }

@@ -19,8 +19,9 @@ or `printable://contracts/{tool}` for a direct-parameter tool. For example,
 `printable://contracts/view/section` describes cutaway requests without loading
 native viewport, dimensions, or overhang parameters. Input schemas are derived
 from the advertised tool schemas and include only their reachable definitions.
-The response explicitly identifies its output schema as tool-wide; it does not
-pretend that the current output schema is action-specific. Contract resources
+The response explicitly identifies its output schema scope. Printer and print
+action contracts include only their selected action's output variants; other
+workflows currently retain tool-wide output schemas. Contract resources
 do not invoke operations or grant authorization, and whole-tool annotations
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
