@@ -78,6 +78,11 @@ For another private registry, an authenticated maintainer can run
 `PRINTABLE_SOURCE_REPOSITORY` set. The source must be a credential-free HTTPS
 repository URL. The same proxy, security, image identity, and GPU gates apply.
 
+`build-docker.sh` binds its isolated MCP smoke container to loopback port 8000.
+Set `PRINTABLE_SMOKE_PORT` to another available TCP port when that port is
+already in use. Both local builds and `--push` qualification use this setting;
+it does not change the service's installation port.
+
 No GitHub image pair has been qualified by this migration yet. Public binary
 distribution also needs the exact dependency inventory, corresponding source
 and build materials for copyleft components, and retained qualification
