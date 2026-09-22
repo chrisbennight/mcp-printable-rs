@@ -78,8 +78,8 @@ The [release workflow](docs/releases.md) runs builds and publication directly
 in the public repository through manual main-branch dispatches. Only GPU
 qualification uses the private rootless runner. Publication requires a trusted
 integration status bound to the exact successful candidate build. Verify public package access
-and release materials before distribution. Publishing retains the approved crate-proxy gate;
-ordinary local source builds do not require that proxy.
+and release materials before distribution. Hosted releases use crates.io with
+the checked-in lockfile. Local builds may configure a reachable crate mirror.
 
 Write plain English. Documentation should state current behavior, give runnable
 commands, and distinguish measured evidence from assumptions. Keep design

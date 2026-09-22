@@ -37,16 +37,6 @@ if [[ ! "$smoke_port" =~ ^[1-9][0-9]{0,4}$ ]] || (( smoke_port > 65535 )); then
   exit 2
 fi
 
-# A local build may fall back to crates.io; it publishes nothing. A publishing
-# run may not: an absent address there means the fleet's injection regressed,
-# and the pushed image would carry crates that bypassed the proxy's cache,
-# audit, and blocklist.
-if [ "$push" -eq 1 ] && [ -z "${CRATES_INDEX_URL:-}" ]; then
-  echo "CRATES_INDEX_URL is unset; refusing to publish images built outside the artifact proxy" >&2
-  exit 1
-fi
-
-
 # Where crates come from, for the builds that compile Rust. Forwarded by value
 # because the daemon never sees this shell's environment, and only when the name
 # holds one: an empty value would pin a source naming an empty registry. With

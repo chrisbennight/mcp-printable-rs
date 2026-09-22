@@ -1,14 +1,9 @@
-"""Publication routes Rust dependencies through the approved crate proxy.
-
-Cargo reads no environment variable for a mirror, so the redirect is a config
-file rather than a setting the caller can simply export. A site that never gets
-one fails silently: cargo resolves from crates.io and the build goes green, so
-nothing in a log distinguishes a working redirect from an absent one.
-"""
+"""Public builds use crates.io; configured mirrors reach every Rust build."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -43,6 +38,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
                         #!/bin/sh
                         if [ "{name}" = docker ]; then
                           printf '%s\\n' "$*" >> "$DOCKER_LOG"
+                          exit 73
                         fi
                         if [ "{name}" = git ]; then
                           case "$1" in
@@ -54,15 +50,22 @@ class PackageIndexRoutingTests(unittest.TestCase):
                     )
                 )
                 stub.chmod(0o755)
-            # `test -x` on the exported smoke driver has to find something.
-            (root / "workdir").mkdir()
+            shutil.copyfile(BUILD_SCRIPT, root / "build-docker.sh")
+            (root / "scripts").mkdir()
+            shutil.copyfile(ROOT / "scripts/release_identity.py", root / "scripts/release_identity.py")
+            # Exercise a checkout with an existing export, as in a release run.
+            # The Docker stub stops before any build or nested test execution.
+            (root / "target/release").mkdir(parents=True)
+            smoke = root / "target/release/printable-smoke"
+            smoke.write_text("#!/bin/sh\nexit 99\n")
+            smoke.chmod(0o755)
             base = {
                 key: value
                 for key, value in os.environ.items()
                 if key != "CRATES_INDEX_URL"
             }
             result = subprocess.run(
-                ["bash", str(BUILD_SCRIPT), *arguments],
+                ["bash", str(root / "build-docker.sh"), *arguments],
                 env=base | {"PATH": f"{root}:{os.environ['PATH']}", "DOCKER_LOG": str(log)} | environment,
                 capture_output=True,
                 text=True,
@@ -137,25 +140,17 @@ class PackageIndexRoutingTests(unittest.TestCase):
                 self.assertIn(f'cargo "${{cargo_index_args[@]}}" {command}', self.script)
 
 
-    def test_publishing_refuses_to_fall_back_to_the_public_index(self) -> None:
-        """A pull request may fall back; a run that pushes may not.
-
-        An absent address on a publishing run means the fleet's injection
-        regressed, and the pushed image would carry crates that bypassed the
-        proxy's cache, audit, and blocklist.
-        """
-        self.assertIn('CRATES_INDEX_URL: sparse+${{ secrets.CRATES_PROXY_URL }}', self.build)
-        self.assertIn('test -n "$CRATES_INDEX_URL"', self.build)
+    def test_publishing_builds_without_a_private_index(self) -> None:
+        self.assertNotIn('CRATES_PROXY_URL', self.build)
+        self.assertNotIn('CRATES_INDEX_URL', self.build)
         self.assertIn('./build-docker.sh --push', self.build)
-
-        # The local script refuses before it builds anything, so the caller
-        # learns immediately rather than after a full release build.
         for mode in ("--push", "--push-candidate"):
             with self.subTest(mode=mode):
-                refused, refused_calls = self.run_build_script({}, arguments=(mode,))
-                self.assertEqual(refused.returncode, 1)
-                self.assertIn("refusing to publish", refused.stderr)
-                self.assertEqual(refused_calls, [])
+                result, calls = self.run_build_script({}, arguments=(mode,))
+                self.assertEqual(result.returncode, 73)
+                self.assertTrue(any(call.startswith('buildx build ') for call in calls))
+                self.assertNotIn('CRATES_INDEX_URL', '\n'.join(calls))
+                self.assertNotIn('refusing to publish', result.stderr)
 
     def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
         """Root-image builds compile Rust, including CAD and slicer workers.
@@ -193,7 +188,8 @@ class PackageIndexRoutingTests(unittest.TestCase):
         )
         self.assertNotIn("CRATES_INDEX_URL", "\n".join(bare_calls))
         # Both paths reach a build; neither aborts before issuing one.
-        self.assertEqual(configured.returncode, bare.returncode)
+        self.assertEqual(configured.returncode, 73)
+        self.assertEqual(bare.returncode, 73)
 
 
 if __name__ == "__main__":
