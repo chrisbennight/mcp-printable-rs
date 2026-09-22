@@ -37,7 +37,7 @@ def validate(root):
             "candidate token permissions changed")
     require(publish["permissions"] == {"contents": "read", "actions": "read", "packages": "write"},
             "publisher token permissions changed")
-    require(build["env"]["CRATES_INDEX_URL"] == "${{ vars.CRATES_INDEX_URL }}",
+    require(build["env"]["CRATES_INDEX_URL"] == "sparse+${{ secrets.CRATES_PROXY_URL }}",
             "release must receive the configured crate proxy")
     require(any(step.get("run") == "./build-docker.sh --push-candidate" for step in build["steps"]),
             "build must run the audited candidate publisher")

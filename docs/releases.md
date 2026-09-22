@@ -42,12 +42,12 @@ bridge from private qualification evidence to public publication and must not
 approve an unverified result. This is a maintainer-operated sequence, not an
 automatic cross-repository trigger.
 
-Configure these repository variables before dispatch:
+Configure these repository settings before dispatch:
 
-| Variable | Meaning |
+| Setting | Meaning |
 | --- | --- |
-| `CRATES_INDEX_URL` | Approved credential-free Cargo proxy reachable from the hosted runner and its Docker builds |
-| `PRINTABLE_QUALIFIER_ID` | Numeric GitHub account ID of the trusted integration that verifies private GPU evidence and posts approval statuses |
+| Secret `CRATES_PROXY_URL` | Approved credential-free HTTPS Cargo proxy URL, without the `sparse+` prefix; secret storage masks this deployment configuration in public logs |
+| Variable `PRINTABLE_QUALIFIER_ID` | Numeric GitHub account ID of the trusted integration that verifies private GPU evidence and posts approval statuses |
 
 The GPU runner needs Linux/amd64, Python, NVIDIA drivers and Container Toolkit,
 rootless Docker with CDI, and a pre-existing compute workload for coexistence
