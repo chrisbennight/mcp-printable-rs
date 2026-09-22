@@ -1,39 +1,53 @@
 # Build and qualify a matching image set
 
-The [reusable release workflow](../.github/workflows/release.yml) separates
-building from GPU execution. A private repository calls it from a manual
-`workflow_dispatch` workflow on `main`, pinning the reusable workflow to a
-reviewed commit. The public source repository does not register a GPU runner.
-Public pull requests continue to use hosted runners without release credentials.
+The [Release workflow](../.github/workflows/release.yml) runs directly in this
+public repository. It builds and tests immutable candidates on GitHub-hosted
+runners. GPU qualification runs separately in a private repository; this public
+repository never registers a persistent GPU runner. Public pull requests use
+hosted runners without release credentials.
 
 ## Execution and authentication
 
-The build job uses `ubuntu-latest` to run source checks, build and publish the
-four immutable candidate images, and perform security, native installation,
-recovery, and software-rendering tests. It uploads the candidate's source
-revision and exact image digests as an immutable Actions artifact.
+1. Dispatch **Release** on `main`. The job runs source checks, builds and pushes
+   the four candidate images, and performs security, native installation,
+   recovery, and software-rendering tests. Only success produces the immutable
+   `printable-candidate` Actions artifact with the source revision and digests.
+2. A trusted maintainer integration downloads that artifact from the successful
+   build and dispatches the private GPU workflow with its exact manifest and
+   source revision. That workflow checks main-branch ancestry and uses rootless
+   Docker to qualify the exact Blender digest. It has read-only repository
+   permission and no package publishing credential.
+3. The integration verifies the private workflow's successful conclusion,
+   reviewed workflow revision, runner identity, and downloaded proof. The proof
+   must contain `gpu: passed` and the SHA-256 of the complete candidate, using
+   `release_candidate.digest`. Only then does the integration post a successful
+   commit status on the candidate source revision. Its context is
+   `printable/gpu/<public-build-run-id>` and its description is
+   `sha256:<candidate-hash>`. Retain the private proof and run identity for audit;
+   do not include private host or repository details in the public status.
+4. Dispatch [Publish qualified release](../.github/workflows/publish-release.yml)
+   on `main` with `candidate-run-id` set to that public build run. The job checks
+   the build's repository, workflow, event, branch, source revision, and success,
+   then downloads its candidate artifact. It requires the latest matching
+   status to be successful, posted by the configured trusted account, and bound
+   to the exact candidate hash before publishing the release record. A later
+   failure status revokes an earlier success. A proof file or status from an
+   arbitrary account is insufficient.
 
-The GPU job uses the private caller's dedicated runner. It downloads that same
-candidate, checks out the same source revision, and runs NVIDIA qualification
-against the exact Blender digest. It has read-only repository permission and
-no package publishing credential. Its result identifies the complete candidate
-by SHA-256. This result is workflow evidence, not a standalone signature:
-only artifacts from the current trusted run are eligible for publication.
+Both hosted workflows belong to the public repository, including their usage
+accounting. Their publishing jobs use the automatically issued `GITHUB_TOKEN`
+with `packages: write`. No personal publishing token is required. The trusted
+integration's status-writing authority stays outside these jobs; it is the
+bridge from private qualification evidence to public publication and must not
+approve an unverified result. This is a maintainer-operated sequence, not an
+automatic cross-repository trigger.
 
-The final job returns to `ubuntu-latest` and depends on successful build and
-GPU jobs. It validates the matching GPU result before publishing the compatible
-release record. Both publishing jobs use their automatically issued
-`GITHUB_TOKEN` with `contents: read` and `packages: write`. No personal package
-publishing token is required. The caller must permit those job permissions and
-have publishing access to the destination packages.
+Configure these repository settings before dispatch:
 
-The reusable workflow takes these required inputs:
-
-| Input | Meaning |
+| Setting | Meaning |
 | --- | --- |
-| `source-revision` | Full reviewed source commit reachable from this repository's `main` |
-| `crates-index-url` | Approved credential-free Cargo proxy reachable from the hosted runner and its Docker builds |
-| `gpu-runner-label` | Dedicated label registered only with the private caller repository |
+| Secret `CRATES_PROXY_URL` | Approved credential-free HTTPS Cargo proxy URL, without the `sparse+` prefix; secret storage masks this deployment configuration in public logs |
+| Variable `PRINTABLE_QUALIFIER_ID` | Numeric GitHub account ID of the trusted integration that verifies private GPU evidence and posts approval statuses |
 
 The GPU runner needs Linux/amd64, Python, NVIDIA drivers and Container Toolkit,
 rootless Docker with CDI, and a pre-existing compute workload for coexistence
