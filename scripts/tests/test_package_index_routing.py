@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -37,6 +38,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
                         #!/bin/sh
                         if [ "{name}" = docker ]; then
                           printf '%s\\n' "$*" >> "$DOCKER_LOG"
+                          exit 73
                         fi
                         if [ "{name}" = git ]; then
                           case "$1" in
@@ -48,15 +50,22 @@ class PackageIndexRoutingTests(unittest.TestCase):
                     )
                 )
                 stub.chmod(0o755)
-            # `test -x` on the exported smoke driver has to find something.
-            (root / "workdir").mkdir()
+            shutil.copyfile(BUILD_SCRIPT, root / "build-docker.sh")
+            (root / "scripts").mkdir()
+            shutil.copyfile(ROOT / "scripts/release_identity.py", root / "scripts/release_identity.py")
+            # Exercise a checkout with an existing export, as in a release run.
+            # The Docker stub stops before any build or nested test execution.
+            (root / "target/release").mkdir(parents=True)
+            smoke = root / "target/release/printable-smoke"
+            smoke.write_text("#!/bin/sh\nexit 99\n")
+            smoke.chmod(0o755)
             base = {
                 key: value
                 for key, value in os.environ.items()
                 if key != "CRATES_INDEX_URL"
             }
             result = subprocess.run(
-                ["bash", str(BUILD_SCRIPT), *arguments],
+                ["bash", str(root / "build-docker.sh"), *arguments],
                 env=base | {"PATH": f"{root}:{os.environ['PATH']}", "DOCKER_LOG": str(log)} | environment,
                 capture_output=True,
                 text=True,
@@ -138,6 +147,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
         for mode in ("--push", "--push-candidate"):
             with self.subTest(mode=mode):
                 result, calls = self.run_build_script({}, arguments=(mode,))
+                self.assertEqual(result.returncode, 73)
                 self.assertTrue(any(call.startswith('buildx build ') for call in calls))
                 self.assertNotIn('CRATES_INDEX_URL', '\n'.join(calls))
                 self.assertNotIn('refusing to publish', result.stderr)
@@ -178,7 +188,8 @@ class PackageIndexRoutingTests(unittest.TestCase):
         )
         self.assertNotIn("CRATES_INDEX_URL", "\n".join(bare_calls))
         # Both paths reach a build; neither aborts before issuing one.
-        self.assertEqual(configured.returncode, bare.returncode)
+        self.assertEqual(configured.returncode, 73)
+        self.assertEqual(bare.returncode, 73)
 
 
 if __name__ == "__main__":
