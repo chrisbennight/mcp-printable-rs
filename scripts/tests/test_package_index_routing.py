@@ -144,16 +144,18 @@ class PackageIndexRoutingTests(unittest.TestCase):
         regressed, and the pushed image would carry crates that bypassed the
         proxy's cache, audit, and blocklist.
         """
-        self.assertIn('CRATES_INDEX_URL: ${{ vars.CRATES_INDEX_URL }}', self.build)
-        self.assertIn('test -n "${CRATES_INDEX_URL}"', self.build)
+        self.assertIn('CRATES_INDEX_URL: ${{ inputs.crates-index-url }}', self.build)
+        self.assertIn('test -n "$CRATES_INDEX_URL"', self.build)
         self.assertIn('./build-docker.sh --push', self.build)
 
         # The local script refuses before it builds anything, so the caller
         # learns immediately rather than after a full release build.
-        refused, refused_calls = self.run_build_script({}, arguments=("--push",))
-        self.assertEqual(refused.returncode, 1)
-        self.assertIn("refusing to publish", refused.stderr)
-        self.assertEqual(refused_calls, [])
+        for mode in ("--push", "--push-candidate"):
+            with self.subTest(mode=mode):
+                refused, refused_calls = self.run_build_script({}, arguments=(mode,))
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn("refusing to publish", refused.stderr)
+                self.assertEqual(refused_calls, [])
 
     def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
         """Root-image builds compile Rust, including CAD and slicer workers.

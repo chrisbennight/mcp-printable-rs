@@ -20,23 +20,37 @@ def validate(root):
 
     release = read_workflow(root / ".github/workflows/release.yml")
     ci = read_workflow(root / ".github/workflows/ci.yml")
-    require(set(release["on"]) == {"workflow_dispatch"}, "release must be manual only")
-    require(set(release["jobs"]) == {"release"}, "unexpected release job")
-    job = release["jobs"]["release"]
-    require(job["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRINTABLE_RELEASE_ENABLED == 'true'",
-            "release must require manual dispatch on main and explicit enablement")
-    require(job["runs-on"] == ["self-hosted", "Linux", "X64", "printable-release"],
-            "release requires the dedicated Linux/amd64 runner")
-    require(job["environment"] == "printable-release", "release requires its protected environment")
-    require(job["permissions"] == {"contents": "read", "packages": "write"},
-            "release token permissions changed")
+    require(set(release["on"]) == {"workflow_call"}, "release must use its private manual caller")
+    require(set(release["jobs"]) == {"build", "gpu", "publish"}, "unexpected release jobs")
+    build, gpu, publish = (release["jobs"][key] for key in ("build", "gpu", "publish"))
+    require(build["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == true",
+            "release must require a manual main-branch dispatch from a private repository")
+    require(build["runs-on"] == publish["runs-on"] == "ubuntu-latest",
+            "building and publishing must use hosted runners")
+    require(gpu["runs-on"] == "${{ inputs.gpu-runner-label }}",
+            "GPU qualification must use the configured private runner")
+    require(gpu["needs"] == "build" and publish["needs"] == ["build", "gpu"],
+            "publication must depend on both build and GPU qualification")
+    require(gpu["permissions"] == {"contents": "read"}, "GPU jobs must not receive publishing authority")
+    for job in (build, publish):
+        require(job["permissions"] == {"contents": "read", "packages": "write"},
+                "publisher token permissions changed")
     require(release["concurrency"]["cancel-in-progress"] == "false",
             "an active release must not be cancelled by a later dispatch")
-    require(job["env"]["CRATES_INDEX_URL"] == "${{ vars.CRATES_INDEX_URL }}",
+    require(build["env"]["CRATES_INDEX_URL"] == "${{ inputs.crates-index-url }}",
             "release must receive the configured crate proxy")
-    publish = [step for step in job["steps"] if step.get("run") == "./build-docker.sh --push"]
-    require(len(publish) == 1 and job["steps"][-1] == publish[0],
-            "release must end with the audited publisher")
+    require(any(step.get("run") == "./build-docker.sh --push-candidate" for step in build["steps"]),
+            "build must run the audited candidate publisher")
+    require(any("scripts/release_candidate.py qualify" in step.get("run", "") for step in gpu["steps"]),
+            "GPU job must qualify the candidate")
+    require(publish["steps"][-1].get("run") == "python3 scripts/release_candidate.py publish target/release/candidate.json target/release/gpu-proof.json",
+            "record publication must validate the matching GPU proof")
+    for job in release["jobs"].values():
+        for step in job["steps"]:
+            if step.get("uses", "").startswith("actions/checkout@"):
+                require(step["with"].get("repository") == "chrisbennight/mcp-printable-rs"
+                        and step["with"].get("ref") == "${{ inputs.source-revision }}",
+                        "all release jobs must check out the same source revision")
     for workflow in (ci, release):
         require(workflow["permissions"] == {"contents": "read"}, "workflow defaults must be read-only")
         for current in workflow["jobs"].values():

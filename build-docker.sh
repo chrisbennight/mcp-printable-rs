@@ -20,10 +20,14 @@ CAD_BASE="${release_identity[4]}"
 SLICER_BASE="${release_identity[5]}"
 
 push=0
-if [ "${1:-}" = "--push" ]; then
+candidate_only=0
+if [ "${1:-}" = "--push-candidate" ]; then
+  push=1
+  candidate_only=1
+elif [ "${1:-}" = "--push" ]; then
   push=1
 elif [ -n "${1:-}" ]; then
-  echo "usage: $0 [--push]" >&2
+  echo "usage: $0 [--push|--push-candidate]" >&2
   exit 2
 fi
 
@@ -279,11 +283,18 @@ PRINTABLE_PAIR_SMOKE_RUN_ID="local-${short_sha}-$$" \
     "$verified_server" "$verified_blender" \
     target/release/printable-smoke smoke/expected-tools.txt
 
-echo "==> GPU-smoke the exact published Blender digest"
+echo "==> Verify notices and installation recovery"
 python3 scripts/test-image-notices.py "$verified_server" "$verified_blender" \
   --cad-image "$verified_cad" --slicer-image "$verified_slicer"
 python3 scripts/test-installation.py "$verified_server" "$verified_blender" \
   --cad-image "$verified_cad" --slicer-image "$verified_slicer" --recovery
+if [ "$candidate_only" -eq 1 ]; then
+  python3 scripts/release_candidate.py create target/release/candidate.json \
+    "$revision" "$verified_server" "$verified_blender" "$verified_cad" "$verified_slicer"
+  echo "==> Candidate passed CPU qualification; GPU qualification and release-record publication remain"
+  exit 0
+fi
+echo "==> GPU-smoke the exact published Blender digest"
 PRINTABLE_GPU_SMOKE_RUN_ID="local-${short_sha}" \
   scripts/smoke-blender-gpu "$verified_blender"
 

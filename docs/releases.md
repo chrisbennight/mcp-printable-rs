@@ -1,50 +1,61 @@
 # Build and qualify a matching image set
 
-The [release workflow](../.github/workflows/release.yml) is manual, restricted
-to `main`, and disabled unless the repository variable
-`PRINTABLE_RELEASE_ENABLED` is `true`. Adding this workflow does not register a
-runner, configure environment protection, publish an image, or deploy a service.
-Source visibility does not authorize release execution or package publication.
+The [reusable release workflow](../.github/workflows/release.yml) separates
+building from GPU execution. A private repository calls it from a manual
+`workflow_dispatch` workflow on `main`, pinning the reusable workflow to a
+reviewed commit. The public source repository does not register a GPU runner.
 Public pull requests continue to use hosted runners without release credentials.
 
-## Runner and registry prerequisites
+## Execution and authentication
 
-Use a trusted, dedicated GitHub runner labelled `self-hosted`, `Linux`, `X64`,
-and `printable-release`. It needs Docker Engine with Buildx, Python 3.11 or
-newer with venv support, the repository's Rust toolchain, CMake, a C++ compiler,
-curl, and the NVIDIA Container Toolkit. A pre-existing compute workload must be
-running on the selected GPU throughout qualification; the test does not stop it.
-Do not expose this runner to pull requests or other untrusted repositories.
+The build job uses `ubuntu-latest` to run source checks, build and publish the
+four immutable candidate images, and perform security, native installation,
+recovery, and software-rendering tests. It uploads the candidate's source
+revision and exact image digests as an immutable Actions artifact.
 
-Before enabling the workflow, restrict the `printable-release` environment to
-the protected `main` branch and configure maintainer approval where supported
-by the account's GitHub plan. Verify runner access restrictions and package
-permissions. The workflow uses GitHub's temporary token with package-write
-permission and a temporary Docker credential directory; it does not need a
-stored registry password, Infisical, SSH, or Komodo.
+The GPU job uses the private caller's dedicated runner. It downloads that same
+candidate, checks out the same source revision, and runs NVIDIA qualification
+against the exact Blender digest. It has read-only repository permission and
+no package publishing credential. Its result identifies the complete candidate
+by SHA-256. This result is workflow evidence, not a standalone signature:
+only artifacts from the current trusted run are eligible for publication.
 
-The repository variables are:
+The final job returns to `ubuntu-latest` and depends on successful build and
+GPU jobs. It validates the matching GPU result before publishing the compatible
+release record. Both publishing jobs use their automatically issued
+`GITHUB_TOKEN` with `contents: read` and `packages: write`. No personal package
+publishing token is required. The caller must permit those job permissions and
+have publishing access to the destination packages.
 
-| Variable | Meaning |
+The reusable workflow takes these required inputs:
+
+| Input | Meaning |
 | --- | --- |
-| `PRINTABLE_RELEASE_ENABLED` | Explicit opt-in to run the publisher; leave unset until prerequisites are verified |
-| `CRATES_INDEX_URL` | Approved credential-free Cargo proxy URL reachable from both the host and Docker builds |
-| `PRINTABLE_GPU_DEVICE` | One NVIDIA device index or GPU UUID; defaults to `0` |
+| `source-revision` | Full reviewed source commit reachable from this repository's `main` |
+| `crates-index-url` | Approved credential-free Cargo proxy reachable from the hosted runner and its Docker builds |
+| `gpu-runner-label` | Dedicated label registered only with the private caller repository |
+
+The GPU runner needs Linux/amd64, Python, NVIDIA drivers and Container Toolkit,
+rootless Docker with CDI, and a pre-existing compute workload for coexistence
+measurement. `PRINTABLE_GPU_RUNTIME=cdi` selects native CDI device injection;
+the standalone smoke defaults to Docker's `--gpus` interface. The smoke resolves
+Blender's host PID by its container cgroup, including rootless PID namespaces.
+Do not give this runner the production Docker socket or register it with a
+public repository. Serialize GPU qualification jobs on the physical host.
 
 Publishing still requires the approved crate proxy. Ordinary source builds and
-pull-request CI can resolve public upstreams. Making the proxy optional for
-publishing is a separate policy decision; this port preserves that safeguard.
-Never put a credential-bearing URL into a build argument.
+pull-request CI can resolve public upstreams. Never put a credential-bearing
+URL into a build argument.
 
-Images default to `ghcr.io/chrisbennight/mcp-printable-rs`,
+Images use `ghcr.io/chrisbennight/mcp-printable-rs`,
 `ghcr.io/chrisbennight/mcp-printable-blender`,
 `ghcr.io/chrisbennight/mcp-printable-cad`,
 `ghcr.io/chrisbennight/mcp-printable-slicer`, and
-`ghcr.io/chrisbennight/mcp-printable-release`. The workflow derives the namespace
-from the repository owner. GitHub documents that newly published container
-packages are private by default; an existing public package remains a separate
-visibility decision. Verify all destination packages are private before the
-first dispatch. See [GitHub's container registry guidance](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+`ghcr.io/chrisbennight/mcp-printable-release`. New GHCR packages default to
+private visibility. Configure these packages for public distribution and
+verify anonymous pulls of the exact digests before deployment. Publishing
+permission and public download access are separate settings. See
+[GitHub's container registry guidance](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
 ## Qualification and consumption
 
@@ -72,11 +83,16 @@ verified server, Blender, CAD, and slicer digest references together. Keep the p
 workspace backup for rollback; image rollback does not reverse saved data.
 There is no mutable production channel or automatic deployment in this flow.
 
-For another private registry, an authenticated maintainer can run
+For a standalone release or another registry, an authenticated maintainer can run
 `./build-docker.sh --push` on an equivalent trusted host with
 `PRINTABLE_REGISTRY`, `PRINTABLE_IMAGE_NAMESPACE`, and
 `PRINTABLE_SOURCE_REPOSITORY` set. The source must be a credential-free HTTPS
 repository URL. The same proxy, security, image identity, and GPU gates apply.
+
+`./build-docker.sh --push-candidate` runs all source and CPU qualification but
+stops before GPU qualification and release-record publication. It writes
+`target/release/candidate.json` only after those checks pass. The workflow
+transfers this file without rebuilding the images on the GPU machine.
 
 `build-docker.sh` binds its isolated MCP smoke container to loopback port 8000.
 Set `PRINTABLE_SMOKE_PORT` to another available TCP port when that port is
