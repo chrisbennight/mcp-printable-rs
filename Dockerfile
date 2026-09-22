@@ -54,15 +54,17 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 ARG SOURCE_REVISION
 ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 RUN apt-get update && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 \
+ && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
-RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.4.2/OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.4.2.AppImage \
- && echo 'd12fb8c8eac1aecd2dfb6377acd48f994f8fa439ed5292fa532dd82880f029fd  /tmp/orca.AppImage' | sha256sum --check \
+RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-6915edb/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-6915edb.AppImage \
+ && echo 'eb46a67b37063cc5ccbe00c058b45cf5cd71e4c0c15e66a96ca2c0c89ca1da13  /tmp/orca.AppImage' | sha256sum --check \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
  && rm -rf /opt/orca/resources/web \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
+COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
+ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \

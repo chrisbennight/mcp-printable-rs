@@ -1,4 +1,5 @@
 """Exercise packaged Orca slicing, toolpath previews, and restart recovery."""
+import io
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,44 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
+
+from PIL import Image
+
+
+def verify_package(path):
+    with zipfile.ZipFile(path) as package:
+        names = set(package.namelist())
+        assert any(name.endswith(".gcode") and package.getinfo(name).file_size > 0
+                   for name in names), "package has no G-code"
+        models = [name for name in names if name.endswith(".model")]
+        assert models, "package has no model"
+        assert any(ET.fromstring(package.read(name)).find(".//{*}triangle") is not None
+                   for name in models), "package has no geometry"
+        thumbnails = set()
+        for name in names:
+            if not name.endswith(".rels"):
+                continue
+            for relationship in ET.fromstring(package.read(name)):
+                if "thumbnail" not in relationship.get("Type", "").lower():
+                    continue
+                target = relationship.attrib["Target"]
+                assert target.startswith("/"), f"unexpected thumbnail target: {target}"
+                thumbnails.add(target.lstrip("/"))
+        assert thumbnails, "package has no thumbnail relationships"
+        assert {"Metadata/plate_1.png", "Metadata/plate_1_small.png"} <= thumbnails, (
+            f"missing expected plate thumbnail relationships: {sorted(thumbnails)}")
+        for name in thumbnails:
+            assert name in names, f"missing thumbnail: {name}"
+            with Image.open(io.BytesIO(package.read(name))) as image:
+                image.load()
+                assert image.format == "PNG", f"thumbnail is not PNG: {name}"
+                assert min(image.size) > 0
+                rgba = image.convert("RGBA")
+                background = Image.new("RGBA", rgba.size, "white")
+                background.alpha_composite(rgba)
+                assert any(low != high for low, high in background.convert("RGB").getextrema()), f"blank thumbnail: {name}"
 
 
 def request(action, params):
@@ -87,6 +126,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert f'; curr_bed_type = {state["setup"]["build_plate"]}' in gcode
             temperature = state["setup"]["filaments"][0]["bed_temperature_initial_layer"][0]
             assert f"M190 S{temperature}" in gcode or f"M140 S{temperature}" in gcode
+            verify_package(project / model / "model.gcode.3mf")
             review = request("review", {"slice": handle, "toolpath": toolpath, "first_layer": 1, "last_layer": 1})
             assert review["kind"] == "actual_toolpath" and review["segments"] > 0
             assert (root / review["image"]["path"]).read_bytes().startswith(b"\x89PNG")
@@ -100,7 +140,7 @@ with tempfile.TemporaryDirectory() as directory:
         worker = start()
         for handle in handles:
             assert request("status", handle)["status"] == "completed"
-        print("Native A1/X1C slices, actual toolpath images, and restart recovery passed")
+        print("Native A1/X1C slices, package thumbnails, actual toolpath images, and restart recovery passed")
     finally:
         worker.terminate()
         worker.wait(timeout=10)

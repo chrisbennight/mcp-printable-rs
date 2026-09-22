@@ -5,6 +5,18 @@ the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
+The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-6915edb)
+supports headless package thumbnails by fixing the CLI OpenGL context request and
+model initialization without a wx application. It retains the upstream 2.4.2 JSON
+profile format used by the worker.
+
+The container's `orca-headless` wrapper provides Xvfb and Mesa software rendering
+without GPU passthrough. It creates a private runtime directory inside
+each slice's temporary staging directory. The worker's existing process-group
+cancellation and staging cleanup also cover the display process and runtime files.
+The native smoke checks A1/X1C slices and package re-slicing, including decodable,
+nonblank thumbnail relationships, retained geometry, G-code, and build-plate settings.
+
 Read `printable://contracts/slice/{action}` for exact request parameters.
 Use `profiles` to find printer, process and filament profiles, and `settings` to
 inspect inherited settings before preparing a slice. Each selected profile may
