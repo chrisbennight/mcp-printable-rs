@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+# The worker assigns HOME to its private per-slice staging directory and kills
+# this entire process group on cancellation. Staging cleanup removes runtime
+# files even when cancellation prevents xvfb-run from running its exit trap.
+umask 077
+XDG_RUNTIME_DIR=$(mktemp -d "${HOME}/orca-runtime.XXXXXXXX")
+export XDG_RUNTIME_DIR
+export TMPDIR="$XDG_RUNTIME_DIR"
+export LIBGL_ALWAYS_SOFTWARE=1
+export GDK_BACKEND=x11
+exec xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' /opt/orca/AppRun "$@"
