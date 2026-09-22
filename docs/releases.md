@@ -46,7 +46,6 @@ Configure these repository settings before dispatch:
 
 | Setting | Meaning |
 | --- | --- |
-| Secret `CRATES_PROXY_URL` | Approved credential-free HTTPS Cargo proxy URL, without the `sparse+` prefix; secret storage masks this deployment configuration in public logs |
 | Variable `PRINTABLE_QUALIFIER_ID` | Numeric GitHub account ID of the trusted integration that verifies private GPU evidence and posts approval statuses |
 
 The GPU runner needs Linux/amd64, Python, NVIDIA drivers and Container Toolkit,
@@ -57,9 +56,10 @@ Blender's host PID by its container cgroup, including rootless PID namespaces.
 Do not give this runner the production Docker socket or register it with a
 public repository. Serialize GPU qualification jobs on the physical host.
 
-Publishing still requires the approved crate proxy. Ordinary source builds and
-pull-request CI can resolve public upstreams. Never put a credential-bearing
-URL into a build argument.
+Hosted releases and pull-request CI resolve crates.io using the checked-in
+lockfile. A local build or publication can set `CRATES_INDEX_URL` to a reachable
+mirror; that setting applies to both Docker builds and host Cargo commands.
+Never put a credential-bearing URL into a build argument.
 
 Images use `ghcr.io/chrisbennight/mcp-printable-rs`,
 `ghcr.io/chrisbennight/mcp-printable-blender`,
@@ -101,7 +101,7 @@ For a standalone release or another registry, an authenticated maintainer can ru
 `./build-docker.sh --push` on an equivalent trusted host with
 `PRINTABLE_REGISTRY`, `PRINTABLE_IMAGE_NAMESPACE`, and
 `PRINTABLE_SOURCE_REPOSITORY` set. The source must be a credential-free HTTPS
-repository URL. The same proxy, security, image identity, and GPU gates apply.
+repository URL. The same security, image identity, and GPU gates apply.
 
 `./build-docker.sh --push-candidate` runs all source and CPU qualification but
 stops before GPU qualification and release-record publication. It writes

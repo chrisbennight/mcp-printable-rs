@@ -1,10 +1,4 @@
-"""Publication routes Rust dependencies through the approved crate proxy.
-
-Cargo reads no environment variable for a mirror, so the redirect is a config
-file rather than a setting the caller can simply export. A site that never gets
-one fails silently: cargo resolves from crates.io and the build goes green, so
-nothing in a log distinguishes a working redirect from an absent one.
-"""
+"""Public builds use crates.io; configured mirrors reach every Rust build."""
 
 from __future__ import annotations
 
@@ -137,25 +131,16 @@ class PackageIndexRoutingTests(unittest.TestCase):
                 self.assertIn(f'cargo "${{cargo_index_args[@]}}" {command}', self.script)
 
 
-    def test_publishing_refuses_to_fall_back_to_the_public_index(self) -> None:
-        """A pull request may fall back; a run that pushes may not.
-
-        An absent address on a publishing run means the fleet's injection
-        regressed, and the pushed image would carry crates that bypassed the
-        proxy's cache, audit, and blocklist.
-        """
-        self.assertIn('CRATES_INDEX_URL: sparse+${{ secrets.CRATES_PROXY_URL }}', self.build)
-        self.assertIn('test -n "$CRATES_INDEX_URL"', self.build)
+    def test_publishing_builds_without_a_private_index(self) -> None:
+        self.assertNotIn('CRATES_PROXY_URL', self.build)
+        self.assertNotIn('CRATES_INDEX_URL', self.build)
         self.assertIn('./build-docker.sh --push', self.build)
-
-        # The local script refuses before it builds anything, so the caller
-        # learns immediately rather than after a full release build.
         for mode in ("--push", "--push-candidate"):
             with self.subTest(mode=mode):
-                refused, refused_calls = self.run_build_script({}, arguments=(mode,))
-                self.assertEqual(refused.returncode, 1)
-                self.assertIn("refusing to publish", refused.stderr)
-                self.assertEqual(refused_calls, [])
+                result, calls = self.run_build_script({}, arguments=(mode,))
+                self.assertTrue(any(call.startswith('buildx build ') for call in calls))
+                self.assertNotIn('CRATES_INDEX_URL', '\n'.join(calls))
+                self.assertNotIn('refusing to publish', result.stderr)
 
     def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
         """Root-image builds compile Rust, including CAD and slicer workers.

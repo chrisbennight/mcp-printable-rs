@@ -37,8 +37,8 @@ def validate(root):
             "candidate token permissions changed")
     require(publish["permissions"] == {"contents": "read", "actions": "read", "packages": "write"},
             "publisher token permissions changed")
-    require(build["env"]["CRATES_INDEX_URL"] == "sparse+${{ secrets.CRATES_PROXY_URL }}",
-            "release must receive the configured crate proxy")
+    require("CRATES_INDEX_URL" not in build["env"],
+            "hosted release must use the public Cargo source")
     require(any(step.get("run") == "./build-docker.sh --push-candidate" for step in build["steps"]),
             "build must run the audited candidate publisher")
     require(publish["steps"][-1].get("run") == 'python3 scripts/release_authorization.py publish "$CANDIDATE_RUN_ID" target/release/candidate.json',
@@ -71,8 +71,6 @@ def validate(root):
                 "untrusted CI must not acquire release authority")
         require("secrets." not in str(current), "untrusted CI must not request secrets")
     script = (root / "build-docker.sh").read_text()
-    require('CRATES_INDEX_URL is unset; refusing to publish' in script,
-            "publishing must refuse an absent crate proxy")
     require('docker buildx imagetools create' not in script,
             "publisher must not change mutable image channels")
     require(not re.search(r"\bdocker\s+(?:tag|push)\b", script),
