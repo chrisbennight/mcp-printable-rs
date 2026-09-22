@@ -100,7 +100,10 @@ CONTRACTS = {
         user="10001",
         healthcheck=["CMD", "/usr/local/bin/printable-slicer-worker", "--healthcheck"],
         entrypoint=["/usr/bin/tini", "--", "/usr/local/bin/printable-slicer-worker"],
-        environment=("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",),
+        environment=(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless",
+        ),
     ),
     "cad": ImageContract(
         repository="mcp-printable-cad",

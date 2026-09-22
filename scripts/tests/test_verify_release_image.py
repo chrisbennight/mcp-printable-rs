@@ -39,10 +39,20 @@ class VerifyReleaseImageTests(unittest.TestCase):
         document = server_document()
         config = document["Config"]
         config.update(User=contract.user, Healthcheck={"Test": contract.healthcheck},
-                      Entrypoint=contract.entrypoint, Env=list(contract.environment))
+                      Entrypoint=contract.entrypoint, Env=[
+                          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                          "PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless",
+                      ])
         config["Labels"]["org.printable.role"] = contract.role
         image = ReleaseIdentity().repository("slicer") + f":sha-{REVISION[:12]}@sha256:{'b' * 64}"
         self.assertEqual(verify_release_image.verify("slicer", image, REVISION, document, []), [])
+        valid_env = config["Env"][:]
+        for invalid_env in (valid_env[:1], valid_env[:1] + ["PRINTABLE_SLICER_BIN=/opt/orca/AppRun"]):
+            with self.subTest(environment=invalid_env):
+                config["Env"] = invalid_env
+                self.assertIn("image environment does not match the exact runtime contract",
+                              verify_release_image.verify("slicer", image, REVISION, document, []))
+        config["Env"] = valid_env
         self.assertTrue(verify_release_image.verify("slicer", SERVER_IMAGE, REVISION, document, []))
         config["User"] = "0"
         self.assertTrue(verify_release_image.verify("slicer", image, REVISION, document, []))
