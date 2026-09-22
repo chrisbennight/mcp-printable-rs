@@ -74,9 +74,10 @@ pull requests off persistent GPU runners and away from release credentials.
 Do not couple the general installation to a private registry, secret provider,
 or deployment controller. Site-specific production wiring belongs downstream.
 
-The [manual release workflow](docs/releases.md) is disabled until its trusted
-runner, environment protections, private package destinations, and release
-materials are verified. Publishing retains the approved crate-proxy gate;
+The [release workflow](docs/releases.md) requires a manual main-branch call from
+a private repository. Builds and publishing use hosted runners; only GPU
+qualification uses the private rootless runner. Verify public package access
+and release materials before distribution. Publishing retains the approved crate-proxy gate;
 ordinary local source builds do not require that proxy.
 
 Write plain English. Documentation should state current behavior, give runnable

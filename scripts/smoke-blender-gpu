@@ -23,6 +23,12 @@ if [[ ! "$gpu_device" =~ ^([0-9]+|GPU-[a-fA-F0-9-]+)$ ]]; then
 fi
 gpu_name="printable-blender-gpu-smoke-${run_id}"
 unavailable_name="printable-blender-no-gpu-smoke-${run_id}"
+gpu_runtime="${PRINTABLE_GPU_RUNTIME:-docker}"
+case "$gpu_runtime" in
+  docker) gpu_args=(--gpus "device=${gpu_device}") ;;
+  cdi) gpu_args=(--device "nvidia.com/gpu=${gpu_device}") ;;
+  *) echo "PRINTABLE_GPU_RUNTIME must be docker or cdi" >&2; exit 2 ;;
+esac
 
 for command_name in docker nvidia-smi; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -117,7 +123,7 @@ if ! docker logs "$unavailable_name" 2>&1 |
 fi
 require_peer
 
-docker run -d --name "$gpu_name" --gpus "device=${gpu_index}" \
+docker run -d --name "$gpu_name" "${gpu_args[@]}" \
   "${common_args[@]}" \
   -e "NVIDIA_VISIBLE_DEVICES=${gpu_index}" \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display \
@@ -162,12 +168,6 @@ if docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$
   exit 1
 fi
 
-blender_pid="$(docker top "$gpu_name" -eo pid,comm | awk '$2 == "blender" { print $1; exit }')"
-if [ -z "$blender_pid" ]; then
-  echo "could not resolve the host Blender process id" >&2
-  exit 1
-fi
-
 docker exec "$gpu_name" python3 /opt/printable/addon/integration_smoke.py \
   --host 127.0.0.1 --mode gpu-ui
 require_peer
@@ -176,6 +176,8 @@ docker exec "$gpu_name" python3 /opt/printable/addon/integration_smoke.py \
   --host 127.0.0.1 --mode gpu-eevee
 require_peer
 
+container_id="$(docker inspect --format '{{.Id}}' "$gpu_name")"
+blender_pid="$(python3 scripts/gpu_process.py "$container_id" "$gpu_index")"
 baseline_memory_mib="$(process_memory_mib "$blender_pid")"
 if [[ ! "$baseline_memory_mib" =~ ^[0-9]+$ ]]; then
   echo "could not measure Blender GPU memory before the Cycles stage" >&2
