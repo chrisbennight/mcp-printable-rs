@@ -19,39 +19,40 @@ def validate(root):
             failures.append(message)
 
     release = read_workflow(root / ".github/workflows/release.yml")
+    publication = read_workflow(root / ".github/workflows/publish-release.yml")
     ci = read_workflow(root / ".github/workflows/ci.yml")
-    require(set(release["on"]) == {"workflow_call"}, "release must use its private manual caller")
-    require(set(release["jobs"]) == {"build", "gpu", "publish"}, "unexpected release jobs")
-    build, gpu, publish = (release["jobs"][key] for key in ("build", "gpu", "publish"))
-    require(build["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == true",
-            "release must require a manual main-branch dispatch from a private repository")
+    for workflow in (release, publication):
+        require(set(workflow["on"]) == {"workflow_dispatch"}, "release must be manually dispatched")
+        require(workflow["concurrency"]["cancel-in-progress"] == "false",
+                "an active release must not be cancelled by a later dispatch")
+    require(set(release["jobs"]) == {"build"} and set(publication["jobs"]) == {"publish"},
+            "public workflows must contain only hosted build and publication jobs")
+    build, publish = release["jobs"]["build"], publication["jobs"]["publish"]
+    for job in (build, publish):
+        require(job["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == false",
+                "release must require a manual main-branch dispatch in a public repository")
     require(build["runs-on"] == publish["runs-on"] == "ubuntu-latest",
             "building and publishing must use hosted runners")
-    require(gpu["runs-on"] == "${{ inputs.gpu-runner-label }}",
-            "GPU qualification must use the configured private runner")
-    require(gpu["needs"] == "build" and publish["needs"] == ["build", "gpu"],
-            "publication must depend on both build and GPU qualification")
-    require(gpu["permissions"] == {"contents": "read"}, "GPU jobs must not receive publishing authority")
-    for job in (build, publish):
-        require(job["permissions"] == {"contents": "read", "packages": "write"},
-                "publisher token permissions changed")
-    require(release["concurrency"]["cancel-in-progress"] == "false",
-            "an active release must not be cancelled by a later dispatch")
-    require(build["env"]["CRATES_INDEX_URL"] == "${{ inputs.crates-index-url }}",
+    require(build["permissions"] == {"contents": "read", "packages": "write"},
+            "candidate token permissions changed")
+    require(publish["permissions"] == {"contents": "read", "actions": "read", "packages": "write"},
+            "publisher token permissions changed")
+    require(build["env"]["CRATES_INDEX_URL"] == "${{ vars.CRATES_INDEX_URL }}",
             "release must receive the configured crate proxy")
     require(any(step.get("run") == "./build-docker.sh --push-candidate" for step in build["steps"]),
             "build must run the audited candidate publisher")
-    require(any("scripts/release_candidate.py qualify" in step.get("run", "") for step in gpu["steps"]),
-            "GPU job must qualify the candidate")
-    require(publish["steps"][-1].get("run") == "python3 scripts/release_candidate.py publish target/release/candidate.json target/release/gpu-proof.json",
-            "record publication must validate the matching GPU proof")
-    for job in release["jobs"].values():
-        for step in job["steps"]:
-            if step.get("uses", "").startswith("actions/checkout@"):
-                require(step["with"].get("repository") == "chrisbennight/mcp-printable-rs"
-                        and step["with"].get("ref") == "${{ inputs.source-revision }}",
-                        "all release jobs must check out the same source revision")
-    for workflow in (ci, release):
+    require(publish["steps"][-1].get("run") == 'python3 scripts/release_authorization.py publish "$CANDIDATE_RUN_ID" target/release/candidate.json',
+            "record publication must validate trusted candidate-specific GPU approval")
+    require(publish["env"].get("QUALIFIER_ID") == "${{ vars.PRINTABLE_QUALIFIER_ID }}",
+            "GPU approval must come from the configured trusted account")
+    require(any(step.get("id") == "candidate" and step.get("run") ==
+                'python3 scripts/release_authorization.py prepare "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"'
+                for step in publish["steps"]), "candidate build identity must be checked")
+    require(any(step.get("with", {}).get("ref") == "${{ steps.candidate.outputs.revision }}"
+                for step in publish["steps"]), "publication must check out the verified candidate revision")
+    require(build["steps"][0]["with"].get("ref") == "${{ github.sha }}",
+            "build must check out the dispatched main revision")
+    for workflow in (ci, release, publication):
         require(workflow["permissions"] == {"contents": "read"}, "workflow defaults must be read-only")
         for current in workflow["jobs"].values():
             for step in current["steps"]:

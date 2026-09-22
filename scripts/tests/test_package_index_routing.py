@@ -144,7 +144,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
         regressed, and the pushed image would carry crates that bypassed the
         proxy's cache, audit, and blocklist.
         """
-        self.assertIn('CRATES_INDEX_URL: ${{ inputs.crates-index-url }}', self.build)
+        self.assertIn('CRATES_INDEX_URL: ${{ vars.CRATES_INDEX_URL }}', self.build)
         self.assertIn('test -n "$CRATES_INDEX_URL"', self.build)
         self.assertIn('./build-docker.sh --push', self.build)
 

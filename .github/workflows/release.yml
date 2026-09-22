@@ -1,17 +1,7 @@
 name: Release
 
 on:
-  workflow_call:
-    inputs:
-      source-revision:
-        required: true
-        type: string
-      crates-index-url:
-        required: true
-        type: string
-      gpu-runner-label:
-        required: true
-        type: string
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,22 +21,22 @@ env:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == true
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
       packages: write
     env:
-      CRATES_INDEX_URL: ${{ inputs.crates-index-url }}
-      SOURCE_REVISION: ${{ inputs.source-revision }}
+      CRATES_INDEX_URL: ${{ vars.CRATES_INDEX_URL }}
+      SOURCE_REVISION: ${{ github.sha }}
       GRYPE_VERSION: "0.110.0"
       GRYPE_CHECKSUM: aaa98d27d2d7efd9317c6a1ad6d9b15f3e65bab320e7d03bde41e251387bb71c
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: chrisbennight/mcp-printable-rs
-          ref: ${{ inputs.source-revision }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate source and build prerequisites
@@ -89,65 +79,3 @@ jobs:
           path: target/release/candidate.json
           if-no-files-found: error
           retention-days: 30
-
-  gpu:
-    needs: build
-    runs-on: ${{ inputs.gpu-runner-label }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      PRINTABLE_GPU_RUNTIME: cdi
-      PRINTABLE_GPU_SMOKE_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: chrisbennight/mcp-printable-rs
-          ref: ${{ inputs.source-revision }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: printable-candidate
-          path: target/release
-      - name: Verify rootless runtime and qualify the exact candidate
-        run: |
-          test "$(id -u)" -ne 0
-          test ! -r /var/run/docker.sock
-          docker info --format '{{json .SecurityOptions}}' |
-            python3 -c 'import json,sys; assert "name=rootless" in json.load(sys.stdin)'
-          python3 scripts/release_candidate.py qualify target/release/candidate.json target/release/gpu-proof.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: printable-gpu-proof
-          path: target/release/gpu-proof.json
-          if-no-files-found: error
-          retention-days: 30
-
-  publish:
-    needs: [build, gpu]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: chrisbennight/mcp-printable-rs
-          ref: ${{ inputs.source-revision }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: printable-*
-          path: target/release
-          merge-multiple: true
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-        with:
-          cache-binary: false
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the qualified release record
-        run: python3 scripts/release_candidate.py publish target/release/candidate.json target/release/gpu-proof.json
