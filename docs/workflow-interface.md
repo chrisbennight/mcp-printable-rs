@@ -29,6 +29,15 @@ Contract resources do not invoke operations or grant authorization, and whole-to
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
 
+Task searches can use organic/procedural modeling, materials or animation for
+`blender_execute`, section/cutaway for `view`, and same-view comparison for
+`compare_renders`. Use `edit` for its supported convenience operations before
+choosing native Python. For comparison, render inputs using the same camera and
+presentation settings first: `compare_renders` combines existing images, but
+does not align cameras or verify that the views match. Search ranking is owned
+by the client or gateway; verify these queries against the deployed catalog
+after an update rather than treating local vocabulary checks as ranking proof.
+
 Combined tools take an `action` and an operation-specific `params` object.
 Each action's parameters are derived from the same Rust type used by its handler;
 unknown actions, unrelated fields, and wrong parameter types fail before dispatch.

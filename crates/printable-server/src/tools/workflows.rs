@@ -336,7 +336,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "blender_execute",
-        description: "Run explicit synchronous Blender Python. Set result to finite JSON; output is bounded. Checkpoint first. A timeout after delivery has unknown mutation outcome: never retry automatically; wait for healthy status, then inspect or restore. Persistent unhealthy state requires operator recovery.",
+        description: "Run synchronous Blender Python for organic/procedural modeling, materials and animation. Checkpoint first; set result to bounded finite JSON. A timeout after delivery means unknown mutation: never retry automatically; wait for healthy status, then inspect or restore. Persistent unhealthy state requires operator recovery.",
         schema: schema_of::<BlenderExecuteParams>,
         annotations: code_annotations,
     },
@@ -360,19 +360,19 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "view",
-        description: "Observe the native viewport or editor, or inspect dimensioned geometry, sections, and overhangs. Native captures identify method, scene/view state, redraw and convergence. Images and metadata remain artifacts; inline images are optional and bounded.",
+        description: "Inspect a native viewport/editor, dimensions, section/cutaway or overhangs. Captures report method, scene/view state, redraw and convergence. Images/metadata are artifacts; inline images are optional and bounded.",
         schema: workflow_schema_of::<ViewRequest>,
         annotations: write_annotations,
     },
     ToolDef {
         name: "render",
-        description: "Render an authored scene, product presentation, gallery, or turntable contact sheet. Product presentation preserves source geometry and verifies cleanup. Images remain artifacts; optional inline images are bounded. Read printable://render/product-v1 for presentation semantics.",
+        description: "Render a scene, product, gallery or turntable contact sheet. Reuse presentation settings for matched views. Product renders preserve geometry and verify cleanup. Images are artifacts; inline images are optional and bounded. Read printable://render/product-v1.",
         schema: workflow_schema_of::<RenderRequest>,
         annotations: write_annotations,
     },
     ToolDef {
         name: "compare_renders",
-        description: "Compare two existing PNG artifacts in a labeled before/after image without invoking Blender.",
+        description: "Compare PNGs before/after. Render inputs with the same view; comparison does not align cameras or invoke Blender.",
         schema: schema_of::<CompareRendersParams>,
         annotations: write_annotations,
     },
