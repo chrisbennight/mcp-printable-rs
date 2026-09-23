@@ -47,11 +47,11 @@ particular gateway or model provider.
 
 ## Review and support
 
-Open pull requests against `main`. Required GitHub checks must pass; GPU
-qualification is a separate trusted release gate. Contributors do not need
+Open pull requests against `main`. Required GitHub checks must pass; merges
+publish automatically after successful main-branch CI. Contributors do not need
 access to the maintainer's network, private secret store, or review service.
 Maintainers may use automated review, but remain responsible for decisions and
-the resulting code. See [CI](docs/continuous-integration.md) for the trust split.
+the resulting code. See [CI](docs/continuous-integration.md) for the checks.
 
 AI-assisted contributions are welcome on the same terms as other contributions.
 The author must understand the change, review generated text and dependencies,

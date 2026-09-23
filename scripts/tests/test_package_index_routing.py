@@ -12,7 +12,7 @@ from textwrap import dedent
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 TEST_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DOCKERFILE = ROOT / "Dockerfile"
 BUILD_SCRIPT = ROOT / "build-docker.sh"
@@ -116,7 +116,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
         """
         for name, source in (
             ("Dockerfile", self.dockerfile),
-            ("release.yml", self.build),
+            ("ci.yml", self.build),
             ("ci.yml", self.test),
             ("build-docker.sh", self.script),
         ):
@@ -127,45 +127,17 @@ class PackageIndexRoutingTests(unittest.TestCase):
                 self.assertNotIn("CARGO_REGISTRY_INDEX", effective)
 
 
-    def test_the_publishing_script_routes_its_own_cargo_commands(self) -> None:
-        """`--push` resolves dependencies on the host as well as in an image.
-
-        Passed as cargo's own `--config` assignments rather than by writing
-        `.cargo/config.toml`, because this path refuses to publish from a dirty
-        worktree and a generated file would be exactly that.
-        """
-        self.assertIn('source.crates-io.replace-with="mirror"', self.script)
-        for command in ("clippy", "test"):
-            with self.subTest(command=command):
-                self.assertIn(f'cargo "${{cargo_index_args[@]}}" {command}', self.script)
-
-
-    def test_publishing_builds_without_a_private_index(self) -> None:
+    def test_publishing_does_not_rebuild_with_a_private_index(self):
         self.assertNotIn('CRATES_PROXY_URL', self.build)
         self.assertNotIn('CRATES_INDEX_URL', self.build)
-        self.assertIn('./build-docker.sh --push', self.build)
+        self.assertIn('scripts/publish_images.py publish', self.build)
+
+    def test_retired_local_publication_flags_fail_before_building(self):
         for mode in ("--push", "--push-candidate"):
             with self.subTest(mode=mode):
                 result, calls = self.run_build_script({}, arguments=(mode,))
-                self.assertEqual(result.returncode, 73)
-                self.assertTrue(any(call.startswith('buildx build ') for call in calls))
-                self.assertNotIn('CRATES_INDEX_URL', '\n'.join(calls))
-                self.assertNotIn('refusing to publish', result.stderr)
-
-    def test_the_local_script_forwards_at_every_site_that_builds_rust(self) -> None:
-        """Root-image builds compile Rust, including CAD and slicer workers.
-
-        Blender, the native test overlays, and the release record do not resolve
-        crates and must not receive the Rust index setting.
-        """
-        commands = [line.strip() for line in self.script.replace("\\\n", " ").splitlines()
-                    if line.strip().startswith(("docker build ", "docker buildx build "))]
-        self.assertEqual(len(commands), 9)
-        for command in commands:
-            with self.subTest(command=command):
-                self.assertEqual('"${index_build_args[@]}"' in command,
-                                 "--file " not in command)
-
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(calls, [])
 
     def test_a_local_build_forwards_by_value_and_omits_an_unset_name(self) -> None:
         """The stub records what actually reached the daemon.

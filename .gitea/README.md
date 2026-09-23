@@ -6,4 +6,4 @@ pull-request template is historical, not an active CI configuration. Removing
 workflow files here does not disable a separate repository or erase Git history.
 
 See [GitHub CI](../docs/continuous-integration.md) and
-[the manual release flow](../docs/releases.md) for maintained guidance.
+[automatic releases](../docs/releases.md) for maintained guidance.

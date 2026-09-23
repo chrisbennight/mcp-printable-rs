@@ -20,7 +20,7 @@ Historical design context is retained without site-specific operating details:
 | `DEPLOYMENT.md` | Links to maintained installation and operation guides |
 | `docs/history/imported-readme.md` | Preserved detailed earlier README, clearly marked as historical |
 | `.gitea/` | Historical template and retirement note; obsolete workflows removed |
-| `evidence/blender-gpu-smoke-2026-07-18.md`, `acceptance/agent-workflows.md` | Qualification guidance and evaluation contracts without site-specific observations |
+| `evidence/blender-gpu-smoke-2026-07-18.md`, `acceptance/agent-workflows.md` | Optional GPU diagnostics and workflow evaluations without site-specific observations |
 
 Earlier commits may contain deployment metadata that does not belong in a
 public example. Review them separately from credential scanning. New changes
@@ -73,9 +73,9 @@ Verify the private vulnerability-reporting path with an external account, as
 described in [SECURITY.md](../SECURITY.md). Confirm that package visibility is a
 separate decision from repository visibility. Complete the corresponding-source
 and notice material in [the license guidance](../THIRD_PARTY_NOTICES.md) before
-binary distribution, and retain qualification evidence for the exact image pair.
+binary distribution, and retain CI results for the exact image set.
 
 The automated source checks, tutorial, and software-container exercises are
 useful evidence. The [outside-user trial](../acceptance/outside-user-trial.md)
-and NVIDIA qualification require their own actual results. Do not describe a
+and optional NVIDIA diagnostics require their own actual results. Do not describe a
 pending trial, an unmeasured latency target, or a planned release as completed.

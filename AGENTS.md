@@ -50,8 +50,7 @@ python3 scripts/docgate
 ```
 
 Unit tests use fakes and must not contact production systems. Dedicated
-container integration is the live software test boundary; trusted NVIDIA
-qualification is separate. Read an explicit successful exit status before
+container integration tests the software without a GPU. Read an explicit successful exit status before
 claiming a gate passed. Reuse valid evidence for an unchanged candidate.
 
 ## Git and release workflow
@@ -69,15 +68,14 @@ contributors do not need access to that private review service. Automated
 review does not replace human responsibility for the change.
 
 Server, Blender, CAD, and slicer images form a matching set identified by immutable digests and source revision.
-Do not promote software-rendered test results as NVIDIA qualification. Keep
-pull requests off persistent GPU runners and away from release credentials.
+Do not claim GPU performance from software-rendering tests. Keep
+pull requests away from release credentials.
 Do not couple the general installation to a private registry, secret provider,
 or deployment controller. Site-specific production wiring belongs downstream.
 
 The [release workflow](docs/releases.md) runs builds and publication directly
-in the public repository through manual main-branch dispatches. Only GPU
-qualification uses the private rootless runner. Publication requires a trusted
-integration status bound to the exact successful candidate build. Verify public package access
+in the public repository automatically after successful main-branch CI. It needs
+no GPU, private runner or external approval status. Verify public package access
 and release materials before distribution. Hosted releases use crates.io with
 the checked-in lockfile. Local builds may configure a reachable crate mirror.
 

@@ -7,7 +7,7 @@ workspace storage, container isolation, and reverse-proxy settings.
 For operation and delivery, see:
 
 - [Operations and recovery](docs/operations.md).
-- [Release qualification](docs/releases.md).
+- [Automatic releases](docs/releases.md).
 - [CI and its trust boundaries](docs/continuous-integration.md).
 - [Scene and render recovery](docs/render-worker.md).
 
