@@ -127,6 +127,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_contracts_keep_task_discovery_vocabulary() {
+        for (tool, action, terms) in [
+            (
+                "blender_execute",
+                None,
+                &[
+                    "organic",
+                    "procedural",
+                    "modeling",
+                    "materials",
+                    "animation",
+                ][..],
+            ),
+            ("view", Some("section"), &["section", "cutaway"][..]),
+            ("compare_renders", None, &["comparison", "same view"][..]),
+            ("project", Some("resolve"), &["project", "resolve"][..]),
+            ("scene", Some("checkpoint"), &["checkpoint"][..]),
+            ("artifact", Some("publish"), &["publish", "transfer"][..]),
+        ] {
+            let uri = match action {
+                Some(action) => format!("{ROOT}/{tool}/{action}"),
+                None => format!("{ROOT}/{tool}"),
+            };
+            let contract = read(&uri).unwrap();
+            let description = contract["description"].as_str().unwrap();
+            assert_eq!(description, workflows::lookup(tool).unwrap().description);
+            for term in terms {
+                assert!(description.contains(term), "{uri} omits {term}");
+            }
+        }
+    }
+
+    #[test]
     fn every_advertised_action_has_a_self_contained_contract() {
         let index = read(ROOT).unwrap();
         for entry in index["tools"].as_array().unwrap() {
