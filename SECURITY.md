@@ -33,8 +33,8 @@ authentication is a security defect.
 ## Release and incident handling
 
 Use matching immutable image digests and retain the release's source revision,
-scan results, and qualification evidence. A software-rendered CI pass is not a
-production NVIDIA qualification. Review known unremediated findings before
+scan results, and CI results. Software-rendering tests do not measure GPU
+performance or driver compatibility. Review known unremediated findings before
 using a pair; passing the configured scan policy does not mean an image has no
 vulnerabilities.
 

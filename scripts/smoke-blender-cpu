@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CPU/software integration evidence; NVIDIA release qualification is separate.
+# Exercise Blender with software rendering; no GPU is required.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then

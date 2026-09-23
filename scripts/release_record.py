@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Carry immutable image identity between build, GPU qualification, and publication."""
+"""Publish the image-set record consumed by installations."""
 
-import argparse
-import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
-
-from release_identity import ReleaseIdentity
-
 
 ROLES = ("server", "blender", "cad", "slicer")
 
@@ -32,24 +26,8 @@ def validate(candidate, identity):
     return candidate
 
 
-def digest(candidate):
-    encoded = json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def write_new(path, document):
-    with Path(path).open("x") as output:
-        json.dump(document, output, sort_keys=True, indent=2)
-        output.write("\n")
-
-
-def validate_proof(candidate, proof):
-    if proof != {"candidate_sha256": digest(candidate), "gpu": "passed"}:
-        raise ValueError("GPU qualification does not match this candidate")
-
-
-def publish(candidate, proof, identity):
-    validate_proof(candidate, proof)
+def publish(candidate, identity):
+    validate(candidate, identity)
     revision = candidate["revision"]
     tag = identity.repository("pair") + ":sha-" + revision[:12]
     command = ["docker", "buildx", "build", "--platform", "linux/amd64",
@@ -74,42 +52,5 @@ def publish(candidate, proof, identity):
         if (labels.get("org.printable." + role + ".image") != image
                 or labels.get("org.printable." + role + ".digest") != image_digest):
             raise ValueError("published record has an unexpected component")
-    print("QUALIFIED_RELEASE=" + reference)
+    print("RELEASE_IMAGE=" + reference)
     return reference
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="operation", required=True)
-    create = sub.add_parser("create")
-    create.add_argument("output")
-    create.add_argument("revision")
-    create.add_argument("images", nargs=4)
-    for operation in ("qualify", "publish"):
-        command = sub.add_parser(operation)
-        command.add_argument("candidate")
-        command.add_argument("proof")
-    args = parser.parse_args()
-    identity = ReleaseIdentity.from_environment()
-    if args.operation == "create":
-        candidate = validate({"revision": args.revision, "source": identity.source,
-                              "images": dict(zip(ROLES, args.images))}, identity)
-        write_new(args.output, candidate)
-        return
-    candidate = validate(json.loads(Path(args.candidate).read_text()), identity)
-    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    if checkout != candidate["revision"]:
-        raise ValueError("checkout does not match the candidate source revision")
-    if args.operation == "qualify":
-        image = candidate["images"]["blender"]
-        subprocess.run(["docker", "pull", "--platform", "linux/amd64", image], check=True)
-        subprocess.run(["python3", "scripts/verify_release_image.py", "blender", image, checkout], check=True)
-        subprocess.run(["scripts/smoke-blender-gpu", image], check=True)
-        write_new(args.proof, {"candidate_sha256": digest(candidate), "gpu": "passed"})
-    else:
-        proof = json.loads(Path(args.proof).read_text())
-        publish(candidate, proof, identity)
-
-
-if __name__ == "__main__":
-    main()

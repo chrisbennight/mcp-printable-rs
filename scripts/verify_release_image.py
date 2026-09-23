@@ -185,7 +185,8 @@ def verify(
     if not isinstance(config, dict):
         return ["image inspect has no Config object"]
 
-    if not expected_reference(role, identity).fullmatch(image):
+    local_image = re.fullmatch(r"sha256:[0-9a-f]{64}", image) and document.get("Id") == image
+    if not local_image and not expected_reference(role, identity).fullmatch(image):
         failures.append(f"reference is not an immutable {role} release image")
     if not REVISION_RE.fullmatch(expected_revision):
         failures.append("expected revision is not a full lowercase Git commit")

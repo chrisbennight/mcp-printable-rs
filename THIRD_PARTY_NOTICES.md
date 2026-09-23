@@ -30,7 +30,7 @@ Do not strip upstream documentation directories when reducing image size.
 
 ## Binary release obligations
 
-Before distributing a qualified pair, retain the source revision, lockfile,
+For each release, retain the source revision, lockfile,
 Dockerfiles, exact image digests, package inventory, applicable license texts,
 and the corresponding source and build material required by the components
 actually shipped. Provide recipients access alongside the binaries. An SBOM or
@@ -43,7 +43,6 @@ package versions to their binary versions, including distribution patches;
 retain Blender's exact source and any changes; include vendored native sources
 used by Rust crates where their license requires them.
 
-The current migration has not qualified a publicly distributed image pair.
-Public binary publication remains gated on completion of this per-pair material
-and NVIDIA qualification. These notes describe the project's distribution
-process and component boundaries, not a blanket legal certification.
+Provide these materials for the exact images distributed. GPU tests do not
+establish license compliance. These notes describe component boundaries and
+distribution requirements, not a blanket legal certification.

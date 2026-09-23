@@ -12,7 +12,7 @@ server. You supply the MCP client.
 Development is maintained publicly on
 [GitHub](https://github.com/chrisbennight/mcp-printable-rs).
 See [continuous integration](docs/continuous-integration.md) for source checks
-and the separate release qualification requirements.
+and automatic image publication after merges to `main`.
 
 ## Get started
 
@@ -64,7 +64,7 @@ does not prove clearance. Review the evidence and your printer and material
 requirements before manufacturing a part.
 
 NVIDIA is the supported graphics path. Software rendering in CI checks code and
-container behavior; it does not qualify a GPU release. Separate Blender
+container behavior; it does not measure GPU performance. Separate Blender
 processes still share physical GPU resources.
 
 ## Project information

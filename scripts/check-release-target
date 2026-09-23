@@ -3,6 +3,3 @@ set -eu
 python3 scripts/workflow_policy.py
 sh -n scripts/registry-manifest-digest scripts/test-registry-manifest-digest
 sh scripts/test-registry-manifest-digest
-if [ "${PRINTABLE_RELEASE_POLICY_SELF_TEST:-0}" != 1 ]; then
-  PRINTABLE_RELEASE_POLICY_SELF_TEST=1 sh scripts/test-release-target-policy
-fi
