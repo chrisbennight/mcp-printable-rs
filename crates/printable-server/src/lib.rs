@@ -16,6 +16,7 @@ pub mod jobs;
 pub mod mcp;
 pub mod printers;
 pub mod projects;
+pub mod provenance;
 pub mod resources;
 pub mod server;
 pub mod slicing;

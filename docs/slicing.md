@@ -49,6 +49,11 @@ native encoding is checked before and after it runs. Full-file layer counts and
 estimates remain available when processing completes within that budget.
 It does not establish adhesion, strength, clearance or a successful physical print.
 
+Completed slices and reviews return retained provenance references. Optional
+`design_record` links a CAD measurement to the exact source bytes. Pass slice and
+review references to printer import to check their applicability before upload;
+see [design and print evidence](delivery-evidence.md).
+
 The worker accepts source artifacts up to 1 GiB, one to sixteen material profiles
 and a preparation timeout up to two hours. Container memory, CPU and temporary
 storage limits remain separate limits. Neither preparation nor review uploads a

@@ -1,5 +1,6 @@
 //! Printer observation and physical print control share the Printable endpoint.
 
+mod delivery;
 mod operations;
 mod print_jobs;
 mod records;

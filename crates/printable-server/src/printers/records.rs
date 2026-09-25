@@ -129,12 +129,13 @@ impl PrinterService {
         let (mut result, source) = match target {
             Target::Queue { id } => {
                 let job = self.read.print_job(id).await?;
+                let evidence = super::delivery::observe(workspace, &job)?;
                 let source = job
                     .library_file_id
                     .map(|id| (id, false))
                     .or(job.archive_id.map(|id| (id, true)));
                 (
-                    json!({"print":queue(job_result(workspace,job)?,p.detail)}),
+                    json!({"print":queue(job_result(workspace,job)?,p.detail),"delivery_evidence":evidence}),
                     source,
                 )
             }

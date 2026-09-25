@@ -126,6 +126,40 @@ async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
     };
     let reviewed = worker.review(request()).await.unwrap();
     assert!(reviewed["segments"].as_u64().unwrap() > 0);
+    let slice_ref = serde_json::from_value(completed["provenance"].clone()).unwrap();
+    let review_ref = serde_json::from_value(reviewed["provenance"].clone()).unwrap();
+    let manifest = provenance::read(
+        &worker.workspace,
+        &slice_ref,
+        provenance::Kind::Slice,
+        "part",
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.data["source_sha256"],
+        provenance::digest(b"retained original model")
+    );
+    assert_eq!(
+        manifest.data["settings_sha256"],
+        provenance::digest(&serde_json::to_vec(&manifest.data["settings"]).unwrap())
+    );
+    assert_eq!(manifest.data["engine"]["version"], ENGINE_VERSION);
+    assert_eq!(manifest.data["design_evidence"]["status"], "unverified");
+    let evidence = provenance::ImportEvidence {
+        slice: Some(slice_ref),
+        toolpath_review: Some(review_ref),
+    };
+    assert_eq!(
+        provenance::verify_import(
+            &worker.workspace,
+            "part",
+            &provenance::digest(b"fake3mf"),
+            7,
+            &evidence
+        )
+        .unwrap()["toolpath_review"],
+        "matched_slice"
+    );
     let (_, png) = worker
         .workspace
         .read_artifact(reviewed["image"]["path"].as_str().unwrap())
@@ -138,6 +172,26 @@ async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
         .write_artifact("projects/part/slice/plate_1.gcode", b"changed", true)
         .unwrap();
     assert!(worker.review(request()).await.is_err());
+    // A later mutable report cannot rewrite the retained review or manifest.
+    let review_record = provenance::read(
+        &worker.workspace,
+        evidence.toolpath_review.as_ref().unwrap(),
+        provenance::Kind::ToolpathReview,
+        "part",
+    )
+    .unwrap();
+    let (_, retained_png) = worker
+        .workspace
+        .read_artifact(
+            review_record.data["image"]["artifact"]["path"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        provenance::digest(&retained_png),
+        review_record.data["image"]["sha256"]
+    );
     let restarted = Arc::new(SliceWorker::new(
         Arc::clone(&worker.workspace),
         Profiles::load(&directory.path().join("profiles")).unwrap(),

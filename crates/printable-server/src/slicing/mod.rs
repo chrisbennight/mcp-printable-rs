@@ -6,7 +6,7 @@ pub mod setup;
 #[cfg(test)]
 mod tests;
 
-use crate::{error::ToolError, projects, upload::random_hex_id};
+use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use printable_workspace::Workspace;
 use profiles::{Category, ProfileQuery, ProfileSelection, Profiles};
 use schemars::JsonSchema;
@@ -70,6 +70,8 @@ pub struct PrepareParams {
     pub project_id: String,
     /// Project-relative STL or 3MF. STEP must first be converted by cad_build.
     pub source: String,
+    /// Optional retained CAD measurement reference for the exact source artifact.
+    pub design_record: Option<provenance::RecordRef>,
     /// New project-relative directory retaining source, settings, state and outputs.
     pub output_dir: String,
     /// Physical upward-facing surface, independent of the numbered project plate.
@@ -201,6 +203,7 @@ impl SliceWorker {
                 slice_error("slicer is busy; retry review after the active operation completes")
             })?;
         let workspace = Arc::clone(&self.workspace);
+        let slice_provenance = state.get("provenance").cloned();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_BYTES)?;
@@ -208,6 +211,23 @@ impl SliceWorker {
                 return Err(slice_error(
                     "toolpath changed since slicing; prepare a new revision",
                 ));
+            }
+            if let Some(reference) = &slice_provenance {
+                let reference: provenance::RecordRef = serde_json::from_value(reference.clone())?;
+                let retained = provenance::read(
+                    &workspace,
+                    &reference,
+                    provenance::Kind::Slice,
+                    &params.slice.project_id,
+                )?;
+                if retained.data["slice"] != json!(params.slice)
+                    || retained.data["artifacts"][&params.toolpath]["sha256"] != expected_hash
+                    || retained.data["artifacts"][&params.toolpath]["artifact"]["path"] != path
+                {
+                    return Err(invalid(
+                        "slice state does not match its retained provenance",
+                    ));
+                }
             }
             let (bytes, mut evidence) = review::render(snapshot.path(), &params)?;
             let review_id = random_hex_id()?;
@@ -217,6 +237,19 @@ impl SliceWorker {
             evidence["slice"] = json!(params.slice);
             evidence["toolpath"] = json!(path);
             evidence["image"] = json!(artifact);
+            evidence["slice_provenance"] = json!(slice_provenance);
+            let image_sha256 = provenance::digest(&bytes);
+            let retained_image = format!(".printable/evidence/review_media/{review_id}.png");
+            let image = workspace.write_reserved_artifact(&retained_image, &bytes, false)?;
+            let mut retained = evidence.clone();
+            retained["image"] = json!({"artifact":image,"sha256":image_sha256});
+            let reference = provenance::store(
+                &workspace,
+                provenance::Kind::ToolpathReview,
+                &params.slice.project_id,
+                retained,
+            )?;
+            evidence["provenance"] = json!(reference);
             let metadata_path = format!("{output}/review-{review_id}.json");
             workspace.write_artifact(&metadata_path, &serde_json::to_vec(&evidence)?, false)?;
             evidence["metadata_path"] = json!(metadata_path);
@@ -297,6 +330,7 @@ impl SliceWorker {
         let local_source = staging.path().join(&source_name);
         let workspace = Arc::clone(&self.workspace);
         let copy_to = local_source.clone();
+        let source_path_for_evidence = source_path.clone();
         let source_hash = tokio::task::spawn_blocking(move || {
             let snapshot = workspace.snapshot_artifact_bounded(&source_path, MAX_BYTES)?;
             std::fs::copy(snapshot.path(), &copy_to)?;
@@ -304,6 +338,12 @@ impl SliceWorker {
         })
         .await
         .map_err(|_| slice_error("source snapshot task failed"))??;
+        let design_evidence = provenance::design_evidence(
+            &self.workspace,
+            params.design_record.as_ref(),
+            &source_path_for_evidence,
+            &source_hash,
+        )?;
         let summary = setup::summary(&params, &printer, &process, &filaments);
         let settings = json!({"build_plate":params.build_plate,"printer":printer,"process":process,"filaments":filaments});
         for (name, value) in [
@@ -374,8 +414,26 @@ impl SliceWorker {
                 .clone();
             match result {
                 Ok(artifacts) => {
-                    terminal["status"] = json!("completed");
-                    terminal["artifacts"] = artifacts;
+                    let data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
+                        "settings":settings,"settings_sha256":provenance::digest(&serde_json::to_vec(&settings).expect("JSON value serializes")),
+                        "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
+                        "design_evidence":design_evidence,"artifacts":artifacts});
+                    match provenance::store(
+                        &worker.workspace,
+                        provenance::Kind::Slice,
+                        &params.project_id,
+                        data,
+                    ) {
+                        Ok(reference) => {
+                            terminal["status"] = json!("completed");
+                            terminal["artifacts"] = artifacts;
+                            terminal["provenance"] = json!(reference);
+                        }
+                        Err(error) => {
+                            terminal["status"] = json!("failed");
+                            terminal["error"] = json!(error.to_string());
+                        }
+                    }
                 }
                 Err(error) => {
                     terminal["status"] = json!(if cancel.is_cancelled() {

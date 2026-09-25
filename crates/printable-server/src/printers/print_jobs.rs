@@ -1,5 +1,5 @@
 use super::{PrintRequest, PrinterService, validate_id};
-use crate::{error::ToolError, projects};
+use crate::{error::ToolError, projects, provenance};
 use bambuddy_api::{BambuddyApi, jobs::StageJob};
 use printable_workspace::Workspace;
 use schemars::JsonSchema;
@@ -12,6 +12,9 @@ pub struct ImportParams {
     pub project_id: String,
     /// Project-relative printer-ready .gcode.3mf artifact.
     pub path: String,
+    /// Optional retained slice and toolpath review references for these exact bytes.
+    #[serde(default)]
+    pub evidence: provenance::ImportEvidence,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -155,8 +158,11 @@ impl PrinterService {
                 let path = projects::resolve(workspace, &params.project_id, &params.path)?;
                 let snapshot_workspace = std::sync::Arc::clone(workspace);
                 let snapshot_path = path.clone();
-                let source = tokio::task::spawn_blocking(move || {
-                    snapshot_workspace.snapshot_artifact_bounded(&snapshot_path, 1024 * 1024 * 1024)
+                let (source, source_sha256) = tokio::task::spawn_blocking(move || {
+                    let source = snapshot_workspace
+                        .snapshot_artifact_bounded(&snapshot_path, 1024 * 1024 * 1024)?;
+                    let sha256 = crate::slicing::hash_file(source.path())?;
+                    Ok::<_, ToolError>((source, sha256))
                 })
                 .await
                 .map_err(|_| std::io::Error::other("print source snapshot task failed"))??;
@@ -165,13 +171,49 @@ impl PrinterService {
                     .and_then(|v| v.to_str())
                     .ok_or_else(|| invalid("invalid print filename"))?
                     .to_owned();
+                let checked = provenance::verify_import(
+                    workspace,
+                    &params.project_id,
+                    &source_sha256,
+                    source.meta().size_bytes,
+                    &params.evidence,
+                )?;
+                let import_id = crate::upload::random_hex_id()?;
+                let retained_path =
+                    format!(".printable/evidence/import_files/{import_id}.gcode.3mf");
+                let retain_workspace = std::sync::Arc::clone(workspace);
+                let retain_path = retained_path.clone();
+                let source = tokio::task::spawn_blocking(move || {
+                    retain_workspace.commit_reserved_generated_artifact_bounded(
+                        &retain_path,
+                        source.path(),
+                        false,
+                        1024 * 1024 * 1024,
+                    )?;
+                    Ok::<_, ToolError>(source)
+                })
+                .await
+                .map_err(|_| std::io::Error::other("print source retention task failed"))??;
+                let intent = provenance::store(
+                    workspace,
+                    provenance::Kind::ImportIntent,
+                    &params.project_id,
+                    json!({"attempt_id":import_id,"source":path,"retained_source":retained_path,
+                        "sha256":source_sha256,"size_bytes":source.meta().size_bytes,"evidence":params.evidence,
+                        "applicability":checked,"backend_digest_verification":"unverified","outcome":"unknown"}),
+                )?;
                 let file = self.control.upload_print(source.path(), filename).await?;
+                let receipt = provenance::store(workspace, provenance::Kind::ImportReceipt, &params.project_id,
+                    json!({"intent":intent,"library_file_id":file.id,"outcome":"import_accepted",
+                        "backend_digest_verification":"unverified","execution":"not_observed"}))
+                    .map_err(|_| invalid(&format!("library file {} was uploaded but its receipt could not be saved; inspect the retained import intent before retrying", file.id)))?;
                 workspace.write_reserved_artifact(
                     &format!(".printable/bambuddy-library/{}.json", file.id),
-                    &serde_json::to_vec(&json!({"project_id":params.project_id,"source":path}))?, false,
+                    &serde_json::to_vec(&json!({"project_id":params.project_id,"source":path,"delivery":receipt}))?, false,
                 ).map_err(|_| invalid(&format!("library file {} was uploaded but its project association could not be saved; inspect before retrying", file.id)))?;
                 Ok(
-                    json!({"library_file":file,"project_id":params.project_id,"source":path,"starts_printing":false}),
+                    json!({"library_file":file,"project_id":params.project_id,"source":path,"starts_printing":false,
+                        "provenance":receipt,"local_sha256":source_sha256,"backend_digest_verification":"unverified"}),
                 )
             }
             PrintRequest::Stage(params) => {
@@ -221,8 +263,18 @@ impl PrinterService {
                     timelapse: params.timelapse,
                     manual_start: true,
                 };
+                let intent = super::delivery::begin(
+                    workspace,
+                    job.library_file_id,
+                    "stage",
+                    serde_json::to_value(&job)?,
+                )?;
+                let staged = self.control.stage_print(&job).await?;
+                let evidence = super::delivery::accepted(workspace, intent, &staged)
+                    .map_err(|_| invalid(&format!("print {} was staged but its receipt could not be saved; inspect the retained attempt before retrying", staged.id)))?;
                 Ok(
-                    json!({"print":self.control.stage_print(&job).await?,"starts_printing":false,"setup":setup,"compatibility":compatibility}),
+                    json!({"print":job_result(workspace,staged)?,"starts_printing":false,"setup":setup,
+                    "compatibility":compatibility,"delivery_evidence":evidence}),
                 )
             }
             PrintRequest::List(params) => self.record_list(params, workspace).await,
@@ -286,8 +338,21 @@ impl PrinterService {
                         "staged print changed during inspection; inspect it again before starting",
                     ));
                 }
+                let intent = super::delivery::begin(
+                    workspace,
+                    job.library_file_id,
+                    "start",
+                    json!({"inspected_job":job,"skip_filament_check":params.skip_filament_check}),
+                )?;
+                let started = self
+                    .control
+                    .start_with_options(params.print_id, params.skip_filament_check)
+                    .await?;
+                let evidence = super::delivery::accepted(workspace,intent,&started)
+                    .map_err(|_| invalid(&format!("print {} start was accepted but its receipt could not be saved; inspect the retained attempt before retrying", params.print_id)))?;
                 Ok(
-                    json!({"print":self.control.start_with_options(params.print_id, params.skip_filament_check).await?,"may_start_printing":true,"compatibility":compatibility}),
+                    json!({"print":job_result(workspace,started)?,"may_start_printing":true,
+                    "compatibility":compatibility,"delivery_evidence":evidence}),
                 )
             }
             PrintRequest::Cancel(params) => self.cancel(params).await,

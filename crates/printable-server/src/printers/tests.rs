@@ -153,6 +153,40 @@ async fn import_snapshots_project_bytes_and_uploads_once_on_a_current_thread_run
         .unwrap();
     assert_eq!(result["starts_printing"], false);
     assert_eq!(result["library_file"]["id"], 91);
+    assert_eq!(result["backend_digest_verification"], "unverified");
+    assert_eq!(
+        result["local_sha256"],
+        crate::provenance::digest(b"fixture-print-bytes")
+    );
+    let reference = serde_json::from_value(result["provenance"].clone()).unwrap();
+    let receipt = crate::provenance::read(
+        &ws,
+        &reference,
+        crate::provenance::Kind::ImportReceipt,
+        "import-fixture",
+    )
+    .unwrap();
+    let intent_ref = serde_json::from_value(receipt.data["intent"].clone()).unwrap();
+    let intent = crate::provenance::read(
+        &ws,
+        &intent_ref,
+        crate::provenance::Kind::ImportIntent,
+        "import-fixture",
+    )
+    .unwrap();
+    assert_eq!(intent.data["applicability"]["slice"], "unverified");
+    ws.write_artifact(
+        "projects/import-fixture/part.gcode.3mf",
+        b"replacement",
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        ws.read_artifact(intent.data["retained_source"].as_str().unwrap())
+            .unwrap()
+            .1,
+        b"fixture-print-bytes"
+    );
     let schema = super::action_output_schema("print", "import").unwrap();
     assert!(
         jsonschema::validator_for(&schema)
@@ -185,6 +219,205 @@ fn validate(name: &str, value: &Value) {
         .map(|e| e.to_string())
         .collect::<Vec<_>>();
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[tokio::test]
+async fn delivery_links_reviewed_bytes_to_acceptance_and_later_observations() {
+    use crate::provenance::{self, Kind};
+    let backend = MockServer::start().await;
+    let mut job = json!({"id":7,"printer_id":1,"library_file_id":91,"status":"pending",
+        "manual_start":true,"plate_id":1,"ams_mapping":[0],"use_ams":true});
+    let observed = Arc::new(std::sync::Mutex::new(job.clone()));
+    let responder = Arc::clone(&observed);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/queue/7"))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(responder.lock().unwrap().clone())
+        })
+        .mount(&backend)
+        .await;
+    for (endpoint, value) in [
+        (
+            "/api/v1/printers/",
+            json!([{"id":1,"name":"Fixture","model":"P1S","is_active":true}]),
+        ),
+        ("/api/v1/printers/1/status", status()),
+        (
+            "/api/v1/library/files/91",
+            json!({"id":91,"filename":"part.gcode.3mf","file_type":"gcode.3mf","sliced_for_model":"P1S"}),
+        ),
+    ] {
+        get(&backend, endpoint, value).await;
+    }
+    for (endpoint, response) in [
+        (
+            "/api/v1/library/files",
+            json!({"id":91,"filename":"part.gcode.3mf","file_type":"gcode.3mf"}),
+        ),
+        ("/api/v1/queue/", job.clone()),
+        ("/api/v1/queue/7/start", {
+            let mut v = job.clone();
+            v["manual_start"] = json!(false);
+            v
+        }),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&backend)
+            .await;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(root.path()), None).unwrap());
+    crate::projects::dispatch(
+        &ws,
+        serde_json::from_value(
+            json!({"action":"create","params":{"project_id":"p","name":"Part"}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    ws.write_artifact("projects/p/part.gcode.3mf", b"fixture", false)
+        .unwrap();
+    let slice = provenance::store(&ws,Kind::Slice,"p",json!({
+        "source_sha256":provenance::digest(b"model"),"settings":{"layer_height":0.2},
+        "design_evidence":{"status":"unverified"},
+        "artifacts":{"model.gcode.3mf":{"sha256":provenance::digest(b"fixture"),"artifact":{"path":"projects/p/part.gcode.3mf","size_bytes":7}},
+        "plate_1.gcode":{"sha256":provenance::digest(b"gcode"),"artifact":{"path":"projects/p/plate_1.gcode","size_bytes":5}}}})).unwrap();
+    let review = provenance::store(
+        &ws,
+        Kind::ToolpathReview,
+        "p",
+        json!({"slice_provenance":slice,
+        "source_sha256":provenance::digest(b"gcode"),"toolpath":"projects/p/plate_1.gcode"}),
+    )
+    .unwrap();
+    let service = service(&backend);
+    let imported = service.control(serde_json::from_value(json!({"action":"import","params":{
+        "project_id":"p","path":"part.gcode.3mf","evidence":{"slice":slice,"toolpath_review":review}}})).unwrap(),&ws).await.unwrap();
+    validate("print", &imported);
+    let staged = service
+        .control(
+            serde_json::from_value(json!({"action":"stage","params":{
+        "library_file_id":91,"printer_id":1,"plate":1,"ams_mapping":[0],"use_ams":true}}))
+            .unwrap(),
+            &ws,
+        )
+        .await
+        .unwrap();
+    validate("print", &staged);
+    assert_eq!(staged["delivery_evidence"]["execution"], "not_observed");
+    let started = service
+        .control(
+            serde_json::from_value(json!({"action":"start","params":{"print_id":7}})).unwrap(),
+            &ws,
+        )
+        .await
+        .unwrap();
+    validate("print", &started);
+    assert_eq!(started["delivery_evidence"]["execution"], "not_observed");
+    assert_eq!(
+        started["delivery_evidence"]["import_receipt"],
+        imported["provenance"]
+    );
+    let mut last = Value::Null;
+    for (state, execution) in [
+        ("printing", "printing_observed"),
+        ("completed", "completion_observed"),
+        ("completed", "completion_observed"),
+    ] {
+        job["status"] = json!(state);
+        job["manual_start"] = json!(false);
+        *observed.lock().unwrap() = job.clone();
+        let result = service
+            .control(
+                serde_json::from_value(json!({"action":"status","params":{"print_id":7}})).unwrap(),
+                &ws,
+            )
+            .await
+            .unwrap();
+        validate("print", &result);
+        assert_eq!(result["delivery_evidence"]["execution"], execution);
+        assert_eq!(
+            result["delivery_evidence"]["backend_digest_verification"],
+            "unverified"
+        );
+        let reference =
+            serde_json::from_value(result["delivery_evidence"]["record"].clone()).unwrap();
+        let record = provenance::read(&ws, &reference, Kind::Observation, "p").unwrap();
+        assert_eq!(record.data["submissions"].as_array().unwrap().len(), 2);
+        assert_eq!(record.data["import_receipt"], imported["provenance"]);
+        assert_eq!(record.data["physical_qualification"], "unverified");
+        if state == "completed" {
+            if !last.is_null() {
+                assert_eq!(last, result["delivery_evidence"]["record"]);
+            }
+            last = result["delivery_evidence"]["record"].clone();
+        }
+    }
+    ws.write_artifact("projects/p/part.gcode.3mf", b"different", true)
+        .unwrap();
+    let changed=service.control(serde_json::from_value(json!({"action":"import","params":{
+        "project_id":"p","path":"part.gcode.3mf","evidence":{"slice":slice,"toolpath_review":review}}})).unwrap(),&ws).await;
+    assert!(
+        changed
+            .unwrap_err()
+            .to_string()
+            .contains("upload bytes do not match")
+    );
+    backend.verify().await;
+}
+
+#[tokio::test]
+async fn uncertain_import_keeps_exact_bytes_and_unknown_intent_without_replay() {
+    let backend = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/library/files"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&backend)
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(root.path()), None).unwrap());
+    crate::projects::dispatch(
+        &ws,
+        serde_json::from_value(
+            json!({"action":"create","params":{"project_id":"p","name":"Part"}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    ws.write_artifact("projects/p/file.gcode.3mf", b"uncertain-upload", false)
+        .unwrap();
+    let result = service(&backend)
+        .control(
+            serde_json::from_value(
+                json!({"action":"import","params":{"project_id":"p","path":"file.gcode.3mf"}}),
+            )
+            .unwrap(),
+            &ws,
+        )
+        .await;
+    assert_eq!(result.unwrap_err().code(), "printer_outcome_unknown");
+    let intents = ws
+        .list_artifacts(".printable/evidence/import_intent", 10)
+        .unwrap();
+    assert_eq!(intents.len(), 1);
+    let (_, bytes) = ws.read_artifact(&intents[0].path).unwrap();
+    let intent: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(intent["data"]["outcome"], "unknown");
+    assert_eq!(
+        intent["data"]["sha256"],
+        crate::provenance::digest(b"uncertain-upload")
+    );
+    assert_eq!(
+        ws.read_artifact(intent["data"]["retained_source"].as_str().unwrap())
+            .unwrap()
+            .1,
+        b"uncertain-upload"
+    );
+    backend.verify().await;
 }
 
 #[test]
