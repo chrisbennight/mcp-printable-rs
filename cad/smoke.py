@@ -14,7 +14,7 @@ import urllib.request
 
 import cadquery as cq
 
-from build import build, original_names
+from build import build, original_names, vertical_holes
 from step import import_step
 
 
@@ -24,6 +24,21 @@ def close(actual, expected):
 
 
 def main():
+    hole_grid = [(-12, -8), (-12, 8), (12, -8), (12, 8)]
+    for width in [40, 60]:
+        part = cq.Workplane("XY").box(width, 30, 5).faces(">Z").workplane().pushPoints(hole_grid).hole(4).val()
+        measured = vertical_holes(part)
+        assert measured["status"] == "measured", measured
+        actual = sorted((tuple(h["center_mm"]) for h in measured["holes"]), key=lambda p: tuple(round(v, 6) for v in p))
+        assert len(actual) == len(hole_grid), measured
+        for point, expected in zip(actual, sorted(hole_grid)):
+            close(point, expected)
+        assert all(math.isclose(h["radius_mm"], 2, abs_tol=1e-5) for h in measured["holes"])
+    boss = cq.Workplane("XY").circle(2).extrude(5).val()
+    assert vertical_holes(boss) == {"status": "measured", "holes": []}
+    tilted = part.rotate((0, 0, 0), (1, 0, 0), 45)
+    assert vertical_holes(tilted) == {"status": "measured", "holes": []}
+    assert vertical_holes(cq.Face.makePlane(10, 20))["status"] == "unmeasured"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "model.py").write_text('result = cq.Workplane().box(parameters["width"], 20, 30)\n')
@@ -99,7 +114,7 @@ def worker_smoke(root):
     endpoint = "http://127.0.0.1:8002"
     process = subprocess.Popen(["/usr/local/bin/printable-cad-worker"], env=environment)
     try:
-        for _ in range(50):
+        for _ in range(200):
             if process.poll() is not None:
                 raise RuntimeError("CAD worker exited during startup")
             try:
@@ -109,6 +124,10 @@ def worker_smoke(root):
                 time.sleep(0.1)
         else:
             raise RuntimeError("CAD worker did not become healthy")
+        with urllib.request.urlopen(endpoint + "/readyz", timeout=5) as response:
+            readiness = json.load(response)
+        assert readiness["state"] == "ready"
+        assert readiness["engine"] == "CadQuery" and readiness["version"] == cq.__version__
         data = json.dumps({"action": "model", "params": {"project_id": "smoke", "source": "part.py", "parameters": {"width": 42}, "output_dir": "builds/one"}}).encode()
         subprocess.run(["/usr/local/bin/printable-cad-worker", "--healthcheck"], env=environment, check=True, timeout=5)
         request = urllib.request.Request(endpoint + "/build", data=data, headers={"Content-Type": "application/json"})
@@ -118,6 +137,27 @@ def worker_smoke(root):
         assert len(result["artifacts"]) == 4
         assert (project / "builds/one/inputs/part.py").read_bytes() == (project / "part.py").read_bytes()
         assert json.loads((project / "builds/one/report.json").read_text()) == result
+        (project / "surface.py").write_text('result = cq.Face.makePlane(10, 20)\n')
+        (project / "parts.py").write_text('result = cq.Assembly().add(cq.Workplane().box(10,20,30), name="first").add(cq.Workplane().box(10,20,30), name="second", loc=cq.Location((20,0,0)))\n')
+        for name, source, qualification, expected, criterion in [
+            ("qualified", "part.py", {"policy":"printable_part", "dimensions_mm":[42,20,30]}, "passed", None),
+            ("wrong-size", "part.py", {"policy":"printable_part", "dimensions_mm":[50,20,30]}, "failed", "dimensions"),
+            ("wrong-units", "part.py", {"policy":"printable_part", "units":"inch", "dimensions_mm":[42,20,30]}, "failed", "units"),
+            ("parts", "parts.py", {"policy":"printable_part", "dimensions_mm":[30,20,30], "solid_count":2}, "passed", None),
+            ("inspect-surface", "surface.py", {"policy":"inspection"}, "passed", None),
+            ("reject-surface", "surface.py", {"policy":"printable_part"}, "failed", "meaningful_solids"),
+        ]:
+            request = urllib.request.Request(endpoint + "/build", data=json.dumps({"action":"model", "params":{
+                "project_id":"smoke", "source":source, "parameters":{"width":42},
+                "output_dir":"builds/" + name, "qualification":qualification}}).encode(), headers={"Content-Type":"application/json"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                result = json.load(response)
+            assert result["completion"] == "completed" and result["qualification"]["status"] == expected
+            if criterion:
+                assert result["qualification"]["criteria"][criterion]["status"] == "failed"
+            assert len(result["artifacts"]) == 4
+            assert (project / "builds" / name / "inputs" / source).read_bytes() == (project / source).read_bytes()
+            assert json.loads((project / "builds" / name / "report.json").read_text()) == result
     finally:
         process.terminate()
         try:

@@ -76,6 +76,31 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Acquire a nonblocking advisory lock for cooperating server processes.
+    /// Keep the returned descriptor alive through the complete state change.
+    /// Lock files are permanent: unlinking one would allow two lock identities.
+    pub fn try_lock_reserved(&self, path: &str) -> Result<OwnedFd, WsError> {
+        let comps = normalize(path)?;
+        require_mutation_scope(&comps, MutationScope::Reserved)?;
+        let name = comps.last().ok_or(WsError::ReservedPath)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], path, Missing::Create)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::from_bits_truncate(0o600),
+            path,
+        )?;
+        if FileType::from_raw_mode(rustix::fs::fstat(&fd).map_err(errno_io)?.st_mode)
+            != FileType::RegularFile
+        {
+            return Err(WsError::NotRegularFile);
+        }
+        rustix::fs::flock(&fd, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .map_err(errno_io)?;
+        Ok(fd)
+    }
+
     /// Open a workspace. `blender_root` is the host-side path Blender sees for
     /// the same directory; it is stored verbatim (it usually does not exist
     /// locally). Requiring `root` alongside `blender_root` is the settings
@@ -1034,6 +1059,24 @@ fn temp_name() -> Result<String, WsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_lock_serializes_independently_opened_workspaces_and_releases_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Workspace::open(Some(dir.path()), None).unwrap();
+        let second = Workspace::open(Some(dir.path()), None).unwrap();
+        let path = ".printable/locks/project.lock";
+        let guard = first.try_lock_reserved(path).unwrap();
+        assert!(
+            matches!(second.try_lock_reserved(path), Err(WsError::Io(e)) if e.kind()==std::io::ErrorKind::WouldBlock)
+        );
+        drop(guard);
+        assert!(second.try_lock_reserved(path).is_ok());
+        assert!(first.try_lock_reserved("ordinary.lock").is_err());
+        assert!(first.try_lock_reserved("../outside.lock").is_err());
+        std::os::unix::fs::symlink(dir.path(), dir.path().join(".printable/redirect")).unwrap();
+        assert!(first.try_lock_reserved(".printable/redirect/lock").is_err());
+    }
 
     // Exercises the private scan_cap directly (the public API only exposes the
     // fixed MAX_LIST_SCAN_ENTRIES ceiling, so a small cap can't be tested there).

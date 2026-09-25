@@ -560,6 +560,40 @@ async fn readyz_fails_closed_without_leaking_dependency_configuration() {
 }
 
 #[tokio::test]
+async fn readyz_reports_native_capabilities_independently() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let app = axum::Router::new().route("/readyz", axum::routing::get(|| async {
+        axum::Json(json!({"protocol_version":1,"configured":true,"state":"busy", "engine":"CadQuery", "version":"2.8.0", "profile_counts":null}))
+    }));
+    let worker = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.cad_endpoint = Some(endpoint.clone());
+    // The same URL deliberately identifies the wrong native engine for slicing.
+    settings.slicer_endpoint = Some(endpoint.clone());
+    let server = start_with_settings(settings).await;
+    let response = reqwest::get(format!("{}/readyz", server.base))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["checks"]["cad"], "busy");
+    assert_eq!(body["checks"]["slicer"], "incompatible");
+    assert!(
+        body["codes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("slicer_incompatible"))
+    );
+    assert!(!body.to_string().contains(&endpoint));
+    assert!(!body.to_string().contains("2.8.0"));
+    server.shutdown().await;
+    worker.abort();
+}
+
+#[tokio::test]
 async fn mcp_requires_the_exact_shared_bearer() {
     let server = start().await;
     let mcp = format!("{}/mcp", server.base);

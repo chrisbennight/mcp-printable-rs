@@ -12,13 +12,33 @@ dependencies, render-worker availability, and recovery integrity. A busy worker
 is distinct from an unavailable worker. Live modeling can remain available
 while the background worker is occupied.
 
+CAD and slicer checks distinguish `not_configured`, `ready`, `busy`,
+`unavailable`, and `incompatible`. An omitted optional endpoint does not block
+overall readiness. A configured worker that cannot answer the current readiness
+protocol blocks the aggregate probe, while each other capability keeps its own
+state. The MCP `status` result also includes the native engine version and the
+slicer's loaded profile counts. Blender status reports `busy` immediately when
+its healthy operation lane is occupied, without waiting for that work to end.
+
+Native workers check their installed engine during startup in a private
+temporary directory: CAD imports its build modules and reports the CadQuery
+version; the slicer checks its supported command-line interface. These checks
+do not build or slice a model. Worker `/readyz` then checks workspace readiness
+and admission occupancy without repeating native startup. Restart the worker
+after changing its installation. `/healthz` remains process liveness; the
+container health checks use worker `/readyz`. Readiness is an observation, not
+a reservation or a guarantee that the next job will succeed.
+
 Use `job` actions `list` and `get` to inspect work before maintenance. Cancel
 unneeded jobs explicitly, then wait for their recorded terminal state. Running
 cancellation is cooperative at a frame boundary. A lost connection or timeout
 does not prove that a scene mutation failed; inspect state before retrying.
-CAD builds are synchronous requests, not render jobs in `job.list`. Retain their
-output directories and inspect `report.json` or `failure.json` after an
-interrupted request. Stop the CAD worker with the other services before backup.
+CAD builds have their own retained handles and are not render jobs in `job.list`.
+Use `cad_build.status` or `cad_build.cancel` with the original project and output
+directory. Disconnecting a waiting client does not cancel admitted work. Keep
+output directories, including `state.json`, `report.json`, and `failure.json`;
+after a worker restart, unfinished state is reported as interrupted. Stop the
+CAD worker with the other services before backup.
 
 ## Back up
 

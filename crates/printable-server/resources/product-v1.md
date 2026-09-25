@@ -133,6 +133,13 @@ using the profile's actual `maximum_overhang_degrees`. Kit modules reject local
 wall, rib, boss, radius, and shell arguments that violate their constructive
 invariants.
 
+Read `validation.assessment` alongside these measurements. Its criteria use
+`passed`, `failed`, `unmeasured`, and `physical_test_required`. A valid solid
+with no detected support requirement still has an `incomplete` assessment:
+geometry alone does not establish wall suitability, fit, material/process
+suitability, or physical performance. The compatibility field `printable`
+retains its original meaning as an alias for `solid_geometry`.
+
 That is not a global wall-thickness proof for arbitrary caller geometry.
 `global_minimum_wall.status` therefore remains `not_certified`. A product that
 requires wall proof must encode exact constructive assertions or companion proof
@@ -145,7 +152,10 @@ Use the same public sequence for enclosures, brackets, grips, mechanisms, and
 other hard-surface products:
 
 1. Compile the final printable variant with an explicit profile and require
-   measured topology, orientation, bed contact, and overhang evidence to pass.
+   `validation.assessment.criteria.solid_topology.status` and
+   `validation.assessment.criteria.support_free_orientation.status` to be
+   `passed`. Inspect bounds, bed contact, and all remaining criteria before
+   deciding what additional measurement or testing the product requires.
 2. For an interface or moving assembly, compile every rigid body in shared
    millimetre coordinates and run `analyze_assembly`; never substitute
    `moving_clearance_mm` for that result.

@@ -5627,9 +5627,8 @@ fn decode_bounded(data_base64: &str) -> Result<Vec<u8>, ToolError> {
     Ok(bytes)
 }
 
-/// Probe backend readiness without mutating anything: a 5-second Blender
-/// liveness check, an OpenSCAD binary probe, and workspace status. Never fails
-/// as a whole — a downed backend is reported, not raised.
+/// Probe capabilities without waiting behind active Blender work. A downed
+/// backend is reported independently, without failing the complete response.
 async fn status(
     workspace: &Workspace,
     blender: &BlenderClient,
@@ -5639,19 +5638,29 @@ async fn status(
 ) -> Result<Value, ToolError> {
     let mut blender_json = json!({
         "available": false,
+        "state": "unavailable",
         "host": settings.blender_host,
         "port": settings.blender_port,
     });
-    match blender
-        .send_value(
+    let (blender_probe, cad, slicer) = tokio::join!(
+        blender.try_send_value(
             "bridge_status",
             Params::new(),
             Deadline::new(Duration::from_secs(5)),
-        )
-        .await
-    {
-        Ok(backend) => {
+        ),
+        crate::worker_health::probe(
+            settings.cad_endpoint.as_deref(),
+            crate::worker_health::NativeEngine::CadQuery
+        ),
+        crate::worker_health::probe(
+            settings.slicer_endpoint.as_deref(),
+            crate::worker_health::NativeEngine::OrcaSlicer
+        ),
+    );
+    match blender_probe {
+        Ok(Some(backend)) => {
             blender_json["available"] = json!(true);
+            blender_json["state"] = json!("ready");
             blender_json["version"] = backend
                 .get("blender_version")
                 .cloned()
@@ -5674,6 +5683,10 @@ async fn status(
                 .get("execution_limits")
                 .cloned()
                 .unwrap_or(Value::Null);
+        }
+        Ok(None) => {
+            blender_json["available"] = json!(true);
+            blender_json["state"] = json!("busy");
         }
         Err(e) => {
             blender_json["error"] = json!(e.to_string());
@@ -5716,8 +5729,8 @@ async fn status(
             "concurrency": settings.scad_concurrency,
         },
         "render_jobs": render_jobs,
-        "cad": {"configured": settings.cad_endpoint.is_some()},
-        "slicer": {"configured": settings.slicer_endpoint.is_some()},
+        "cad": cad,
+        "slicer": slicer,
         "printers": {"configured": settings.printers.is_some()},
         "workspace": {
             "confined": ws.confined,

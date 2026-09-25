@@ -357,7 +357,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
+        description: "Build project CAD from Python or STEP, retaining source, parameters and exports. Use background:true, then status or cancel with project_id/output_dir; disconnects do not cancel admitted work. Check completion and delivery qualification separately: inspection does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Does not change Blender or start printing.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },
@@ -381,7 +381,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "validate_mesh",
-        description: "Validate an immutable STL snapshot for solid topology, bounds, mass properties, bed contact, and overhangs. Does not repair geometry or certify arbitrary global wall thickness.",
+        description: "Validate an immutable STL snapshot for solid topology, bounds, mass properties, bed contact, and overhangs. Read assessment for failed and unmeasured manufacturing criteria; printable is only a legacy alias for solid_geometry. Does not repair geometry or establish physical suitability.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -399,7 +399,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create/discover projects, resolve shared paths, export selected files, or export_blender with explicitly selected inputs and a saved entrypoint. Native export packs supported dependencies in an isolated child and retains original sources, engine/units metadata and hashes in a new ZIP. Unsupported dependencies fail explicitly; scripts are not inspected. Neither export switches the live scene or prints.",
+        description: "Create/discover projects, resolve shared paths, retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

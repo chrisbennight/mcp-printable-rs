@@ -9,6 +9,7 @@ import sys
 import cadquery as cq
 from cadquery.occ_impl.assembly import toCAF
 from OCP.Message import Message_ProgressRange
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.RWGltf import RWGltf_CafWriter
 from OCP.RWMesh import RWMesh_CoordinateSystem_Zup
 from OCP.TCollection import TCollection_AsciiString
@@ -25,6 +26,41 @@ def bounds(shape):
         "max": [box.xmax, box.ymax, box.zmax],
         "size": [box.xlen, box.ylen, box.zlen],
     }
+
+
+def vertical_holes(shape):
+    """Measure complete vertical cylindrical inner walls, not fastener fit."""
+    faces = shape.Faces()
+    if not shape.isValid() or not shape.Solids() or len(faces) > 4096:
+        return {"status": "unmeasured", "holes": []}
+    holes = []
+    for face in faces:
+        if face.geomType() != "CYLINDER":
+            continue
+        surface = BRepAdaptor_Surface(face.wrapped)
+        cylinder = surface.Cylinder()
+        axis = cylinder.Axis()
+        direction = axis.Direction()
+        if abs(abs(direction.Z()) - 1.0) > 1e-7:
+            continue
+        u0, u1, v0, v1 = face.uvBounds()
+        if abs((u1 - u0) - 2 * math.pi) > 1e-6:
+            continue
+        normal, point = face.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
+        center = axis.Location()
+        radial_dot = normal.x * (point.x - center.X()) + normal.y * (point.y - center.Y())
+        if radial_dot >= 0:
+            continue
+        hole = {"center_mm": [center.X(), center.Y()], "radius_mm": cylinder.Radius()}
+        if not all(math.isfinite(n) for n in [*hole["center_mm"], hole["radius_mm"]]):
+            return {"status": "unmeasured", "holes": []}
+        if not any(
+            max(abs(a - b) for a, b in zip(hole["center_mm"], previous["center_mm"])) < 1e-7
+            and abs(hole["radius_mm"] - previous["radius_mm"]) < 1e-7
+            for previous in holes
+        ):
+            holes.append(hole)
+    return {"status": "measured", "holes": holes}
 
 
 def assembly_result(result):
@@ -110,14 +146,17 @@ def build(request, directory):
     ):
         raise ValueError("GLB export failed")
     (output / "components.json").write_text(json.dumps({"nodes": names, "components": components}, allow_nan=False))
+    volumes = [solid.Volume() if solid.isValid() else None for solid in shape.Solids()]
     report = {
         "cadquery_version": cq.__version__,
         "source": source_metadata,
         "units": "mm",
         "bounds_mm": measured,
         "solid_count": len(shape.Solids()),
+        "solid_volumes_mm3": [value if value is not None and math.isfinite(value) else None for value in volumes],
         "component_count": len(components),
         "valid": shape.isValid(),
+        "vertical_holes": vertical_holes(shape),
         "meshing": {
             "linear_tolerance_mm": request["linear_tolerance_mm"],
             "angular_tolerance_rad": request["angular_tolerance_rad"],
@@ -136,5 +175,8 @@ def build(request, directory):
 
 
 if __name__ == "__main__":
-    job = Path(sys.argv[1]).resolve()
-    build(json.loads((job / "request.json").read_text()), job)
+    if sys.argv[1:] == ["--version"]:
+        print(cq.__version__)
+    else:
+        job = Path(sys.argv[1]).resolve()
+        build(json.loads((job / "request.json").read_text()), job)
