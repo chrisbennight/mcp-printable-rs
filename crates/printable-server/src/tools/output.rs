@@ -32,6 +32,43 @@ fn scene_state() -> Value {
     )
 }
 
+fn mesh_report() -> Value {
+    let criterion = object(
+        json!({
+            "status": {"enum": ["passed", "failed", "unmeasured", "physical_test_required"]},
+            "evidence": {"type": "string", "description": "JSON pointer relative to this validation report."}
+        }),
+        &["status"],
+    );
+    let criteria = [
+        "solid_topology",
+        "finite_dimensions",
+        "support_free_orientation",
+        "wall_thickness",
+        "dimensional_requirements",
+        "build_envelope",
+        "material_process",
+        "physical_performance",
+    ];
+    let properties: Map<String, Value> = criteria
+        .iter()
+        .map(|name| ((*name).to_owned(), criterion.clone()))
+        .collect();
+    object(
+        json!({
+            "solid_geometry": {"type": "boolean"},
+            "printable": {"type": "boolean", "deprecated": true,
+                "description": "Compatibility alias for solid_geometry only. Does not establish manufacturing qualification."},
+            "assessment": object(json!({
+                "scope": {"const": "mesh_geometry"},
+                "status": {"enum": ["failed", "incomplete"]},
+                "criteria": object(Value::Object(properties), &criteria)
+            }), &["scope", "status", "criteria"])
+        }),
+        &["solid_geometry", "printable", "assessment"],
+    )
+}
+
 fn selected_bundle() -> Value {
     let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
     let file = object(
@@ -189,7 +226,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "scad_build" => object(
             json!({
                 "artifact": artifact(), "diagnostics": {"type": "object"},
-                "validation": {"type": "object"}, "manufacturing_evidence": {"type": "object"}
+                "validation": mesh_report(), "manufacturing_evidence": {"type": "object"}
             }),
             &["artifact", "diagnostics"],
         ),
@@ -206,7 +243,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         ),
         "validate_mesh" => object(
             json!({
-                "artifact": artifact(), "units": {"const": "millimetres"}, "report": {"type": "object"}
+                "artifact": artifact(), "units": {"const": "millimetres"}, "report": mesh_report()
             }),
             &["artifact", "units", "report"],
         ),
