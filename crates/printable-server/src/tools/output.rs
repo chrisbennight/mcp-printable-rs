@@ -346,6 +346,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         }
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
+            object(json!({"format_version":{"const":1},"logical_bytes":{"type":"integer"},"reserved_remaining_bytes":{"type":"integer"},"charged_bytes":{"type":"integer"},"complete":{"type":"boolean"},"by_project":{"type":"object"},"by_class":{"type":"object"},"accounting":{"type":"string"}}), &["format_version","logical_bytes","reserved_remaining_bytes","charged_bytes","complete","by_project","by_class","accounting"]),
+            object(json!({"cleanup":{"type":"array","items":object(json!({"id":{"type":"string"},"bytes":{"type":["integer","null"]},"state":{"enum":["protected","pending","deleted"]},"reason":{"type":"string"}}), &["id","bytes","state","reason"])},"retained_artifacts":{"type":"string"}}), &["cleanup","retained_artifacts"]),
             object(json!({"state": {"enum": ["prepared", "receiving", "ready", "failed", "commit_uncertain", "committed"]}}), &["state"]),
             object(json!({"entries": {"type": "array", "items": artifact()}}), &["entries"]),
             object(json!({"upload_id": {"type": "string"}}), &["upload_id"]),

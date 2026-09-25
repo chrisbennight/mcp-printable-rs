@@ -165,7 +165,12 @@ impl PrinterService {
                     .and_then(|v| v.to_str())
                     .ok_or_else(|| invalid("invalid print filename"))?
                     .to_owned();
-                let file = self.control.upload_print(source.path(), filename).await?;
+                let size_bytes = source.meta().size_bytes;
+                let stream = crate::file_transfer::snapshot_stream(source, ())?;
+                let file = self
+                    .control
+                    .upload_print(reqwest::Body::wrap_stream(stream), size_bytes, filename)
+                    .await?;
                 workspace.write_reserved_artifact(
                     &format!(".printable/bambuddy-library/{}.json", file.id),
                     &serde_json::to_vec(&json!({"project_id":params.project_id,"source":path}))?, false,

@@ -15,9 +15,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rmcp::model::RequestMetaObject;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio_util::{io::ReaderStream, sync::CancellationToken};
+use tokio_util::sync::CancellationToken;
 
 use printable_workspace::{Snapshot, Workspace};
 
@@ -285,7 +284,7 @@ pub async fn download(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let token_hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    let (reader, media_type, size) = {
+    let (source, media_type, size) = {
         let mut entries = published
             .entries
             .lock()
@@ -301,21 +300,13 @@ pub async fn download(
             return StatusCode::UNAUTHORIZED.into_response();
         }
         let entry = entries.remove(&id).expect("authorized entry exists");
-        let file = match std::fs::File::open(entry.snapshot.path()) {
-            Ok(file) => file,
+        let stream = match snapshot_stream(entry.snapshot, entry._capacity) {
+            Ok(stream) => stream,
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         };
-        (
-            PermitReader {
-                file: tokio::fs::File::from_std(file),
-                _capacity: entry._capacity,
-            },
-            entry.file.mime_type,
-            entry.file.size,
-        )
+        (stream, entry.file.mime_type, entry.file.size)
     };
-    let stream = ReaderStream::new(reader);
-    let mut response = Body::from_stream(stream).into_response();
+    let mut response = Body::from_stream(source).into_response();
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -332,19 +323,29 @@ pub async fn download(
     response
 }
 
-struct PermitReader {
-    file: tokio::fs::File,
-    _capacity: OwnedSemaphorePermit,
-}
-
-impl AsyncRead for PermitReader {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.file).poll_read(context, buffer)
-    }
+/// Each blocking read owns the snapshot and its optional admission guard.
+/// Dropping an HTTP body cannot release storage while an offloaded read holds it.
+pub(crate) fn snapshot_stream(
+    snapshot: Snapshot,
+    guard: impl Send + 'static,
+) -> std::io::Result<impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> + Send> {
+    let file = std::fs::File::open(snapshot.path())?;
+    Ok(futures_util::stream::try_unfold(
+        (file, snapshot, guard),
+        |(mut file, snapshot, guard)| async move {
+            tokio::task::spawn_blocking(move || {
+                let mut bytes = vec![0u8; 64 * 1024];
+                let count = file.read(&mut bytes)?;
+                if count == 0 {
+                    return Ok::<_, std::io::Error>(None);
+                }
+                bytes.truncate(count);
+                Ok(Some((bytes, (file, snapshot, guard))))
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        },
+    ))
 }
 
 fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
@@ -359,6 +360,133 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_body_keeps_queued_file_read_owned() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = Workspace::open(Some(root.path()), None).unwrap();
+            workspace
+                .write_artifact("source.stl", b"source", false)
+                .unwrap();
+            let snapshot = workspace.snapshot_artifact("source.stl").unwrap();
+            let capacity = Arc::new(Semaphore::new(1));
+            let guard = Arc::clone(&capacity).try_acquire_owned().unwrap();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
+            let body = Body::from_stream(snapshot_stream(snapshot, guard).unwrap());
+            let mut reader = Box::pin(axum::body::to_bytes(body, 100));
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(reader.as_mut(), cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            drop(reader);
+            assert_eq!(capacity.available_permits(), 0);
+            let protected = workspace.cleanup_preview().unwrap();
+            assert_eq!(protected.len(), 1);
+            assert_eq!(
+                workspace
+                    .cleanup_scratch(&[protected[0].id.clone()])
+                    .unwrap()[0]
+                    .state,
+                "protected"
+            );
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while capacity.available_permits() == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(workspace.cleanup_preview().unwrap().is_empty());
+        });
+    }
+
+    #[tokio::test]
+    async fn streamed_downloads_keep_storage_owned_until_consumed_or_dropped() {
+        for consume in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+            workspace.configure_storage_budget(Some(40_000)).unwrap();
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"payload":"x".repeat(8000)})).unwrap();
+            // Caller filenames must not overwrite the scratch controller metadata.
+            workspace
+                .write_artifact("reservation.json", &bytes, false)
+                .unwrap();
+            let published = Arc::new(PublishedFiles::new(Arc::clone(&workspace)));
+            let file = published
+                .publish(PublishParams {
+                    path: "reservation.json".into(),
+                })
+                .await
+                .unwrap();
+            assert!(workspace.storage_usage().unwrap().complete);
+            let grant = published
+                .authorize_download(
+                    AuthorizeDownloadParams {
+                        uri: file.uri.clone(),
+                    },
+                    &"http://127.0.0.1:8000".parse().unwrap(),
+                )
+                .unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                grant["download"]["headers"]["Authorization"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            );
+            let response = download(
+                State(Arc::clone(&published)),
+                Path(file.uri.strip_prefix(FILE_URI_PREFIX).unwrap().to_owned()),
+                headers,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(published.entries.lock().unwrap().is_empty());
+            assert_eq!(published.capacity.available_permits(), 1);
+            let protected = workspace.cleanup_preview().unwrap();
+            assert_eq!(protected.len(), 1);
+            assert_eq!(
+                workspace
+                    .cleanup_scratch(&[protected[0].id.clone()])
+                    .unwrap()[0]
+                    .state,
+                "protected"
+            );
+            assert!(matches!(
+                workspace.write_artifact("next.stl", &vec![0; 25_000], false),
+                Err(printable_workspace::WsError::StorageBudgetExceeded)
+            ));
+            if consume {
+                assert_eq!(
+                    axum::body::to_bytes(response.into_body(), 10_000)
+                        .await
+                        .unwrap()
+                        .as_ref(),
+                    bytes.as_slice()
+                );
+            } else {
+                drop(response);
+            }
+            assert!(workspace.cleanup_preview().unwrap().is_empty());
+            assert_eq!(published.capacity.available_permits(), 2);
+            workspace
+                .write_artifact("next.stl", &vec![0; 25_000], false)
+                .unwrap();
+        }
+    }
 
     #[test]
     fn download_grant_never_outlives_its_snapshot() {

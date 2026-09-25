@@ -97,18 +97,28 @@ retain a live-scene restoration obligation and therefore a mutation fence.
 
 ## Storage and cleanup
 
-The server bounds individual artifacts, publication snapshots, render admission,
-and caller-selected frame/video budgets. Those bounds do not impose a total
-disk quota. Docker's default named volume can fill its host filesystem. Use a
-dedicated filesystem or an operator-enforced quota, monitor available bytes and
-inodes, and leave room for temporary snapshots and backup operations.
+Use `artifact.usage` to inspect logical workspace bytes by project and artifact
+class, live temporary reservations, and accounting completeness. Configure
+`PRINTABLE_WORKSPACE_BUDGET_MIB` on the server to enable aggregate service
+admission limits. The server retains that policy for workers sharing its
+workspace; an unset setting disables the limit at server startup. Read
+[storage accounting and cleanup](storage.md) for coverage and recovery.
+
+Docker's default named volume can still fill its host filesystem. Native
+Python, direct Blender writes, filesystem overhead, and other processes are
+outside service enforcement. Use a dedicated filesystem or an operator-enforced
+quota, monitor available bytes and inodes, and leave room for backups.
 
 Job history retains the newest admitted records up to its configured source
 limit, evicting terminal records first. Eviction does not delete their old
 frame and video files. Download grants expire automatically, but that expiry
 does not delete the original workspace artifact. Plan retention explicitly.
 
-There is no automatic whole-workspace garbage collector. For manual cleanup,
+`artifact.cleanup_preview` identifies abandoned managed temporary directories;
+`artifact.cleanup` rechecks ownership before deleting the selected identifiers.
+Live temporary inputs and all retained files remain protected. Failed removal
+stays pending until a later attempt confirms deletion. There is no automatic
+whole-workspace garbage collector. For manual cleanup of retained artifacts,
 stop all services and confirm active transfers and jobs are no longer running.
 Back up first. Remove only artifacts you have identified as no longer needed,
 including by checkpoints with external dependencies. Keep `.printable` intact

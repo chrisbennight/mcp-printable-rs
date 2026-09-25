@@ -67,7 +67,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
-| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit`, `usage`, `cleanup_preview`, `cleanup` |
 
 Mesh reports from `validate_mesh` and `scad_build` include a scoped
 `assessment`. See [mesh assessment](mesh-assessment.md) for checked criteria,
