@@ -458,6 +458,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         render_worker_host: None,
         render_worker_port: 9876,
         workspace_root: None,
+        workspace_budget_bytes: None,
         blender_workspace_root: None,
         openscad_bin: None,
         cad_endpoint: None,
@@ -1458,6 +1459,61 @@ async fn scad_rejects_invalid_requests_before_starting_the_process() {
 }
 
 #[tokio::test]
+async fn storage_actions_report_usage_and_preserve_live_and_retained_inputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    ws.configure_storage_budget(Some(100_000)).unwrap();
+    ws.write_artifact("checkpoint.blend", b"retained", false)
+        .unwrap();
+    let live = ws.scratch(100, "transfer").unwrap();
+    let up = uploads();
+    let blender = client("127.0.0.1", 9);
+    let cfg = settings("127.0.0.1", 9);
+    let mut id = String::new();
+    for action in ["usage", "cleanup_preview", "cleanup"] {
+        let params = if action == "cleanup" {
+            json!({"ids":[id.clone()]})
+        } else {
+            json!({})
+        };
+        let call = printable_server::tools::workflows::resolve(
+            "artifact",
+            json!({"action":action,"params":params}),
+        )
+        .unwrap();
+        let result = dispatch(&ws, &up, &blender, &cfg, call.name, call.arguments)
+            .await
+            .unwrap();
+        let contract = printable_server::resources::contracts::read(&format!(
+            "printable://contracts/artifact/{action}"
+        ))
+        .unwrap();
+        jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .validate(&result)
+            .unwrap();
+        if action == "usage" {
+            assert!(result["reserved_remaining_bytes"].as_u64().unwrap() > 0);
+            assert_eq!(result["complete"], true);
+        } else {
+            assert_eq!(result["cleanup"][0]["state"], "protected");
+            id = result["cleanup"][0]["id"].as_str().unwrap().to_owned();
+        }
+    }
+    drop(live);
+    let call = printable_server::tools::workflows::resolve(
+        "artifact",
+        json!({"action":"cleanup","params":{"ids":[id]}}),
+    )
+    .unwrap();
+    let result = dispatch(&ws, &up, &blender, &cfg, call.name, call.arguments)
+        .await
+        .unwrap();
+    assert_eq!(result["cleanup"][0]["state"], "deleted");
+    assert_eq!(ws.read_artifact("checkpoint.blend").unwrap().1, b"retained");
+}
+
+#[tokio::test]
 async fn workspace_write_read_list_round_trip() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));
@@ -2196,6 +2252,66 @@ async fn status_reports_the_configured_openscad_runner_and_capacity() {
         json!(fake.binary.display().to_string())
     );
     assert_eq!(status["openscad"]["concurrency"], json!(2));
+}
+
+#[tokio::test]
+async fn status_reports_busy_blender_without_waiting_or_sending_another_command() {
+    use printable_blender::Params;
+    use tokio::sync::Notify;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let fake = FakeAddon::spawn({
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        move |_, _| ResponseSpec::SuccessWhenReleased {
+            result: json!({}),
+            addon_version: Some(printable_blender::BRIDGE_PROTOCOL_VERSION.to_owned()),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }
+    })
+    .await;
+    let blender = Arc::new(client(&fake.host(), fake.port()));
+    let active = tokio::spawn({
+        let blender = Arc::clone(&blender);
+        async move {
+            blender
+                .send_value("long_render", Params::new(), blender.default_deadline())
+                .await
+        }
+    });
+    started.notified().await;
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        dispatch(
+            &workspace(None),
+            &uploads(),
+            &blender,
+            &settings(&fake.host(), fake.port()),
+            "printable_status",
+            json!({}),
+        ),
+    )
+    .await
+    .expect("status must not wait for the render")
+    .unwrap();
+    assert_eq!(status["blender"]["state"], "busy");
+    assert_eq!(status["blender"]["available"], true);
+    assert_eq!(status["cad"]["state"], "not_configured");
+    assert_eq!(status["slicer"]["state"], "not_configured");
+    assert_eq!(fake.commands(), ["long_render"]);
+    release.notify_one();
+    active.await.unwrap().unwrap();
+    let schema = Value::Object(
+        printable_server::tools::output::schema("status")
+            .as_ref()
+            .clone(),
+    );
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&status)
+    );
 }
 
 #[tokio::test]

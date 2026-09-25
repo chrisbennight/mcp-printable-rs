@@ -567,8 +567,12 @@ fn snapshot_copies_and_detects_mutation() {
     assert_eq!(snap.meta().path, "s.stl");
     assert_eq!(snap.meta().size_bytes, 6);
     assert_eq!(snap.meta().media_type, "model/stl");
-    // The snapshot lives outside the workspace root.
-    assert!(!snap.path().starts_with(dir.path()));
+    // Managed snapshots remain private and count toward workspace storage.
+    assert!(
+        snap.path()
+            .starts_with(dir.path().join(".printable/storage/scratch"))
+    );
+    assert_ne!(snap.path(), dir.path().join("s.stl"));
 
     let mutated = ws.snapshot_with_hook("s.stl", || {
         std::fs::write(dir.path().join("s.stl"), b"mutated!").unwrap();

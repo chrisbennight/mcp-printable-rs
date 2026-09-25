@@ -56,7 +56,9 @@ mod workspace;
 
 pub use error::WsError;
 pub use media::{ALLOWED_ARTIFACT_SUFFIXES, media_type_for};
-pub use workspace::{ArtifactMeta, Snapshot, Workspace, WorkspaceStatus};
+pub use workspace::{
+    ArtifactMeta, CleanupEntry, ManagedScratch, Snapshot, StorageUsage, Workspace, WorkspaceStatus,
+};
 
 /// Hard cap on a single artifact transfer.
 pub const MAX_TRANSFER_BYTES: u64 = 25 * 1024 * 1024;

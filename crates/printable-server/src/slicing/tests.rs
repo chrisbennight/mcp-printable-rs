@@ -74,6 +74,35 @@ fn params() -> PrepareParams {
     serde_json::from_value(json!({"project_id":"part","source":"source.stl","output_dir":"slice","build_plate":"Textured PEI Plate",
         "printer":{"name":"printer"},"process":{"name":"process"},"filaments":[{"name":"filament"}]})).unwrap()
 }
+
+#[tokio::test]
+async fn readiness_verifies_the_native_interface_profiles_and_busy_state() {
+    use crate::worker_health::CapabilityState;
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    std::fs::write(
+        &worker.binary,
+        "#!/bin/sh\nprintf 'OrcaSlicer-2.4.2:\\n--slice --export-3mf\\n'\n",
+    )
+    .unwrap();
+    let startup = worker.probe_engine().await;
+    assert_eq!(startup.state, CapabilityState::Ready);
+    assert_eq!(startup.profile_counts.unwrap().printer, 1);
+    let permit = worker.admission.acquire().await.unwrap();
+    assert_eq!(worker.readiness(&startup).state, CapabilityState::Busy);
+    drop(permit);
+    assert_eq!(worker.readiness(&startup).state, CapabilityState::Ready);
+    for script in [
+        "#!/bin/sh\nprintf 'different interface\\n'\n",
+        "#!/bin/sh\nprintf 'OrcaSlicer-2.4.20:\\n--slice --export-3mf\\n'\n",
+    ] {
+        std::fs::write(&worker.binary, script).unwrap();
+        assert_eq!(
+            worker.probe_engine().await.state,
+            CapabilityState::Incompatible
+        );
+    }
+}
 fn handle() -> SliceHandle {
     SliceHandle {
         project_id: "part".into(),

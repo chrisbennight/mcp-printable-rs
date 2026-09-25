@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use crate::error::ToolError;
 
 mod export;
+pub mod requirements;
+pub mod revisions;
 pub use export::NativeExportParams;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -64,6 +66,8 @@ pub struct FilesParams {
     deny_unknown_fields
 )]
 pub enum ProjectRequest {
+    Revise(revisions::ReviseParams),
+    Revision(revisions::GetParams),
     Create(CreateParams),
     Get(ProjectParams),
     List(ListParams),
@@ -186,6 +190,8 @@ fn existing_project(
 
 pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value, ToolError> {
     match request {
+        ProjectRequest::Revise(params) => revisions::revise(workspace, params),
+        ProjectRequest::Revision(params) => revisions::read(workspace, params),
         ProjectRequest::ExportBlender(_) => Err(ToolError::Validation(
             "native export requires the Blender command dispatcher".into(),
         )),

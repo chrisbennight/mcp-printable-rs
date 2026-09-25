@@ -202,7 +202,12 @@ impl PrinterService {
                         "sha256":source_sha256,"size_bytes":source.meta().size_bytes,"evidence":params.evidence,
                         "applicability":checked,"backend_digest_verification":"unverified","outcome":"unknown"}),
                 )?;
-                let file = self.control.upload_print(source.path(), filename).await?;
+                let size_bytes = source.meta().size_bytes;
+                let stream = crate::file_transfer::snapshot_stream(source, ())?;
+                let file = self
+                    .control
+                    .upload_print(reqwest::Body::wrap_stream(stream), size_bytes, filename)
+                    .await?;
                 let receipt = provenance::store(workspace, provenance::Kind::ImportReceipt, &params.project_id,
                     json!({"intent":intent,"library_file_id":file.id,"outcome":"import_accepted",
                         "backend_digest_verification":"unverified","execution":"not_observed"}))

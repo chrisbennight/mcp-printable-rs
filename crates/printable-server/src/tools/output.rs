@@ -32,6 +32,30 @@ fn scene_state() -> Value {
     )
 }
 
+fn worker_readiness() -> Value {
+    object(
+        json!({
+            "protocol_version": {"const": 1},
+            "configured": {"type": "boolean"},
+            "state": {"enum": ["not_configured", "ready", "busy", "unavailable", "incompatible"]},
+            "engine": {"enum": ["CadQuery", "OrcaSlicer"]},
+            "version": {"type": ["string", "null"]},
+            "profile_counts": {"anyOf": [
+                {"type": "null"},
+                object(json!({"printer": {"type":"integer", "minimum": 0}, "process": {"type":"integer", "minimum": 0}, "filament": {"type":"integer", "minimum": 0}}), &["printer", "process", "filament"])
+            ]}
+        }),
+        &[
+            "protocol_version",
+            "configured",
+            "state",
+            "engine",
+            "version",
+            "profile_counts",
+        ],
+    )
+}
+
 fn mesh_report() -> Value {
     let criterion = object(
         json!({
@@ -162,11 +186,13 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "server_version": {"type": "string"}, "transport": {"const": "streamable-http"},
                 "blender": {"type": "object", "properties": {
                     "available": {"type": "boolean"},
+                    "state": {"enum": ["ready", "busy", "unavailable"]},
                     "scene_state": {"anyOf": [scene_state(), {"type": "null"}]},
                     "native_observation": {"type": "object"}
                 }, "required": ["available"]},
                 "openscad": {"type": "object"}, "workspace": {"type": "object"},
                 "render_jobs": {"type": "object"},
+                "cad": worker_readiness(), "slicer": worker_readiness(),
                 "printers": {"type": "object", "properties": {"configured": {"type": "boolean"}}, "required": ["configured"]}
             }),
             &[
@@ -176,6 +202,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "openscad",
                 "workspace",
                 "render_jobs",
+                "cad",
+                "slicer",
             ],
         ),
         "inspect" => object(
@@ -213,16 +241,53 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "elapsed_ms",
             ],
         ),
-        "cad_build" => object(
-            json!({
-                "build_directory": {"type": "string"},
-                "report": {"type": "object"},
-                "artifacts": {"type": "array", "items": object(json!({
-                    "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
-                }), &["artifact", "sha256"])}
-            }),
-            &["build_directory", "report", "artifacts"],
-        ),
+        "cad_build" => {
+            let mut qualification = serde_json::to_value(schemars::schema_for!(
+                crate::cad::qualification::Qualification
+            ))
+            .expect("CAD qualification schema serializes");
+            let definitions = qualification
+                .as_object_mut()
+                .expect("schema object")
+                .remove("$defs");
+            let completed = object(
+                json!({
+                    "completion": {"const":"completed"},
+                    "qualification": qualification,
+                    "build_directory": {"type": "string"},
+                "revision": object(json!({"id":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["id","sha256"]),
+                "measurement": object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "requirements": object(json!({"scope":{"const":"declared_requirements"},"status":{"enum":["passed","failed","incomplete"]},"criteria":{"type":"object","additionalProperties":object(json!({"status":{"enum":["passed","failed","unmeasured","physical_test_required"]},"evidence":{"type":"string"}}),&["status"])}}), &["scope","status","criteria"]),
+                    "report": {"type": "object"},
+                    "artifacts": {"type": "array", "items": object(json!({
+                        "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                    }), &["artifact", "sha256"])}
+                }),
+                &[
+                    "completion",
+                    "qualification",
+                    "build_directory",
+                    "report",
+                    "artifacts",
+                ],
+            );
+            let mut historical = completed.clone();
+            historical["required"] = json!(["build_directory", "report", "artifacts"]);
+            historical["not"] =
+                json!({"anyOf":[{"required":["completion"]},{"required":["qualification"]}]});
+            let mut result = json!({"type":"object","anyOf":[completed, object(json!({
+                "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
+                "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
+                "phase":{"enum":["input_snapshot","native_execution","terminal"]},
+                "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
+                "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical]}
+            }), &["build","status","phase"])]});
+            if let Some(definitions) = definitions {
+                result["$defs"] = definitions;
+            }
+            result
+        }
         "scad_build" => object(
             json!({
                 "artifact": artifact(), "diagnostics": {"type": "object"},
@@ -267,15 +332,22 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
             }), &["jobs", "next_offset"])
         ]}),
-        "project" => json!({"type":"object","anyOf":[
+        "project" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let revision = generator.subschema_for::<crate::projects::revisions::Response>();
+            json!({"type":"object","anyOf":[
+            revision,
             serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
             selected_bundle(), native_bundle()
-        ]}),
+        ],"$defs":generator.take_definitions(true)})
+        }
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
+            object(json!({"format_version":{"const":1},"logical_bytes":{"type":"integer"},"reserved_remaining_bytes":{"type":"integer"},"charged_bytes":{"type":"integer"},"complete":{"type":"boolean"},"by_project":{"type":"object"},"by_class":{"type":"object"},"accounting":{"type":"string"}}), &["format_version","logical_bytes","reserved_remaining_bytes","charged_bytes","complete","by_project","by_class","accounting"]),
+            object(json!({"cleanup":{"type":"array","items":object(json!({"id":{"type":"string"},"bytes":{"type":["integer","null"]},"state":{"enum":["protected","pending","deleted"]},"reason":{"type":"string"}}), &["id","bytes","state","reason"])},"retained_artifacts":{"type":"string"}}), &["cleanup","retained_artifacts"]),
             object(json!({"state": {"enum": ["prepared", "receiving", "ready", "failed", "commit_uncertain", "committed"]}}), &["state"]),
             object(json!({"entries": {"type": "array", "items": artifact()}}), &["entries"]),
             object(json!({"upload_id": {"type": "string"}}), &["upload_id"]),

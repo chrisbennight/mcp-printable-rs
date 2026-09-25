@@ -149,6 +149,18 @@ fn default_gallery_views() -> Vec<GalleryView> {
     ]
 }
 
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StorageQueryParams {}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StorageCleanupParams {
+    /// Identifiers returned by cleanup_preview; retained artifact paths are not accepted.
+    #[schemars(length(max = 1000))]
+    ids: Vec<String>,
+}
+
 /// `printable_workspace_list` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1480,6 +1492,24 @@ fn code_annotations() -> ToolAnnotations {
 /// The tool catalog, in a stable order.
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
+        name: "printable_workspace_usage",
+        description: "Report logical workspace usage by project and artifact class, live reservations, budget, and accounting limits.",
+        schema: schema_of::<StorageQueryParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "printable_workspace_cleanup_preview",
+        description: "Preview abandoned managed temporary directories. Retained artifacts and active leases remain protected.",
+        schema: schema_of::<StorageQueryParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "printable_workspace_cleanup",
+        description: "Remove selected abandoned temporary directories after rechecking live ownership. Reports protected, pending, or confirmed deleted outcomes.",
+        schema: schema_of::<StorageCleanupParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_workspace_stat",
         description: "Inspect confined artifact metadata without reading bytes. Supports optional project-relative resolution. Describes a mutable filename, not immutable content identity.",
         schema: schema_of::<StatParams>,
@@ -1799,6 +1829,29 @@ pub(crate) async fn dispatch_with_content(
 ) -> Result<ToolOutput, ToolError> {
     let (scad, jobs) = backends;
     match name {
+        "printable_workspace_usage" => {
+            let _: StorageQueryParams = de(args)?;
+            let ws = Arc::clone(workspace);
+            Ok(ToolOutput::without_inline(serde_json::to_value(
+                blocking(move || ws.storage_usage()).await?,
+            )?))
+        }
+        "printable_workspace_cleanup_preview" => {
+            let _: StorageQueryParams = de(args)?;
+            let ws = Arc::clone(workspace);
+            let entries = blocking(move || ws.cleanup_preview()).await?;
+            Ok(ToolOutput::without_inline(
+                json!({"cleanup":entries,"retained_artifacts":"protected; only managed temporary directories are eligible"}),
+            ))
+        }
+        "printable_workspace_cleanup" => {
+            let p: StorageCleanupParams = de(args)?;
+            let ws = Arc::clone(workspace);
+            let entries = blocking(move || ws.cleanup_scratch(&p.ids)).await?;
+            Ok(ToolOutput::without_inline(
+                json!({"cleanup":entries,"retained_artifacts":"protected; only managed temporary directories are eligible"}),
+            ))
+        }
         "printable_native_view" => native::capture(Arc::clone(workspace), blender, de(args)?).await,
         "printable_render_product" => {
             let params: RenderProductParams = de(args)?;
@@ -4937,7 +4990,7 @@ fn geometry_worker_error(code: &'static str, message: impl Into<String>) -> Tool
 }
 
 struct PreparedScadJob {
-    _staging: tempfile::TempDir,
+    _staging: printable_workspace::ManagedScratch,
     _snapshots: Vec<Snapshot>,
     source_path: PathBuf,
     output_path: PathBuf,
@@ -4993,7 +5046,7 @@ async fn prepare_scad_job(
     cross_section_z_mm: Option<f64>,
     materialize_cross_section: bool,
     product_v1: bool,
-) -> Result<(ScadPermit, PreparedScadJob), ToolError> {
+) -> Result<(ScadPermit, Arc<PreparedScadJob>), ToolError> {
     let permit = runner.acquire().await?;
     blocking(move || {
         let mut snapshots = Vec::new();
@@ -5013,9 +5066,10 @@ async fn prepare_scad_job(
             snapshots.push(snapshot);
             Ok(snapshot_path)
         })?;
-        let staging = tempfile::Builder::new()
-            .prefix("printable-scad-")
-            .tempdir()?;
+        let staging = workspace.scratch(
+            2 * MAX_PRODUCT_RENDER_BYTES + 4 * MAX_SCAD_SOURCE_BYTES as u64,
+            "openscad",
+        )?;
         let confined_source = if product_v1 {
             std::fs::write(
                 staging.path().join(printable_scad::PRODUCT_V1_CALLER_FILE),
@@ -5052,16 +5106,18 @@ async fn prepare_scad_job(
                 })
             })
             .transpose()?;
-        Ok::<_, ToolError>((
-            permit,
-            PreparedScadJob {
-                _staging: staging,
-                _snapshots: snapshots,
-                source_path,
-                output_path,
-                cross_section,
-            },
-        ))
+        let job = Arc::new(PreparedScadJob {
+            _staging: staging,
+            _snapshots: snapshots,
+            source_path,
+            output_path,
+            cross_section,
+        });
+        let mut permit = permit.inherit_lease(job._staging.clone_lease()?);
+        for snapshot in &job._snapshots {
+            permit = permit.inherit_lease(snapshot.clone_lease()?);
+        }
+        Ok::<_, ToolError>((permit.retain(Arc::clone(&job)), job))
     })
     .await
 }
@@ -5575,9 +5631,8 @@ fn decode_bounded(data_base64: &str) -> Result<Vec<u8>, ToolError> {
     Ok(bytes)
 }
 
-/// Probe backend readiness without mutating anything: a 5-second Blender
-/// liveness check, an OpenSCAD binary probe, and workspace status. Never fails
-/// as a whole — a downed backend is reported, not raised.
+/// Probe capabilities without waiting behind active Blender work. A downed
+/// backend is reported independently, without failing the complete response.
 async fn status(
     workspace: &Workspace,
     blender: &BlenderClient,
@@ -5587,19 +5642,29 @@ async fn status(
 ) -> Result<Value, ToolError> {
     let mut blender_json = json!({
         "available": false,
+        "state": "unavailable",
         "host": settings.blender_host,
         "port": settings.blender_port,
     });
-    match blender
-        .send_value(
+    let (blender_probe, cad, slicer) = tokio::join!(
+        blender.try_send_value(
             "bridge_status",
             Params::new(),
             Deadline::new(Duration::from_secs(5)),
-        )
-        .await
-    {
-        Ok(backend) => {
+        ),
+        crate::worker_health::probe(
+            settings.cad_endpoint.as_deref(),
+            crate::worker_health::NativeEngine::CadQuery
+        ),
+        crate::worker_health::probe(
+            settings.slicer_endpoint.as_deref(),
+            crate::worker_health::NativeEngine::OrcaSlicer
+        ),
+    );
+    match blender_probe {
+        Ok(Some(backend)) => {
             blender_json["available"] = json!(true);
+            blender_json["state"] = json!("ready");
             blender_json["version"] = backend
                 .get("blender_version")
                 .cloned()
@@ -5622,6 +5687,10 @@ async fn status(
                 .get("execution_limits")
                 .cloned()
                 .unwrap_or(Value::Null);
+        }
+        Ok(None) => {
+            blender_json["available"] = json!(true);
+            blender_json["state"] = json!("busy");
         }
         Err(e) => {
             blender_json["error"] = json!(e.to_string());
@@ -5664,8 +5733,8 @@ async fn status(
             "concurrency": settings.scad_concurrency,
         },
         "render_jobs": render_jobs,
-        "cad": {"configured": settings.cad_endpoint.is_some()},
-        "slicer": {"configured": settings.slicer_endpoint.is_some()},
+        "cad": cad,
+        "slicer": slicer,
         "printers": {"configured": settings.printers.is_some()},
         "workspace": {
             "confined": ws.confined,

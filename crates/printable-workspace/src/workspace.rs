@@ -11,6 +11,9 @@ use crate::error::WsError;
 use crate::media::{allowed_suffix, media_type_for};
 use crate::{MAX_LIST_LIMIT, MAX_LIST_SCAN_ENTRIES, MAX_TRANSFER_BYTES};
 
+mod storage;
+pub use storage::{CleanupEntry, ManagedScratch, StorageUsage};
+
 pub const RESERVED_WORKSPACE_ROOT: &str = ".printable";
 
 /// Metadata for one workspace artifact. `path` is normalized and relative to
@@ -37,13 +40,18 @@ pub struct WorkspaceStatus {
 /// directory is removed when the snapshot is dropped.
 #[derive(Debug)]
 pub struct Snapshot {
-    _tempdir: tempfile::TempDir,
+    _tempdir: ManagedScratch,
     path: PathBuf,
     meta: ArtifactMeta,
     source_stat: Stat,
 }
 
 impl Snapshot {
+    /// Retain the snapshot's storage ownership for a native process.
+    pub fn clone_lease(&self) -> std::io::Result<OwnedFd> {
+        self._tempdir.clone_lease()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -73,6 +81,31 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Acquire a nonblocking advisory lock for cooperating server processes.
+    /// Keep the returned descriptor alive through the complete state change.
+    /// Lock files are permanent: unlinking one would allow two lock identities.
+    pub fn try_lock_reserved(&self, path: &str) -> Result<OwnedFd, WsError> {
+        let comps = normalize(path)?;
+        require_mutation_scope(&comps, MutationScope::Reserved)?;
+        let name = comps.last().ok_or(WsError::ReservedPath)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], path, Missing::Create)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::from_bits_truncate(0o600),
+            path,
+        )?;
+        if FileType::from_raw_mode(rustix::fs::fstat(&fd).map_err(errno_io)?.st_mode)
+            != FileType::RegularFile
+        {
+            return Err(WsError::NotRegularFile);
+        }
+        rustix::fs::flock(&fd, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .map_err(errno_io)?;
+        Ok(fd)
+    }
+
     /// Open a workspace. `blender_root` is the host-side path Blender sees for
     /// the same directory; it is stored verbatim (it usually does not exist
     /// locally). Requiring `root` alongside `blender_root` is the settings
@@ -214,6 +247,7 @@ impl Workspace {
         if bytes.len() as u64 > MAX_TRANSFER_BYTES {
             return Err(WsError::WriteTooLarge);
         }
+        let _storage = self.admit_storage_write(bytes.len() as u64)?;
         let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Create)?;
 
         let temp_name = temp_name()?;
@@ -370,6 +404,7 @@ impl Workspace {
         if before.len() > max_bytes {
             return Err(WsError::WriteTooLarge);
         }
+        let _storage = self.admit_storage_write(before.len())?;
         let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Create)?;
         let temp_name = temp_name()?;
         let temp_fd = openat(
@@ -383,11 +418,14 @@ impl Workspace {
         let commit = (|| -> Result<Stat, WsError> {
             let mut output = std::fs::File::from(temp_fd);
             let copied = std::io::copy(
-                &mut Read::by_ref(&mut input).take(max_bytes.saturating_add(1)),
+                &mut Read::by_ref(&mut input).take(before.len().saturating_add(1)),
                 &mut output,
             )?;
             if copied > max_bytes {
                 return Err(WsError::WriteTooLarge);
+            }
+            if copied != before.len() {
+                return Err(WsError::ChangedWhileReading);
             }
             output.sync_all()?;
             let after = input.metadata()?;
@@ -664,15 +702,20 @@ impl Workspace {
             return Err(snapshot_too_large(max_bytes));
         }
 
-        let tempdir = tempfile::TempDir::new()?;
-        let dst = tempdir.path().join(&name);
+        let tempdir = self.scratch(before.st_size as u64, "snapshot")?;
+        let payload = tempdir.path().join("payload");
+        std::fs::create_dir(&payload)?;
+        let dst = payload.join(&name);
         let mut out = std::fs::File::create(&dst)?;
         let copied = std::io::copy(
-            &mut Read::by_ref(&mut file).take(max_bytes.saturating_add(1)),
+            &mut Read::by_ref(&mut file).take((before.st_size as u64).saturating_add(1)),
             &mut out,
         )?;
         if copied > max_bytes {
             return Err(snapshot_too_large(max_bytes));
+        }
+        if copied != before.st_size as u64 {
+            return Err(WsError::ChangedWhileReading);
         }
         out.sync_all()?;
 
@@ -1022,6 +1065,24 @@ fn temp_name() -> Result<String, WsError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn reserved_lock_serializes_independently_opened_workspaces_and_releases_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Workspace::open(Some(dir.path()), None).unwrap();
+        let second = Workspace::open(Some(dir.path()), None).unwrap();
+        let path = ".printable/locks/project.lock";
+        let guard = first.try_lock_reserved(path).unwrap();
+        assert!(
+            matches!(second.try_lock_reserved(path), Err(WsError::Io(e)) if e.kind()==std::io::ErrorKind::WouldBlock)
+        );
+        drop(guard);
+        assert!(second.try_lock_reserved(path).is_ok());
+        assert!(first.try_lock_reserved("ordinary.lock").is_err());
+        assert!(first.try_lock_reserved("../outside.lock").is_err());
+        std::os::unix::fs::symlink(dir.path(), dir.path().join(".printable/redirect")).unwrap();
+        assert!(first.try_lock_reserved(".printable/redirect/lock").is_err());
+    }
+
     // Exercises the private scan_cap directly (the public API only exposes the
     // fixed MAX_LIST_SCAN_ENTRIES ceiling, so a small cap can't be tested there).
     #[test]
@@ -1032,10 +1093,11 @@ mod tests {
             ws.write_artifact(&format!("f{i:03}.stl"), b"x", false)
                 .unwrap();
         }
-        // A cap below the entry count truncates the walk without error. `.` and
-        // `..` are not counted, so exactly `cap` files are seen.
+        // A cap below the entry count truncates the walk without error. The
+        // internal storage directory also consumes a scanned entry.
         let capped = ws.list_with_scan_cap("", 1000, 50).unwrap();
-        assert_eq!(capped.len(), 50);
+        assert!(!capped.is_empty() && capped.len() <= 50);
+        assert!(capped.iter().all(|entry| entry.path.starts_with('f')));
         // The public API with the real ceiling returns everything.
         assert_eq!(ws.list_artifacts("", 1000).unwrap().len(), 60);
     }

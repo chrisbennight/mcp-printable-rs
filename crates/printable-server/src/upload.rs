@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use tempfile::TempDir;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -63,7 +64,7 @@ struct UploadState {
 /// the job, the guard — and the append and `written` update it protects —
 /// release only when the job itself finishes.
 struct Upload {
-    _dir: TempDir,
+    _dir: printable_workspace::ManagedScratch,
     staging: PathBuf,
     target: String,
     overwrite: bool,
@@ -91,17 +92,30 @@ impl UploadRegistry {
     /// concurrent-upload registry (after reclaiming timed-out uploads).
     pub async fn begin(
         &self,
-        workspace: &Workspace,
+        workspace: &Arc<Workspace>,
         target: String,
         overwrite: bool,
     ) -> Result<String, ToolError> {
         // Validate every destination invariant before allocating staging or a
         // registry entry; commit repeats the checks against the final path.
         workspace.validate_public_mutation_path(&target)?;
+        // Free expired reservations before asking the workspace for capacity.
+        // In-use entries remain live; insertion below still rechecks the cap.
+        let registry = Arc::clone(&self.uploads);
+        blocking(move || {
+            let evicted = {
+                let mut map = registry.lock().expect("upload registry mutex poisoned");
+                collect_expired(&mut map, Instant::now())
+            };
+            drop(evicted);
+            Ok::<_, ToolError>(())
+        })
+        .await?;
         // Create the staging dir + empty file off the async workers, before
         // taking the registry lock (so the lock is never held across I/O).
-        let (dir, staging) = blocking(|| {
-            let dir = TempDir::new()?;
+        let workspace = Arc::clone(workspace);
+        let (dir, staging) = blocking(move || {
+            let dir = workspace.scratch(MAX_TRANSFER_BYTES, "chunked_upload")?;
             let staging = dir.path().join("blob");
             std::fs::File::create(&staging)?;
             Ok::<_, ToolError>((dir, staging))
@@ -156,7 +170,7 @@ impl UploadRegistry {
         // release together only when the job finishes — a cancelled request
         // cannot orphan a half-applied append (see `Upload`).
         let guard = Arc::clone(&upload.state).lock_owned().await;
-        // Move the guard *and* `upload` (which owns the staging TempDir) into the
+        // Move the guard *and* `upload` (which owns the staging directory) into the
         // blocking job, so the guard, the append, the `written` update, and the
         // staging directory all release together only when the job finishes — a
         // cancelled request can neither orphan a half-applied append nor drop the
@@ -195,7 +209,7 @@ impl UploadRegistry {
         workspace: &Arc<Workspace>,
     ) -> Result<ArtifactMeta, ToolError> {
         // Clone the handle *without* removing the registry entry, so the entry —
-        // and the staging TempDir it owns — is retained until the commit actually
+        // and the staging directory it owns — is retained until the commit actually
         // runs. If this future is cancelled while awaiting the per-upload lock or
         // the workspace permit below, the registry still holds the upload: the
         // staged data survives and the caller can retry. The entry is dropped only
@@ -312,8 +326,10 @@ pub(crate) fn random_hex_id() -> Result<String, ToolError> {
 mod tests {
     use super::*;
 
-    fn staged_upload(last_activity: Instant) -> Arc<Upload> {
-        let dir = TempDir::new().expect("tempdir");
+    fn staged_upload(workspace: &Workspace, last_activity: Instant) -> Arc<Upload> {
+        let dir = workspace
+            .scratch(MAX_TRANSFER_BYTES, "test_upload")
+            .unwrap();
         let staging = dir.path().join("blob");
         std::fs::File::create(&staging).expect("touch staging file");
         Arc::new(Upload {
@@ -338,8 +354,10 @@ mod tests {
         let now = base + UPLOAD_IDLE_TIMEOUT + Duration::from_secs(1);
 
         let mut map = HashMap::new();
-        map.insert("stale".to_string(), staged_upload(base));
-        map.insert("fresh".to_string(), staged_upload(now));
+        let root = TempDir::new().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        map.insert("stale".to_string(), staged_upload(&ws, base));
+        map.insert("fresh".to_string(), staged_upload(&ws, now));
 
         let evicted = collect_expired(&mut map, now);
 
@@ -358,7 +376,9 @@ mod tests {
         let now = base + UPLOAD_IDLE_TIMEOUT + Duration::from_secs(1);
 
         let mut map = HashMap::new();
-        map.insert("in_use".to_string(), staged_upload(base));
+        let root = TempDir::new().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        map.insert("in_use".to_string(), staged_upload(&ws, base));
         // Simulate an in-flight operation holding the upload.
         let _in_flight = Arc::clone(map.get("in_use").expect("present"));
 
@@ -369,9 +389,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_upload_releases_its_budget_before_new_admission() {
+        let root = TempDir::new().unwrap();
+        let ws = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        ws.configure_storage_budget(Some(26 * 1024 * 1024)).unwrap();
+        let registry = UploadRegistry::new();
+        let first = registry
+            .begin(&ws, "first.stl".into(), false)
+            .await
+            .unwrap();
+        assert!(
+            registry
+                .begin(&ws, "second.stl".into(), false)
+                .await
+                .is_err()
+        );
+        {
+            let upload = registry.get(&first).unwrap();
+            upload.state.lock().await.last_activity =
+                Instant::now() - UPLOAD_IDLE_TIMEOUT - Duration::from_secs(1);
+        }
+        let second = registry
+            .begin(&ws, "second.stl".into(), false)
+            .await
+            .unwrap();
+        assert!(registry.get(&first).is_err());
+        assert!(registry.get(&second).is_ok());
+        assert_eq!(ws.cleanup_preview().unwrap().len(), 1);
+        registry.chunk(&second, b"model".to_vec()).await.unwrap();
+        registry.commit(&second, &ws).await.unwrap();
+        assert_eq!(ws.read_artifact("second.stl").unwrap().1, b"model");
+    }
+
+    #[tokio::test]
     async fn begin_rejects_reserved_job_state_before_allocating_an_upload() {
         let dir = TempDir::new().expect("workspace tempdir");
-        let ws = Workspace::open(Some(dir.path()), None).expect("open workspace");
+        let ws = Arc::new(Workspace::open(Some(dir.path()), None).expect("open workspace"));
         let reg = UploadRegistry::new();
 
         let error = reg

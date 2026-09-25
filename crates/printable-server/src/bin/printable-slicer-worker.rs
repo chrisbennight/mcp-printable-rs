@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
             .no_proxy()
             .timeout(std::time::Duration::from_secs(3))
             .build()?
-            .get(format!("http://{probe}/healthz"))
+            .get(format!("http://{probe}/readyz"))
             .send()
             .await?
             .error_for_status()?;
@@ -52,7 +52,23 @@ async fn main() -> anyhow::Result<()> {
         Profiles::load(&profiles)?,
         binary,
     ));
+    let readiness = worker.probe_engine().await;
+    let health_worker = Arc::clone(&worker);
     let app = Router::new()
+        .route(
+            "/readyz",
+            get(move || {
+                let readiness = health_worker.readiness(&readiness);
+                async move {
+                    let status = if readiness.available() {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    };
+                    (status, Json(readiness))
+                }
+            }),
+        )
         .route(
             "/healthz",
             get(|| async {

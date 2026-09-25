@@ -15,8 +15,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use printable_workspace::{ArtifactMeta, Workspace};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Write as _;
 use subtle::ConstantTimeEq;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -74,9 +74,20 @@ pub struct IngestResult {
 }
 
 struct Received {
-    file: tempfile::NamedTempFile,
+    file: Arc<StagedUpload>,
     size: u64,
     sha256: String,
+}
+
+struct StagedUpload {
+    file: tempfile::NamedTempFile,
+    _scratch: printable_workspace::ManagedScratch,
+}
+
+impl StagedUpload {
+    fn path(&self) -> &std::path::Path {
+        self.file.path()
+    }
 }
 
 enum TransferState {
@@ -352,7 +363,7 @@ pub async fn upload(
     tokio::spawn(async move {
     let result = tokio::time::timeout_at(
         transfer.expires.into(),
-        receive(body, &transfer, files.max_bytes),
+        receive(body, &transfer, files.max_bytes, Arc::clone(&files.workspace)),
     )
     .await
     .unwrap_or(Err(StatusCode::REQUEST_TIMEOUT));
@@ -380,16 +391,32 @@ async fn receive(
     mut body: Body,
     transfer: &Transfer,
     max_bytes: u64,
+    workspace: Arc<Workspace>,
 ) -> Result<Received, StatusCode> {
-    let staged = tokio::task::spawn_blocking(tempfile::NamedTempFile::new)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    let reservation = transfer.expected_size.unwrap_or(max_bytes);
+    let staged = tokio::task::spawn_blocking(move || {
+        let scratch = workspace
+            .scratch(reservation, "native_upload")
+            .map_err(|error| {
+                if matches!(error, printable_workspace::WsError::StorageBudgetExceeded) {
+                    StatusCode::INSUFFICIENT_STORAGE
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            })?;
+        let file = tempfile::NamedTempFile::new_in(scratch.path())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok::<_, StatusCode>(Arc::new(StagedUpload {
+            file,
+            _scratch: scratch,
+        }))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    let mut writer = staged
+        .file
+        .reopen()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut writer = tokio::fs::File::from_std(
-        staged
-            .reopen()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-    );
     let mut size = 0_u64;
     let mut digest = Sha256::new();
     loop {
@@ -412,11 +439,16 @@ async fn receive(
             {
                 return Err(StatusCode::PAYLOAD_TOO_LARGE);
             }
-            writer
-                .write_all(&bytes)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             digest.update(&bytes);
+            let owner = Arc::clone(&staged);
+            writer = tokio::task::spawn_blocking(move || {
+                let _owner = owner;
+                writer.write_all(&bytes)?;
+                Ok::<_, std::io::Error>(writer)
+            })
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
     let hash: [u8; 32] = digest.finalize().into();
@@ -429,14 +461,14 @@ async fn receive(
     {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
-    writer
-        .flush()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    writer
-        .sync_all()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let owner = Arc::clone(&staged);
+    tokio::task::spawn_blocking(move || {
+        let _owner = owner;
+        writer.sync_all()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Received {
         file: staged,
         size,

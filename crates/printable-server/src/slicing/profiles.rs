@@ -90,6 +90,14 @@ pub struct Profiles {
 }
 
 impl Profiles {
+    pub fn counts(&self) -> crate::worker_health::ProfileCounts {
+        crate::worker_health::ProfileCounts {
+            printer: self.entries[&Category::Printer].len(),
+            process: self.entries[&Category::Process].len(),
+            filament: self.entries[&Category::Filament].len(),
+        }
+    }
+
     pub fn settings(&self, query: SettingsQuery) -> Result<Value, ToolError> {
         if !(1..=100).contains(&query.limit) || query.query.len() > 256 {
             return Err(invalid(

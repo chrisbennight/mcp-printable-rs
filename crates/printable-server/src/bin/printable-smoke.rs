@@ -139,9 +139,24 @@ fn validate_readiness(http_status: u16, body: &Value, require_ready: bool) -> Re
         "openscad",
         "ffmpeg",
         "durable_recovery",
+        "cad",
+        "slicer",
     ]);
-    if check_keys != expected_checks || checks.values().any(|value| !value.is_boolean()) {
-        return Err(format!("/readyz checks are not sanitized booleans: {body}"));
+    if check_keys != expected_checks
+        || checks.iter().any(|(key, value)| {
+            if matches!(key.as_str(), "cad" | "slicer") {
+                !matches!(
+                    value.as_str(),
+                    Some("not_configured" | "ready" | "busy" | "unavailable" | "incompatible")
+                )
+            } else {
+                !value.is_boolean()
+            }
+        })
+    {
+        return Err(format!(
+            "/readyz checks are not sanitized capability states: {body}"
+        ));
     }
 
     let work = body["work"]
@@ -164,6 +179,10 @@ fn validate_readiness(http_status: u16, body: &Value, require_ready: bool) -> Re
         "openscad_unavailable",
         "ffmpeg_unavailable",
         "durable_recovery_fenced",
+        "cad_unavailable",
+        "cad_incompatible",
+        "slicer_unavailable",
+        "slicer_incompatible",
         "work_in_progress",
     ]);
     if codes.iter().any(|value| {
@@ -187,8 +206,18 @@ fn validate_readiness(http_status: u16, body: &Value, require_ready: bool) -> Re
             expected_blockers.push(Value::String(code.to_string()));
         }
     }
-    let work_in_progress =
-        work["queued"] == Value::Bool(true) || work["running"] == Value::Bool(true);
+    for check in ["cad", "slicer"] {
+        if matches!(checks[check].as_str(), Some("unavailable" | "incompatible")) {
+            expected_blockers.push(Value::String(format!(
+                "{check}_{}",
+                checks[check].as_str().expect("validated state")
+            )));
+        }
+    }
+    let work_in_progress = work["queued"] == Value::Bool(true)
+        || work["running"] == Value::Bool(true)
+        || checks["cad"] == "busy"
+        || checks["slicer"] == "busy";
 
     match body["status"].as_str() {
         Some("ready")
@@ -2404,7 +2433,8 @@ mod tests {
                     "workspace": true,
                     "openscad": true,
                     "ffmpeg": true,
-                    "durable_recovery": true
+                    "durable_recovery": true,
+                    "cad": "not_configured", "slicer": "not_configured"
                 },
                 "work": {"queued": true, "running": false},
                 "codes": ["work_in_progress"]
@@ -2423,7 +2453,8 @@ mod tests {
                     "workspace": true,
                     "openscad": true,
                     "ffmpeg": true,
-                    "durable_recovery": true
+                    "durable_recovery": true,
+                    "cad": "not_configured", "slicer": "not_configured"
                 },
                 "work": {"queued": false, "running": false},
                 "codes": ["ffmpeg_unavailable"]
@@ -2443,7 +2474,8 @@ mod tests {
                     "workspace": true,
                     "openscad": true,
                     "ffmpeg": true,
-                    "durable_recovery": true
+                    "durable_recovery": true,
+                    "cad": "not_configured", "slicer": "not_configured"
                 },
                 "work": {"queued": false, "running": false},
                 "codes": ["blender_unavailable"],
@@ -2460,7 +2492,8 @@ mod tests {
         let blocked = json!({
             "status": "blocked",
             "checks": {"blender": true, "render_worker": false, "workspace": true,
-                "openscad": true, "ffmpeg": true, "durable_recovery": true},
+                "openscad": true, "ffmpeg": true, "durable_recovery": true,
+                "cad": "not_configured", "slicer": "not_configured"},
             "work": {"queued": false, "running": false},
             "codes": ["render_worker_unavailable"]
         });
@@ -2468,6 +2501,28 @@ mod tests {
         let error = validate_readiness(503, &blocked, true)
             .expect_err("paired delivery requires its worker");
         assert!(error.contains("paired service is not ready"), "{error}");
+    }
+
+    #[test]
+    fn readiness_contract_accepts_native_states_and_rejects_worker_diagnostics() {
+        let mut body = json!({"status":"ready", "checks":{"blender":true,"render_worker":true,"workspace":true,"openscad":true,"ffmpeg":true,"durable_recovery":true,"cad":"not_configured","slicer":"ready"},"work":{"queued":false,"running":false},"codes":[]});
+        validate_readiness(200, &body, true).unwrap();
+        body["checks"]["cad"] = json!("busy");
+        body["status"] = json!("busy");
+        body["codes"] = json!(["work_in_progress"]);
+        validate_readiness(200, &body, true).unwrap();
+        body["checks"]["cad"] = json!("unavailable");
+        body["checks"]["slicer"] = json!("incompatible");
+        body["status"] = json!("blocked");
+        body["codes"] = json!(["cad_unavailable", "slicer_incompatible"]);
+        validate_readiness(503, &body, false).unwrap();
+        assert!(validate_readiness(503, &body, true).is_err());
+        body["checks"]["cad"] = json!("private-worker:8001 failed");
+        assert!(
+            validate_readiness(503, &body, false)
+                .unwrap_err()
+                .contains("sanitized capability states")
+        );
     }
 
     #[tokio::test]

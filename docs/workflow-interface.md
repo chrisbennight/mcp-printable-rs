@@ -56,7 +56,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
-| `cad_build` | `model`, `import_step` |
+| `cad_build` | `model`, `import_step`, `status`, `cancel` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |
@@ -64,10 +64,10 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files`, `export_files`, `export_blender` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
-| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
+| `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit`, `usage`, `cleanup_preview`, `cleanup` |
 
 Mesh reports from `validate_mesh` and `scad_build` include a scoped
 `assessment`. See [mesh assessment](mesh-assessment.md) for checked criteria,
@@ -105,6 +105,9 @@ print workflows. Read `printable://printing/workflow-v1` before physical printin
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
+[Design revisions](project-revisions.md) retain typed requirements, parameter
+ranges, source snapshots, and parent identities; native CAD checks the declared
+requirements against its measurements.
 [Native slicing](slicing.md) converts project meshes or 3MF inputs into retained
 printer-ready packages and previews the actual generated toolpaths.
 

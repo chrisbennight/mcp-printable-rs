@@ -66,7 +66,10 @@ and archives continue to work with no local receipt link; a null record or absen
 historical reference is unverified. All retained evidence and upload copies must
 be preserved with the workspace; they are not disposable temporary files.
 
-Tests use fake CAD/slicer outputs and isolated fake printer services. They cover
+Unit tests use fake CAD/slicer outputs and isolated fake printer services. They cover
 changed upload paths, settings and source changes, retained images and bytes,
 cross-project references, accepted requests versus observed execution, and
-repeated status observations. They do not start physical printers.
+repeated status observations. Native container acceptance also creates a project
+revision, builds it with CAD, slices its identified output, and verifies the
+retained measurement, slice and review records through public MCP and downloads.
+These checks do not start physical printers.

@@ -6,7 +6,7 @@ use reqwest::{
     multipart::{Form, Part},
 };
 use serde::{Deserialize, Serialize};
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 use url::Url;
 
 pub use crate::job_types::{FileMetadata, LibraryFile, PrintArchive, QueueItem};
@@ -74,13 +74,11 @@ impl Client {
 
     pub async fn upload_print(
         &self,
-        path: &Path,
+        body: reqwest::Body,
+        size_bytes: u64,
         filename: String,
     ) -> Result<LibraryFile, ApiError> {
-        let part = Part::file(path)
-            .await
-            .map_err(|_| ApiError::InvalidConfiguration("print artifact"))?
-            .file_name(filename);
+        let part = Part::stream_with_length(body, size_bytes).file_name(filename);
         let response = self
             .http
             .post(self.resource(&["library", "files"])?)

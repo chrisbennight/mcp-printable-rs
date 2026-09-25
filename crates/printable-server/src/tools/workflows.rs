@@ -217,6 +217,9 @@ impl JobRequest {
 }
 
 workflow!(ArtifactRequest {
+    Usage(StorageQueryParams) => "printable_workspace_usage",
+    CleanupPreview(StorageQueryParams) => "printable_workspace_cleanup_preview",
+    Cleanup(StorageCleanupParams) => "printable_workspace_cleanup",
     Stat(StatParams) => "printable_workspace_stat",
     List(ListParams) => "printable_workspace_list",
     Read(ReadParams) => "printable_workspace_read",
@@ -354,7 +357,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
+        description: "Build project CAD from Python or STEP, retaining source, parameters and exports. Use background:true, then status or cancel with project_id/output_dir; disconnects do not cancel admitted work. Check completion and delivery qualification separately: inspection does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Does not change Blender or start printing.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },
@@ -396,13 +399,13 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create/discover projects, resolve shared paths, export selected files, or export_blender with explicitly selected inputs and a saved entrypoint. Native export packs supported dependencies in an isolated child and retains original sources, engine/units metadata and hashes in a new ZIP. Unsupported dependencies fail explicitly; scripts are not inspected. Neither export switches the live scene or prints.",
+        description: "Create/discover projects, resolve shared paths, retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },
     ToolDef {
         name: "artifact",
-        description: "Stat/list/read/write workspace files, publish immutable files through governed raw-byte transfer, ingest uploaded files using a file URI, check transfer_status using the private URI, or upload chunks using upload_id. Stat returns metadata without bytes and supports project-relative paths. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery. This tool does not run rendering jobs.",
+        description: "Stat/list/read/write workspace files, publish immutable files, ingest uploaded file URIs, inspect transfers, or upload chunks. Usage reports shared storage accounting; cleanup_preview and cleanup reclaim abandoned managed temporary directories while protecting live owners and retained artifacts. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery.",
         schema: workflow_schema_of::<ArtifactRequest>,
         annotations: write_annotations,
     },

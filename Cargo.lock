@@ -2223,6 +2223,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "crc32fast",
+ "futures-util",
  "getrandom 0.4.3",
  "image",
  "jsonschema",
@@ -2262,6 +2263,7 @@ dependencies = [
  "proptest",
  "rustix",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
