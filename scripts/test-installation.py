@@ -17,6 +17,7 @@ from cad_client_smoke import run as run_cad
 from scad_client_smoke import run as run_scad
 from slicer_client_smoke import run as run_slicer, verify_restored as verify_slicer
 from export_client_smoke import run as run_export
+from selective_client_smoke import run as run_discovery
 
 
 def main():
@@ -25,12 +26,20 @@ def main():
     parser.add_argument("blender_image")
     parser.add_argument("--cad-image", required=True)
     parser.add_argument("--slicer-image", required=True)
-    parser.add_argument("--evidence-dir", type=Path, help="new directory for the tutorial's verified artifacts")
+    parser.add_argument("--evidence-dir", type=Path, help="new directory for verified artifacts and discovery evidence")
     parser.add_argument("--recovery", action="store_true", help="also test backup restore, damaged metadata, and bounded storage exhaustion")
     args = parser.parse_args()
     if args.evidence_dir is not None:
         args.evidence_dir.mkdir(mode=0o700)
     root = Path(__file__).resolve().parent.parent
+    runtime = {}
+    for role, image in (("server", args.server_image), ("blender", args.blender_image),
+                        ("cad", args.cad_image), ("slicer", args.slicer_image)):
+        identity = subprocess.run([
+            "docker", "image", "inspect", "--format",
+            '{"image_id":{{json .Id}},"source_revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}}}', image,
+        ], check=True, capture_output=True, text=True).stdout.strip()
+        runtime[role] = json.loads(identity)
     environment = dict(os.environ, PRINTABLE_SERVER_IMAGE=args.server_image,
                        PRINTABLE_BLENDER_IMAGE=args.blender_image,
                        PRINTABLE_CAD_IMAGE=args.cad_image,
@@ -70,6 +79,8 @@ def main():
         try:
             subprocess.run(compose + ["up", "-d", "--wait", "--wait-timeout", "600"], check=True)
             with Client(endpoint(), credential) as client:
+                evidence_root = args.evidence_dir if args.evidence_dir is not None else directory
+                run_discovery(client, evidence_root / "discovery", runtime)
                 run_scad(client)
                 run(client, directory / "bracket")
                 run_cad(client, directory / "cad")

@@ -983,6 +983,15 @@ async fn scad_compile_snapshots_imports_and_returns_validated_stl() {
     assert_eq!(result["artifact"]["path"], json!("models/compiled.stl"));
     assert_eq!(result["validation"]["printable"], json!(true));
     assert_eq!(
+        result["validation"]["assessment"]["status"],
+        json!("incomplete")
+    );
+    let schema = printable_server::tools::output::schema("scad_build");
+    jsonschema::validator_for(&Value::Object(schema.as_ref().clone()))
+        .unwrap()
+        .validate(&result)
+        .unwrap();
+    assert_eq!(
         result["validation"]["solid_properties"]["volume_mm3"],
         json!(1000.0)
     );
@@ -2274,6 +2283,32 @@ async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     assert_eq!(report["report"]["topology"]["manifold"], json!(true));
     assert_eq!(report["report"]["solid_geometry"], json!(true));
     assert_eq!(report["report"]["printable"], json!(true));
+    let assessment = &report["report"]["assessment"];
+    assert_eq!(assessment["status"], "incomplete");
+    assert_eq!(assessment["criteria"]["solid_topology"]["status"], "passed");
+    assert_eq!(
+        assessment["criteria"]["wall_thickness"]["status"],
+        "unmeasured"
+    );
+    assert_eq!(
+        assessment["criteria"]["physical_performance"]["status"],
+        "physical_test_required"
+    );
+    let selected = printable_server::tools::workflows::resolve(
+        "validate_mesh",
+        json!({"path":"models/cube.stl"}),
+    )
+    .unwrap();
+    let compact = selected.response.apply(report.clone());
+    assert_eq!(compact["report"]["assessment"], *assessment);
+    let contract =
+        printable_server::resources::contracts::read("printable://contracts/validate_mesh")
+            .unwrap();
+    let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+    validator.validate(&compact).unwrap();
+    let mut misleading = compact.clone();
+    misleading["report"]["assessment"]["status"] = json!("passed");
+    assert!(!validator.is_valid(&misleading));
     assert_eq!(
         report["report"]["solid_properties"]["volume_mm3"],
         json!(1000.0)
@@ -2320,6 +2355,10 @@ async fn mesh_validation_reports_open_geometry_and_rejects_invalid_stl() {
     .await
     .expect("open mesh report");
     assert_eq!(report["report"]["printable"], json!(false));
+    assert_eq!(
+        report["report"]["assessment"]["criteria"]["solid_topology"]["status"],
+        "failed"
+    );
     assert_eq!(report["report"]["topology"]["boundary_edges"], json!(3));
     assert_eq!(report["report"]["issues"][0]["code"], json!("open_mesh"));
     assert!(

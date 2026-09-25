@@ -2,6 +2,7 @@ import base64
 import hashlib
 import importlib.util
 import io
+import json
 from email.message import Message
 from pathlib import Path
 import tempfile
@@ -19,6 +20,55 @@ class Response(io.BytesIO):
 
 
 class DownloadTests(unittest.TestCase):
+    def test_selected_contracts_do_not_request_the_full_catalog(self):
+        instance = object.__new__(client.Client)
+        calls = []
+        def rpc(method, params):
+            calls.append((method, params))
+            return {"contents": [{"uri": params["uri"], "text": json.dumps({"tool": "view", "action": "section"})}]}
+        instance.rpc = rpc
+        self.assertEqual(instance.contracts("view", "section"), {"tool": "view", "action": "section"})
+        self.assertEqual(calls, [("resources/read", {"uri": "printable://contracts/view/section"})])
+        for tool, action in [(None, "section"), ("../view", None), ("view", "section/other"), ("", None)]:
+            with self.subTest(tool=tool, action=action), self.assertRaises(ValueError):
+                instance.contracts(tool, action)
+        self.assertEqual(len(calls), 1, "invalid names must not reach the server")
+        instance.rpc = lambda *args: {"contents": [{"uri": "printable://contracts/other", "text": "{}"}]}
+        with self.assertRaises(ValueError):
+            instance.contracts("view", "section")
+
+    def test_full_discovery_keeps_pages_and_rejects_a_repeated_cursor(self):
+        instance = object.__new__(client.Client)
+        calls = []
+        def rpc(method, params):
+            calls.append((method, params))
+            if not params:
+                return {"tools": [{"name": "view"}], "nextCursor": "next"}
+            return {"tools": [{"name": "render"}]}
+        instance.rpc = rpc
+        self.assertEqual(instance.tools(), {"tools": [{"name": "view"}, {"name": "render"}]})
+        self.assertEqual(calls, [("tools/list", {}), ("tools/list", {"cursor": "next"})])
+        instance.rpc = lambda *args: {"tools": [], "nextCursor": "same"}
+        with self.assertRaisesRegex(ValueError, "repeated"):
+            instance.tools()
+
+    def test_results_prefer_structured_content_and_support_json_text(self):
+        instance = object.__new__(client.Client)
+        for response in [
+            {"structuredContent": {"ok": True}, "content": [{"type": "text", "text": "different"}]},
+            {"content": [{"type": "text", "text": '{"ok":true}'}]},
+        ]:
+            instance.rpc = lambda *args: response
+            self.assertEqual(instance.call("status", {}), {"ok": True})
+        calls = []
+        def rejected(*args):
+            calls.append(args)
+            return {"isError": True, "structuredContent": {"ok": True}}
+        instance.rpc = rejected
+        with self.assertRaises(ValueError):
+            instance.call("edit", {})
+        self.assertEqual(len(calls), 1, "rejected mutations must not be replayed")
+
     def test_sse_empty_events_and_notifications_before_response(self):
         instance = object.__new__(client.Client)
         instance.url = "http://127.0.0.1/mcp"

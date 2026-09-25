@@ -378,7 +378,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "validate_mesh",
-        description: "Validate an immutable STL snapshot for solid topology, bounds, mass properties, bed contact, and overhangs. Does not repair geometry or certify arbitrary global wall thickness.",
+        description: "Validate an immutable STL snapshot for solid topology, bounds, mass properties, bed contact, and overhangs. Read assessment for failed and unmeasured manufacturing criteria; printable is only a legacy alias for solid_geometry. Does not repair geometry or establish physical suitability.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },

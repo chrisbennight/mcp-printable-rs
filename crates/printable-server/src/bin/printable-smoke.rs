@@ -439,7 +439,7 @@ async fn run(
         json!({"path": "smoke.stl", "density_g_cm3": 1.24}),
     )
     .await?;
-    if validation["report"]["printable"] != json!(true)
+    if validation["report"]["solid_geometry"] != json!(true)
         || validation["report"]["topology"]["watertight"] != json!(true)
         || validation["report"]["solid_properties"]["volume_mm3"] != json!(1000.0)
         || validation["report"]["solid_properties"]["mass_g"] != json!(1.24)
@@ -595,7 +595,7 @@ difference() {
     )
     .await?;
     if strict_bores["artifact"]["path"] != json!("smoke-strict-horizontal-bores.stl")
-        || strict_bores["validation"]["printable"] != json!(true)
+        || strict_bores["validation"]["solid_geometry"] != json!(true)
         || strict_bores["validation"]["overhang"]["threshold_degrees"] != json!(5.0)
         || strict_bores["validation"]["overhang"]["requires_support"] != json!(false)
     {
@@ -644,7 +644,7 @@ difference() {
     )
     .await?;
     if thick_wall_shell["artifact"]["path"] != json!("smoke-thick-wall-shell.stl")
-        || thick_wall_shell["validation"]["printable"] != json!(true)
+        || thick_wall_shell["validation"]["solid_geometry"] != json!(true)
         || thick_wall_shell["validation"]["topology"]["watertight"] != json!(true)
         || thick_wall_shell["validation"]["topology"]["manifold"] != json!(true)
         || thick_wall_shell["validation"]["topology"]["consistently_oriented"] != json!(true)
@@ -673,7 +673,7 @@ difference() {
     )
     .await?;
     if pronounced_edge_shell["artifact"]["path"] != json!("smoke-pronounced-edge-shell.stl")
-        || pronounced_edge_shell["validation"]["printable"] != json!(true)
+        || pronounced_edge_shell["validation"]["solid_geometry"] != json!(true)
         || pronounced_edge_shell["validation"]["topology"]["watertight"] != json!(true)
         || pronounced_edge_shell["validation"]["topology"]["manifold"] != json!(true)
         || pronounced_edge_shell["validation"]["topology"]["consistently_oriented"] != json!(true)
@@ -866,7 +866,7 @@ fn validate_compiled_product(
     overhang_degrees: f64,
 ) -> Result<(), String> {
     if compiled["artifact"]["path"] != json!(expected_path)
-        || compiled["validation"]["printable"] != json!(true)
+        || compiled["validation"]["solid_geometry"] != json!(true)
         || compiled["validation"]["topology"]["watertight"] != json!(true)
         || compiled["validation"]["topology"]["manifold"] != json!(true)
         || compiled["validation"]["topology"]["consistently_oriented"] != json!(true)
