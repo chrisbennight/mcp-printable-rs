@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import math
+import time
 import uuid
 
 
@@ -24,7 +25,17 @@ def run(client, output):
         ("import_step", {"source": "builds/model/model.step", "output_dir": "builds/import"}),
     ]
     for action, parameters in requests:
-        result = call("cad_build", action, {"project_id": project_id, **parameters})
+        state = call("cad_build", action, {"project_id": project_id, **parameters, "background": True})
+        handle = state["build"]
+        deadline = time.monotonic() + 180
+        while state["status"] in ("admitted", "running"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("CAD smoke wait ended; retained build may still be running")
+            time.sleep(0.2)
+            state = call("cad_build", "status", handle)
+        if state["status"] != "completed":
+            raise ValueError("CAD background build did not complete")
+        result = state["result"]
         report = result["report"]
         if (report["units"] != "mm" or not report["valid"] or report["solid_count"] != 1
                 or len(report["bounds_mm"]["size"]) != 3

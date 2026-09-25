@@ -10,7 +10,6 @@ use axum::{
 use printable_server::cad::{CadRequest, CadWorker};
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
-use tokio::sync::Semaphore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,16 +44,15 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("PRINTABLE_WORKSPACE_ROOT")
             .context("PRINTABLE_WORKSPACE_ROOT is required")?,
     );
-    let worker = Arc::new(CadWorker {
-        workspace: Arc::new(Workspace::open(Some(&root), None)?),
-        python: std::env::var_os("PRINTABLE_CAD_PYTHON")
+    let worker = Arc::new(CadWorker::new(
+        Arc::new(Workspace::open(Some(&root), None)?),
+        std::env::var_os("PRINTABLE_CAD_PYTHON")
             .map(PathBuf::from)
             .unwrap_or_else(|| "/opt/cad/bin/python".into()),
-        script: std::env::var_os("PRINTABLE_CAD_SCRIPT")
+        std::env::var_os("PRINTABLE_CAD_SCRIPT")
             .map(PathBuf::from)
             .unwrap_or_else(|| "/opt/printable/cad/build.py".into()),
-        admission: Semaphore::new(1),
-    });
+    ));
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/build", post(build))

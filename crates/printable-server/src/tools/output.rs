@@ -176,16 +176,26 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "elapsed_ms",
             ],
         ),
-        "cad_build" => object(
-            json!({
-                "build_directory": {"type": "string"},
-                "report": {"type": "object"},
-                "artifacts": {"type": "array", "items": object(json!({
-                    "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
-                }), &["artifact", "sha256"])}
-            }),
-            &["build_directory", "report", "artifacts"],
-        ),
+        "cad_build" => {
+            let completed = object(
+                json!({
+                    "build_directory": {"type": "string"},
+                    "report": {"type": "object"},
+                    "artifacts": {"type": "array", "items": object(json!({
+                        "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                    }), &["artifact", "sha256"])}
+                }),
+                &["build_directory", "report", "artifacts"],
+            );
+            json!({"type":"object","anyOf":[completed, object(json!({
+                "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
+                "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
+                "phase":{"enum":["input_snapshot","native_execution","terminal"]},
+                "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
+                "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":completed
+            }), &["build","status","phase"])]})
+        }
         "scad_build" => object(
             json!({
                 "artifact": artifact(), "diagnostics": {"type": "object"},
