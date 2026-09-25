@@ -136,5 +136,8 @@ def build(request, directory):
 
 
 if __name__ == "__main__":
-    job = Path(sys.argv[1]).resolve()
-    build(json.loads((job / "request.json").read_text()), job)
+    if sys.argv[1:] == ["--version"]:
+        print(cq.__version__)
+    else:
+        job = Path(sys.argv[1]).resolve()
+        build(json.loads((job / "request.json").read_text()), job)

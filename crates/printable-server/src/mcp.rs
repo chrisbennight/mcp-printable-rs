@@ -354,7 +354,19 @@ impl PrintableServer {
         );
         let jobs = self.jobs.health();
         let openscad = self.scad.ready();
-        let (blender_probe, jobs, openscad) = tokio::join!(blender_probe, jobs, openscad);
+        let (blender_probe, jobs, openscad, cad, slicer) = tokio::join!(
+            blender_probe,
+            jobs,
+            openscad,
+            crate::worker_health::probe(
+                self.settings.cad_endpoint.as_deref(),
+                crate::worker_health::NativeEngine::CadQuery
+            ),
+            crate::worker_health::probe(
+                self.settings.slicer_endpoint.as_deref(),
+                crate::worker_health::NativeEngine::OrcaSlicer
+            ),
+        );
         let (blender, blender_busy) = match blender_probe {
             Ok(Some(_)) => (true, false),
             Ok(None) => (true, true),
@@ -366,6 +378,7 @@ impl PrintableServer {
             self.workspace.ready(),
             openscad,
             &jobs,
+            [cad.state, slicer.state],
         )
     }
 }
@@ -376,6 +389,7 @@ fn aggregate_readiness(
     workspace: bool,
     openscad: bool,
     jobs: &Value,
+    native: [crate::worker_health::CapabilityState; 2],
 ) -> ReadinessResponse {
     let ffmpeg = jobs["encoder"]["available"].as_bool().unwrap_or(false);
     let durable_recovery = jobs["recovery_integrity"]["status"].as_str() == Some("ok");
@@ -390,6 +404,8 @@ fn aggregate_readiness(
             openscad,
             ffmpeg,
             durable_recovery,
+            cad: native[0],
+            slicer: native[1],
         },
         ReadinessWork {
             queued,
@@ -623,6 +639,7 @@ mod tests {
                 "encoder": {"available": true},
                 "worker": {"available": true}
             }),
+            [crate::worker_health::CapabilityState::NotConfigured; 2],
         );
 
         assert_eq!(busy.status, "busy");
@@ -646,6 +663,7 @@ mod tests {
                 "encoder": {"available": true},
                 "worker": {"available": true}
             }),
+            [crate::worker_health::CapabilityState::NotConfigured; 2],
         );
 
         assert_eq!(blocked.status, "blocked");

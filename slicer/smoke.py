@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     def start():
         process = subprocess.Popen(["/usr/local/bin/printable-slicer-worker"], env=env)
-        for _ in range(100):
+        for _ in range(200):
             if process.poll() is not None:
                 raise RuntimeError("slicer worker exited during startup")
             try:
@@ -97,6 +97,11 @@ with tempfile.TemporaryDirectory() as directory:
 
     worker = start()
     try:
+        with urllib.request.urlopen("http://127.0.0.1:8003/readyz", timeout=5) as response:
+            readiness = json.load(response)
+        assert readiness["state"] == "ready"
+        assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.4.2"
+        assert all(count > 0 for count in readiness["profile_counts"].values())
         handles = []
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),

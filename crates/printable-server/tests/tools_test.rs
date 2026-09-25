@@ -2190,6 +2190,66 @@ async fn status_reports_the_configured_openscad_runner_and_capacity() {
 }
 
 #[tokio::test]
+async fn status_reports_busy_blender_without_waiting_or_sending_another_command() {
+    use printable_blender::Params;
+    use tokio::sync::Notify;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let fake = FakeAddon::spawn({
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        move |_, _| ResponseSpec::SuccessWhenReleased {
+            result: json!({}),
+            addon_version: Some(printable_blender::BRIDGE_PROTOCOL_VERSION.to_owned()),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }
+    })
+    .await;
+    let blender = Arc::new(client(&fake.host(), fake.port()));
+    let active = tokio::spawn({
+        let blender = Arc::clone(&blender);
+        async move {
+            blender
+                .send_value("long_render", Params::new(), blender.default_deadline())
+                .await
+        }
+    });
+    started.notified().await;
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        dispatch(
+            &workspace(None),
+            &uploads(),
+            &blender,
+            &settings(&fake.host(), fake.port()),
+            "printable_status",
+            json!({}),
+        ),
+    )
+    .await
+    .expect("status must not wait for the render")
+    .unwrap();
+    assert_eq!(status["blender"]["state"], "busy");
+    assert_eq!(status["blender"]["available"], true);
+    assert_eq!(status["cad"]["state"], "not_configured");
+    assert_eq!(status["slicer"]["state"], "not_configured");
+    assert_eq!(fake.commands(), ["long_render"]);
+    release.notify_one();
+    active.await.unwrap().unwrap();
+    let schema = Value::Object(
+        printable_server::tools::output::schema("status")
+            .as_ref()
+            .clone(),
+    );
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&status)
+    );
+}
+
+#[tokio::test]
 async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));

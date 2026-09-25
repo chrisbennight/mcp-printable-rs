@@ -99,7 +99,7 @@ def worker_smoke(root):
     endpoint = "http://127.0.0.1:8002"
     process = subprocess.Popen(["/usr/local/bin/printable-cad-worker"], env=environment)
     try:
-        for _ in range(50):
+        for _ in range(200):
             if process.poll() is not None:
                 raise RuntimeError("CAD worker exited during startup")
             try:
@@ -109,6 +109,10 @@ def worker_smoke(root):
                 time.sleep(0.1)
         else:
             raise RuntimeError("CAD worker did not become healthy")
+        with urllib.request.urlopen(endpoint + "/readyz", timeout=5) as response:
+            readiness = json.load(response)
+        assert readiness["state"] == "ready"
+        assert readiness["engine"] == "CadQuery" and readiness["version"] == cq.__version__
         data = json.dumps({"action": "model", "params": {"project_id": "smoke", "source": "part.py", "parameters": {"width": 42}, "output_dir": "builds/one"}}).encode()
         subprocess.run(["/usr/local/bin/printable-cad-worker", "--healthcheck"], env=environment, check=True, timeout=5)
         request = urllib.request.Request(endpoint + "/build", data=data, headers={"Content-Type": "application/json"})
