@@ -673,7 +673,9 @@ impl Workspace {
         }
 
         let tempdir = self.scratch(before.st_size as u64, "snapshot")?;
-        let dst = tempdir.path().join(&name);
+        let payload = tempdir.path().join("payload");
+        std::fs::create_dir(&payload)?;
+        let dst = payload.join(&name);
         let mut out = std::fs::File::create(&dst)?;
         let copied = std::io::copy(
             &mut Read::by_ref(&mut file).take((before.st_size as u64).saturating_add(1)),
