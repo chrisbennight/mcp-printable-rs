@@ -72,10 +72,12 @@ struct QueueResult {
 struct ProjectSource {
     project_id: String,
     source: String,
+    delivery: Option<crate::provenance::RecordRef>,
 }
 #[derive(Serialize, JsonSchema)]
 struct PrintStatus {
     print: QueueResult,
+    delivery_evidence: Option<super::delivery::Evidence>,
     setup: Option<super::print_jobs::StageParams>,
     compatibility: Option<Compatibility>,
     starts_printing: Option<bool>,
@@ -100,6 +102,9 @@ pub(super) enum CompatibilityStatus {
 #[derive(Serialize, JsonSchema)]
 struct LibraryStatus {
     library_file: LibraryFile,
+    provenance: Option<crate::provenance::RecordRef>,
+    local_sha256: Option<String>,
+    backend_digest_verification: Option<String>,
     project_id: Option<String>,
     source: Option<String>,
     starts_printing: Option<bool>,

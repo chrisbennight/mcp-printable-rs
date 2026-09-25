@@ -35,6 +35,11 @@ Import accepts a snapshotted project-relative printer-ready `.gcode.3mf`. Review
 compares the selected source, plate, target, materials and hardware observations.
 Stage requests manual start; the explicit start/control actions are separate.
 Neither review nor acknowledgement certifies physical safety or completion.
+Optional import evidence links the exact local upload to its slice and toolpath
+review. Retained submission and queue observations distinguish accepted requests
+from observed execution, while backend digest verification remains unverified.
+See [design and print evidence](delivery-evidence.md) for reference fields,
+historical records, and recovery after an unknown outcome.
 The workflow resource explains plate readiness, calibration, AMS mapping and
 replacement-print handling. Slicing itself is a separate capability; use a
 compatible slicer to prepare and visually review the printer-ready file.
