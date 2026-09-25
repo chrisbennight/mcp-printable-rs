@@ -25,7 +25,8 @@ def run(client, output):
         ("import_step", {"source": "builds/model/model.step", "output_dir": "builds/import"}),
     ]
     for action, parameters in requests:
-        state = call("cad_build", action, {"project_id": project_id, **parameters, "background": True})
+        state = call("cad_build", action, {"project_id": project_id, **parameters, "background": True,
+            "qualification": {"policy": "printable_part", "dimensions_mm": [42, 20, 30], "solid_count": 1}})
         handle = state["build"]
         deadline = time.monotonic() + 180
         while state["status"] in ("admitted", "running"):
@@ -36,6 +37,8 @@ def run(client, output):
         if state["status"] != "completed":
             raise ValueError("CAD background build did not complete")
         result = state["result"]
+        if result["completion"] != "completed" or result["qualification"]["status"] != "passed":
+            raise ValueError("CAD export completed without meeting its declared delivery requirements")
         report = result["report"]
         if (report["units"] != "mm" or not report["valid"] or report["solid_count"] != 1
                 or len(report["bounds_mm"]["size"]) != 3

@@ -1,5 +1,7 @@
 //! Project CAD builds delegated to a dedicated native worker.
 
+pub mod qualification;
+
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use printable_workspace::Workspace;
@@ -42,6 +44,8 @@ pub struct BuildParams {
     /// Return retained admission state immediately, then poll status by output_dir.
     #[serde(default)]
     pub background: bool,
+    #[serde(default)]
+    pub qualification: qualification::Requirements,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -59,6 +63,8 @@ pub struct ImportParams {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub background: bool,
+    #[serde(default)]
+    pub qualification: qualification::Requirements,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -108,6 +114,7 @@ impl CadRequest {
                     angular_tolerance_rad: params.angular_tolerance_rad,
                     timeout_seconds: params.timeout_seconds,
                     background: params.background,
+                    qualification: params.qualification.clone(),
                 }),
             ),
             Self::Status(_) | Self::Cancel(_) => {
@@ -123,6 +130,7 @@ impl CadRequest {
             return build_directory(workspace, handle);
         }
         let (action, p) = self.parts()?;
+        p.qualification.validate()?;
         let extension = Path::new(&p.source)
             .extension()
             .and_then(|v| v.to_str())
@@ -481,7 +489,7 @@ impl CadWorker {
                 )?;
             }
             match result {
-                Ok(()) => self.commit(staging.path(), output),
+                Ok(()) => self.commit(staging.path(), output, &params.qualification),
                 Err(error) => Err(error),
             }
         }
@@ -541,7 +549,12 @@ impl CadWorker {
         }
     }
 
-    fn commit(&self, staging: &Path, output: &str) -> Result<Value, ToolError> {
+    fn commit(
+        &self,
+        staging: &Path,
+        output: &str,
+        requirements: &qualification::Requirements,
+    ) -> Result<Value, ToolError> {
         let report_file = open_native_file(&staging.join("output/report.json"))?;
         let mut report_bytes = Vec::new();
         std::io::Read::read_to_end(
@@ -563,7 +576,8 @@ impl CadWorker {
             )?;
             artifacts.push(json!({"artifact":meta,"sha256":hash_file(&path)?}));
         }
-        let result = json!({"report":report,"artifacts":artifacts,"build_directory":output});
+        let qualification = qualification::assess(&report, requirements);
+        let result = json!({"completion":"completed","qualification":qualification,"report":report,"artifacts":artifacts,"build_directory":output});
         self.workspace.write_artifact(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
@@ -867,6 +881,9 @@ mod tests {
             ("output_dir", json!("../other")),
             ("linear_tolerance_mm", json!(-1)),
             ("timeout_seconds", json!(0)),
+            ("qualification", json!({"dimensions_mm":[0,20,30]})),
+            ("qualification", json!({"dimension_tolerance_mm":-0.1})),
+            ("qualification", json!({"solid_count":0})),
         ] {
             let mut input = serde_json::to_value(request()).unwrap();
             input["params"][field] = value;
@@ -877,11 +894,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_status_remains_readable_without_invented_qualification() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = workspace(directory.path());
+        let report = json!({"build_directory":"projects/cad/builds/one","report":{"valid":true},"artifacts":[]});
+        workspace
+            .write_artifact(
+                "projects/cad/builds/one/report.json",
+                &serde_json::to_vec(&report).unwrap(),
+                false,
+            )
+            .unwrap();
+        let worker = CadWorker::new(workspace, "/bin/false".into(), "unused".into());
+        let state = worker.status(handle(), false).await.unwrap();
+        assert_eq!(state["history"], "legacy_report");
+        assert_eq!(state["result"], report);
+        let contract =
+            crate::resources::contracts::read("printable://contracts/cad_build/status").unwrap();
+        let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+        validator.validate(&state).unwrap();
+        let mut malformed = state;
+        malformed["result"]["qualification"] = json!({"status":"invented"});
+        assert!(!validator.is_valid(&malformed));
+    }
+
+    #[tokio::test]
     async fn retains_sources_and_publishes_terminal_report_without_overwriting_a_build() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = workspace(directory.path());
         let fake = directory.path().join("fake-cad");
-        std::fs::write(&fake, b"#!/usr/bin/python3\nimport pathlib,sys,json\np=pathlib.Path(sys.argv[-1])/'output'\np.mkdir()\nfor name in ['model.step','model.stl','model.glb','components.json']:\n (p/name).write_text('fake artifact')\n(p/'report.json').write_text(json.dumps({'valid':True}))\n").unwrap();
+        std::fs::write(&fake, b"#!/usr/bin/python3\nimport pathlib,sys,json\np=pathlib.Path(sys.argv[-1])/'output'\np.mkdir()\nfor name in ['model.step','model.stl','model.glb','components.json']:\n (p/name).write_text('fake artifact')\n(p/'report.json').write_text(json.dumps({'valid':True,'units':'mm','solid_count':1,'solid_volumes_mm3':[6000],'bounds_mm':{'size':[10,20,30]}}))\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
         let worker = Arc::new(CadWorker::new(
             Arc::clone(&workspace),
@@ -889,6 +931,14 @@ mod tests {
             "unused".into(),
         ));
         let output = worker.build(request()).await.unwrap();
+        assert_eq!(output["completion"], "completed");
+        assert_eq!(output["qualification"]["status"], "passed");
+        let contract =
+            crate::resources::contracts::read("printable://contracts/cad_build/model").unwrap();
+        jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .validate(&output)
+            .unwrap();
         assert_eq!(output["artifacts"].as_array().unwrap().len(), 4);
         let (_, retained) = workspace
             .read_artifact("projects/cad/builds/one/inputs/source.py")
@@ -903,5 +953,26 @@ mod tests {
             .read_artifact("projects/cad/builds/one/report.json")
             .unwrap();
         assert_eq!(report, unchanged);
+
+        let mut rejected = serde_json::to_value(request()).unwrap();
+        rejected["params"]["output_dir"] = json!("builds/rejected");
+        rejected["params"]["qualification"] =
+            json!({"policy":"printable_part","dimensions_mm":[42,20,30]});
+        let failed = worker
+            .build(serde_json::from_value(rejected).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(failed["completion"], "completed");
+        assert_eq!(failed["qualification"]["status"], "failed");
+        assert_eq!(
+            failed["qualification"]["criteria"]["dimensions"]["status"],
+            "failed"
+        );
+        assert_eq!(failed["artifacts"].as_array().unwrap().len(), 4);
+        assert!(
+            workspace
+                .read_artifact("projects/cad/builds/rejected/inputs/source.py")
+                .is_ok()
+        );
     }
 }
