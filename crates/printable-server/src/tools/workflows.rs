@@ -396,7 +396,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create/discover projects, resolve shared paths, export selected files, or export_blender with explicitly selected inputs and a saved entrypoint. Native export packs supported dependencies in an isolated child and retains original sources, engine/units metadata and hashes in a new ZIP. Unsupported dependencies fail explicitly; scripts are not inspected. Neither export switches the live scene or prints.",
+        description: "Create/discover projects, resolve shared paths, retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

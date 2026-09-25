@@ -179,6 +179,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "cad_build" => object(
             json!({
                 "build_directory": {"type": "string"},
+                "revision": object(json!({"id":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["id","sha256"]),
+                "measurement": object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "requirements": object(json!({"scope":{"const":"declared_requirements"},"status":{"enum":["passed","failed","incomplete"]},"criteria":{"type":"object","additionalProperties":object(json!({"status":{"enum":["passed","failed","unmeasured","physical_test_required"]},"evidence":{"type":"string"}}),&["status"])}}), &["scope","status","criteria"]),
                 "report": {"type": "object"},
                 "artifacts": {"type": "array", "items": object(json!({
                     "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}

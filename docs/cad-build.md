@@ -5,6 +5,11 @@ changing Blender's live scene. Create a project with `project`, then write or
 ingest its source and input artifacts. Paths in build requests are relative to
 that project's root.
 
+Optionally capture a [design revision](project-revisions.md) and pass its
+identity as `revision`. The build then uses verified retained source bytes and
+the revision's parameter values, returning requirement checks and a retained
+measurement identity alongside its normal artifacts.
+
 ```json
 {
   "action": "model",

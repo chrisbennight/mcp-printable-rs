@@ -14,7 +14,7 @@ import urllib.request
 
 import cadquery as cq
 
-from build import build, original_names
+from build import build, original_names, vertical_holes
 from step import import_step
 
 
@@ -24,6 +24,21 @@ def close(actual, expected):
 
 
 def main():
+    hole_grid = [(-12, -8), (-12, 8), (12, -8), (12, 8)]
+    for width in [40, 60]:
+        part = cq.Workplane("XY").box(width, 30, 5).faces(">Z").workplane().pushPoints(hole_grid).hole(4).val()
+        measured = vertical_holes(part)
+        assert measured["status"] == "measured", measured
+        actual = sorted((tuple(h["center_mm"]) for h in measured["holes"]), key=lambda p: tuple(round(v, 6) for v in p))
+        assert len(actual) == len(hole_grid), measured
+        for point, expected in zip(actual, sorted(hole_grid)):
+            close(point, expected)
+        assert all(math.isclose(h["radius_mm"], 2, abs_tol=1e-5) for h in measured["holes"])
+    boss = cq.Workplane("XY").circle(2).extrude(5).val()
+    assert vertical_holes(boss) == {"status": "measured", "holes": []}
+    tilted = part.rotate((0, 0, 0), (1, 0, 0), 45)
+    assert vertical_holes(tilted) == {"status": "measured", "holes": []}
+    assert vertical_holes(cq.Face.makePlane(10, 20))["status"] == "unmeasured"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "model.py").write_text('result = cq.Workplane().box(parameters["width"], 20, 30)\n')
