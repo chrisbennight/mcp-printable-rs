@@ -292,12 +292,17 @@ impl SliceWorker {
         let permit = Arc::clone(&self.admission)
             .try_acquire_owned()
             .map_err(|_| slice_error("slicer is busy; inspect the active slice before retrying"))?;
-        let staging = tempfile::tempdir()?;
+        let staging = Arc::new(
+            self.workspace
+                .scratch(3 * MAX_BYTES + MAX_LOG as u64, "slice")?,
+        );
         let source_name = format!("source.{extension}");
         let local_source = staging.path().join(&source_name);
         let workspace = Arc::clone(&self.workspace);
         let copy_to = local_source.clone();
+        let staging_owner = Arc::clone(&staging);
         let source_hash = tokio::task::spawn_blocking(move || {
+            let _staging_owner = staging_owner;
             let snapshot = workspace.snapshot_artifact_bounded(&source_path, MAX_BYTES)?;
             std::fs::copy(snapshot.path(), &copy_to)?;
             hash_file(&copy_to)

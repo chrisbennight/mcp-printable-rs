@@ -458,6 +458,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         render_worker_host: None,
         render_worker_port: 9876,
         workspace_root: None,
+        workspace_budget_bytes: None,
         blender_workspace_root: None,
         openscad_bin: None,
         cad_endpoint: None,
@@ -1446,6 +1447,61 @@ async fn scad_rejects_invalid_requests_before_starting_the_process() {
             "tool={name} started OpenSCAD before validation"
         );
     }
+}
+
+#[tokio::test]
+async fn storage_actions_report_usage_and_preserve_live_and_retained_inputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    ws.configure_storage_budget(Some(100_000)).unwrap();
+    ws.write_artifact("checkpoint.blend", b"retained", false)
+        .unwrap();
+    let live = ws.scratch(100, "transfer").unwrap();
+    let up = uploads();
+    let blender = client("127.0.0.1", 9);
+    let cfg = settings("127.0.0.1", 9);
+    let mut id = String::new();
+    for action in ["usage", "cleanup_preview", "cleanup"] {
+        let params = if action == "cleanup" {
+            json!({"ids":[id.clone()]})
+        } else {
+            json!({})
+        };
+        let call = printable_server::tools::workflows::resolve(
+            "artifact",
+            json!({"action":action,"params":params}),
+        )
+        .unwrap();
+        let result = dispatch(&ws, &up, &blender, &cfg, call.name, call.arguments)
+            .await
+            .unwrap();
+        let contract = printable_server::resources::contracts::read(&format!(
+            "printable://contracts/artifact/{action}"
+        ))
+        .unwrap();
+        jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .validate(&result)
+            .unwrap();
+        if action == "usage" {
+            assert!(result["reserved_remaining_bytes"].as_u64().unwrap() > 0);
+            assert_eq!(result["complete"], true);
+        } else {
+            assert_eq!(result["cleanup"][0]["state"], "protected");
+            id = result["cleanup"][0]["id"].as_str().unwrap().to_owned();
+        }
+    }
+    drop(live);
+    let call = printable_server::tools::workflows::resolve(
+        "artifact",
+        json!({"action":"cleanup","params":{"ids":[id]}}),
+    )
+    .unwrap();
+    let result = dispatch(&ws, &up, &blender, &cfg, call.name, call.arguments)
+        .await
+        .unwrap();
+    assert_eq!(result["cleanup"][0]["state"], "deleted");
+    assert_eq!(ws.read_artifact("checkpoint.blend").unwrap().1, b"retained");
 }
 
 #[tokio::test]

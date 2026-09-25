@@ -3095,7 +3095,10 @@ async fn encode_video(
         .workspace
         .resolve(&format!("{JOB_ROOT}/{}/frames", record.job_id), true)
         .map_err(workspace_failure)?;
-    let output_dir = tempfile::tempdir().map_err(io_failure)?;
+    let output_dir = inner
+        .workspace
+        .scratch(record.spec.max_video_bytes, "video_encoding")
+        .map_err(workspace_failure)?;
     let staged_video = output_dir.path().join("video.mp4");
     let input_pattern = frames_dir.join("frame-%06d.png");
     let mut command = Command::new(&inner.ffmpeg_bin);

@@ -62,6 +62,7 @@ pub struct Settings {
     pub render_worker_host: Option<String>,
     pub render_worker_port: u16,
     pub workspace_root: Option<PathBuf>,
+    pub workspace_budget_bytes: Option<u64>,
     pub blender_workspace_root: Option<PathBuf>,
     /// OpenSCAD binary override for compile, render, and cross-section tools.
     pub openscad_bin: Option<PathBuf>,
@@ -99,6 +100,10 @@ pub struct Settings {
 /// payload.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SettingsError {
+    #[error("PRINTABLE_WORKSPACE_BUDGET_MIB must be a positive MiB count within u64 bytes")]
+    WorkspaceBudgetInvalid,
+    #[error("PRINTABLE_WORKSPACE_BUDGET_MIB requires PRINTABLE_WORKSPACE_ROOT")]
+    WorkspaceBudgetRequiresWorkspace,
     #[error("printer integration setting {0} is missing or invalid")]
     Printers(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
@@ -165,6 +170,10 @@ impl Settings {
     /// is testable without the process-global environment.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, SettingsError> {
         let workspace_root = nonempty(&get, "PRINTABLE_WORKSPACE_ROOT");
+        let workspace_budget_bytes = workspace_budget_bytes(&get)?;
+        if workspace_budget_bytes.is_some() && workspace_root.is_none() {
+            return Err(SettingsError::WorkspaceBudgetRequiresWorkspace);
+        }
         let blender_workspace_root = nonempty(&get, "PRINTABLE_BLENDER_WORKSPACE_ROOT");
         // The Blender-side root only makes sense relative to the app-side root.
         if blender_workspace_root.is_some() && workspace_root.is_none() {
@@ -178,6 +187,7 @@ impl Settings {
             render_worker_host: nonempty(&get, "PRINTABLE_RENDER_WORKER_HOST"),
             render_worker_port: port(&get, "PRINTABLE_RENDER_WORKER_PORT", DEFAULT_BLENDER_PORT)?,
             workspace_root: workspace_root.map(PathBuf::from),
+            workspace_budget_bytes,
             blender_workspace_root: blender_workspace_root.map(PathBuf::from),
             openscad_bin: nonempty(&get, "OPENSCAD_BIN").map(PathBuf::from),
             cad_endpoint: nonempty(&get, "PRINTABLE_CAD_ENDPOINT"),
@@ -352,6 +362,21 @@ fn file_upload_max_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<u64, S
     value.ok_or(SettingsError::FileUploadLimitInvalid)
 }
 
+fn workspace_budget_bytes(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<u64>, SettingsError> {
+    nonempty(get, "PRINTABLE_WORKSPACE_BUDGET_MIB")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .and_then(|value| value.checked_mul(1024 * 1024))
+                .ok_or(SettingsError::WorkspaceBudgetInvalid)
+        })
+        .transpose()
+}
+
 fn geometry_worker_memory_bytes(
     get: &impl Fn(&str) -> Option<String>,
 ) -> Result<u64, SettingsError> {
@@ -396,6 +421,38 @@ fn allowed_hosts(raw: Option<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn storage_budget_requires_a_workspace_and_checked_positive_bytes() {
+        assert_eq!(
+            Settings::from_lookup(lookup(&[]))
+                .unwrap()
+                .workspace_budget_bytes,
+            None
+        );
+        assert!(matches!(
+            Settings::from_lookup(lookup(&[("PRINTABLE_WORKSPACE_BUDGET_MIB", "8")])),
+            Err(SettingsError::WorkspaceBudgetRequiresWorkspace)
+        ));
+        for value in ["0", "-1", "18446744073709551615", "invalid"] {
+            assert!(matches!(
+                Settings::from_lookup(lookup(&[
+                    ("PRINTABLE_WORKSPACE_ROOT", "/tmp"),
+                    ("PRINTABLE_WORKSPACE_BUDGET_MIB", value)
+                ])),
+                Err(SettingsError::WorkspaceBudgetInvalid)
+            ));
+        }
+        assert_eq!(
+            Settings::from_lookup(lookup(&[
+                ("PRINTABLE_WORKSPACE_ROOT", "/tmp"),
+                ("PRINTABLE_WORKSPACE_BUDGET_MIB", "8")
+            ]))
+            .unwrap()
+            .workspace_budget_bytes,
+            Some(8 * 1024 * 1024)
+        );
+    }
 
     /// A `Settings::from_lookup` env source backed by a fixed map — no process
     /// environment, so the table runs parallel-safe.

@@ -186,7 +186,9 @@ impl CadWorker {
         })?;
         let workspace = Arc::clone(&self.workspace);
         let (action, params) = request.parts();
-        let staging = tempfile::tempdir()?;
+        let staging = self
+            .workspace
+            .scratch(5 * MAX_FILE_BYTES + MAX_LOG_BYTES, "cad")?;
         let input_root = staging.path().join("inputs");
         std::fs::create_dir(&input_root)?;
         let mut names = params.inputs.clone();

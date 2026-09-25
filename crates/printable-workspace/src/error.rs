@@ -37,6 +37,14 @@ pub enum WsError {
     ChangedWhileReading,
     #[error("limit must be between 1 and {MAX_LIST_LIMIT}")]
     InvalidLimit,
+    #[error("workspace storage budget exceeded; inspect artifact usage and cleanup preview")]
+    StorageBudgetExceeded,
+    #[error(
+        "workspace storage accounting is incomplete; resolve inaccessible or oversized directory trees before admission"
+    )]
+    StorageAccountingIncomplete,
+    #[error("invalid managed scratch identifier")]
+    InvalidScratchId,
     #[error("workspace I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -60,6 +68,9 @@ impl WsError {
             WsError::SnapshotTooLarge(_) => "read_too_large",
             WsError::ChangedWhileReading => "changed_while_reading",
             WsError::InvalidLimit => "invalid_limit",
+            WsError::StorageBudgetExceeded => "storage_budget_exceeded",
+            WsError::StorageAccountingIncomplete => "storage_accounting_incomplete",
+            WsError::InvalidScratchId => "invalid_scratch_id",
             WsError::Io(_) => "io",
         }
     }

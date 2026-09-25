@@ -2262,6 +2262,7 @@ dependencies = [
  "proptest",
  "rustix",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

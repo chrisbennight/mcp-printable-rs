@@ -72,6 +72,11 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
         )
         .context("open confined workspace")?,
     );
+    if workspace.confined() {
+        workspace
+            .configure_storage_budget(settings.workspace_budget_bytes)
+            .context("configure shared workspace storage budget")?;
+    }
     let blender = Arc::new(BlenderClient::new(
         settings.blender_host.clone(),
         settings.blender_port,

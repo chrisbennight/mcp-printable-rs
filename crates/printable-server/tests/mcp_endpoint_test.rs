@@ -54,6 +54,7 @@ fn test_settings(blender_port: u16) -> Settings {
         render_worker_host: None,
         render_worker_port: 9876,
         workspace_root: None,
+        workspace_budget_bytes: None,
         blender_workspace_root: None,
         openscad_bin: Some(std::path::PathBuf::from("/bin/false")),
         cad_endpoint: None,
