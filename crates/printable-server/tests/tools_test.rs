@@ -983,6 +983,15 @@ async fn scad_compile_snapshots_imports_and_returns_validated_stl() {
     assert_eq!(result["artifact"]["path"], json!("models/compiled.stl"));
     assert_eq!(result["validation"]["printable"], json!(true));
     assert_eq!(
+        result["validation"]["assessment"]["status"],
+        json!("incomplete")
+    );
+    let schema = printable_server::tools::output::schema("scad_build");
+    jsonschema::validator_for(&Value::Object(schema.as_ref().clone()))
+        .unwrap()
+        .validate(&result)
+        .unwrap();
+    assert_eq!(
         result["validation"]["solid_properties"]["volume_mm3"],
         json!(1000.0)
     );
@@ -2190,6 +2199,66 @@ async fn status_reports_the_configured_openscad_runner_and_capacity() {
 }
 
 #[tokio::test]
+async fn status_reports_busy_blender_without_waiting_or_sending_another_command() {
+    use printable_blender::Params;
+    use tokio::sync::Notify;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let fake = FakeAddon::spawn({
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        move |_, _| ResponseSpec::SuccessWhenReleased {
+            result: json!({}),
+            addon_version: Some(printable_blender::BRIDGE_PROTOCOL_VERSION.to_owned()),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }
+    })
+    .await;
+    let blender = Arc::new(client(&fake.host(), fake.port()));
+    let active = tokio::spawn({
+        let blender = Arc::clone(&blender);
+        async move {
+            blender
+                .send_value("long_render", Params::new(), blender.default_deadline())
+                .await
+        }
+    });
+    started.notified().await;
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        dispatch(
+            &workspace(None),
+            &uploads(),
+            &blender,
+            &settings(&fake.host(), fake.port()),
+            "printable_status",
+            json!({}),
+        ),
+    )
+    .await
+    .expect("status must not wait for the render")
+    .unwrap();
+    assert_eq!(status["blender"]["state"], "busy");
+    assert_eq!(status["blender"]["available"], true);
+    assert_eq!(status["cad"]["state"], "not_configured");
+    assert_eq!(status["slicer"]["state"], "not_configured");
+    assert_eq!(fake.commands(), ["long_render"]);
+    release.notify_one();
+    active.await.unwrap().unwrap();
+    let schema = Value::Object(
+        printable_server::tools::output::schema("status")
+            .as_ref()
+            .clone(),
+    );
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&status)
+    );
+}
+
+#[tokio::test]
 async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));
@@ -2214,6 +2283,32 @@ async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     assert_eq!(report["report"]["topology"]["manifold"], json!(true));
     assert_eq!(report["report"]["solid_geometry"], json!(true));
     assert_eq!(report["report"]["printable"], json!(true));
+    let assessment = &report["report"]["assessment"];
+    assert_eq!(assessment["status"], "incomplete");
+    assert_eq!(assessment["criteria"]["solid_topology"]["status"], "passed");
+    assert_eq!(
+        assessment["criteria"]["wall_thickness"]["status"],
+        "unmeasured"
+    );
+    assert_eq!(
+        assessment["criteria"]["physical_performance"]["status"],
+        "physical_test_required"
+    );
+    let selected = printable_server::tools::workflows::resolve(
+        "validate_mesh",
+        json!({"path":"models/cube.stl"}),
+    )
+    .unwrap();
+    let compact = selected.response.apply(report.clone());
+    assert_eq!(compact["report"]["assessment"], *assessment);
+    let contract =
+        printable_server::resources::contracts::read("printable://contracts/validate_mesh")
+            .unwrap();
+    let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+    validator.validate(&compact).unwrap();
+    let mut misleading = compact.clone();
+    misleading["report"]["assessment"]["status"] = json!("passed");
+    assert!(!validator.is_valid(&misleading));
     assert_eq!(
         report["report"]["solid_properties"]["volume_mm3"],
         json!(1000.0)
@@ -2260,6 +2355,10 @@ async fn mesh_validation_reports_open_geometry_and_rejects_invalid_stl() {
     .await
     .expect("open mesh report");
     assert_eq!(report["report"]["printable"], json!(false));
+    assert_eq!(
+        report["report"]["assessment"]["criteria"]["solid_topology"]["status"],
+        "failed"
+    );
     assert_eq!(report["report"]["topology"]["boundary_edges"], json!(3));
     assert_eq!(report["report"]["issues"][0]["code"], json!("open_mesh"));
     assert!(

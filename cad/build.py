@@ -146,12 +146,14 @@ def build(request, directory):
     ):
         raise ValueError("GLB export failed")
     (output / "components.json").write_text(json.dumps({"nodes": names, "components": components}, allow_nan=False))
+    volumes = [solid.Volume() if solid.isValid() else None for solid in shape.Solids()]
     report = {
         "cadquery_version": cq.__version__,
         "source": source_metadata,
         "units": "mm",
         "bounds_mm": measured,
         "solid_count": len(shape.Solids()),
+        "solid_volumes_mm3": [value if value is not None and math.isfinite(value) else None for value in volumes],
         "component_count": len(components),
         "valid": shape.isValid(),
         "vertical_holes": vertical_holes(shape),
@@ -173,5 +175,8 @@ def build(request, directory):
 
 
 if __name__ == "__main__":
-    job = Path(sys.argv[1]).resolve()
-    build(json.loads((job / "request.json").read_text()), job)
+    if sys.argv[1:] == ["--version"]:
+        print(cq.__version__)
+    else:
+        job = Path(sys.argv[1]).resolve()
+        build(json.loads((job / "request.json").read_text()), job)

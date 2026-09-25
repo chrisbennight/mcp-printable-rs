@@ -5,7 +5,9 @@ use crate::{error::ToolError, upload::random_hex_id};
 use printable_workspace::{Workspace, WsError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -59,6 +61,14 @@ pub struct Revision {
     pub source: String,
     pub files: BTreeMap<String, Source>,
     pub manifest: Manifest,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Response {
+    pub identity: Identity,
+    pub revision: Revision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurements_directory: Option<String>,
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -154,9 +164,16 @@ pub fn read(workspace: &Workspace, params: GetParams) -> Result<Value, ToolError
         invalid("project has no design revision; existing project files remain available")
     })?;
     let revision = get(workspace, &params.project_id, &identity)?;
-    Ok(
-        json!({"measurements_directory":format!("{}/{}/measurements", directory(&params.project_id), identity.id),"identity":identity,"revision":revision}),
-    )
+    let measurements_directory = Some(format!(
+        "{}/{}/measurements",
+        directory(&params.project_id),
+        identity.id
+    ));
+    Ok(serde_json::to_value(Response {
+        identity,
+        revision,
+        measurements_directory,
+    })?)
 }
 
 pub fn revise(workspace: &Workspace, params: ReviseParams) -> Result<Value, ToolError> {
@@ -250,7 +267,11 @@ pub fn revise(workspace: &Workspace, params: ReviseParams) -> Result<Value, Tool
         &serde_json::to_vec(&identity)?,
         true,
     )?;
-    Ok(json!({"identity":identity,"revision":revision}))
+    Ok(serde_json::to_value(Response {
+        identity,
+        revision,
+        measurements_directory: None,
+    })?)
 }
 
 pub fn hash_file(path: &std::path::Path) -> Result<String, ToolError> {
@@ -370,6 +391,35 @@ mod tests {
             *p.pointer_mut(pointer).unwrap() = value;
             assert!(revise(&workspace, serde_json::from_value(p).unwrap()).is_err());
             assert_eq!(head(&workspace, "housing").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn successful_revision_operations_match_full_and_selected_response_contracts() {
+        let (_root, workspace, params) = setup();
+        let revised = revise(&workspace, serde_json::from_value(params).unwrap()).unwrap();
+        let reopened = read(
+            &workspace,
+            GetParams {
+                project_id: "housing".into(),
+                revision: None,
+            },
+        )
+        .unwrap();
+        let full = serde_json::to_value(crate::tools::output::schema("project")).unwrap();
+        let full = jsonschema::validator_for(&full).unwrap();
+        for (action, value) in [("revise", revised), ("revision", reopened)] {
+            full.validate(&value).unwrap();
+            let contract = crate::resources::contracts::read(&format!(
+                "printable://contracts/project/{action}"
+            ))
+            .unwrap();
+            let selected = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+            selected.validate(&value).unwrap();
+            let mut invalid = value;
+            invalid["revision"]["manifest"]["parameters"]["width"]["unit"] = json!("unknown_unit");
+            assert!(!full.is_valid(&invalid));
+            assert!(!selected.is_valid(&invalid));
         }
     }
 }

@@ -116,7 +116,10 @@ of rereading the whole scene after every edit.
 
 Save an editable `.blend` with `scene` with `action: "checkpoint"`. Export intended mesh
 objects with `scene` with `action: "export"`, then validate the exported artifact with
-`validate_mesh`. Appearance, modifier settings, and base mesh counts
+`validate_mesh`. Read `report.assessment` for checked, failed, and unmeasured
+criteria. `solid_geometry` establishes the solid result; the legacy `printable`
+field means the same thing and does not establish manufacturing qualification.
+Appearance, modifier settings, and base mesh counts
 do not certify the evaluated/exported solid. Assembly clearance requires its
 separate analysis workflow. Render smoothing must not substitute for actual
 modeled edge breaks.
