@@ -354,7 +354,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
+        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Check completion and delivery qualification separately; inspection policy does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },

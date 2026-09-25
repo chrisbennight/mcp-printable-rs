@@ -13,7 +13,14 @@ that project's root.
     "source": "housing.py",
     "output_dir": "builds/revision-1",
     "parameters": {"width": 80},
-    "inputs": ["vendor/board.step"]
+    "inputs": ["vendor/board.step"],
+    "qualification": {
+      "policy": "printable_part",
+      "units": "mm",
+      "dimensions_mm": [80, 40, 20],
+      "dimension_tolerance_mm": 0.05,
+      "solid_count": 1
+    }
   }
 }
 ```
@@ -38,6 +45,46 @@ inspect it before choosing a new directory. Native diagnostics are retained in
 `build-log.json` when the process completes. The build response contains compact
 measurements and artifact references; the full component inventory stays in a
 file. Retrieve or publish outputs with the existing `artifact` workflow.
+
+## Completion and delivery qualification
+
+A response with `completion: "completed"` means the native exports and retained
+report were published. Check `qualification` separately before accepting the
+deliverable. Its scope is `cad_delivery`, with `status` equal to `passed`,
+`failed`, or `incomplete`. A failed or incomplete qualification still returns
+the exported artifacts, source snapshots, hashes, and diagnostics for inspection.
+An execution or publication error remains a tool error with retained failure
+evidence when available.
+
+`qualification.policy` defaults to `inspection` for compatibility with general
+modeling and imperfect imports. It requires the requested delivery units and
+any explicitly supplied dimension or solid-count requirements. Geometry
+validity and solid-volume diagnostics remain visible but do not prevent an
+inspection result from passing its policy. A surface can therefore pass an
+inspection policy without being accepted as a printable solid.
+
+Select `printable_part` to additionally require valid geometry, positive-volume
+solids, and target dimensions. Missing measurements or omitted target dimensions
+produce `incomplete`, never an assumed pass. Multiple solids are allowed; supply
+`solid_count` when their exact count matters. Dimensions are the assembly's
+axis-aligned X/Y/Z bounds in millimetres. Tolerance is an absolute nonnegative
+distance applied to each axis. Current exports use `mm`; requesting delivery
+in `inch` produces a units failure without silently rescaling the model.
+STEP source units are independently converted to millimetres by the importer.
+
+Each criterion identifies its status, whether the selected policy requires it,
+its report-relative evidence pointer when measured, and a next action when
+needed. `passed` establishes only the required checks of that policy. Physical
+performance remains `physical_test_required`; wall suitability, fit, strength,
+material, supports, and print-process qualification require separate evidence.
+The optional source `parameters` dictionary does not by itself establish any
+dimensional invariant.
+
+Existing requests without `qualification` retain inspection/export behavior.
+Existing reports without the new fields carry no delivery-policy evidence;
+rebuild from their retained source when that evidence is required. Recommended
+clients check completion and qualification separately, then inspect all
+remaining physical and manufacturing requirements before fabrication.
 
 Linear meshing tolerance defaults to 0.05 mm and angular tolerance to 0.1 radians.
 STL uses absolute linear tolerance. Builds accept a deadline up to 1800 seconds,

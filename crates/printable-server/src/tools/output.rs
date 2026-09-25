@@ -241,16 +241,38 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "elapsed_ms",
             ],
         ),
-        "cad_build" => object(
-            json!({
-                "build_directory": {"type": "string"},
-                "report": {"type": "object"},
-                "artifacts": {"type": "array", "items": object(json!({
-                    "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
-                }), &["artifact", "sha256"])}
-            }),
-            &["build_directory", "report", "artifacts"],
-        ),
+        "cad_build" => {
+            let mut qualification = serde_json::to_value(schemars::schema_for!(
+                crate::cad::qualification::Qualification
+            ))
+            .expect("CAD qualification schema serializes");
+            let definitions = qualification
+                .as_object_mut()
+                .expect("schema object")
+                .remove("$defs");
+            let mut result = object(
+                json!({
+                    "completion": {"const":"completed"},
+                    "qualification": qualification,
+                    "build_directory": {"type": "string"},
+                    "report": {"type": "object"},
+                    "artifacts": {"type": "array", "items": object(json!({
+                        "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                    }), &["artifact", "sha256"])}
+                }),
+                &[
+                    "completion",
+                    "qualification",
+                    "build_directory",
+                    "report",
+                    "artifacts",
+                ],
+            );
+            if let Some(definitions) = definitions {
+                result["$defs"] = definitions;
+            }
+            result
+        }
         "scad_build" => object(
             json!({
                 "artifact": artifact(), "diagnostics": {"type": "object"},
