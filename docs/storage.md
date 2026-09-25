@@ -24,6 +24,11 @@ inputs), CAD and slicer staging, OpenSCAD staging, chunked and native uploads,
 and video encoding. Upload copying retains ownership even when its awaiting
 request disappears.
 
+Native CAD, slicer, OpenSCAD, and video-encoding processes inherit their staging
+leases. If a Rust worker exits while its native child survives, that child keeps
+the reservation and cleanup protection until it exits. Native programs must not
+close inherited lease descriptors while they still use managed storage.
+
 Reservations are conservative: snapshots use their observed source size;
 uploads use their declared size or transfer limit; native staging uses fixed
 estimates. CAD reserves five GiB plus its log allowance, and slicing reserves

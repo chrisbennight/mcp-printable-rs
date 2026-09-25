@@ -401,7 +401,7 @@ impl SliceWorker {
         tokio::spawn(async move {
             let _permit = permit;
             let result = worker
-                .execute(staging.path(), &local_source, &params, &cancel)
+                .execute(&staging, &local_source, &params, &cancel)
                 .await;
             let mut active = worker.active.lock().await;
             let mut terminal = active
@@ -445,12 +445,13 @@ impl SliceWorker {
 
     async fn execute(
         self: &Arc<Self>,
-        staging: &Path,
+        staging_owner: &printable_workspace::ManagedScratch,
         source: &Path,
         params: &PrepareParams,
         cancel: &CancellationToken,
     ) -> Result<Value, ToolError> {
         use std::os::unix::process::CommandExt;
+        let staging = staging_owner.path();
         let output = staging.join("output");
         let progress_path = staging.join("progress.fifo");
         if !Command::new("/usr/bin/mkfifo")
@@ -511,6 +512,7 @@ impl SliceWorker {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         command.as_std_mut().process_group(0);
+        staging_owner.retain_for_command(command.as_std_mut())?;
         let mut child = command.spawn()?;
         let group = ProcessGroup(child.id().expect("spawned child"));
         let stdout = child.stdout.take().expect("piped stdout");

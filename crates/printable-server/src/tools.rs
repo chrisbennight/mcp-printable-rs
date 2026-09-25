@@ -5113,6 +5113,10 @@ async fn prepare_scad_job(
             output_path,
             cross_section,
         });
+        let mut permit = permit.inherit_lease(job._staging.clone_lease()?);
+        for snapshot in &job._snapshots {
+            permit = permit.inherit_lease(snapshot.clone_lease()?);
+        }
         Ok::<_, ToolError>((permit.retain(Arc::clone(&job)), job))
     })
     .await

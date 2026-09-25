@@ -515,9 +515,7 @@ impl CadWorker {
                 state["native_started_at_unix_ms"] = json!(now_ms());
                 self.persist_state(output, state, true)?;
             }
-            let result = self
-                .execute(staging.path(), params.timeout_seconds, cancel)
-                .await;
+            let result = self.execute(&staging, params.timeout_seconds, cancel).await;
             let log = staging.path().join("build-log.json");
             if log.try_exists()? {
                 self.workspace.commit_generated_artifact_bounded(
@@ -551,10 +549,11 @@ impl CadWorker {
 
     async fn execute(
         &self,
-        directory: &Path,
+        staging: &printable_workspace::ManagedScratch,
         timeout: u64,
         cancel: &CancellationToken,
     ) -> Result<(), ToolError> {
+        let directory = staging.path();
         let mut command = Command::new(&self.python);
         command
             .arg("-I")
@@ -570,6 +569,7 @@ impl CadWorker {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         command.as_std_mut().process_group(0);
+        staging.retain_for_command(command.as_std_mut())?;
         let mut child = command.spawn()?;
         let _group = ProcessGroup(child.id().expect("spawned process"));
         let stdout = child.stdout.take().expect("piped stdout");

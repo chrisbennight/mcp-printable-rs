@@ -53,6 +53,26 @@ impl ManagedScratch {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Duplicate ownership above the standard streams, still close-on-exec.
+    pub fn clone_lease(&self) -> std::io::Result<OwnedFd> {
+        rustix::io::fcntl_dupfd_cloexec(self.lease.as_ref().expect("live scratch lease"), 3)
+            .map_err(Into::into)
+    }
+
+    /// Keep staging protected if a native child outlives its Rust worker.
+    pub fn retain_for_command(&self, command: &mut std::process::Command) -> std::io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        let lease = self.clone_lease()?;
+        // SAFETY: only the async-signal-safe fcntl syscall runs after fork.
+        // The descriptor stays close-on-exec in the parent and unrelated children.
+        unsafe {
+            command.pre_exec(move || {
+                rustix::io::fcntl_setfd(&lease, rustix::io::FdFlags::empty()).map_err(Into::into)
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Drop for ManagedScratch {
@@ -577,6 +597,39 @@ fn remove_contents(dir: &OwnedFd, depth: usize, scanned: &mut usize) -> Result<(
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn native_child_keeps_storage_protected_after_parent_ownership_is_released() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = ws.scratch(8192, "native_child").unwrap();
+        let id = scratch.id.clone();
+        let input = scratch.path().join("input.stl");
+        std::fs::write(&input, b"input").unwrap();
+        let mut command = std::process::Command::new("/bin/cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        scratch.retain_for_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        // Close every parent copy, as process exit would. The exec'd child is
+        // now the only owner and must keep both admission and cleanup protection.
+        drop(command);
+        drop(scratch);
+        let usage = ws.storage_usage();
+        let cleanup = ws.cleanup_scratch(std::slice::from_ref(&id));
+        let input_exists = input.exists();
+        let alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(alive);
+        assert!(usage.unwrap().reserved_remaining_bytes > 0);
+        assert_eq!(cleanup.unwrap()[0].state, "protected");
+        assert!(input_exists);
+        assert_eq!(ws.storage_usage().unwrap().reserved_remaining_bytes, 0);
+        assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
+        assert!(!input.exists());
+    }
 
     #[test]
     fn concurrent_reservations_share_one_budget_and_reconcile_lost_owners() {

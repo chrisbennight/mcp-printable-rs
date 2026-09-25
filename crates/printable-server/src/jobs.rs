@@ -3129,6 +3129,14 @@ async fn encode_video(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    output_dir
+        .retain_for_command(command.as_std_mut())
+        .map_err(|error| {
+            RunFailure::new(
+                "encoder_io",
+                format!("could not retain encoder storage: {error}"),
+            )
+        })?;
     let mut child = command.spawn().map_err(|error| {
         RunFailure::new(
             "encoder_unavailable",
