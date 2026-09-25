@@ -255,6 +255,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "completion": {"const":"completed"},
                     "qualification": qualification,
                     "build_directory": {"type": "string"},
+                "revision": object(json!({"id":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["id","sha256"]),
+                "measurement": object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "requirements": object(json!({"scope":{"const":"declared_requirements"},"status":{"enum":["passed","failed","incomplete"]},"criteria":{"type":"object","additionalProperties":object(json!({"status":{"enum":["passed","failed","unmeasured","physical_test_required"]},"evidence":{"type":"string"}}),&["status"])}}), &["scope","status","criteria"]),
                     "report": {"type": "object"},
                     "artifacts": {"type": "array", "items": object(json!({
                         "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
@@ -329,13 +332,18 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
             }), &["jobs", "next_offset"])
         ]}),
-        "project" => json!({"type":"object","anyOf":[
+        "project" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let revision = generator.subschema_for::<crate::projects::revisions::Response>();
+            json!({"type":"object","anyOf":[
+            revision,
             serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
             selected_bundle(), native_bundle()
-        ]}),
+        ],"$defs":generator.take_definitions(true)})
+        }
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
             object(json!({"state": {"enum": ["prepared", "receiving", "ready", "failed", "commit_uncertain", "committed"]}}), &["state"]),

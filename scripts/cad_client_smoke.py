@@ -63,6 +63,8 @@ def run(client, output):
     if call("inspect", "scene", {})["scene_state"] != before:
         raise ValueError("Independent CAD build changed the live Blender scene")
     print("CAD_CLIENT_OK: project build, STEP round trip, verified downloads, unchanged live scene")
+    from project_revision_smoke import run as verify_revisions
+    verify_revisions(client, project, output)
 
     saved = project["root"] + "/before-attachment.blend"
     call("scene", "checkpoint", {"path": saved, "expected_scene": before})

@@ -41,6 +41,8 @@ pub struct BuildParams {
     pub angular_tolerance_rad: f64,
     #[serde(default = "timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Build the exact retained source and parameters of this design revision.
+    pub revision: Option<projects::revisions::Identity>,
     /// Return retained admission state immediately, then poll status by output_dir.
     #[serde(default)]
     pub background: bool,
@@ -61,6 +63,7 @@ pub struct ImportParams {
     pub angular_tolerance_rad: f64,
     #[serde(default = "timeout_seconds")]
     pub timeout_seconds: u64,
+    pub revision: Option<projects::revisions::Identity>,
     #[serde(default)]
     pub background: bool,
     #[serde(default)]
@@ -113,6 +116,7 @@ impl CadRequest {
                     linear_tolerance_mm: params.linear_tolerance_mm,
                     angular_tolerance_rad: params.angular_tolerance_rad,
                     timeout_seconds: params.timeout_seconds,
+                    revision: params.revision.clone(),
                     background: params.background,
                     qualification: params.qualification.clone(),
                 }),
@@ -131,6 +135,26 @@ impl CadRequest {
         }
         let (action, p) = self.parts()?;
         p.qualification.validate()?;
+        if let Some(identity) = &p.revision {
+            let revision = projects::revisions::get(workspace, &p.project_id, identity)?;
+            let mut inputs = p.inputs.clone();
+            inputs.push(p.source.clone());
+            inputs.sort();
+            inputs.dedup();
+            let parameters_match = p.parameters.len() == revision.manifest.parameters.len()
+                && revision.manifest.parameters.iter().all(|(key, parameter)| {
+                    p.parameters.get(key).and_then(Value::as_f64) == Some(parameter.value)
+                });
+            if p.source != revision.source
+                || !parameters_match
+                || inputs != revision.files.keys().cloned().collect::<Vec<_>>()
+            {
+                return Err(ToolError::Validation(
+                    "CAD source, inputs, and parameters must match the selected immutable revision"
+                        .into(),
+                ));
+            }
+        }
         let extension = Path::new(&p.source)
             .extension()
             .and_then(|v| v.to_str())
@@ -423,19 +447,29 @@ impl CadWorker {
         names.sort();
         names.dedup();
         let id = params.project_id.clone();
+        let revision = params
+            .revision
+            .as_ref()
+            .map(|identity| projects::revisions::get(&workspace, &id, identity))
+            .transpose()?;
         let staging_inputs = input_root.clone();
         let sources = tokio::task::spawn_blocking(move || {
             let mut sources = Vec::new();
             let mut total = 0;
             for name in names {
                 let path = projects::resolve(&workspace, &id, &name)?;
-                let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_FILE_BYTES)?;
+                let retained = revision.as_ref().map(|r| &r.files[&name]);
+                let snapshot = workspace.snapshot_artifact_bounded(retained.map_or(path.as_str(), |s| s.snapshot.as_str()), MAX_FILE_BYTES)?;
                 total += snapshot.meta().size_bytes;
                 if total > MAX_FILE_BYTES { return Err(ToolError::Cad("CAD input set exceeds 1 GiB".into())); }
                 let destination = staging_inputs.join(&name);
                 std::fs::create_dir_all(destination.parent().expect("input parent"))?;
                 std::fs::copy(snapshot.path(), &destination)?;
-                sources.push(json!({"path":path,"snapshot":format!("inputs/{name}"),"sha256":hash_file(&destination)?}));
+                let sha256 = hash_file(&destination)?;
+                if retained.is_some_and(|s| s.sha256 != sha256 || s.size_bytes != snapshot.meta().size_bytes) {
+                    return Err(ToolError::Validation("retained revision source identity changed; restore verified source bytes before building".into()));
+                }
+                sources.push(json!({"path":path,"snapshot":format!("inputs/{name}"),"sha256":sha256}));
             }
             Ok::<_,ToolError>(sources)
         }).await.map_err(|_| ToolError::Cad("CAD input staging task failed".into()))??;
@@ -489,7 +523,13 @@ impl CadWorker {
                 )?;
             }
             match result {
-                Ok(()) => self.commit(staging.path(), output, &params.qualification),
+                Ok(()) => self.commit(
+                    staging.path(),
+                    output,
+                    &params.project_id,
+                    params.revision.as_ref(),
+                    &params.qualification,
+                ),
                 Err(error) => Err(error),
             }
         }
@@ -553,6 +593,8 @@ impl CadWorker {
         &self,
         staging: &Path,
         output: &str,
+        project: &str,
+        identity: Option<&projects::revisions::Identity>,
         requirements: &qualification::Requirements,
     ) -> Result<Value, ToolError> {
         let report_file = open_native_file(&staging.join("output/report.json"))?;
@@ -577,7 +619,22 @@ impl CadWorker {
             artifacts.push(json!({"artifact":meta,"sha256":hash_file(&path)?}));
         }
         let qualification = qualification::assess(&report, requirements);
-        let result = json!({"completion":"completed","qualification":qualification,"report":report,"artifacts":artifacts,"build_directory":output});
+        let mut result = json!({"completion":"completed","qualification":qualification,"report":report,"artifacts":artifacts,"build_directory":output});
+        if let Some(identity) = identity {
+            let revision = projects::revisions::get(&self.workspace, project, identity)?;
+            result["revision"] = json!(identity);
+            result["requirements"] = revision.manifest.assess(&report);
+            let retained = format!(
+                ".printable/revisions/{project}/{}/measurements/{}.json",
+                identity.id,
+                crate::upload::random_hex_id()?
+            );
+            let bytes = serde_json::to_vec(&result)?;
+            self.workspace
+                .write_reserved_artifact(&retained, &bytes, false)?;
+            result["measurement"] =
+                json!({"path":retained,"sha256":projects::revisions::digest(&bytes)});
+        }
         self.workspace.write_artifact(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
@@ -954,6 +1011,69 @@ mod tests {
             .unwrap();
         assert_eq!(report, unchanged);
 
+        let revision = projects::revisions::revise(&workspace, serde_json::from_value(json!({
+            "project_id":"cad","expected_parent":null,"source":"source.py",
+            "expected_source_sha256":projects::revisions::digest(b"original source"),
+            "manifest":{"format_version":1,"units":"mm","requirements":{"fit":{"kind":"physical_test","description":"Physical fit needs a prototype"}}}
+        })).unwrap()).unwrap();
+        workspace
+            .write_artifact("projects/cad/source.py", b"replacement source", true)
+            .unwrap();
+        let mut revised = serde_json::to_value(request()).unwrap();
+        revised["params"]["output_dir"] = json!("builds/revision");
+        revised["params"]["revision"] = revision["identity"].clone();
+        let revised = worker
+            .build(serde_json::from_value(revised).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(revised["revision"], revision["identity"]);
+        assert_eq!(
+            revised["requirements"]["criteria"]["fit"]["status"],
+            "physical_test_required"
+        );
+        assert_eq!(
+            workspace
+                .read_artifact("projects/cad/builds/revision/inputs/source.py")
+                .unwrap()
+                .1,
+            b"original source"
+        );
+        let measured = workspace
+            .read_artifact(revised["measurement"]["path"].as_str().unwrap())
+            .unwrap()
+            .1;
+        assert_eq!(
+            projects::revisions::digest(&measured),
+            revised["measurement"]["sha256"]
+        );
+        let measured: Value = serde_json::from_slice(&measured).unwrap();
+        assert_eq!(measured["completion"], "completed");
+        assert_eq!(measured["qualification"], revised["qualification"]);
+        assert_eq!(measured["requirements"], revised["requirements"]);
+        let state = worker
+            .status(
+                BuildHandle {
+                    project_id: "cad".into(),
+                    output_dir: "builds/revision".into(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["status"], "completed");
+        assert_eq!(state["result"], revised);
+        let status_contract =
+            crate::resources::contracts::read("printable://contracts/cad_build/status").unwrap();
+        jsonschema::validator_for(&status_contract["outputSchema"])
+            .unwrap()
+            .validate(&state)
+            .unwrap();
+        let schema =
+            crate::resources::contracts::read("printable://contracts/cad_build/model").unwrap();
+        jsonschema::validator_for(&schema["outputSchema"])
+            .unwrap()
+            .validate(&revised)
+            .unwrap();
         let mut rejected = serde_json::to_value(request()).unwrap();
         rejected["params"]["output_dir"] = json!("builds/rejected");
         rejected["params"]["qualification"] =
