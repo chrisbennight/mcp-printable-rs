@@ -354,7 +354,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Build general CadQuery models or import STEP assemblies in an explicit project. Retain source and parameters, export STEP/STL/GLB, and report dimensions and component placements. Check completion and delivery qualification separately; inspection policy does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Runs in the dedicated CAD worker without changing Blender's live scene.",
+        description: "Build project CAD from Python or STEP, retaining source, parameters and exports. Use background:true, then status or cancel with project_id/output_dir; disconnects do not cancel admitted work. Check completion and delivery qualification separately: inspection does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Does not change Blender or start printing.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },

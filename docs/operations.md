@@ -33,9 +33,12 @@ Use `job` actions `list` and `get` to inspect work before maintenance. Cancel
 unneeded jobs explicitly, then wait for their recorded terminal state. Running
 cancellation is cooperative at a frame boundary. A lost connection or timeout
 does not prove that a scene mutation failed; inspect state before retrying.
-CAD builds are synchronous requests, not render jobs in `job.list`. Retain their
-output directories and inspect `report.json` or `failure.json` after an
-interrupted request. Stop the CAD worker with the other services before backup.
+CAD builds have their own retained handles and are not render jobs in `job.list`.
+Use `cad_build.status` or `cad_build.cancel` with the original project and output
+directory. Disconnecting a waiting client does not cancel admitted work. Keep
+output directories, including `state.json`, `report.json`, and `failure.json`;
+after a worker restart, unfinished state is reported as interrupted. Stop the
+CAD worker with the other services before backup.
 
 ## Back up
 

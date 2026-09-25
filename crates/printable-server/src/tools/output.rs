@@ -250,7 +250,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 .as_object_mut()
                 .expect("schema object")
                 .remove("$defs");
-            let mut result = object(
+            let completed = object(
                 json!({
                     "completion": {"const":"completed"},
                     "qualification": qualification,
@@ -268,6 +268,18 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "artifacts",
                 ],
             );
+            let mut historical = completed.clone();
+            historical["required"] = json!(["build_directory", "report", "artifacts"]);
+            historical["not"] =
+                json!({"anyOf":[{"required":["completion"]},{"required":["qualification"]}]});
+            let mut result = json!({"type":"object","anyOf":[completed, object(json!({
+                "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
+                "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
+                "phase":{"enum":["input_snapshot","native_execution","terminal"]},
+                "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
+                "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical]}
+            }), &["build","status","phase"])]});
             if let Some(definitions) = definitions {
                 result["$defs"] = definitions;
             }
