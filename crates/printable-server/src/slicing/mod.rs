@@ -145,6 +145,38 @@ pub struct SliceWorker {
 }
 
 impl SliceWorker {
+    pub async fn probe_engine(&self) -> crate::worker_health::WorkerReadiness {
+        use crate::worker_health::{CapabilityState, NativeEngine, WorkerReadiness, probe_native};
+        let mut command = Command::new(&self.binary);
+        command.arg("--help");
+        let output = probe_native(command).await;
+        let compatible = output.as_ref().is_some_and(|text| {
+            text.split(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+                .any(|version| version == ENGINE_VERSION)
+                && text.contains("--slice")
+                && text.contains("--export-3mf")
+        });
+        let mut readiness = WorkerReadiness::new(
+            NativeEngine::OrcaSlicer,
+            compatible.then(|| ENGINE_VERSION.to_owned()),
+        );
+        if output.is_some() && !compatible {
+            readiness.state = CapabilityState::Incompatible;
+        }
+        readiness.profile_counts = Some(self.profiles.counts());
+        readiness
+    }
+
+    pub fn readiness(
+        &self,
+        startup: &crate::worker_health::WorkerReadiness,
+    ) -> crate::worker_health::WorkerReadiness {
+        startup.clone().runtime(
+            self.workspace.ready(),
+            self.admission.available_permits() == 0,
+        )
+    }
+
     pub fn new(workspace: Arc<Workspace>, profiles: Profiles, binary: PathBuf) -> Self {
         Self {
             workspace,

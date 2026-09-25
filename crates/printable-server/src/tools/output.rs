@@ -32,6 +32,30 @@ fn scene_state() -> Value {
     )
 }
 
+fn worker_readiness() -> Value {
+    object(
+        json!({
+            "protocol_version": {"const": 1},
+            "configured": {"type": "boolean"},
+            "state": {"enum": ["not_configured", "ready", "busy", "unavailable", "incompatible"]},
+            "engine": {"enum": ["CadQuery", "OrcaSlicer"]},
+            "version": {"type": ["string", "null"]},
+            "profile_counts": {"anyOf": [
+                {"type": "null"},
+                object(json!({"printer": {"type":"integer", "minimum": 0}, "process": {"type":"integer", "minimum": 0}, "filament": {"type":"integer", "minimum": 0}}), &["printer", "process", "filament"])
+            ]}
+        }),
+        &[
+            "protocol_version",
+            "configured",
+            "state",
+            "engine",
+            "version",
+            "profile_counts",
+        ],
+    )
+}
+
 fn mesh_report() -> Value {
     let criterion = object(
         json!({
@@ -162,11 +186,13 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "server_version": {"type": "string"}, "transport": {"const": "streamable-http"},
                 "blender": {"type": "object", "properties": {
                     "available": {"type": "boolean"},
+                    "state": {"enum": ["ready", "busy", "unavailable"]},
                     "scene_state": {"anyOf": [scene_state(), {"type": "null"}]},
                     "native_observation": {"type": "object"}
                 }, "required": ["available"]},
                 "openscad": {"type": "object"}, "workspace": {"type": "object"},
                 "render_jobs": {"type": "object"},
+                "cad": worker_readiness(), "slicer": worker_readiness(),
                 "printers": {"type": "object", "properties": {"configured": {"type": "boolean"}}, "required": ["configured"]}
             }),
             &[
@@ -176,6 +202,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "openscad",
                 "workspace",
                 "render_jobs",
+                "cad",
+                "slicer",
             ],
         ),
         "inspect" => object(

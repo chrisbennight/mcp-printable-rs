@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::cad::{CadRequest, CadWorker};
+use printable_server::worker_health::{NativeEngine, WorkerReadiness, probe_native};
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
@@ -32,9 +33,10 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         reqwest::Client::builder()
+            .no_proxy()
             .timeout(std::time::Duration::from_secs(3))
             .build()?
-            .get(format!("http://{probe}/healthz"))
+            .get(format!("http://{probe}/readyz"))
             .send()
             .await?
             .error_for_status()?;
@@ -55,8 +57,40 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| "/opt/printable/cad/build.py".into()),
         admission: Semaphore::new(1),
     });
+    let mut command = tokio::process::Command::new(&worker.python);
+    command
+        .arg("-I")
+        .arg("-B")
+        .arg(&worker.script)
+        .arg("--version");
+    let readiness = WorkerReadiness::new(
+        NativeEngine::CadQuery,
+        probe_native(command)
+            .await
+            .map(|version| version.trim().to_owned()),
+    );
+    let health_worker = Arc::clone(&worker);
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
+        .route(
+            "/readyz",
+            get(move || {
+                let worker = Arc::clone(&health_worker);
+                let readiness = readiness.clone();
+                async move {
+                    let readiness = readiness.runtime(
+                        worker.workspace.ready() && worker.script.is_file(),
+                        worker.admission.available_permits() == 0,
+                    );
+                    let status = if readiness.available() {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    };
+                    (status, Json(readiness))
+                }
+            }),
+        )
         .route("/build", post(build))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(worker);

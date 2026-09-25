@@ -1,3 +1,4 @@
+use crate::worker_health::CapabilityState;
 use serde::Serialize;
 
 /// The MCP server name. Shared by the `/healthz` `server` field and the MCP
@@ -31,6 +32,8 @@ pub(crate) struct ReadinessChecks {
     pub openscad: bool,
     pub ffmpeg: bool,
     pub durable_recovery: bool,
+    pub cad: CapabilityState,
+    pub slicer: CapabilityState,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -41,7 +44,7 @@ pub(crate) struct ReadinessWork {
 
 /// Sanitized dependency readiness for an unauthenticated operator probe.
 ///
-/// The response deliberately contains only stable status codes and booleans:
+/// The response deliberately contains only stable capability states and booleans:
 /// no backend address, binary path, workspace path, or diagnostic string may
 /// cross this boundary.
 #[derive(Debug, Clone, Serialize)]
@@ -73,10 +76,23 @@ impl ReadinessResponse {
         if !checks.durable_recovery {
             codes.push("durable_recovery_fenced");
         }
+        match checks.cad {
+            CapabilityState::Unavailable => codes.push("cad_unavailable"),
+            CapabilityState::Incompatible => codes.push("cad_incompatible"),
+            _ => {}
+        }
+        match checks.slicer {
+            CapabilityState::Unavailable => codes.push("slicer_unavailable"),
+            CapabilityState::Incompatible => codes.push("slicer_incompatible"),
+            _ => {}
+        }
 
         let status = if !codes.is_empty() {
             "blocked"
-        } else if work.queued || work.running {
+        } else if work.queued
+            || work.running
+            || [checks.cad, checks.slicer].contains(&CapabilityState::Busy)
+        {
             codes.push("work_in_progress");
             "busy"
         } else {
@@ -99,6 +115,7 @@ impl ReadinessResponse {
 #[cfg(test)]
 mod tests {
     use super::{ReadinessChecks, ReadinessResponse, ReadinessWork};
+    use crate::worker_health::CapabilityState;
 
     #[test]
     fn readiness_distinguishes_ready_busy_and_blocked_without_diagnostics() {
@@ -109,6 +126,8 @@ mod tests {
             openscad: true,
             ffmpeg: true,
             durable_recovery: true,
+            cad: CapabilityState::NotConfigured,
+            slicer: CapabilityState::NotConfigured,
         };
 
         let ready = ReadinessResponse::new(
@@ -121,6 +140,34 @@ mod tests {
         assert_eq!(ready.status, "ready");
         assert!(ready.codes.is_empty());
         assert!(ready.available());
+
+        let native_busy = ReadinessResponse::new(
+            ReadinessChecks {
+                cad: CapabilityState::Ready,
+                slicer: CapabilityState::Busy,
+                ..healthy
+            },
+            ReadinessWork {
+                queued: false,
+                running: false,
+            },
+        );
+        assert_eq!(native_busy.status, "busy");
+        assert!(native_busy.available());
+        let native_blocked = ReadinessResponse::new(
+            ReadinessChecks {
+                cad: CapabilityState::Unavailable,
+                slicer: CapabilityState::Ready,
+                ..healthy
+            },
+            ReadinessWork {
+                queued: false,
+                running: false,
+            },
+        );
+        assert_eq!(native_blocked.status, "blocked");
+        assert_eq!(native_blocked.codes, ["cad_unavailable"]);
+        assert_eq!(native_blocked.checks.slicer, CapabilityState::Ready);
 
         let busy = ReadinessResponse::new(
             healthy,
@@ -159,7 +206,9 @@ mod tests {
                     "workspace": true,
                     "openscad": true,
                     "ffmpeg": false,
-                    "durable_recovery": true
+                    "durable_recovery": true,
+                    "cad": "not_configured",
+                    "slicer": "not_configured"
                 },
                 "work": {
                     "queued": true,
