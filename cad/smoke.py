@@ -118,6 +118,27 @@ def worker_smoke(root):
         assert len(result["artifacts"]) == 4
         assert (project / "builds/one/inputs/part.py").read_bytes() == (project / "part.py").read_bytes()
         assert json.loads((project / "builds/one/report.json").read_text()) == result
+        (project / "surface.py").write_text('result = cq.Face.makePlane(10, 20)\n')
+        (project / "parts.py").write_text('result = cq.Assembly().add(cq.Workplane().box(10,20,30), name="first").add(cq.Workplane().box(10,20,30), name="second", loc=cq.Location((20,0,0)))\n')
+        for name, source, qualification, expected, criterion in [
+            ("qualified", "part.py", {"policy":"printable_part", "dimensions_mm":[42,20,30]}, "passed", None),
+            ("wrong-size", "part.py", {"policy":"printable_part", "dimensions_mm":[50,20,30]}, "failed", "dimensions"),
+            ("wrong-units", "part.py", {"policy":"printable_part", "units":"inch", "dimensions_mm":[42,20,30]}, "failed", "units"),
+            ("parts", "parts.py", {"policy":"printable_part", "dimensions_mm":[30,20,30], "solid_count":2}, "passed", None),
+            ("inspect-surface", "surface.py", {"policy":"inspection"}, "passed", None),
+            ("reject-surface", "surface.py", {"policy":"printable_part"}, "failed", "meaningful_solids"),
+        ]:
+            request = urllib.request.Request(endpoint + "/build", data=json.dumps({"action":"model", "params":{
+                "project_id":"smoke", "source":source, "parameters":{"width":42},
+                "output_dir":"builds/" + name, "qualification":qualification}}).encode(), headers={"Content-Type":"application/json"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                result = json.load(response)
+            assert result["completion"] == "completed" and result["qualification"]["status"] == expected
+            if criterion:
+                assert result["qualification"]["criteria"][criterion]["status"] == "failed"
+            assert len(result["artifacts"]) == 4
+            assert (project / "builds" / name / "inputs" / source).read_bytes() == (project / source).read_bytes()
+            assert json.loads((project / "builds" / name / "report.json").read_text()) == result
     finally:
         process.terminate()
         try:
