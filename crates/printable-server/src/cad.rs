@@ -186,9 +186,10 @@ impl CadWorker {
         })?;
         let workspace = Arc::clone(&self.workspace);
         let (action, params) = request.parts();
-        let staging = self
-            .workspace
-            .scratch(5 * MAX_FILE_BYTES + MAX_LOG_BYTES, "cad")?;
+        let staging = Arc::new(
+            self.workspace
+                .scratch(5 * MAX_FILE_BYTES + MAX_LOG_BYTES, "cad")?,
+        );
         let input_root = staging.path().join("inputs");
         std::fs::create_dir(&input_root)?;
         let mut names = params.inputs.clone();
@@ -197,7 +198,9 @@ impl CadWorker {
         names.dedup();
         let id = params.project_id.clone();
         let staging_inputs = input_root.clone();
+        let staging_owner = Arc::clone(&staging);
         let sources = tokio::task::spawn_blocking(move || {
+            let _staging_owner = staging_owner;
             let mut sources = Vec::new();
             let mut total = 0;
             for name in names {
@@ -445,6 +448,62 @@ mod tests {
             assert!(request.validate(&workspace).is_err());
         }
         assert!(!directory.path().join("projects/cad/builds").exists());
+    }
+
+    #[test]
+    fn cancelled_waiter_keeps_queued_input_copy_owned_until_it_finishes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = workspace(directory.path());
+            let worker = Arc::new(CadWorker {
+                workspace: Arc::clone(&workspace),
+                python: "/bin/false".into(),
+                script: "unused".into(),
+                admission: Semaphore::new(1),
+            });
+            let (release, waiting) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                waiting.recv().unwrap();
+            });
+            ready.await.unwrap();
+            let caller = tokio::spawn(async move { worker.build(request()).await });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while workspace.cleanup_preview().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            let protected = workspace.cleanup_preview().unwrap();
+            assert_eq!(protected.len(), 1);
+            assert_eq!(protected[0].state, "protected");
+            assert_eq!(
+                workspace
+                    .cleanup_scratch(&[protected[0].id.clone()])
+                    .unwrap()[0]
+                    .state,
+                "protected"
+            );
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !workspace.cleanup_preview().unwrap().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!directory.path().join("projects/cad/builds/one").exists());
+        });
     }
 
     #[tokio::test]

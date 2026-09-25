@@ -5046,7 +5046,7 @@ async fn prepare_scad_job(
     cross_section_z_mm: Option<f64>,
     materialize_cross_section: bool,
     product_v1: bool,
-) -> Result<(ScadPermit, PreparedScadJob), ToolError> {
+) -> Result<(ScadPermit, Arc<PreparedScadJob>), ToolError> {
     let permit = runner.acquire().await?;
     blocking(move || {
         let mut snapshots = Vec::new();
@@ -5106,16 +5106,14 @@ async fn prepare_scad_job(
                 })
             })
             .transpose()?;
-        Ok::<_, ToolError>((
-            permit,
-            PreparedScadJob {
-                _staging: staging,
-                _snapshots: snapshots,
-                source_path,
-                output_path,
-                cross_section,
-            },
-        ))
+        let job = Arc::new(PreparedScadJob {
+            _staging: staging,
+            _snapshots: snapshots,
+            source_path,
+            output_path,
+            cross_section,
+        });
+        Ok::<_, ToolError>((permit.retain(Arc::clone(&job)), job))
     })
     .await
 }

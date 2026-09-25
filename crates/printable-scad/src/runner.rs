@@ -122,6 +122,7 @@ impl ScadRunner {
         Ok(ScadPermit {
             binary,
             _permit: permit,
+            resources: Vec::new(),
         })
     }
 }
@@ -129,6 +130,7 @@ impl ScadRunner {
 pub struct ScadPermit {
     binary: PathBuf,
     _permit: OwnedSemaphorePermit,
+    resources: Vec<Box<dyn Send>>,
 }
 
 impl std::fmt::Debug for ScadPermit {
@@ -141,6 +143,13 @@ impl std::fmt::Debug for ScadPermit {
 }
 
 impl ScadPermit {
+    /// Keep inputs and staging alive with the detached process and its output
+    /// handling, even if the calling request stops awaiting the result.
+    pub fn retain<T: Send + 'static>(mut self, resource: T) -> Self {
+        self.resources.push(Box::new(resource));
+        self
+    }
+
     /// Run one argv-only command. The work budget covers process exit and
     /// complete output drainage, and `max_file_bytes` is inherited as the
     /// subprocess's per-file ceiling. The detached task retains the permit and
@@ -419,6 +428,50 @@ mod tests {
             .expect("run");
         assert_eq!(output.stdout, argument);
         assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn detached_process_retains_inputs_after_its_waiter_is_aborted() {
+        let (directory, script_path) = script(
+            "touch \"$1\"\nwhile [ ! -f \"$2\" ]; do sleep 0.01; done\ntest -f \"$3\" || exit 9\ntouch \"$4\"",
+        );
+        let inputs = tempfile::tempdir().unwrap();
+        let input_root = inputs.path().to_owned();
+        let input = input_root.join("model.stl");
+        std::fs::write(&input, b"input").unwrap();
+        let started = directory.path().join("started");
+        let release = directory.path().join("release");
+        let done = directory.path().join("done");
+        let runner = shell_runner();
+        let permit = runner.acquire().await.unwrap().retain(inputs);
+        let args = [&script_path, &started, &release, &input, &done]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let waiter = tokio::spawn(async move {
+            permit
+                .run(args, Duration::from_secs(3), TEST_OUTPUT_LIMIT)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(input.exists());
+        std::fs::write(&release, b"go").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while input_root.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(done.exists());
     }
 
     #[tokio::test]

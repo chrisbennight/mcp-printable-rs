@@ -99,6 +99,18 @@ impl UploadRegistry {
         // Validate every destination invariant before allocating staging or a
         // registry entry; commit repeats the checks against the final path.
         workspace.validate_public_mutation_path(&target)?;
+        // Free expired reservations before asking the workspace for capacity.
+        // In-use entries remain live; insertion below still rechecks the cap.
+        let registry = Arc::clone(&self.uploads);
+        blocking(move || {
+            let evicted = {
+                let mut map = registry.lock().expect("upload registry mutex poisoned");
+                collect_expired(&mut map, Instant::now())
+            };
+            drop(evicted);
+            Ok::<_, ToolError>(())
+        })
+        .await?;
         // Create the staging dir + empty file off the async workers, before
         // taking the registry lock (so the lock is never held across I/O).
         let workspace = Arc::clone(workspace);
@@ -158,7 +170,7 @@ impl UploadRegistry {
         // release together only when the job finishes — a cancelled request
         // cannot orphan a half-applied append (see `Upload`).
         let guard = Arc::clone(&upload.state).lock_owned().await;
-        // Move the guard *and* `upload` (which owns the staging TempDir) into the
+        // Move the guard *and* `upload` (which owns the staging directory) into the
         // blocking job, so the guard, the append, the `written` update, and the
         // staging directory all release together only when the job finishes — a
         // cancelled request can neither orphan a half-applied append nor drop the
@@ -197,7 +209,7 @@ impl UploadRegistry {
         workspace: &Arc<Workspace>,
     ) -> Result<ArtifactMeta, ToolError> {
         // Clone the handle *without* removing the registry entry, so the entry —
-        // and the staging TempDir it owns — is retained until the commit actually
+        // and the staging directory it owns — is retained until the commit actually
         // runs. If this future is cancelled while awaiting the per-upload lock or
         // the workspace permit below, the registry still holds the upload: the
         // staged data survives and the caller can retry. The entry is dropped only
@@ -374,6 +386,39 @@ mod tests {
 
         assert!(evicted.is_empty(), "an in-use idle upload is not evicted");
         assert!(map.contains_key("in_use"), "the in-use upload is kept");
+    }
+
+    #[tokio::test]
+    async fn expired_upload_releases_its_budget_before_new_admission() {
+        let root = TempDir::new().unwrap();
+        let ws = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        ws.configure_storage_budget(Some(26 * 1024 * 1024)).unwrap();
+        let registry = UploadRegistry::new();
+        let first = registry
+            .begin(&ws, "first.stl".into(), false)
+            .await
+            .unwrap();
+        assert!(
+            registry
+                .begin(&ws, "second.stl".into(), false)
+                .await
+                .is_err()
+        );
+        {
+            let upload = registry.get(&first).unwrap();
+            upload.state.lock().await.last_activity =
+                Instant::now() - UPLOAD_IDLE_TIMEOUT - Duration::from_secs(1);
+        }
+        let second = registry
+            .begin(&ws, "second.stl".into(), false)
+            .await
+            .unwrap();
+        assert!(registry.get(&first).is_err());
+        assert!(registry.get(&second).is_ok());
+        assert_eq!(ws.cleanup_preview().unwrap().len(), 1);
+        registry.chunk(&second, b"model".to_vec()).await.unwrap();
+        registry.commit(&second, &ws).await.unwrap();
+        assert_eq!(ws.read_artifact("second.stl").unwrap().1, b"model");
     }
 
     #[tokio::test]
