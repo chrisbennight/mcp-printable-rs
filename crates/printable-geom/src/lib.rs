@@ -22,6 +22,9 @@ use parry3d_f64::shape::{
 use serde::{Deserialize, Serialize};
 
 mod assembly;
+mod assessment;
+
+pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
 
 pub use assembly::{
     AssemblyOptions, AssemblyPartSummary, AssemblyRelation, AssemblyReport, AssemblyStaticReport,
@@ -164,7 +167,9 @@ pub struct ValidationReport {
     pub solid_properties: Option<SolidProperties>,
     pub overhang: OverhangReport,
     pub solid_geometry: bool,
+    /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
+    pub assessment: MeshAssessment,
     pub issues: Vec<ValidationIssue>,
 }
 
@@ -430,6 +435,11 @@ fn prepare_mesh(
         ));
     }
 
+    let assessment = MeshAssessment::new(
+        solid_geometry,
+        bounds.dimensions_mm.iter().all(|value| value.is_finite()),
+        overhang.requires_support,
+    );
     Ok(PreparedMesh {
         report: ValidationReport {
             vertices: mesh.vertices.len(),
@@ -447,6 +457,7 @@ fn prepare_mesh(
             surface_area_mm2: raw_surface_area,
             signed_volume_mm3: signed_volume,
             solid_properties,
+            assessment,
             overhang,
             solid_geometry,
             printable: solid_geometry,
@@ -880,12 +891,75 @@ mod tests {
     }
 
     #[test]
+    fn thin_valid_solid_does_not_imply_qualified_walls_or_physical_performance() {
+        let mut mesh = cube(10.0, [0.0; 3]);
+        for vertex in &mut mesh.vertices {
+            vertex[2] *= 0.01;
+        }
+        let report = analyze_mesh(&mesh, ValidationOptions::default()).unwrap();
+        assert!(report.solid_geometry);
+        assert!(report.printable);
+        assert_eq!(report.assessment.status, AssessmentStatus::Incomplete);
+        assert_eq!(
+            report.assessment.criteria["solid_topology"].status,
+            CriterionStatus::Passed
+        );
+        assert_eq!(
+            report.assessment.criteria["finite_dimensions"].status,
+            CriterionStatus::Passed
+        );
+        assert_eq!(
+            report.assessment.criteria["wall_thickness"].status,
+            CriterionStatus::Unmeasured
+        );
+        assert_eq!(
+            report.assessment.criteria["physical_performance"].status,
+            CriterionStatus::PhysicalTestRequired
+        );
+        assert_eq!(report.assessment.criteria["wall_thickness"].evidence, None);
+    }
+
+    #[test]
+    fn valid_tilted_solid_retains_overhang_failure_and_warning() {
+        let mut mesh = cube(10.0, [0.0; 3]);
+        let (sin, cos) = 60.0_f64.to_radians().sin_cos();
+        for vertex in &mut mesh.vertices {
+            let [x, y, z] = *vertex;
+            *vertex = [cos * x - sin * z, y, sin * x + cos * z];
+        }
+        let report = analyze_mesh(&mesh, ValidationOptions::default()).unwrap();
+        assert!(report.solid_geometry);
+        assert!(report.printable);
+        assert!(report.overhang.requires_support);
+        assert_eq!(report.assessment.status, AssessmentStatus::Failed);
+        assert_eq!(
+            report.assessment.criteria["support_free_orientation"].status,
+            CriterionStatus::Failed
+        );
+        assert_eq!(
+            report.assessment.criteria["support_free_orientation"].evidence,
+            Some("/overhang")
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "support_recommended")
+        );
+    }
+
+    #[test]
     fn open_cube_reports_boundary_edges_and_no_solid_properties() {
         let mut mesh = cube(10.0, [0.0, 0.0, 0.0]);
         mesh.triangles.drain(2..4);
         let report = analyze_mesh(&mesh, ValidationOptions::default()).expect("open report");
 
         assert!(!report.solid_geometry);
+        assert_eq!(report.assessment.status, AssessmentStatus::Failed);
+        assert_eq!(
+            report.assessment.criteria["solid_topology"].status,
+            CriterionStatus::Failed
+        );
         assert!(!report.topology.watertight);
         assert!(report.topology.consistently_oriented);
         assert_eq!(report.topology.boundary_edges, Some(4));

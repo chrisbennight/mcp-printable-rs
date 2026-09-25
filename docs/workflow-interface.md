@@ -64,6 +64,10 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit` |
 
+Mesh reports from `validate_mesh` and `scad_build` include a scoped
+`assessment`. See [mesh assessment](mesh-assessment.md) for checked criteria,
+unmeasured requirements, and migration from the legacy `printable` boolean.
+
 For example, a concise object search is:
 
 ```json
