@@ -3194,6 +3194,7 @@ async fn encode_video(
     validate_decodable_video(
         &inner.ffmpeg_bin,
         &staged_video,
+        &output_dir,
         record.progress.total_frames,
         record.spec.frames_per_second,
         deadline,
@@ -3231,6 +3232,7 @@ async fn encode_video(
 async fn validate_decodable_video(
     ffmpeg_bin: &std::path::Path,
     path: &std::path::Path,
+    storage: &printable_workspace::ManagedScratch,
     expected_frames: u32,
     frames_per_second: u16,
     deadline: tokio::time::Instant,
@@ -3262,6 +3264,14 @@ async fn validate_decodable_video(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    storage
+        .retain_for_command(command.as_std_mut())
+        .map_err(|error| {
+            RunFailure::new(
+                "encoder_io",
+                format!("could not retain video validation storage: {error}"),
+            )
+        })?;
     let mut child = command.spawn().map_err(|error| {
         RunFailure::new(
             "encoder_unavailable",
