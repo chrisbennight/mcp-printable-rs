@@ -87,6 +87,12 @@ must not erase required capability merely to improve a score.
 
 ## Observation and execution evidence
 
+The [direct-client discovery fixture](../docs/selective-contracts.md) records
+full versus selected contracts for a small OpenSCAD build and dimensional
+check. The installation test runs it against isolated containers and can
+retain its evidence files. It does not run an agent or establish provider
+token savings; those fields remain explicitly unavailable.
+
 Each retained trial record identifies:
 
 - source release, deployed image identities, model identity, prompt/fixture

@@ -29,6 +29,11 @@ Contract resources do not invoke operations or grant authorization, and whole-to
 remain whole-tool annotations. Direct MCP and gateway Code Mode continue to
 invoke the advertised tool names.
 
+The [direct-client example](selective-contracts.md) loads selected contracts,
+retains full discovery, and records the actual schemas/results exposed during
+an isolated modeling task. Host-specific model usage remains a separate
+measurement.
+
 Task searches can use organic/procedural modeling, materials or animation for
 `blender_execute`, section/cutaway for `view`, and same-view comparison for
 `compare_renders`. Use `edit` for its supported convenience operations before
