@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -15,6 +16,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_DOWNLOAD = 1024 * 1024 * 1024
+CLIENT_INFO = {"name": "printable-direct", "version": "2"}
 
 
 def validate_url(value):
@@ -46,14 +48,16 @@ class Client:
         self.session = None
         self.sequence = 0
         self.protocol = "2025-11-25"
+        self.server_info = None
         self.http = build_opener(NoRedirect())
 
     def __enter__(self):
         result = self.rpc("initialize", {
             "protocolVersion": self.protocol, "capabilities": {},
-            "clientInfo": {"name": "printable-direct", "version": "1"},
+            "clientInfo": CLIENT_INFO,
         })
         self.protocol = result["protocolVersion"]
+        self.server_info = result["serverInfo"]
         self.rpc("notifications/initialized", notification=True)
         return self
 
@@ -127,7 +131,43 @@ class Client:
         result = self.rpc("tools/call", {"name": name, "arguments": arguments})
         if result.get("isError"):
             raise ValueError("Tool failed; inspect service status before retrying mutations")
-        return result["structuredContent"]
+        if "structuredContent" in result:
+            return result["structuredContent"]
+        texts = [item["text"] for item in result.get("content", []) if item.get("type") == "text"]
+        if len(texts) != 1:
+            raise ValueError("Expected one JSON text result when structuredContent is absent")
+        return json.loads(texts[0])
+
+    def contracts(self, tool=None, action=None):
+        if action is not None and tool is None:
+            raise ValueError("An action contract requires a tool name")
+        segments = [value for value in (tool, action) if value is not None]
+        if any(not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", value)
+               for value in segments):
+            raise ValueError("Invalid contract tool or action name")
+        uri = "printable://contracts" + "".join("/" + value for value in segments)
+        result = self.rpc("resources/read", {"uri": uri})
+        contents = result.get("contents", [])
+        if len(contents) != 1 or contents[0].get("uri") != uri or "text" not in contents[0]:
+            raise ValueError("Unexpected contract resource")
+        return json.loads(contents[0]["text"])
+
+    def tools(self):
+        """Full standards-compatible discovery, including every returned page."""
+        items = []
+        cursor = None
+        seen = set()
+        while True:
+            page = self.rpc("tools/list", {"cursor": cursor} if cursor else {})
+            items.extend(page["tools"])
+            cursor = page.get("nextCursor")
+            if cursor is None:
+                return {"tools": items}
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise ValueError("Invalid or repeated discovery cursor")
+            seen.add(cursor)
+            if len(seen) >= 100:
+                raise ValueError("Tool discovery exceeds the client page limit")
 
     def download(self, path, destination):
         destination = Path(destination)
@@ -175,6 +215,10 @@ def main():
     parser.add_argument("--bearer-file", type=Path, default=Path(".dev/mcp-bearer"))
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("tools", help="read the complete MCP tool catalog")
+    contracts = commands.add_parser("contracts", help="read the contract index or one selected contract")
+    contracts.add_argument("tool", nargs="?")
+    contracts.add_argument("action", nargs="?")
     call = commands.add_parser("call")
     call.add_argument("tool")
     call.add_argument("arguments", type=Path, help="JSON file containing tool arguments")
@@ -186,6 +230,10 @@ def main():
         with Client(args.url, args.bearer_file) as client:
             if args.command == "status":
                 result = client.call("status", {"detail": True})
+            elif args.command == "tools":
+                result = client.tools()
+            elif args.command == "contracts":
+                result = client.contracts(args.tool, args.action)
             elif args.command == "call":
                 result = client.call(args.tool, json.loads(args.arguments.read_text()))
             else:
