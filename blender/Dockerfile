@@ -6,8 +6,8 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 
 ARG BLENDER_VERSION=5.2.0
 ARG BLENDER_SHA256=96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
-ARG URLLIB3_WHEEL_URL=https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl
-ARG URLLIB3_SHA256=9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
+ARG URLLIB3_WHEEL_URL=https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
+ARG URLLIB3_SHA256=0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
 ARG VIRTUALGL_URL=https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb
 ARG VIRTUALGL_SHA256=df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e
 
@@ -24,10 +24,10 @@ RUN apt-get update \
        --directory /opt/blender --strip-components=1 \
     && curl --fail --location --proto '=https' --tlsv1.2 \
        --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
-       --output /tmp/urllib3-2.7.0-py3-none-any.whl "${URLLIB3_WHEEL_URL}" \
-    && echo "${URLLIB3_SHA256}  /tmp/urllib3-2.7.0-py3-none-any.whl" | sha256sum --check --strict \
+       --output /tmp/urllib3-2.8.0-py3-none-any.whl "${URLLIB3_WHEEL_URL}" \
+    && echo "${URLLIB3_SHA256}  /tmp/urllib3-2.8.0-py3-none-any.whl" | sha256sum --check --strict \
     && /opt/blender/5.2/python/bin/python3.13 -m pip install \
-       --no-cache-dir --no-deps --force-reinstall /tmp/urllib3-2.7.0-py3-none-any.whl \
+       --no-cache-dir --no-deps --force-reinstall /tmp/urllib3-2.8.0-py3-none-any.whl \
     && rm -rf \
        /opt/blender/5.2/python/bin \
        /opt/blender/5.2/python/lib/python3.13/ensurepip \
