@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::error::WsError;
 use crate::media::{allowed_suffix, media_type_for};
-use crate::{MAX_LIST_LIMIT, MAX_LIST_SCAN_ENTRIES, MAX_TRANSFER_BYTES};
+use crate::{MAX_LIST_SCAN_ENTRIES, MAX_TRANSFER_BYTES};
 
 mod storage;
 pub use storage::{CleanupEntry, ManagedScratch, StorageUsage};
@@ -540,8 +540,8 @@ impl Workspace {
 
     /// List allowed-suffix artifacts under the workspace-relative directory
     /// `path` (empty for the root), recursively, skipping symlinks. Scanning
-    /// silently stops at [`MAX_LIST_SCAN_ENTRIES`]. Results are sorted by path
-    /// for deterministic tool output.
+    /// refuses an incomplete scan beyond [`MAX_LIST_SCAN_ENTRIES`]. Results are
+    /// sorted by path for deterministic tool output.
     pub fn list_artifacts(&self, path: &str, limit: usize) -> Result<Vec<ArtifactMeta>, WsError> {
         self.list_with_scan_cap(path, limit, MAX_LIST_SCAN_ENTRIES)
     }
@@ -555,7 +555,7 @@ impl Workspace {
         limit: usize,
         scan_cap: usize,
     ) -> Result<Vec<ArtifactMeta>, WsError> {
-        if !(1..=MAX_LIST_LIMIT).contains(&limit) {
+        if limit == 0 {
             return Err(WsError::InvalidLimit);
         }
         self.require_confined()?;
@@ -573,7 +573,7 @@ impl Workspace {
         // discovered directory instead could retain thousands of descriptors on
         // a wide tree and exhaust the process fd table.
         let mut stack: Vec<String> = vec![rel];
-        'scan: while let Some(prefix) = stack.pop() {
+        while let Some(prefix) = stack.pop() {
             let dir_comps = split_rel(&prefix);
             let dir_fd = match self.walk_to(&dir_comps, &prefix, Missing::Error) {
                 Ok(fd) => fd,
@@ -585,15 +585,15 @@ impl Workspace {
             };
             let dir = Dir::read_from(&dir_fd).map_err(errno_io)?;
             for entry in dir {
-                if scanned >= scan_cap {
-                    break 'scan;
-                }
                 let entry = entry.map_err(errno_io)?;
                 let raw = entry.file_name();
                 // `.`/`..` are exactly two trivial entries per directory; skip
                 // them without spending the cap.
                 if matches!(raw.to_str(), Ok(".") | Ok("..")) {
                     continue;
+                }
+                if scanned >= scan_cap {
+                    return Err(WsError::ListScanLimit);
                 }
                 // Count every other entry against the cap BEFORE the UTF-8
                 // filter — otherwise a directory full of non-UTF-8 names could
@@ -1086,18 +1086,19 @@ mod tests {
     // Exercises the private scan_cap directly (the public API only exposes the
     // fixed MAX_LIST_SCAN_ENTRIES ceiling, so a small cap can't be tested there).
     #[test]
-    fn scan_cap_truncates_without_error() {
+    fn scan_cap_refuses_an_incomplete_listing() {
         let dir = tempfile::TempDir::new().unwrap();
         let ws = Workspace::open(Some(dir.path()), None).unwrap();
         for i in 0..60 {
             ws.write_artifact(&format!("f{i:03}.stl"), b"x", false)
                 .unwrap();
         }
-        // A cap below the entry count truncates the walk without error. The
+        // A cap below the entry count refuses an incomplete listing. The
         // internal storage directory also consumes a scanned entry.
-        let capped = ws.list_with_scan_cap("", 1000, 50).unwrap();
-        assert!(!capped.is_empty() && capped.len() <= 50);
-        assert!(capped.iter().all(|entry| entry.path.starts_with('f')));
+        assert!(matches!(
+            ws.list_with_scan_cap("", usize::MAX, 50),
+            Err(WsError::ListScanLimit)
+        ));
         // The public API with the real ceiling returns everything.
         assert_eq!(ws.list_artifacts("", 1000).unwrap().len(), 60);
     }

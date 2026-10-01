@@ -379,7 +379,7 @@ impl Workspace {
 
     pub fn cleanup_scratch(&self, ids: &[String]) -> Result<Vec<CleanupEntry>, WsError> {
         if ids.len() > 1000 {
-            return Err(WsError::InvalidLimit);
+            return Err(WsError::InvalidCleanupLimit);
         }
         for id in ids {
             if id.len() != 32

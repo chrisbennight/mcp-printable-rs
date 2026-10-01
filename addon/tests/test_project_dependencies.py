@@ -47,6 +47,14 @@ class DependencyTests(unittest.TestCase):
         with self.assertRaises(InspectionError):
             inspect_dependencies(self.blender(["/file"] * 10001), Path("/workspace"), "organic", {})
 
+    def test_large_dependency_counts_preserve_the_inventory_budget(self):
+        bpy = self.blender(["/workspace/projects/organic/file.png"] * 301)
+        for params, expected in [({},20), ({"limit":200},200), ({"limit":2**64 - 1},301),
+                                 ({"offset":300,"limit":2**64 - 1},1)]:
+            result = inspect_dependencies(bpy, Path("/workspace"), "organic", params)
+            self.assertEqual(result["returned"], expected)
+            self.assertEqual(len(result["items"]), expected)
+
     def test_handler_requires_bound_project_and_does_not_mutate_scene_revision(self):
         handler = BlenderHandlers.__new__(BlenderHandlers)
         handler._bpy = self.blender([])

@@ -341,18 +341,23 @@ pub struct MaterialsParams {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 pub(super) fn default_limit() -> usize {
     25
+}
+pub(super) fn database_limit(requested: usize) -> usize {
+    // Bambuddy's LIMIT parameters are bound to signed database integers.
+    requested.min(usize::try_from(i64::MAX).unwrap_or(usize::MAX))
 }
 pub(super) fn page<T: Serialize>(
     items: Vec<T>,
     offset: usize,
     limit: usize,
 ) -> Result<Value, ToolError> {
-    if !(1..=100).contains(&limit) {
-        return Err(ToolError::Validation("limit must be 1–100".into()));
+    if limit == 0 {
+        return Err(ToolError::Validation("limit must be positive".into()));
     }
     let total = items.len();
     let items = items
@@ -361,7 +366,9 @@ pub(super) fn page<T: Serialize>(
         .take(limit)
         .collect::<Vec<_>>();
     let next = offset.saturating_add(items.len());
-    Ok(json!({"items":items,"total":total,"next_offset":(next<total).then_some(next)}))
+    Ok(
+        json!({"items":items,"total":total,"requested_limit":limit,"returned":items.len(),"next_offset":(next<total).then_some(next)}),
+    )
 }
 fn matches_query<T: Serialize>(item: &T, query: &Option<String>) -> bool {
     query.as_ref().is_none_or(|q| {
@@ -370,8 +377,8 @@ fn matches_query<T: Serialize>(item: &T, query: &Option<String>) -> bool {
 }
 impl PrinterService {
     pub(super) async fn materials(&self, p: MaterialsParams) -> Result<Value, ToolError> {
-        if !(1..=100).contains(&p.limit) {
-            return Err(ToolError::Validation("limit must be 1–100".into()));
+        if p.limit == 0 {
+            return Err(ToolError::Validation("limit must be positive".into()));
         }
         let mut result = match p.scope {
             MaterialScope::Loaded => {

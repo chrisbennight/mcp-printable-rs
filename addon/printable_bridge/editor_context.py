@@ -83,7 +83,7 @@ def editing_state(bpy, params):
     summary = context_summary(bpy)
     if section == "selection":
         objects = bpy.context.selected_objects
-        items = [obj.name for obj in islice(objects, offset, offset + limit)]
+        items = [obj.name for obj in islice(objects, offset, min(offset + limit, len(objects)))]
         total = len(objects)
     elif section == "editors":
         items = []
@@ -105,4 +105,5 @@ def editing_state(bpy, params):
         raise InspectionError("section must be editors or selection")
     end = offset + len(items)
     return {**summary, "section": section, "items": items, "total": total,
-            "next_offset": end if end < total else None}
+            "next_offset": end if end < total else None,
+            "requested_limit": limit, "returned": len(items)}

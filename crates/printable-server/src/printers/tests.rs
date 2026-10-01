@@ -23,6 +23,216 @@ fn service(server: &MockServer) -> Arc<PrinterService> {
 }
 
 #[tokio::test]
+async fn mcp_printer_pages_honor_large_counts_defaults_and_native_database_limits() {
+    use crate::{config::Settings, mcp::PrintableServer};
+    use rmcp::model::CallToolRequestParams;
+
+    let backend = MockServer::start().await;
+    let rows = |kind: &str| -> Vec<Value> {
+        (1..=301)
+            .map(|id| match kind {
+                "printer" => json!({"id":id,"name":format!("Printer {id:03}"),"is_active":true}),
+                "queue" => json!({"id":id,"status":"pending","manual_start":true}),
+                "library" => json!({"id":id,"filename":format!("part-{id}.3mf"),"file_type":"3mf"}),
+                "batch" => json!({"id":id,"name":"batch","status":"pending"}),
+                "run" => json!({"id":id,"status":"completed"}),
+                "archive" => {
+                    json!({"id":id,"filename":format!("part-{id}.3mf"),"status":"completed"})
+                }
+                "catalog" => json!({"filament_id":id.to_string(),"name":"PLA"}),
+                "preset" => json!({"id":id.to_string(),"name":"PLA","source":"local"}),
+                _ => json!({"id":id}),
+            })
+            .collect()
+    };
+    for (url, kind) in [
+        ("/api/v1/printers/", "printer"),
+        ("/api/v1/queue/", "queue"),
+        ("/api/v1/library/files", "library"),
+        ("/api/v1/queue/batches", "batch"),
+        ("/api/v1/inventory/spools", "spool"),
+        ("/api/v1/cloud/builtin-filaments", "catalog"),
+    ] {
+        get(&backend, url, json!(rows(kind))).await;
+    }
+    get(
+        &backend,
+        "/api/v1/archives/1/runs",
+        json!({"items":rows("run")}),
+    )
+    .await;
+    get(
+        &backend,
+        "/api/v1/slicer/presets",
+        json!({"local":{"filament":rows("preset")}}),
+    )
+    .await;
+    for (url, kind, has_offset) in [
+        ("/api/v1/archives/", "archive", true),
+        ("/api/v1/inventory/usage", "usage", false),
+        ("/api/v1/inventory/spools/1/usage", "usage", false),
+    ] {
+        let items = rows(kind);
+        Mock::given(method("GET"))
+            .and(path(url))
+            .respond_with(move |request: &wiremock::Request| {
+                let query: std::collections::BTreeMap<_, _> = request.url.query_pairs().collect();
+                let limit: usize = query["limit"].parse().unwrap();
+                let offset: usize = if has_offset {
+                    query["offset"].parse().unwrap()
+                } else {
+                    0
+                };
+                ResponseTemplate::new(200).set_body_json(
+                    items
+                        .iter()
+                        .skip(offset)
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .mount(&backend)
+            .await;
+    }
+    let settings = Settings::from_lookup(|key| match key {
+        "PRINTABLE_MCP_BEARER" => Some("ab".repeat(32)),
+        "PRINTABLE_BAMBUDDY_URL" => Some(backend.uri()),
+        "PRINTABLE_BAMBUDDY_READ_KEY" | "PRINTABLE_BAMBUDDY_CONTROL_KEY" => Some("fixture".into()),
+        _ => None,
+    })
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = printable_workspace::Workspace::open(Some(directory.path()), None).unwrap();
+    let server = PrintableServer::new(
+        Arc::new(workspace),
+        Arc::new(printable_blender::BlenderClient::new(
+            "127.0.0.1",
+            9,
+            Default::default(),
+        )),
+        Arc::new(settings),
+    );
+    for (tool, action, base, field, native) in [
+        ("printer", "list", json!({}), "printers", false),
+        (
+            "printer",
+            "materials",
+            json!({"scope":"inventory"}),
+            "items",
+            false,
+        ),
+        (
+            "printer",
+            "materials",
+            json!({"scope":"catalog"}),
+            "items",
+            false,
+        ),
+        (
+            "printer",
+            "materials",
+            json!({"scope":"presets"}),
+            "items",
+            false,
+        ),
+        (
+            "print",
+            "list",
+            json!({"collection":"queue"}),
+            "prints",
+            false,
+        ),
+        (
+            "print",
+            "list",
+            json!({"collection":"library"}),
+            "items",
+            false,
+        ),
+        (
+            "print",
+            "list",
+            json!({"collection":"batches"}),
+            "items",
+            false,
+        ),
+        ("print", "history", json!({"archive_id":1}), "items", false),
+        ("print", "history", json!({}), "archives", true),
+        (
+            "printer",
+            "history",
+            json!({"target":{"subject":"material_usage"}}),
+            "items",
+            true,
+        ),
+        (
+            "printer",
+            "history",
+            json!({"target":{"subject":"material_usage","spool_id":1}}),
+            "items",
+            true,
+        ),
+    ] {
+        for (limit, offset, returned, next) in [
+            (None, 0usize, 25usize, Some(25usize)),
+            (Some(200usize), 0, 200, Some(200)),
+            (Some(usize::MAX), 0, 301, None),
+            (Some(200), 200, 101, None),
+        ] {
+            let mut input = base.clone();
+            input["offset"] = json!(offset);
+            if let Some(limit) = limit {
+                input["limit"] = json!(limit);
+            }
+            let request = |input: Value| {
+                CallToolRequestParams::new(tool.to_owned()).with_arguments(
+                    json!({"action":action,"params":input})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+            };
+            let before = backend.received_requests().await.unwrap().len();
+            let result = server.invoke_tool(request(input.clone())).await.unwrap();
+            assert_eq!(result.is_error, Some(false), "{tool}/{action}: {result:?}");
+            let result = result.structured_content.unwrap();
+            let schema = action_output_schema(tool, action).unwrap();
+            assert!(
+                jsonschema::validator_for(&schema)
+                    .unwrap()
+                    .is_valid(&result),
+                "{result}"
+            );
+            assert_eq!(result[field].as_array().unwrap().len(), returned);
+            assert_eq!(result["requested_limit"], limit.unwrap_or(25));
+            assert_eq!(result["returned"], returned);
+            assert_eq!(result["next_offset"], json!(next));
+            let requests = backend.received_requests().await.unwrap();
+            assert_eq!(requests.len(), before + 1);
+            if native {
+                let maximum = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+                let effective = limit
+                    .unwrap_or(25)
+                    .min(maximum - if field == "items" { offset } else { 0 });
+                assert_eq!(result["effective_limit"], effective);
+                let submitted = effective
+                    .saturating_add(if field == "items" { offset } else { 0 })
+                    .saturating_add(1)
+                    .min(maximum);
+                let query: std::collections::BTreeMap<_, _> =
+                    requests[before].url.query_pairs().collect();
+                assert_eq!(query["limit"], submitted.to_string());
+            }
+            input["limit"] = json!(0);
+            let result = server.invoke_tool(request(input)).await.unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(backend.received_requests().await.unwrap().len(), before + 1);
+        }
+    }
+}
+
+#[tokio::test]
 async fn mcp_dispatch_preserves_typed_results_and_uncertain_control_without_replay() {
     use crate::{config::Settings, mcp::PrintableServer};
     use rmcp::model::CallToolRequestParams;

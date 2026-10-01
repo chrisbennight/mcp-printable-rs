@@ -90,6 +90,27 @@ currently support STL; consolidating their names does not imply new formats.
 [Editing context](editor-context.md) describes paginated editor and selection
 inspection, explicit Python UI targets, and their lifetime semantics.
 
+Inspection, artifact and project listings, retained job history, frame
+artifacts, slicing profiles and settings, and printer and print pages accept
+positive caller counts and preserve their existing defaults. Inspection,
+artifact and project pages report `requested_limit` and `returned`. Scene pages
+also report their effective count within the existing scene-scan budget; follow
+`next_offset` even after an empty filtered page. Job artifact pages report the
+effective count within the native frame-index range. These counts do not change
+dependency-inventory, directory-scan, retention, byte or duration budgets.
+Workspace and project listings refuse an incomplete directory scan with
+`list_scan_limit`; select a narrower directory instead of treating a traversal
+prefix as a complete listing.
+
+Printer, print and slicing discovery pages report `requested_limit` and
+`returned`. Archive and material-usage history also report `effective_limit`
+when the signed database integer range bounds the upstream query. Archive
+queries use a continuation lookahead; material-usage queries include the
+prefix needed for the requested offset. Finite local collections do not have
+a separate presentation ceiling. The native query behavior is verified against
+[Bambuddy v0.2.4.9 archive reads](https://github.com/maziggy/bambuddy/blob/v0.2.4.9/backend/app/services/archive.py)
+and [material-usage reads](https://github.com/maziggy/bambuddy/blob/v0.2.4.9/backend/app/api/routes/inventory.py).
+
 Job identifiers refer to render execution. Upload identifiers refer to staged
 file transfer. Neither tool accepts the other's lifecycle actions. Mixed-action
 tools use conservative mutating annotations for the whole tool; selecting a

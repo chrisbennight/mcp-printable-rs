@@ -549,8 +549,10 @@ class BlenderHandlers:
 
     def _get_scene_info(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"offset", "limit", "name_contains", "object_type", "collection", "include_transforms"})
-        offset = _nonnegative_integer(params, "offset", 0, 1_000_000)
-        limit = _positive_integer(params, "limit", 100, 1000)
+        try:
+            offset, limit = page_arguments(params, default_limit=100)
+        except InspectionError as error:
+            raise HandlerError(str(error)) from error
         filters = {}
         for key in ("name_contains", "object_type", "collection"):
             if key in params:
@@ -588,6 +590,8 @@ class BlenderHandlers:
             "object_count": object_count,
             "offset": offset,
             "limit": limit,
+            "page": {"requested_limit": limit, "effective_limit": min(limit, 10_000),
+                     "returned": len(objects)},
             "next_offset": next_offset if next_offset < object_count else None,
             "objects": objects,
         }

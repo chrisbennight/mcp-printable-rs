@@ -7,21 +7,23 @@ class InspectionError(ValueError):
     pass
 
 
-def page_arguments(params):
+def page_arguments(params, default_limit=20):
     offset = params.get("offset", 0)
-    limit = params.get("limit", 20)
+    limit = params.get("limit", default_limit)
     if type(offset) is not int or not 0 <= offset <= 1_000_000:
         raise InspectionError("offset must be between 0 and 1000000")
-    if type(limit) is not int or not 1 <= limit <= 100:
-        raise InspectionError("limit must be between 1 and 100")
+    if type(limit) is not int or limit < 1:
+        raise InspectionError("limit must be positive")
     return offset, limit
 
 
 def page(items, offset, limit, project):
-    records = [project(item) for item in islice(items, offset, offset + limit)]
+    records = [project(item) for item in islice(items, offset, min(offset + limit, len(items)))]
     end = offset + len(records)
     return {
         "items": records,
+        "requested_limit": limit,
+        "returned": len(records),
         "total": len(items),
         "next_offset": end if end < len(items) else None,
     }
@@ -75,7 +77,8 @@ def node_tree_info(bpy, params):
             raise InspectionError(f"geometry node group not found: {name}")
     if tree is None:
         return {"name": name, "kind": kind, "section": section, "tree": None,
-                "items": [], "total": 0, "next_offset": None}
+                "items": [], "total": 0, "next_offset": None,
+                "requested_limit": limit, "returned": 0}
     if section == "nodes":
         result = page(tree.nodes, offset, limit, lambda node: {
             "name": node.name,

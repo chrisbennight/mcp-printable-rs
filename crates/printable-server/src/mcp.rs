@@ -329,11 +329,7 @@ impl PrintableServer {
                 } else {
                     (output.value, output.inline_png_base64)
                 };
-                let value = if operation == "printable_workspace_list" {
-                    serde_json::json!({ "entries": value })
-                } else {
-                    projection.apply(value)
-                };
+                let value = projection.apply(value);
                 let mut content = vec![ContentBlock::text(value.to_string())];
                 if let Some(data_base64) = image {
                     content.push(ContentBlock::image(data_base64, "image/png"));

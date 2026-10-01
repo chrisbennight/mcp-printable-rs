@@ -127,7 +127,7 @@ fn error_strings_are_stable() {
             WsError::ChangedWhileReading,
             "workspace artifact changed while being read",
         ),
-        (WsError::InvalidLimit, "limit must be between 1 and 1000"),
+        (WsError::InvalidLimit, "limit must be positive"),
     ];
     for (err, expected) in cases {
         assert_eq!(err.to_string(), expected, "code={}", err.code());
@@ -483,16 +483,15 @@ fn list_filters_sorts_and_limits() {
 fn list_limit_bounds() {
     let dir = tmp();
     let ws = ws(dir.path());
-    for bad in [0usize, 1001] {
-        let err = ws.list_artifacts("", bad).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "limit must be between 1 and 1000",
-            "limit={bad}"
-        );
-    }
+    let err = ws.list_artifacts("", 0).unwrap_err();
+    assert_eq!(err.to_string(), "limit must be positive");
     assert!(ws.list_artifacts("", 1).is_ok());
     assert!(ws.list_artifacts("", 1000).is_ok());
+    for i in 0..2001 {
+        std::fs::write(dir.path().join(format!("fixture-{i:04}.stl")), b"x").unwrap();
+    }
+    assert_eq!(ws.list_artifacts("", 1500).unwrap().len(), 1500);
+    assert_eq!(ws.list_artifacts("", usize::MAX).unwrap().len(), 2001);
 }
 
 #[test]

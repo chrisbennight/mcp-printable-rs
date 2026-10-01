@@ -31,6 +31,7 @@ pub struct ListJobsParams {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 fn default_limit() -> usize {
@@ -59,6 +60,7 @@ pub struct HistoryParams {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 
@@ -284,8 +286,8 @@ impl PrinterService {
             }
             PrintRequest::List(params) => self.record_list(params, workspace).await,
             PrintRequest::History(params) => {
-                if !(1..=100).contains(&params.limit) {
-                    return Err(invalid("limit must be 1–100"));
+                if params.limit == 0 {
+                    return Err(invalid("limit must be positive"));
                 }
                 if let Some(id) = params.printer_id {
                     validate_id(id)?;
@@ -304,14 +306,21 @@ impl PrinterService {
                         .collect();
                     return super::materials::page(runs, params.offset, params.limit);
                 }
+                let maximum = super::materials::database_limit(usize::MAX);
+                if params.offset > maximum {
+                    return Err(invalid("history offset exceeds the database integer range"));
+                }
+                let effective = super::materials::database_limit(params.limit);
+                let submitted = effective.saturating_add(1).min(maximum);
                 let mut archives = self
                     .read
-                    .print_history(params.printer_id, params.offset, params.limit + 1)
+                    .print_history(params.printer_id, params.offset, submitted)
                     .await?;
-                let has_more = archives.len() > params.limit;
-                archives.truncate(params.limit);
+                let has_more = archives.len() > effective
+                    || (submitted == effective && archives.len() == effective);
+                archives.truncate(effective);
                 Ok(
-                    json!({"archives":archives.into_iter().map(|a|serde_json::to_value(a).map(|a|super::records::archive(a,params.detail))).collect::<Result<Vec<_>,_>>()?,"next_offset":has_more.then_some(params.offset.saturating_add(params.limit))}),
+                    json!({"requested_limit":params.limit,"effective_limit":effective,"returned":archives.len(),"archives":archives.into_iter().map(|a|serde_json::to_value(a).map(|a|super::records::archive(a,params.detail))).collect::<Result<Vec<_>,_>>()?,"next_offset":has_more.then_some(params.offset.saturating_add(effective))}),
                 )
             }
             PrintRequest::Status(params) => self.record_status(params, workspace).await,

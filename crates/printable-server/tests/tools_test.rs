@@ -613,7 +613,11 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     let scene = lookup("printable_scene_get").expect("scene tool");
     let scene_schema = serde_json::to_value((scene.schema)()).expect("scene schema serializes");
     assert_eq!(scene_schema["properties"]["limit"]["default"], json!(100));
-    assert_eq!(scene_schema["properties"]["limit"]["maximum"], json!(1000));
+    let validator = jsonschema::validator_for(&scene_schema).unwrap();
+    for limit in [3000_usize, usize::MAX] {
+        assert!(validator.is_valid(&json!({"limit":limit})));
+    }
+    assert!(!validator.is_valid(&json!({"limit":0})));
     assert_eq!((scene.annotations)().read_only_hint, Some(true));
     assert_eq!((scene.annotations)().destructive_hint, Some(false));
     assert_eq!((scene.annotations)().idempotent_hint, Some(true));
@@ -1561,9 +1565,11 @@ async fn workspace_write_read_list_round_trip() {
     )
     .await
     .expect("list ok");
-    let paths: Vec<&str> = listed
+    assert_eq!(listed["requested_limit"], 1000);
+    assert_eq!(listed["returned"], 1);
+    let paths: Vec<&str> = listed["entries"]
         .as_array()
-        .expect("list is an array")
+        .expect("entries are an array")
         .iter()
         .filter_map(|m| m["path"].as_str())
         .collect();
@@ -1602,8 +1608,57 @@ async fn workspace_video_is_discoverable_but_never_base64_transferable() {
     )
     .await
     .expect("list video");
-    assert_eq!(listed[0]["path"], json!("preview.mp4"));
-    assert_eq!(listed[0]["media_type"], json!("video/mp4"));
+    assert_eq!(listed["entries"][0]["path"], json!("preview.mp4"));
+    assert_eq!(listed["entries"][0]["media_type"], json!("video/mp4"));
+}
+
+#[tokio::test]
+async fn artifact_pages_report_requested_and_returned_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    for index in 0..1101 {
+        ws.write_artifact(&format!("file-{index}.stl"), b"fixture", false)
+            .expect("artifact");
+    }
+    let up = uploads();
+    let blender = client("127.0.0.1", 9);
+    let cfg = settings("127.0.0.1", 9);
+    for (arguments, requested, returned) in [
+        (json!({}), 1000, 1000),
+        (json!({"limit": 1500}), 1500, 1101),
+        (json!({"limit": usize::MAX}), usize::MAX, 1101),
+    ] {
+        let listed = dispatch(
+            &ws,
+            &up,
+            &blender,
+            &cfg,
+            "printable_workspace_list",
+            arguments,
+        )
+        .await
+        .expect("list");
+        assert_eq!(listed["requested_limit"], requested);
+        assert_eq!(listed["returned"], returned);
+        assert_eq!(
+            listed["entries"].as_array().expect("entries").len(),
+            returned
+        );
+    }
+    assert_eq!(
+        dispatch(
+            &ws,
+            &up,
+            &blender,
+            &cfg,
+            "printable_workspace_list",
+            json!({"limit":0})
+        )
+        .await
+        .expect_err("zero count")
+        .code(),
+        "invalid_limit"
+    );
 }
 
 #[tokio::test]
@@ -3030,7 +3085,20 @@ async fn modeling_tools_send_typed_commands_and_confined_paths() {
         ),
     ];
 
-    for (tool, arguments, command, expected_params) in cases {
+    for (tool, arguments, command, expected_params) in cases.into_iter().chain([
+        (
+            "printable_scene_get", json!({"limit":usize::MAX}),
+            "get_scene_info", json!({"offset":0,"limit":usize::MAX}),
+        ),
+        (
+            "printable_object_get", json!({"name":"Body","section":"modifiers","limit":300}),
+            "get_object_info", json!({"name":"Body","section":"modifiers","limit":300}),
+        ),
+        (
+            "printable_node_tree_get", json!({"name":"Paint","limit":usize::MAX}),
+            "get_node_tree_info", json!({"name":"Paint","kind":"material","section":"nodes","offset":0,"limit":usize::MAX}),
+        ),
+    ]) {
         let result = dispatch(&ws, &up, &blender, &cfg, tool, arguments)
             .await
             .unwrap_or_else(|error| panic!("{tool} failed: {error}"));
@@ -4863,7 +4931,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_object_get",
-            json!({"name": "Cube", "limit": 101}),
+            json!({"name": "Cube", "limit": 0}),
             "validation",
         ),
         (

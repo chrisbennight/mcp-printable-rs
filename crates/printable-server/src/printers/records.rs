@@ -167,8 +167,8 @@ impl PrinterService {
         p: super::print_jobs::ListJobsParams,
         workspace: &Workspace,
     ) -> Result<Value, ToolError> {
-        if !(1..=100).contains(&p.limit) {
-            return Err(ToolError::Validation("limit must be 1–100".into()));
+        if p.limit == 0 {
+            return Err(ToolError::Validation("limit must be positive".into()));
         }
         if let Some(id) = p.printer_id {
             super::validate_id(id)?;

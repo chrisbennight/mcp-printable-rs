@@ -47,6 +47,7 @@ pub struct ListParams {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "materials::default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 
@@ -157,8 +158,8 @@ impl PrinterService {
         }
         match request {
             PrinterRequest::List(params) => {
-                if !(1..=100).contains(&params.limit) {
-                    return Err(ToolError::Validation("limit must be 1–100".into()));
+                if params.limit == 0 {
+                    return Err(ToolError::Validation("limit must be positive".into()));
                 }
                 let mut printers = self.read.printers().await?;
                 printers.retain(|p| {
@@ -192,7 +193,7 @@ impl PrinterService {
                     .collect::<Vec<_>>();
                 let next = params.offset.saturating_add(printers.len());
                 Ok(
-                    json!({"printers":printers,"total":total,"next_offset":(next<total).then_some(next)}),
+                    json!({"printers":printers,"total":total,"requested_limit":params.limit,"returned":printers.len(),"next_offset":(next<total).then_some(next)}),
                 )
             }
             PrinterRequest::Status(params) => self.status(params).await,

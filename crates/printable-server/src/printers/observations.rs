@@ -314,12 +314,13 @@ pub struct HistoryParams {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "materials::default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 impl PrinterService {
     pub(super) async fn printer_history(&self, p: HistoryParams) -> Result<Value, ToolError> {
-        if !(1..=100).contains(&p.limit) {
-            return Err(ToolError::Validation("limit must be 1–100".into()));
+        if p.limit == 0 {
+            return Err(ToolError::Validation("limit must be positive".into()));
         }
         let mut result = match p.target {
             HistorySubject::Sensors {
@@ -357,20 +358,31 @@ impl PrinterService {
                 if let Some(id) = spool_id {
                     super::validate_id(id)?;
                 }
+                let maximum = materials::database_limit(usize::MAX);
+                let available = maximum
+                    .checked_sub(p.offset)
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| {
+                        ToolError::Validation(
+                            "history offset exceeds the database integer range".into(),
+                        )
+                    })?;
+                let effective = p.limit.min(available);
                 let count = p
                     .offset
-                    .checked_add(p.limit + 1)
-                    .ok_or_else(|| ToolError::Validation("history offset is too large".into()))?;
+                    .saturating_add(effective)
+                    .saturating_add(1)
+                    .min(maximum);
                 let items = self
                     .read
                     .material_usage(printer_id, spool_id, count)
                     .await?;
                 let more = items.len() == count;
-                let mut items: Vec<_> = items.into_iter().skip(p.offset).take(p.limit).collect();
+                let mut items: Vec<_> = items.into_iter().skip(p.offset).take(effective).collect();
                 if let Some(id) = printer_id {
                     items.retain(|i| i.printer_id.and_then(|v| u64::try_from(v).ok()) == Some(id));
                 }
-                json!({"items":items,"total":null,"next_offset":more.then_some(p.offset + p.limit)})
+                json!({"items":items,"total":null,"requested_limit":p.limit,"effective_limit":effective,"returned":items.len(),"next_offset":more.then_some(p.offset.saturating_add(effective))})
             }
         };
         result["fetched_at_unix_ms"] = json!(now_ms());
