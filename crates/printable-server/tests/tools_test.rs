@@ -613,7 +613,11 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     let scene = lookup("printable_scene_get").expect("scene tool");
     let scene_schema = serde_json::to_value((scene.schema)()).expect("scene schema serializes");
     assert_eq!(scene_schema["properties"]["limit"]["default"], json!(100));
-    assert_eq!(scene_schema["properties"]["limit"]["maximum"], json!(1000));
+    let validator = jsonschema::validator_for(&scene_schema).unwrap();
+    for limit in [3000_usize, usize::MAX] {
+        assert!(validator.is_valid(&json!({"limit":limit})));
+    }
+    assert!(!validator.is_valid(&json!({"limit":0})));
     assert_eq!((scene.annotations)().read_only_hint, Some(true));
     assert_eq!((scene.annotations)().destructive_hint, Some(false));
     assert_eq!((scene.annotations)().idempotent_hint, Some(true));
@@ -3030,7 +3034,20 @@ async fn modeling_tools_send_typed_commands_and_confined_paths() {
         ),
     ];
 
-    for (tool, arguments, command, expected_params) in cases {
+    for (tool, arguments, command, expected_params) in cases.into_iter().chain([
+        (
+            "printable_scene_get", json!({"limit":usize::MAX}),
+            "get_scene_info", json!({"offset":0,"limit":usize::MAX}),
+        ),
+        (
+            "printable_object_get", json!({"name":"Body","section":"modifiers","limit":300}),
+            "get_object_info", json!({"name":"Body","section":"modifiers","limit":300}),
+        ),
+        (
+            "printable_node_tree_get", json!({"name":"Paint","limit":usize::MAX}),
+            "get_node_tree_info", json!({"name":"Paint","kind":"material","section":"nodes","offset":0,"limit":usize::MAX}),
+        ),
+    ]) {
         let result = dispatch(&ws, &up, &blender, &cfg, tool, arguments)
             .await
             .unwrap_or_else(|error| panic!("{tool} failed: {error}"));
@@ -4863,7 +4880,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_object_get",
-            json!({"name": "Cube", "limit": 101}),
+            json!({"name": "Cube", "limit": 0}),
             "validation",
         ),
         (

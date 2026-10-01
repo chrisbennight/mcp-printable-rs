@@ -1,5 +1,5 @@
+use crate::MAX_TRANSFER_BYTES;
 use crate::media::allowed_suffix_list;
-use crate::{MAX_LIST_LIMIT, MAX_TRANSFER_BYTES};
 
 /// Workspace errors. Display texts are stable operator messages; `code()` is
 /// the stable machine identifier for the tool layer.
@@ -35,8 +35,12 @@ pub enum WsError {
     SnapshotTooLarge(u64),
     #[error("workspace artifact changed while being read")]
     ChangedWhileReading,
-    #[error("limit must be between 1 and {MAX_LIST_LIMIT}")]
+    #[error("limit must be positive")]
     InvalidLimit,
+    #[error("cleanup batch must contain at most 1000 identifiers")]
+    InvalidCleanupLimit,
+    #[error("workspace listing exceeds its directory-scan budget; list a narrower directory")]
+    ListScanLimit,
     #[error("workspace storage budget exceeded; inspect artifact usage and cleanup preview")]
     StorageBudgetExceeded,
     #[error(
@@ -68,6 +72,8 @@ impl WsError {
             WsError::SnapshotTooLarge(_) => "read_too_large",
             WsError::ChangedWhileReading => "changed_while_reading",
             WsError::InvalidLimit => "invalid_limit",
+            WsError::InvalidCleanupLimit => "invalid_limit",
+            WsError::ListScanLimit => "list_scan_limit",
             WsError::StorageBudgetExceeded => "storage_budget_exceeded",
             WsError::StorageAccountingIncomplete => "storage_accounting_incomplete",
             WsError::InvalidScratchId => "invalid_scratch_id",

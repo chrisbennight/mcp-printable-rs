@@ -39,7 +39,6 @@ const INDEX_PATH: &str = ".printable/jobs/index.json";
 const ISOLATION_PATH: &str = ".printable/render-isolation.json";
 const JOB_SCHEMA_VERSION: u8 = 3;
 const MAX_JOB_HISTORY: usize = 1000;
-const MAX_JOB_LIST_LIMIT: usize = 1000;
 const MAX_ENCODER_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAX_ENCODER_PROGRESS_BYTES: usize = 64 * 1024;
 const MAX_BLENDER_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
@@ -241,9 +240,9 @@ pub(crate) struct RenderJobListParams {
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000000))]
     offset: usize,
-    /// Maximum jobs returned (default 100, maximum 1000).
+    /// Positive count of retained jobs to return; defaults to 100.
     #[serde(default = "default_job_list_limit")]
-    #[schemars(range(min = 1, max = 1000))]
+    #[schemars(range(min = 1))]
     limit: usize,
     /// Optional exact state filter.
     state: Option<JobState>,
@@ -258,9 +257,9 @@ pub(crate) struct RenderJobArtifactsParams {
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000000))]
     offset: u32,
-    /// Maximum frame artifacts returned (default 100, maximum 1000).
+    /// Positive count of completed frame artifacts to return; defaults to 100.
     #[serde(default = "default_job_list_limit")]
-    #[schemars(range(min = 1, max = 1000))]
+    #[schemars(range(min = 1))]
     limit: usize,
 }
 
@@ -902,10 +901,8 @@ impl JobRegistry {
     }
 
     pub(crate) async fn list(&self, params: RenderJobListParams) -> Result<Value, ToolError> {
-        if !(1..=MAX_JOB_LIST_LIMIT).contains(&params.limit) {
-            return Err(ToolError::Validation(format!(
-                "limit must be between 1 and {MAX_JOB_LIST_LIMIT}"
-            )));
+        if params.limit == 0 {
+            return Err(ToolError::Validation("limit must be positive".into()));
         }
         let state = self.inner.state.lock().await;
         let matching = state
@@ -935,6 +932,8 @@ impl JobRegistry {
         let next_offset =
             (params.offset + jobs.len() < matching.len()).then_some(params.offset + jobs.len());
         Ok(json!({
+            "requested_limit": params.limit,
+            "returned": jobs.len(),
             "jobs": jobs,
             "next_offset": next_offset,
             "retained_jobs": state.jobs.len(),
@@ -949,10 +948,8 @@ impl JobRegistry {
         &self,
         params: RenderJobArtifactsParams,
     ) -> Result<Value, ToolError> {
-        if !(1..=MAX_JOB_LIST_LIMIT).contains(&params.limit) {
-            return Err(ToolError::Validation(format!(
-                "limit must be between 1 and {MAX_JOB_LIST_LIMIT}"
-            )));
+        if params.limit == 0 {
+            return Err(ToolError::Validation("limit must be positive".into()));
         }
         let state = self.inner.state.lock().await;
         let job = state
@@ -960,10 +957,8 @@ impl JobRegistry {
             .get(&params.job_id)
             .ok_or_else(|| ToolError::Job("render job not found".to_string()))?;
         let available = job.progress.completed_frames;
-        let end = params
-            .offset
-            .saturating_add(params.limit as u32)
-            .min(available);
+        let effective_limit = u32::try_from(params.limit).unwrap_or(u32::MAX);
+        let end = params.offset.saturating_add(effective_limit).min(available);
         let frames = (params.offset..end)
             .map(|index| {
                 json!({
@@ -976,6 +971,9 @@ impl JobRegistry {
             .collect::<Vec<_>>();
         let next_offset = (end < available).then_some(end);
         Ok(json!({
+            "requested_limit": params.limit,
+            "effective_limit": effective_limit,
+            "returned": frames.len(),
             "job_id": job.job_id,
             "state": job.state,
             "frames": frames,
@@ -6945,6 +6943,112 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
                 .await
                 .contains_key(&job_id),
             "terminal failure cleanup releases the cancellation token"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_job_and_frame_counts_honor_large_pages() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = JobRegistry::new(
+            Arc::new(Workspace::open(Some(temp.path()), None).unwrap()),
+            Arc::new(BlenderClient::new("127.0.0.1", 9, ClientOptions::default())),
+            PathBuf::from("unused-ffmpeg"),
+            2,
+        );
+        let frame_job = format!("{:032x}", 0);
+        {
+            let mut state = registry.inner.state.lock().await;
+            for i in 0..MAX_JOB_HISTORY {
+                let id = format!("{i:032x}");
+                state
+                    .jobs
+                    .insert(id.clone(), test_job_record(&id, JobState::Succeeded));
+                state.order.push_back(id);
+            }
+            let mut submission = submit_params("scene.blend", "animation");
+            submission.frame_end = 2001;
+            let (spec, kind, total) = validate_submit(submission).unwrap();
+            let job = state.jobs.get_mut(&frame_job).unwrap();
+            job.spec = spec;
+            job.kind = kind;
+            job.progress.total_frames = total;
+            job.progress.completed_frames = total;
+            assert_eq!(total, 2001);
+        }
+        let default = serde_json::from_value::<RenderJobListParams>(json!({})).unwrap();
+        assert_eq!(
+            registry.list(default).await.unwrap()["jobs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            100
+        );
+        for (offset, limit, expected) in [
+            (0, 1500, MAX_JOB_HISTORY),
+            (0, usize::MAX, MAX_JOB_HISTORY),
+            (900, usize::MAX, 100),
+        ] {
+            let result = registry
+                .list(RenderJobListParams {
+                    offset,
+                    limit,
+                    state: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(result["jobs"].as_array().unwrap().len(), expected);
+            assert_eq!(result["requested_limit"], json!(limit));
+            assert_eq!(result["returned"], json!(expected));
+            assert!(result["next_offset"].is_null());
+        }
+        assert!(
+            registry
+                .list(RenderJobListParams {
+                    offset: 0,
+                    limit: 0,
+                    state: None
+                })
+                .await
+                .is_err()
+        );
+        let beyond_frame_type = (u32::MAX as usize).saturating_add(1);
+        for (offset, limit, expected) in [
+            (0, 100, 100),
+            (0, 1500, 1500),
+            (0, usize::MAX, 2001),
+            (0, beyond_frame_type, 2001),
+            (2000, usize::MAX, 1),
+        ] {
+            let result = registry
+                .artifacts(RenderJobArtifactsParams {
+                    job_id: frame_job.clone(),
+                    offset,
+                    limit,
+                })
+                .await
+                .unwrap();
+            assert_eq!(result["frames"].as_array().unwrap().len(), expected);
+            assert_eq!(result["requested_limit"], json!(limit));
+            assert_eq!(
+                result["effective_limit"],
+                json!(u32::try_from(limit).unwrap_or(u32::MAX))
+            );
+            assert_eq!(result["returned"], json!(expected));
+            if offset + (expected as u32) < 2001 {
+                assert_eq!(result["next_offset"], json!(offset + expected as u32));
+            } else {
+                assert!(result["next_offset"].is_null());
+            }
+        }
+        assert!(
+            registry
+                .artifacts(RenderJobArtifactsParams {
+                    job_id: frame_job,
+                    offset: 0,
+                    limit: 0
+                })
+                .await
+                .is_err()
         );
     }
 

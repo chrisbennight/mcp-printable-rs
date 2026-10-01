@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import unittest
 
 from printable_bridge.handlers import BlenderHandlers, HandlerError
-from printable_bridge.inspection import InspectionError, node_tree_info, object_details
+from printable_bridge.inspection import InspectionError, node_tree_info, object_details, page_arguments
 
 
 class NamedList(list):
@@ -101,11 +101,40 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(geometry["total"], 2)
         with self.assertRaises(InspectionError):
             node_tree_info(bpy, {"name": "Absent"})
-        for bad in ({"limit": 0}, {"limit": 101}, {"offset": -1}, {"offset": True}, {"kind": []}):
+        for bad in ({"limit": 0}, {"limit": -1}, {"limit": True}, {"limit": 1.5}, {"offset": -1}, {"offset": True}, {"kind": []}):
             with self.subTest(bad=bad), self.assertRaises(InspectionError):
                 node_tree_info(bpy, {"name": "Paint", **bad})
         self.assertEqual(tree.nodes, nodes)
         self.assertEqual(tree.links, links)
+
+    def test_large_scene_counts_keep_the_scan_budget_and_cursor(self):
+        objects = [NS(name=f"Part{i}", type="MESH") for i in range(10_001)]
+        handler = self.handler(objects)
+        for limit, expected in [(1500, 1500), (2**64 - 1, 10_000)]:
+            first = handler._get_scene_info({"limit": limit, "include_transforms": False})
+            self.assertEqual(len(first["objects"]), expected)
+            self.assertEqual(first["page"], {"requested_limit": limit,
+                             "effective_limit": min(limit, 10_000), "returned": expected})
+            self.assertEqual(first["next_offset"], expected)
+        final = handler._get_scene_info({"offset": 10_000, "limit": 2**64 - 1,
+                                         "include_transforms": False})
+        self.assertEqual(len(final["objects"]), 1)
+        self.assertIsNone(final["next_offset"])
+
+    def test_large_object_and_node_counts_use_finite_collection_bounds(self):
+        nodes = [NS(name=f"Node{i}", bl_idname="ShaderNodeValue", type="VALUE", mute=False)
+                 for i in range(301)]
+        tree = NS(name="Tree", nodes=nodes, links=[])
+        bpy = NS(data=NS(materials=NamedList([NS(name="Paint", node_tree=tree)])))
+        for params, expected in [({}, 20), ({"limit": 200}, 200), ({"limit": 2**64 - 1}, 301),
+                                 ({"offset": 300, "limit": 2**64 - 1}, 1)]:
+            result = node_tree_info(bpy, {"name": "Paint", **params})
+            self.assertEqual(len(result["items"]), expected)
+            self.assertEqual(result["returned"], expected)
+        obj = NS(parent=None, children=nodes, users_collection=[])
+        result = object_details(obj, "hierarchy", 0, 2**64 - 1)
+        self.assertEqual(result["children"]["returned"], 301)
+        self.assertEqual(page_arguments({}), (0, 20))
 
 
 if __name__ == "__main__":

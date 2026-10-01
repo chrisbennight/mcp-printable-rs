@@ -14,12 +14,17 @@ struct Page<T> {
     items: Vec<T>,
     total: Option<usize>,
     next_offset: Option<usize>,
+    requested_limit: usize,
+    effective_limit: Option<usize>,
+    returned: usize,
 }
 #[derive(Serialize, JsonSchema)]
 struct PrinterList {
     printers: Vec<PrinterSummary>,
     total: usize,
     next_offset: Option<usize>,
+    requested_limit: usize,
+    returned: usize,
 }
 #[derive(Serialize, JsonSchema)]
 pub(super) struct PrinterSummary {
@@ -126,11 +131,16 @@ struct QueueList {
     prints: Vec<QueueResult>,
     total: usize,
     next_offset: Option<usize>,
+    requested_limit: usize,
+    returned: usize,
 }
 #[derive(Serialize, JsonSchema)]
 struct ArchiveList {
     archives: Vec<PrintArchive>,
     next_offset: Option<usize>,
+    requested_limit: usize,
+    effective_limit: usize,
+    returned: usize,
 }
 #[derive(Serialize, JsonSchema)]
 struct Control {

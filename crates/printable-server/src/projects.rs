@@ -35,6 +35,7 @@ pub struct ProjectParams {
 #[serde(deny_unknown_fields)]
 pub struct ListParams {
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 
@@ -55,6 +56,7 @@ pub struct PathParams {
 pub struct FilesParams {
     pub project_id: String,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 

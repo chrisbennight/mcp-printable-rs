@@ -94,9 +94,9 @@ fn default_path() -> String {
     ".".to_string()
 }
 fn default_limit() -> usize {
-    printable_workspace::MAX_LIST_LIMIT
+    printable_workspace::DEFAULT_LIST_LIMIT
 }
-fn default_scene_limit() -> u16 {
+fn default_scene_limit() -> usize {
     100
 }
 fn default_execute_timeout_seconds() -> f64 {
@@ -168,9 +168,9 @@ struct ListParams {
     /// Directory under the workspace to list (default `.`).
     #[serde(default = "default_path")]
     path: String,
-    /// Maximum artifacts to return (`1..=1000`, also enforced by the workspace).
+    /// Positive artifact count; defaults to 1000. The workspace scan budget applies.
     #[serde(default = "default_limit")]
-    #[schemars(range(min = 1, max = 1000))]
+    #[schemars(range(min = 1))]
     limit: usize,
 }
 
@@ -265,10 +265,10 @@ struct SceneInfoParams {
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000000))]
     offset: u32,
-    /// Maximum object summaries to return (default 100, maximum 1000).
+    /// Positive object count; defaults to 100. The scene scan budget applies.
     #[serde(default = "default_scene_limit")]
-    #[schemars(range(min = 1, max = 1000))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Case-insensitive literal substring of the object name.
     #[serde(skip_serializing_if = "Option::is_none")]
     name_contains: Option<String>,
@@ -293,8 +293,8 @@ struct ProjectDependenciesParams {
     #[schemars(range(min = 0, max = 1000000))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -320,10 +320,10 @@ struct ObjectInfoParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0, max = 1000000))]
     offset: Option<u32>,
-    /// Section page size (default 20, maximum 100).
+    /// Positive section page size; defaults to 20.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: Option<u16>,
+    #[schemars(range(min = 1))]
+    limit: Option<usize>,
 }
 
 #[derive(Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -342,7 +342,7 @@ enum NodeTreeSection {
     Links,
 }
 
-fn default_inspection_limit() -> u16 {
+fn default_inspection_limit() -> usize {
     20
 }
 
@@ -364,8 +364,8 @@ struct NodeTreeInfoParams {
     #[schemars(range(min = 0, max = 1000000))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1335,8 +1335,8 @@ struct EditingStateParams {
     #[schemars(range(min = 0, max = 1000000))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 /// One tool's static metadata. `schema`/`annotations` are `fn` pointers so each
@@ -2329,9 +2329,9 @@ fn validate_scene_page(params: &SceneInfoParams) -> Result<(), ToolError> {
             "offset must be an integer between 0 and 1000000".to_string(),
         ));
     }
-    if !(1..=1000).contains(&params.limit) {
+    if params.limit == 0 {
         return Err(ToolError::Validation(
-            "limit must be an integer between 1 and 1000".to_string(),
+            "limit must be a positive integer".to_string(),
         ));
     }
     Ok(())
@@ -2346,10 +2346,10 @@ fn validate_inspection_name(name: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn validate_inspection_page(offset: u32, limit: u16) -> Result<(), ToolError> {
-    if offset > 1_000_000 || !(1..=100).contains(&limit) {
+fn validate_inspection_page(offset: u32, limit: usize) -> Result<(), ToolError> {
+    if offset > 1_000_000 || limit == 0 {
         return Err(ToolError::Validation(
-            "inspection offset must be between 0 and 1000000 and limit between 1 and 100"
+            "inspection offset must be between 0 and 1000000 and limit must be positive"
                 .to_string(),
         ));
     }

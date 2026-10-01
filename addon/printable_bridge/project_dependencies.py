@@ -40,6 +40,8 @@ def inspect_dependencies(bpy, workspace_root, project_id, params):
                   "scale_length": scale},
         "scope": "blender_registered_external_files",
         "items": items,
+        "requested_limit": limit,
+        "returned": len(items),
         "total": len(paths),
         "next_offset": end if end < len(paths) else None,
         "limitations": [

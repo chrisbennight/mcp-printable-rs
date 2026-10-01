@@ -45,6 +45,14 @@ class EditorContextTests(unittest.TestCase):
         self.assertEqual(observed["items"], ["Part2", "Part3"])
         self.assertEqual(observed["next_offset"], 4)
 
+    def test_large_selection_counts_preserve_defaults_and_offsets(self):
+        self.bpy.context.selected_objects = [NS(name=f"Part{i}") for i in range(301)]
+        for params, expected in [({}, 20), ({"limit":200}, 200), ({"limit":2**64 - 1}, 301),
+                                 ({"offset":300, "limit":2**64 - 1}, 1)]:
+            observed = editing_state(self.bpy, {"section":"selection", **params})
+            self.assertEqual(len(observed["items"]), expected)
+            self.assertEqual(observed["returned"], expected)
+
     def test_context_restores_after_failure(self):
         with self.assertRaisesRegex(ValueError, "source failed"):
             with execution_context(self.bpy, {"area_type": "NODE_EDITOR"}):

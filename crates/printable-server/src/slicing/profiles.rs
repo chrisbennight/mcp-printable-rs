@@ -49,6 +49,7 @@ pub struct ProfileQuery {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 
@@ -67,6 +68,7 @@ pub struct SettingsQuery {
     #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1))]
     pub limit: usize,
 }
 
@@ -99,9 +101,9 @@ impl Profiles {
     }
 
     pub fn settings(&self, query: SettingsQuery) -> Result<Value, ToolError> {
-        if !(1..=100).contains(&query.limit) || query.query.len() > 256 {
+        if query.limit == 0 || query.query.len() > 256 {
             return Err(invalid(
-                "settings discovery requires a limit of 1–100 and a query of at most 256 bytes",
+                "settings discovery requires a positive limit and a query of at most 256 bytes",
             ));
         }
         let resolved = self.resolve(query.category, &query.profile)?;
@@ -119,7 +121,7 @@ impl Profiles {
             .collect();
         let next = query.offset.saturating_add(settings.len());
         Ok(
-            json!({"profile":query.profile.name,"category":query.category,"settings":settings,"total":total,
+            json!({"profile":query.profile.name,"category":query.category,"requested_limit":query.limit,"returned":settings.len(),"settings":settings,"total":total,
                 "next_offset":(next < total).then_some(next),
                 "value_format":"Orca strings or nonempty string arrays; null means this profile does not specify a value",
                 "build_plates":super::setup::BuildPlate::ALL.iter().map(|plate| json!({"name":plate,"temperature_setting":plate.temperature_key(),"initial_layer_temperature_setting":format!("{}_initial_layer",plate.temperature_key())})).collect::<Vec<_>>()
@@ -230,9 +232,9 @@ impl Profiles {
     }
 
     pub fn discover(&self, query: ProfileQuery) -> Result<Value, ToolError> {
-        if !(1..=100).contains(&query.limit) || query.query.len() > 256 {
+        if query.limit == 0 || query.query.len() > 256 {
             return Err(invalid(
-                "profile discovery limit must be 1–100 and query at most 256 bytes",
+                "profile discovery requires a positive limit and a query of at most 256 bytes",
             ));
         }
         let needle = query.query.to_lowercase();
@@ -272,7 +274,9 @@ impl Profiles {
             .take(query.limit)
             .collect();
         let next = query.offset.saturating_add(items.len());
-        Ok(json!({"profiles":items,"total":total,"next_offset":(next < total).then_some(next)}))
+        Ok(
+            json!({"profiles":items,"total":total,"requested_limit":query.limit,"returned":items.len(),"next_offset":(next < total).then_some(next)}),
+        )
     }
 }
 
@@ -290,6 +294,74 @@ fn invalid(message: &str) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_and_setting_pages_honor_positive_counts_and_defaults() {
+        let entries = (0..301)
+            .map(|i| {
+                let name = format!("profile-{i:03}");
+                let value =
+                    serde_json::from_value(json!({"name":name,"instantiation":"true"})).unwrap();
+                (name, value)
+            })
+            .collect();
+        let profiles = Profiles {
+            entries: BTreeMap::from([(Category::Process, entries)]),
+            keys: BTreeMap::from([(
+                Category::Process,
+                (0..301).map(|i| format!("setting-{i:03}")).collect(),
+            )]),
+        };
+        for (limit, offset, returned, next) in [
+            (None, 0, 25, Some(25)),
+            (Some(200), 0, 200, Some(200)),
+            (Some(usize::MAX), 0, 301, None),
+            (Some(200), 200, 101, None),
+        ] {
+            for settings in [false, true] {
+                let mut input = json!({"category":"process","offset":offset});
+                if let Some(limit) = limit {
+                    input["limit"] = json!(limit);
+                }
+                let (result, schema) = if settings {
+                    input["profile"] = json!({"name":"profile-000"});
+                    (
+                        profiles
+                            .settings(serde_json::from_value(input.clone()).unwrap())
+                            .unwrap(),
+                        serde_json::to_value(schemars::schema_for!(SettingsQuery)).unwrap(),
+                    )
+                } else {
+                    (
+                        profiles
+                            .discover(serde_json::from_value(input.clone()).unwrap())
+                            .unwrap(),
+                        serde_json::to_value(schemars::schema_for!(ProfileQuery)).unwrap(),
+                    )
+                };
+                let validator = jsonschema::validator_for(&schema).unwrap();
+                assert!(validator.is_valid(&input));
+                assert_eq!(
+                    result[if settings { "settings" } else { "profiles" }]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    returned
+                );
+                assert_eq!(result["requested_limit"], limit.unwrap_or(25));
+                assert_eq!(result["returned"], returned);
+                assert_eq!(result["next_offset"], json!(next));
+                input["limit"] = json!(0);
+                assert!(!validator.is_valid(&input));
+                let invalid = if settings {
+                    profiles.settings(serde_json::from_value(input).unwrap())
+                } else {
+                    profiles.discover(serde_json::from_value(input).unwrap())
+                };
+                assert!(invalid.is_err());
+            }
+        }
+    }
 
     #[test]
     fn resolves_actual_parent_values_and_rejects_missing_parents_and_identity_overrides() {
