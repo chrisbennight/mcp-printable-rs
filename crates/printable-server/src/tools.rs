@@ -1967,9 +1967,10 @@ async fn dispatch_value(
         }
         "printable_workspace_list" => {
             let p: ListParams = de(args)?;
+            let requested_limit = p.limit;
             let ws = Arc::clone(workspace);
             let metas = blocking(move || ws.list_artifacts(&p.path, p.limit)).await?;
-            Ok(serde_json::to_value(metas)?)
+            Ok(json!({"requested_limit":requested_limit,"returned":metas.len(),"entries":metas}))
         }
         "printable_workspace_read" => {
             let p: ReadParams = de(args)?;

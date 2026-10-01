@@ -1565,9 +1565,11 @@ async fn workspace_write_read_list_round_trip() {
     )
     .await
     .expect("list ok");
-    let paths: Vec<&str> = listed
+    assert_eq!(listed["requested_limit"], 1000);
+    assert_eq!(listed["returned"], 1);
+    let paths: Vec<&str> = listed["entries"]
         .as_array()
-        .expect("list is an array")
+        .expect("entries are an array")
         .iter()
         .filter_map(|m| m["path"].as_str())
         .collect();
@@ -1606,8 +1608,57 @@ async fn workspace_video_is_discoverable_but_never_base64_transferable() {
     )
     .await
     .expect("list video");
-    assert_eq!(listed[0]["path"], json!("preview.mp4"));
-    assert_eq!(listed[0]["media_type"], json!("video/mp4"));
+    assert_eq!(listed["entries"][0]["path"], json!("preview.mp4"));
+    assert_eq!(listed["entries"][0]["media_type"], json!("video/mp4"));
+}
+
+#[tokio::test]
+async fn artifact_pages_report_requested_and_returned_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    for index in 0..1101 {
+        ws.write_artifact(&format!("file-{index}.stl"), b"fixture", false)
+            .expect("artifact");
+    }
+    let up = uploads();
+    let blender = client("127.0.0.1", 9);
+    let cfg = settings("127.0.0.1", 9);
+    for (arguments, requested, returned) in [
+        (json!({}), 1000, 1000),
+        (json!({"limit": 1500}), 1500, 1101),
+        (json!({"limit": usize::MAX}), usize::MAX, 1101),
+    ] {
+        let listed = dispatch(
+            &ws,
+            &up,
+            &blender,
+            &cfg,
+            "printable_workspace_list",
+            arguments,
+        )
+        .await
+        .expect("list");
+        assert_eq!(listed["requested_limit"], requested);
+        assert_eq!(listed["returned"], returned);
+        assert_eq!(
+            listed["entries"].as_array().expect("entries").len(),
+            returned
+        );
+    }
+    assert_eq!(
+        dispatch(
+            &ws,
+            &up,
+            &blender,
+            &cfg,
+            "printable_workspace_list",
+            json!({"limit":0})
+        )
+        .await
+        .expect_err("zero count")
+        .code(),
+        "invalid_limit"
+    );
 }
 
 #[tokio::test]

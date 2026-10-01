@@ -92,8 +92,8 @@ inspection, explicit Python UI targets, and their lifetime semantics.
 
 Inspection, artifact and project listings, retained job history, frame
 artifacts, slicing profiles and settings, and printer and print pages accept
-positive caller counts and preserve their existing defaults. Inspection pages
-report requested and returned counts. Scene pages
+positive caller counts and preserve their existing defaults. Inspection,
+artifact and project pages report `requested_limit` and `returned`. Scene pages
 also report their effective count within the existing scene-scan budget; follow
 `next_offset` even after an empty filtered page. Job artifact pages report the
 effective count within the native frame-index range. These counts do not change

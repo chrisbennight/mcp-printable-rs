@@ -208,6 +208,9 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
             json!({"project_id":params.project_id,"path":resolve(workspace, &params.project_id, &params.path)?}),
         ),
         ProjectRequest::List(params) => {
+            if params.limit == 0 {
+                return Err(WsError::InvalidLimit.into());
+            }
             let files = match workspace.list_artifacts(".printable/projects", params.limit) {
                 Ok(files) => files,
                 Err(WsError::NotFound(_)) => Vec::new(),
@@ -225,9 +228,14 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
                     })?;
                 projects.push(get(workspace, id)?);
             }
-            Ok(json!({"projects":projects,"limit_reached":limit_reached}))
+            Ok(
+                json!({"requested_limit":params.limit,"returned":projects.len(),"projects":projects,"limit_reached":limit_reached}),
+            )
         }
         ProjectRequest::Files(params) => {
+            if params.limit == 0 {
+                return Err(WsError::InvalidLimit.into());
+            }
             let project = get(workspace, &params.project_id)?;
             let entries = match workspace.list_artifacts(&project.root, params.limit) {
                 Ok(entries) => entries,
@@ -235,7 +243,7 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
                 Err(error) => return Err(error.into()),
             };
             Ok(
-                json!({"project_id":project.project_id,"limit_reached":entries.len() == params.limit,"entries":entries}),
+                json!({"project_id":project.project_id,"requested_limit":params.limit,"returned":entries.len(),"limit_reached":entries.len() == params.limit,"entries":entries}),
             )
         }
     }
@@ -244,6 +252,76 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_pages_report_counts_for_defaults_and_large_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        for index in 0..1101 {
+            create(
+                &workspace,
+                CreateParams {
+                    project_id: format!("project-{index}"),
+                    name: format!("Project {index}"),
+                    description: String::new(),
+                    adopt_existing: false,
+                },
+            )
+            .unwrap();
+            workspace
+                .write_artifact(
+                    &format!("projects/project-0/file-{index}.stl"),
+                    b"fixture",
+                    false,
+                )
+                .unwrap();
+        }
+        for (requested, returned) in [(100, 100), (1500, 1101), (usize::MAX, 1101)] {
+            for (request, collection) in [
+                (
+                    ProjectRequest::List(ListParams { limit: requested }),
+                    "projects",
+                ),
+                (
+                    ProjectRequest::Files(FilesParams {
+                        project_id: "project-0".into(),
+                        limit: requested,
+                    }),
+                    "entries",
+                ),
+            ] {
+                let output = dispatch(&workspace, request).unwrap();
+                assert_eq!(output["requested_limit"], requested);
+                assert_eq!(output["returned"], returned);
+                assert_eq!(output[collection].as_array().unwrap().len(), returned);
+                assert_eq!(output["limit_reached"], returned == requested);
+            }
+        }
+        assert_eq!(
+            serde_json::from_value::<ListParams>(json!({}))
+                .unwrap()
+                .limit,
+            100
+        );
+        assert_eq!(
+            serde_json::from_value::<FilesParams>(json!({"project_id":"project-0"}))
+                .unwrap()
+                .limit,
+            100
+        );
+        for request in [
+            ProjectRequest::List(ListParams { limit: 0 }),
+            ProjectRequest::Files(FilesParams {
+                project_id: "project-0".into(),
+                limit: 0,
+            }),
+        ] {
+            assert_eq!(
+                dispatch(&workspace, request).unwrap_err().code(),
+                "invalid_limit"
+            );
+        }
+    }
 
     #[test]
     fn projects_survive_reopen_and_resolve_distinct_backend_paths() {

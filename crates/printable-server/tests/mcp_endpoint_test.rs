@@ -1278,6 +1278,8 @@ async fn workflow_artifact_upload_and_job_queries_have_separate_lifecycles() {
             serde_json::from_str(listed["content"][0]["text"].as_str().expect("listing text"))
                 .expect("listing JSON");
         assert_eq!(listed["structuredContent"], text);
+        assert_eq!(text["requested_limit"], 1000);
+        assert!(text["returned"].as_u64().expect("returned") >= 1);
         assert!(
             text["entries"]
                 .as_array()
