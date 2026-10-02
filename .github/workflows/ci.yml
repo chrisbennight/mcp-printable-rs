@@ -231,6 +231,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Scan and publish tested images
         run: python3 scripts/publish_images.py publish "$GITHUB_SHA" target/release/image-ids.json
+      - name: Retain image scan evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-security-scans
+          path: target/release/scans/*.json
+          if-no-files-found: ignore
+          retention-days: 2
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-image
