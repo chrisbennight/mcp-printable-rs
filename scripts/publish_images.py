@@ -46,7 +46,7 @@ def publish_images(revision, expected, scan_directory=Path("target/release/scans
         print(f"RELEASE_SCAN_ROLE role={role} image={image}", flush=True)
     approved = True
     for role, image in images.items():
-        if not emit_evaluation(image, evaluate_report(reports[role], policy, kev)):
+        if not emit_evaluation(image, evaluate_report(reports[role], policy, kev), reports[role]):
             approved = False
     if not approved:
         raise ValueError("image security check failed")

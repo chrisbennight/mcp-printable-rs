@@ -208,7 +208,53 @@ def evaluate_report(
     )
 
 
-def emit_evaluation(image: str, evaluation: ScanEvaluation) -> bool:
+def emit_blocked_packages(
+    image: str, evaluation: ScanEvaluation, report: dict[str, Any]
+) -> None:
+    blocked = {finding.vulnerability_id for finding in evaluation.blocking}
+    emitted = 0
+    for match in report["matches"]:
+        identifiers = sorted(vulnerability_ids(match) & blocked)
+        if not identifiers:
+            continue
+        if emitted == 50:
+            print("RELEASE_SCAN_PACKAGES_TRUNCATED image=" + image, file=sys.stderr)
+            break
+        artifact = match.get("artifact")
+        artifact = artifact if isinstance(artifact, dict) else {}
+        truncated = False
+
+        def bounded(value: Any) -> str | None:
+            nonlocal truncated
+            if not isinstance(value, str):
+                return None
+            if len(value) > 512:
+                truncated = True
+            return value[:512]
+
+        locations = artifact.get("locations")
+        locations = locations if isinstance(locations, list) else []
+        truncated = len(locations) > 10 or len(identifiers) > 50
+        evidence = {
+            "image": image,
+            "vulnerability_ids": [bounded(value) for value in identifiers[:50]],
+            "package": bounded(artifact.get("name")),
+            "version": bounded(artifact.get("version")),
+            "type": bounded(artifact.get("type")),
+            "locations": [
+                bounded(location.get("path"))
+                for location in locations[:10]
+                if isinstance(location, dict)
+            ],
+            "truncated": truncated,
+        }
+        print("RELEASE_SCAN_PACKAGE " + json.dumps(evidence, sort_keys=True), file=sys.stderr)
+        emitted += 1
+
+
+def emit_evaluation(
+    image: str, evaluation: ScanEvaluation, report: dict[str, Any] | None = None
+) -> bool:
     for finding in evaluation.unremediated:
         print(
             "RELEASE_SCAN_UNREMEDIATED "
@@ -223,6 +269,8 @@ def emit_evaluation(image: str, evaluation: ScanEvaluation) -> bool:
         if len(evaluation.blocking) > 50:
             summary += f", and {len(evaluation.blocking) - 50} more"
         print(f"RELEASE_SCAN_BLOCKED image={image} findings={summary}", file=sys.stderr)
+        if report is not None:
+            emit_blocked_packages(image, evaluation, report)
         return False
     print(f"RELEASE_SCAN_OK image={image}")
     return True
@@ -268,7 +316,8 @@ def main() -> int:
         blocked = False
         for image in images:
             try:
-                evaluation = evaluate_report(scan(image), policy, kev_ids)
+                report = scan(image)
+                evaluation = evaluate_report(report, policy, kev_ids)
             except (
                 json.JSONDecodeError,
                 OSError,
@@ -282,7 +331,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 continue
-            if not emit_evaluation(image, evaluation):
+            if not emit_evaluation(image, evaluation, report):
                 blocked = True
         return 1 if blocked else 0
     except (
