@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -195,6 +196,53 @@ class ReleaseSecurityTests(unittest.TestCase):
             ),
             {"CVE-2026-4000"},
         )
+
+    def test_blocked_package_evidence_is_allowlisted_and_json_escaped(self) -> None:
+        match = {
+            "vulnerability": {
+                "id": "GHSA-example", "severity": "High",
+                "fix": {"state": "not-fixed", "versions": []},
+            },
+            "relatedVulnerabilities": [{"id": "CVE-2026-3909"}],
+            "artifact": {
+                "name": "example\npackage", "version": "1.2.3", "type": "binary",
+                "locations": [{"path": "/app/example.so", "extra": "unrelated"}],
+                "metadata": {"unrelated": "excluded"},
+            },
+        }
+        report = {"matches": [match]}
+        evaluation = release_security.evaluate_report(report, self.policy, {"CVE-2026-3909"})
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            passed = release_security.emit_evaluation("sha256:example", evaluation, report)
+        self.assertFalse(passed)
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        evidence = json.loads(lines[1].removeprefix("RELEASE_SCAN_PACKAGE "))
+        self.assertEqual(evidence, {
+            "image": "sha256:example", "vulnerability_ids": ["CVE-2026-3909"],
+            "package": "example\npackage", "version": "1.2.3", "type": "binary",
+            "locations": ["/app/example.so"], "truncated": False,
+        })
+        self.assertNotIn("unrelated", stderr.getvalue())
+
+    def test_package_evidence_is_bounded_and_reports_truncation(self) -> None:
+        report = {"matches": [{
+            "vulnerability": {"id": "CVE-2026-3909", "severity": "High", "fix": {"state": "not-fixed"}},
+            "artifact": {"name": "x" * 600, "locations": [{"path": "p" * 600}] * 11},
+        }] * 51}
+        evaluation = release_security.evaluate_report(report, self.policy, {"CVE-2026-3909"})
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            self.assertFalse(release_security.emit_evaluation("sha256:example", evaluation, report))
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 52)
+        evidence = json.loads(lines[1].removeprefix("RELEASE_SCAN_PACKAGE "))
+        self.assertTrue(evidence["truncated"])
+        self.assertEqual(len(evidence["package"]), 512)
+        self.assertEqual(len(evidence["locations"]), 10)
+        self.assertEqual(len(evidence["locations"][0]), 512)
+        self.assertIn("RELEASE_SCAN_PACKAGES_TRUNCATED", lines[-1])
 
     def test_scanner_version_must_match_the_release_policy(self) -> None:
         with mock.patch.object(
