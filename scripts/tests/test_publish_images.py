@@ -74,7 +74,7 @@ class PublishImagesTests(unittest.TestCase):
                 patch("publish_images.tested_images", return_value=self.images), \
                 patch("publish_images.load_policy", return_value={"scanner_version": "0.110.0", "fail_on_kev": False}), \
                 patch("publish_images.verify_grype_version"), \
-                patch("publish_images.scan", return_value={}), \
+                patch("publish_images.scan", return_value={}) as scan, \
                 patch("publish_images.evaluate_report", return_value=ScanEvaluation((), ())), \
                 patch("publish_images.emit_evaluation", return_value=False), \
                 patch("publish_images.subprocess.run") as run, \
@@ -83,6 +83,8 @@ class PublishImagesTests(unittest.TestCase):
                 publish_images("a" * 40, self.images, Path(directory))
             run.assert_not_called()
             record.assert_not_called()
-            evidence = json.loads((Path(directory) / "server.json").read_text())
-            self.assertEqual(evidence["image_id"], self.images["server"])
-            self.assertEqual(evidence["report"], {})
+            self.assertEqual(scan.call_count, len(self.images))
+            for role, image in self.images.items():
+                evidence = json.loads((Path(directory) / (role + ".json")).read_text())
+                self.assertEqual(evidence["image_id"], image)
+                self.assertEqual(evidence["report"], {})

@@ -37,13 +37,19 @@ def publish_images(revision, expected, scan_directory=Path("target/release/scans
     verify_grype_version(policy["scanner_version"])
     kev = load_kev_ids() if policy["fail_on_kev"] else set()
     scan_directory.mkdir(parents=True, exist_ok=True)
+    reports = {}
     for role, image in images.items():
         report = scan("docker:" + image)
+        reports[role] = report
         evidence = {"revision": revision, "role": role, "image_id": image, "report": report}
         (scan_directory / (role + ".json")).write_text(json.dumps(evidence) + "\n")
         print(f"RELEASE_SCAN_ROLE role={role} image={image}", flush=True)
-        if not emit_evaluation(image, evaluate_report(report, policy, kev)):
-            raise ValueError("image security check failed")
+    approved = True
+    for role, image in images.items():
+        if not emit_evaluation(image, evaluate_report(reports[role], policy, kev)):
+            approved = False
+    if not approved:
+        raise ValueError("image security check failed")
     identity = ReleaseIdentity.from_environment()
     references = {}
     for role, image in images.items():
