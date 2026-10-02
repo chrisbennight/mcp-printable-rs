@@ -23,6 +23,14 @@ matched package, version and file locations as bounded JSON records; truncation
 is explicit and the retained report contains the full evidence. The vulnerability policy
 continues to decide whether publication may proceed.
 
+Scans apply the reviewed [vendor fixes](../release/vendor-fixes.vex.json) in
+OpenVEX format. These record vendor-confirmed fixes for exact package versions
+when scanner data still reports the vulnerability. They do not waive an
+unfixed vulnerability or suppress the same vulnerability in other packages or
+versions. Grype retains the corrected matches and their VEX reason under
+`ignoredMatches` in each scan report. The severity and known-exploited
+vulnerability policy continues to apply to every remaining match.
+
 Server, Blender, CAD and slicer images receive `sha-<commit>` tags in GHCR.
 The publisher checks that downloaded images match the tested image IDs, then
 publishes the image-set record with their registry digests. The `release-image`

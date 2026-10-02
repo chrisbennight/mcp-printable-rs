@@ -21,6 +21,39 @@ class ReleaseSecurityTests(unittest.TestCase):
             "ignored_vulnerabilities": [],
         }
 
+    def test_scan_applies_vendor_fix_evidence_and_retains_the_full_report(self) -> None:
+        report = {"matches": [], "ignoredMatches": [{"reason": "vendor fixed"}]}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(report))
+        with mock.patch("release_security.subprocess.run", return_value=completed) as run:
+            self.assertEqual(release_security.scan("docker:sha256:fixture"), report)
+        run.assert_called_once_with(
+            ["grype", "docker:sha256:fixture", "--output", "json", "--vex",
+             str(release_security.VENDOR_FIXES_PATH)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=release_security.GRYPE_TIMEOUT_SECONDS,
+        )
+
+    def test_vendor_fix_evidence_is_limited_to_confirmed_package_versions(self) -> None:
+        document = json.loads(release_security.VENDOR_FIXES_PATH.read_text())
+        self.assertEqual(document["@context"], "https://openvex.dev/ns/v0.2.0")
+        self.assertEqual(len(document["statements"]), 1)
+        statement = document["statements"][0]
+        self.assertEqual(statement["status"], "fixed")
+        self.assertEqual(statement["vulnerability"]["name"], "CVE-2026-3909")
+        self.assertEqual(
+            {product["@id"] for product in statement["products"]},
+            {
+                "pkg:deb/debian/libjavascriptcoregtk-4.1-0@2.54.0-1~deb13u1",
+                "pkg:deb/debian/libwebkit2gtk-4.1-0@2.54.0-1~deb13u1",
+            },
+        )
+        self.assertIn("https://security-tracker.debian.org/tracker/data/json",
+                      statement["status_notes"])
+        self.assertIn("https://webkitgtk.org/security/WSA-2026-0006.html",
+                      statement["status_notes"])
+
     def test_evaluate_blocks_high_severity_and_related_kev(self) -> None:
         report = {
             "matches": [
