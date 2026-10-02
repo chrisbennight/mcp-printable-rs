@@ -15,6 +15,12 @@ images and checks their IDs, source revision and runtime configuration. It scans
 them under the existing vulnerability policy before pushing anything. It does
 not rebuild the runtime images.
 
+The `release-security-scans` Actions artifact retains completed Grype reports,
+including when a finding blocks publication. Each report identifies its source
+revision, image role and tested image ID, so maintainers can inspect the matched
+package and version before choosing a remediation. The vulnerability policy
+continues to decide whether publication may proceed.
+
 Server, Blender, CAD and slicer images receive `sha-<commit>` tags in GHCR.
 The publisher checks that downloaded images match the tested image IDs, then
 publishes the image-set record with their registry digests. The `release-image`

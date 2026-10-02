@@ -1,5 +1,8 @@
 """Only the tested images may be published; failures never publish a release record."""
 import unittest
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from publish_images import publish_images, tested_images, publish_update_tag
@@ -34,7 +37,8 @@ class PublishImagesTests(unittest.TestCase):
         def inspect(reference):
             role = next(role for role in ROLES if ("mcp-printable-" + role) in reference) if "mcp-printable-rs" not in reference else "server"
             return {"Id": self.images[role]}, []
-        with patch("publish_images.tested_images", return_value=self.images), \
+        with TemporaryDirectory() as directory, \
+                patch("publish_images.tested_images", return_value=self.images), \
                 patch("publish_images.load_policy", return_value={"scanner_version": "0.110.0", "fail_on_kev": False}), \
                 patch("publish_images.verify_grype_version"), \
                 patch("publish_images.scan", side_effect=lambda image: events.append(["scan", image]) or {}), \
@@ -46,7 +50,12 @@ class PublishImagesTests(unittest.TestCase):
                 patch("publish_images.verify", return_value=[]), \
                 patch("publish_images.publish", return_value="release") as record, \
                 patch("publish_images.publish_update_tag") as update:
-            self.assertEqual(publish_images("a" * 40, self.images), "release")
+            self.assertEqual(publish_images("a" * 40, self.images, Path(directory)), "release")
+            for role, image in self.images.items():
+                evidence = json.loads((Path(directory) / (role + ".json")).read_text())
+                self.assertEqual(evidence["image_id"], image)
+                self.assertEqual(evidence["revision"], "a" * 40)
+                self.assertEqual(evidence["role"], role)
             self.assertTrue(all(event[0] == "scan" for event in events[:4]))
             self.assertEqual([event[2] for event in events if event[:2] == ["docker", "tag"]], list(self.images.values()))
             record.assert_called_once()
@@ -61,15 +70,21 @@ class PublishImagesTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 2 if moves else 0)
 
     def test_scan_failure_prevents_all_pushes(self):
-        with patch("publish_images.tested_images", return_value=self.images), \
+        with TemporaryDirectory() as directory, \
+                patch("publish_images.tested_images", return_value=self.images), \
                 patch("publish_images.load_policy", return_value={"scanner_version": "0.110.0", "fail_on_kev": False}), \
                 patch("publish_images.verify_grype_version"), \
-                patch("publish_images.scan", return_value={}), \
+                patch("publish_images.scan", return_value={}) as scan, \
                 patch("publish_images.evaluate_report", return_value=ScanEvaluation((), ())), \
                 patch("publish_images.emit_evaluation", return_value=False), \
                 patch("publish_images.subprocess.run") as run, \
                 patch("publish_images.publish") as record:
             with self.assertRaises(ValueError):
-                publish_images("a" * 40, self.images)
+                publish_images("a" * 40, self.images, Path(directory))
             run.assert_not_called()
             record.assert_not_called()
+            self.assertEqual(scan.call_count, len(self.images))
+            for role, image in self.images.items():
+                evidence = json.loads((Path(directory) / (role + ".json")).read_text())
+                self.assertEqual(evidence["image_id"], image)
+                self.assertEqual(evidence["report"], {})
