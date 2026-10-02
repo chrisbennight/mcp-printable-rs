@@ -1,0 +1,24 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/chrisbennight/mcp-printable-rs/blob/main/release/vendor-fixes.vex.json",
+  "author": "Printable maintainers",
+  "timestamp": "2026-10-02T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-3909"
+      },
+      "products": [
+        {
+          "@id": "pkg:deb/debian/libjavascriptcoregtk-4.1-0@2.54.0-1~deb13u1"
+        },
+        {
+          "@id": "pkg:deb/debian/libwebkit2gtk-4.1-0@2.54.0-1~deb13u1"
+        }
+      ],
+      "status": "fixed",
+      "status_notes": "Debian's security tracker records webkit2gtk in trixie as resolved at 2.54.0-1~deb13u1. WebKitGTK WSA-2026-0006 identifies 2.54.0 as the fixed release. Sources: https://security-tracker.debian.org/tracker/data/json and https://webkitgtk.org/security/WSA-2026-0006.html. This statement applies only to the listed Debian binary packages at the exact version."
+    }
+  ]
+}

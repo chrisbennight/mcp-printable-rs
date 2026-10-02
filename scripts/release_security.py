@@ -17,6 +17,7 @@ from release_identity import ReleaseIdentity
 
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = ROOT / "release" / "security-policy.json"
+VENDOR_FIXES_PATH = ROOT / "release" / "vendor-fixes.vex.json"
 KEV_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/"
     "known_exploited_vulnerabilities.json"
@@ -278,7 +279,7 @@ def emit_evaluation(
 
 def scan(image: str) -> dict[str, Any]:
     result = subprocess.run(
-        ["grype", image, "--output", "json"],
+        ["grype", image, "--output", "json", "--vex", str(VENDOR_FIXES_PATH)],
         check=True,
         capture_output=True,
         text=True,
