@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -101,7 +101,7 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
       - name: Validate GitHub workflows
         if: steps.scope.outputs.workflows == 'true'
-        run: '"${RUNNER_TEMP}/actionlint"'
+        run: '"${RUNNER_TEMP}/actionlint" -ignore ''unexpected key "queue" for "concurrency" section'''
 
   fuzz:
     name: Confined-source fuzz smoke
@@ -138,6 +138,7 @@ jobs:
     name: Container integration (software graphics)
     outputs:
       images: ${{ steps.scope.outputs.images }}
+      publish: ${{ steps.scope.outputs.publish }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -247,9 +248,13 @@ jobs:
           retention-days: 2
 
   publish:
+    concurrency:
+      group: printable-image-publication
+      queue: max
+      cancel-in-progress: false
     name: Publish images
     needs: [verify, workflow, fuzz, containers]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.containers.outputs.images == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.containers.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -258,7 +263,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          persist-credentials: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: tested-images

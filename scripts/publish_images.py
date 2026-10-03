@@ -2,15 +2,18 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+from tempfile import TemporaryDirectory
 
 from release_identity import ReleaseIdentity
 from release_record import ROLES, publish
 from release_security import load_policy, verify_grype_version, load_kev_ids, scan, evaluate_report, emit_evaluation
 from verify_release_image import inspect_image, verify
 
+ROOT = Path(__file__).resolve().parents[1]
 
 def tested_images(revision):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
@@ -71,15 +74,29 @@ def publish_images(revision, expected, scan_directory=Path("target/release/scans
 
 
 def publish_update_tag(revision, reference, identity):
-    # Main CI runs are serialized; an older rerun must not replace the discovery tag.
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("source revision must be a full Git commit")
+    # Publication is serialized; newer test or documentation commits need no new image.
+    subprocess.check_output(
+        ["git", "fetch", "--quiet", "--no-tags", "origin", "refs/heads/main"], cwd=ROOT)
     current_main = subprocess.check_output(
-        ["git", "ls-remote", "origin", "refs/heads/main"], text=True).split()
-    if len(current_main) != 2 or not re.fullmatch(r"[0-9a-f]{40}", current_main[0]) or current_main[1] != "refs/heads/main":
+        ["git", "rev-parse", "FETCH_HEAD"], cwd=ROOT, text=True).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", current_main):
         raise ValueError("could not resolve main for update discovery")
-    if current_main == [revision, "refs/heads/main"]:
-        channel = identity.repository("pair") + ":main"
-        subprocess.run(["docker", "tag", reference, channel], check=True)
-        subprocess.run(["docker", "push", channel], check=True)
+    subprocess.check_output(["git", "merge-base", "--is-ancestor", revision, current_main], cwd=ROOT)
+    with TemporaryDirectory(prefix="printable-publication-") as directory:
+        output = Path(directory) / "scope"
+        subprocess.check_output(
+            ["bash", str(ROOT / "scripts/ci-scope.sh")], cwd=ROOT,
+            env=os.environ | {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+                              "BASE_SHA": revision, "TARGET_SHA": current_main,
+                              "GITHUB_OUTPUT": str(output)})
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    if values["publish"] == "true":
+        return
+    channel = identity.repository("pair") + ":main"
+    subprocess.run(["docker", "tag", reference, channel], check=True)
+    subprocess.run(["docker", "push", channel], check=True)
 
 
 def main():

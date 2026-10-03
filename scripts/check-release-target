@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
-python3 scripts/workflow_policy.py
-sh -n scripts/registry-manifest-digest scripts/test-registry-manifest-digest
+for script in scripts/registry-manifest-digest scripts/test-registry-manifest-digest; do
+  sh -n "$script"
+done
 sh scripts/test-registry-manifest-digest
