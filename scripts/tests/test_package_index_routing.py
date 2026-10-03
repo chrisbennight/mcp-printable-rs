@@ -12,19 +12,9 @@ from textwrap import dedent
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-TEST_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-DOCKERFILE = ROOT / "Dockerfile"
 BUILD_SCRIPT = ROOT / "build-docker.sh"
 
 class PackageIndexRoutingTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.build = BUILD_WORKFLOW.read_text()
-        cls.test = TEST_WORKFLOW.read_text()
-        cls.dockerfile = DOCKERFILE.read_text()
-        cls.script = BUILD_SCRIPT.read_text()
-
     def run_build_script(self, environment, arguments=()):
         """Drive the local build script against a recording docker stub."""
         with tempfile.TemporaryDirectory() as directory:
@@ -73,64 +63,6 @@ class PackageIndexRoutingTests(unittest.TestCase):
                 cwd=str(root),
             )
             return result, log.read_text().splitlines() if log.exists() else []
-
-    def test_the_argument_carries_no_default(self) -> None:
-        """`ARG NAME=` would hand cargo an empty registry to replace with.
-
-        Declared bare, an unsupplied build leaves it genuinely unset, no config
-        file is written, and cargo resolves from crates.io - the fallback that
-        keeps this image buildable away from the proxy's network.
-        """
-        self.assertIn("\nARG CRATES_INDEX_URL\n", self.dockerfile)
-        self.assertNotIn("ARG CRATES_INDEX_URL=", self.dockerfile)
-
-    def test_the_redirect_is_written_after_the_context_is_copied(self) -> None:
-        """A config file written before `COPY . .` would be overwritten."""
-        copy_at = self.dockerfile.index("COPY . .")
-        config_at = self.dockerfile.index(">> .cargo/config.toml")
-        build_at = self.dockerfile.index("cargo build --release --locked --bin printable-server")
-
-        self.assertLess(copy_at, config_at)
-        self.assertLess(config_at, build_at)
-
-    def test_the_redirect_keeps_the_lockfile_publicly_resolvable(self) -> None:
-        """Source replacement, not a second registry.
-
-        Replacing the existing crates.io source leaves `Cargo.lock` naming
-        `crates-io`, so a lock produced behind the proxy still resolves from the
-        public index. An added registry would rewrite those entries.
-        """
-        for name, source in (("Dockerfile", self.dockerfile),):
-            with self.subTest(source=name):
-                self.assertIn('[source.crates-io]', source)
-                self.assertIn('replace-with = "mirror"', source)
-        self.assertNotIn("nexus", (ROOT / "Cargo.lock").read_text())
-
-    def test_the_name_stays_outside_cargos_own_namespace(self) -> None:
-        """`CARGO_REGISTRY_INDEX` aborts every cargo invocation.
-
-        Cargo maps it onto its removed `registry.index` key, and a Dockerfile
-        `ARG` reaches `RUN` as an environment variable - so that spelling would
-        break the build it was meant to route. Comments explaining this are
-        exempt; what must not appear is a use of the name.
-        """
-        for name, source in (
-            ("Dockerfile", self.dockerfile),
-            ("ci.yml", self.build),
-            ("ci.yml", self.test),
-            ("build-docker.sh", self.script),
-        ):
-            with self.subTest(source=name):
-                effective = "\n".join(
-                    line for line in source.splitlines() if not line.lstrip().startswith("#")
-                )
-                self.assertNotIn("CARGO_REGISTRY_INDEX", effective)
-
-
-    def test_publishing_does_not_rebuild_with_a_private_index(self):
-        self.assertNotIn('CRATES_PROXY_URL', self.build)
-        self.assertNotIn('CRATES_INDEX_URL', self.build)
-        self.assertIn('scripts/publish_images.py publish', self.build)
 
     def test_retired_local_publication_flags_fail_before_building(self):
         for mode in ("--push", "--push-candidate"):

@@ -61,13 +61,49 @@ class PublishImagesTests(unittest.TestCase):
             record.assert_called_once()
             update.assert_called_once()
 
-    def test_update_tag_only_moves_for_current_main(self):
-        for head, moves in (("a" * 40, True), ("b" * 40, False)):
-            with self.subTest(head=head), \
-                    patch("publish_images.subprocess.check_output", return_value=head + "\trefs/heads/main\n"), \
-                    patch("publish_images.subprocess.run") as run:
-                publish_update_tag("a" * 40, "record@sha256:" + "f" * 64, ReleaseIdentity())
-                self.assertEqual(run.call_count, 2 if moves else 0)
+    def test_update_tag_moves_only_when_current_application_inputs_match(self):
+        import shutil
+        import subprocess
+        native_run = subprocess.run
+        selector = Path(__file__).resolve().parents[1] / "ci-scope.sh"
+        for changed, reverts, moves in (("README.md", False, True), ("addon/tests/test_fixture.py", False, True),
+                                        ("crates/printable-core/src/lib.rs", False, False),
+                                        ("crates/printable-core/src/lib.rs", True, False)):
+            with self.subTest(changed=changed, reverts=reverts), TemporaryDirectory() as directory:
+                root = Path(directory) / "checkout"
+                origin = Path(directory) / "origin.git"
+                root.mkdir()
+                (root / "scripts").mkdir()
+                shutil.copyfile(selector, root / "scripts/ci-scope.sh")
+                def git(*arguments):
+                    return subprocess.check_output(
+                        ["git", "-c", "user.name=CI validation", "-c", "user.email=ci@example.invalid", *arguments],
+                        cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
+                git("init", "-q", "-b", "main")
+                git("add", ".")
+                git("commit", "-qm", "qualified source")
+                revision = git("rev-parse", "HEAD")
+                git("init", "--bare", "-q", str(origin))
+                git("remote", "add", "origin", str(origin))
+                path = root / changed
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("new main input")
+                git("add", ".")
+                git("commit", "-qm", "new main input")
+                if reverts:
+                    git("revert", "--no-edit", "HEAD")
+                git("push", "-q", "origin", "main")
+                git("checkout", "-q", revision)
+                docker_calls = []
+                def run(arguments, **kwargs):
+                    if arguments[0] == "docker":
+                        docker_calls.append(arguments)
+                        return subprocess.CompletedProcess(arguments, 0)
+                    return native_run(arguments, **kwargs)
+                with patch("publish_images.ROOT", root), patch("publish_images.subprocess.run", side_effect=run):
+                    publish_update_tag(revision, "record@sha256:" + "f" * 64, ReleaseIdentity())
+                self.assertEqual([call[1] for call in docker_calls], ["tag", "push"] if moves else [])
+
 
     def test_scan_failure_prevents_all_pushes(self):
         with TemporaryDirectory() as directory, \

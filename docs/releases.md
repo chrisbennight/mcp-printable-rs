@@ -71,6 +71,6 @@ See [installation](installation.md) for runtime configuration and rollback.
 `CRATES_INDEX_URL` to a reachable mirror; GitHub builds use public crates.io.
 The old local publication flags are no longer supported.
 
-Validate workflow permissions with `python3 scripts/workflow_policy.py` and
-run the [contributor checks](../CONTRIBUTING.md#development-setup) before opening
+Validate workflows with the pinned actionlint used by CI and run the
+[contributor checks](../CONTRIBUTING.md#development-setup) before opening
 a pull request.

@@ -9,6 +9,7 @@ target
 **/target
 **/__pycache__
 **/*.pyc
+addon/tests
 evals
 .claude
 .dev
