@@ -29,31 +29,48 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select changed components
+        id: scope
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci-scope.sh
       - name: Install native build dependencies
+        if: steps.scope.outputs.rust == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake g++ git
       - name: Activate the repository Rust toolchain
+        if: steps.scope.outputs.rust == 'true'
         run: rustup show active-toolchain
       - name: Check Rust formatting
+        if: steps.scope.outputs.rust == 'true'
         run: cargo fmt --all -- --check
       - name: Lint Rust
+        if: steps.scope.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test Rust
+        if: steps.scope.outputs.rust == 'true'
         run: cargo test --workspace --all-features --locked
       - name: Check Python syntax
+        if: steps.scope.outputs.addon == 'true' || steps.scope.outputs.tooling == 'true'
         run: python3 -m compileall -q addon scripts
       - name: Test the Blender bridge without Blender
+        if: steps.scope.outputs.addon == 'true'
         run: PYTHONPATH=addon python3 -m unittest discover -s addon/tests -v
       - name: Test release policy and dependency routing
+        if: steps.scope.outputs.tooling == 'true'
         run: |
           python3 -m venv "${RUNNER_TEMP}/printable-python"
           "${RUNNER_TEMP}/printable-python/bin/python" -m pip install --disable-pip-version-check -r requirements-tooling.txt
           printf '%s\n' "${RUNNER_TEMP}/printable-python/bin" >> "$GITHUB_PATH"
           PYTHONPATH=scripts "${RUNNER_TEMP}/printable-python/bin/python" -m unittest discover -s scripts/tests -v
       - name: Validate documentation
+        if: steps.scope.outputs.docs == 'true'
         run: python3 scripts/docgate
       - name: Validate shell scripts and publication permissions
+        if: steps.scope.outputs.shell == 'true' || steps.scope.outputs.tooling == 'true'
         run: |
           bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair
           sh scripts/check-release-target
@@ -66,7 +83,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select changed components
+        id: scope
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci-scope.sh
       - name: Install pinned actionlint
+        if: steps.scope.outputs.workflows == 'true'
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --connect-timeout 10 --max-time 120 \
@@ -75,6 +100,7 @@ jobs:
           printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "${RUNNER_TEMP}/actionlint.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
       - name: Validate GitHub workflows
+        if: steps.scope.outputs.workflows == 'true'
         run: '"${RUNNER_TEMP}/actionlint"'
 
   fuzz:
@@ -89,11 +115,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select changed components
+        id: scope
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci-scope.sh
       - name: Install pinned fuzz tooling
+        if: steps.scope.outputs.fuzz == 'true'
         run: |
           rustup toolchain install "${RUST_NIGHTLY}" --profile minimal
           cargo install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
       - name: Exercise the confined OpenSCAD source gate
+        if: steps.scope.outputs.fuzz == 'true'
         working-directory: crates/printable-scad
         run: |
           cargo "+${RUST_NIGHTLY}" fuzz build gate
@@ -101,18 +136,30 @@ jobs:
 
   containers:
     name: Container integration (software graphics)
+    outputs:
+      images: ${{ steps.scope.outputs.images }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select changed components
+        id: scope
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci-scope.sh
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        if: steps.scope.outputs.images == 'true'
         with:
           cache-binary: false
       - name: Verify private local files stay outside the build context
+        if: steps.scope.outputs.images == 'true'
         run: scripts/test-build-context
       - name: Build the server and matching external smoke driver
+        if: steps.scope.outputs.images == 'true'
         run: |
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
@@ -122,11 +169,13 @@ jobs:
             --target smoke-export --output type=local,dest=target/release .
           test -x target/release/printable-smoke
       - name: Build Blender
+        if: steps.scope.outputs.images == 'true'
         run: |
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --file blender/Dockerfile --tag printable-blender:ci .
       - name: Build and verify native CAD
+        if: steps.scope.outputs.images == 'true'
         run: |
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
@@ -141,6 +190,7 @@ jobs:
             --entrypoint /opt/cad/bin/python printable-cad-smoke:ci \
             /opt/printable/cad/smoke.py --worker
       - name: Build and verify native slicing
+        if: steps.scope.outputs.images == 'true'
         run: |
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
@@ -154,9 +204,10 @@ jobs:
             --entrypoint /usr/bin/python3 printable-slicer-smoke:ci \
             /opt/printable/slicer-smoke.py
       - name: Exercise the independent installation and direct client
+        if: steps.scope.outputs.images == 'true'
         run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recovery --evidence-dir target/installation-evidence
       - name: Retain discovery evidence
-        if: always()
+        if: steps.scope.outputs.images == 'true' && (always())
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: discovery-evidence
@@ -164,10 +215,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Check Blender capabilities and shutdown recovery
+        if: steps.scope.outputs.images == 'true'
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Verify packaged license notices
+        if: steps.scope.outputs.images == 'true'
         run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci
       - name: Exercise native views, product workflows, and isolated render jobs
+        if: steps.scope.outputs.images == 'true'
         env:
           PRINTABLE_PAIR_SMOKE_RUN_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -175,13 +229,14 @@ jobs:
             printable-server:ci printable-blender:ci \
             target/release/printable-smoke smoke/expected-tools.txt
       - name: Verify and record tested image IDs
+        if: steps.scope.outputs.images == 'true'
         run: python3 scripts/publish_images.py record "$GITHUB_SHA" target/release/image-ids.json
       - name: Save tested images
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           docker save printable-server:ci printable-blender:ci printable-cad:ci printable-slicer:ci | gzip -1 > target/release/images.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         with:
           name: tested-images
           path: |
@@ -194,7 +249,7 @@ jobs:
   publish:
     name: Publish images
     needs: [verify, workflow, fuzz, containers]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.containers.outputs.images == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

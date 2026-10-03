@@ -17,7 +17,7 @@ def validate(root):
     require(ci["on"]["push"]["branches"] == ["main"], "push CI must target main")
     require(ci["permissions"] == {"contents": "read"}, "default permissions must be read-only")
     publish = ci["jobs"]["publish"]
-    require(publish["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    require(publish["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.containers.outputs.images == 'true'",
             "only a main push may publish")
     require(set(publish["needs"]) == set(ci["jobs"]) - {"publish"}, "publication must wait for all checks")
     require(publish["permissions"] == {"contents": "read", "packages": "write"}, "unexpected publication permissions")
