@@ -63,6 +63,7 @@ else
     esac
     case "$path" in
       scripts/test-registry-manifest-digest) shell=true ;;
+      scripts/release_security.py) ;;
       build-docker.sh|scripts/run-headless-blender|scripts/smoke-*|scripts/test-*|scripts/*_smoke.py|scripts/printable_client.py|scripts/installation_recovery.py|scripts/quickstart.py|scripts/gpu_process.py|scripts/openscad-headless|scripts/orca-headless|scripts/registry-manifest-digest|scripts/release_*.py|scripts/publish_images.py|scripts/verify_release_image.py)
         images=true ;;
     esac
@@ -72,7 +73,6 @@ else
     esac
     case "$path" in
       crates/printable-scad/fuzz/*|addon/tests/*|crates/*/tests/*|crates/*/benches/*|crates/*/examples/*) ;;
-      scripts/release_security.py) publish=true ;;
       Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|addon/*|Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless) publish=true ;;
     esac
     if [[ ! -e "$path" ]]; then docs=true; fi
