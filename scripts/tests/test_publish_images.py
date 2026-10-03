@@ -66,9 +66,10 @@ class PublishImagesTests(unittest.TestCase):
         import subprocess
         native_run = subprocess.run
         selector = Path(__file__).resolve().parents[1] / "ci-scope.sh"
-        for changed, moves in (("README.md", True), ("addon/tests/test_fixture.py", True),
-                               ("crates/printable-core/src/lib.rs", False)):
-            with self.subTest(changed=changed), TemporaryDirectory() as directory:
+        for changed, reverts, moves in (("README.md", False, True), ("addon/tests/test_fixture.py", False, True),
+                                        ("crates/printable-core/src/lib.rs", False, False),
+                                        ("crates/printable-core/src/lib.rs", True, False)):
+            with self.subTest(changed=changed, reverts=reverts), TemporaryDirectory() as directory:
                 root = Path(directory) / "checkout"
                 origin = Path(directory) / "origin.git"
                 root.mkdir()
@@ -89,6 +90,8 @@ class PublishImagesTests(unittest.TestCase):
                 path.write_text("new main input")
                 git("add", ".")
                 git("commit", "-qm", "new main input")
+                if reverts:
+                    git("revert", "--no-edit", "HEAD")
                 git("push", "-q", "origin", "main")
                 git("checkout", "-q", revision)
                 docker_calls = []

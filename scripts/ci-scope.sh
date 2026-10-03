@@ -26,6 +26,9 @@ else
   trap 'rm -f "$changed_files"' EXIT
   if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
     git diff --name-only --no-renames -z "$BASE_SHA...HEAD" >"$changed_files"
+  elif [[ -n "${TARGET_SHA:-}" ]]; then
+    # A reverted image change still makes an older publication stale.
+    git log --format= --name-only --no-renames -z "$BASE_SHA..$target" >"$changed_files"
   else
     git diff --name-only --no-renames -z "$BASE_SHA" "$target" >"$changed_files"
   fi
@@ -44,6 +47,7 @@ else
         rust=true; images=true ;;
       addon/tests/*) addon=true ;;
       addon/*) addon=true; images=true ;;
+      smoke/expected-tools.txt) rust=true; images=true ;;
       Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
         images=true ;;
       compose.yaml) images=true ;;
@@ -68,6 +72,7 @@ else
     esac
     case "$path" in
       crates/printable-scad/fuzz/*|addon/tests/*|crates/*/tests/*|crates/*/benches/*|crates/*/examples/*) ;;
+      scripts/release_security.py) publish=true ;;
       Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|addon/*|Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless) publish=true ;;
     esac
     if [[ ! -e "$path" ]]; then docs=true; fi
