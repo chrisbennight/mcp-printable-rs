@@ -72,7 +72,9 @@ jobs:
       - name: Validate shell scripts and publication permissions
         if: steps.scope.outputs.shell == 'true' || steps.scope.outputs.tooling == 'true'
         run: |
-          bash -n build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair
+          for script in build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair; do
+            bash -n "$script"
+          done
           sh scripts/check-release-target
 
   workflow:
