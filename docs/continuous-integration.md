@@ -14,7 +14,7 @@ does not establish coverage for that component.
 
 - Source checks run Rust formatting, lint and tests, Python tests, documentation
   validation, and shell checks.
-- Workflow validation checks GitHub Actions syntax and publication permissions.
+- Workflow validation checks GitHub Actions syntax.
 - Fuzz smoke exercises the confined OpenSCAD source gate when its source,
   dependency graph, fuzz inputs or CI configuration changes.
 - Container integration builds the server, Blender, CAD and slicer images and
