@@ -51,6 +51,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | Tool | Actions or direct parameters |
 | --- | --- |
 | `status` | Optional direct `detail` (default false) |
+| `skill` | `list`, `get` (bundled instructions for the client to run) |
 | `inspect` | `scene`, `object`, `node_tree`, `editing_state`, `dependencies` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
@@ -123,6 +124,9 @@ the migration from temporary live-session rendering to a separate worker.
 
 [Optional printer integration](printer-integration.md) provides typed device and
 print workflows. Read `printable://printing/workflow-v1` before physical printing.
+The [camera inspection skill](printer-camera-inspection.md) is discoverable with
+`skill.list` and loadable with `skill.get` or its MCP resource. It delegates
+visual assessment to a client sub-agent when available; the parent owns control.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.

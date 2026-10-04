@@ -260,6 +260,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             "printable_printer",
             de::<crate::printers::PrinterRequest>(arguments)?,
         ),
+        "skill" => ResolvedCall::new(
+            "printable_skill",
+            de::<crate::resources::skills::SkillRequest>(arguments)?,
+        ),
         "print" => ResolvedCall::new(
             "printable_print",
             de::<crate::printers::PrintRequest>(arguments)?,
@@ -301,6 +305,12 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 }
 
 pub const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "skill",
+        description: "List bundled client-run skills or get complete instructions by exact name. Load inspect-printer-camera for vision sub-agent review of printer snapshots, spaghetti, collapse and collision concerns, notification and authorized pause policy. Loading a skill performs no inspection or control and grants no authority.",
+        schema: workflow_schema_of::<crate::resources::skills::SkillRequest>,
+        annotations: read_only_idempotent,
+    },
     ToolDef {
         name: "slice",
         description: "Discover native printer, process and filament profiles/settings; prepare a project STL or 3MF with an explicit physical build surface; inspect or cancel retained slices; render selected actual toolpath layers to project artifacts. Preparation does not start a physical print. Inspect retained state before retrying an uncertain preparation.",
@@ -518,6 +528,7 @@ mod tests {
         assert_eq!(
             TOOLS.iter().map(|tool| tool.name).collect::<Vec<_>>(),
             [
+                "skill",
                 "slice",
                 "printer",
                 "print",
@@ -538,7 +549,13 @@ mod tests {
                 "artifact",
             ],
         );
-        for name in ["status", "inspect", "validate_mesh", "analyze_assembly"] {
+        for name in [
+            "skill",
+            "status",
+            "inspect",
+            "validate_mesh",
+            "analyze_assembly",
+        ] {
             assert_eq!(
                 (lookup(name).expect("read tool").annotations)().read_only_hint,
                 Some(true)

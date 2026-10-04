@@ -4,6 +4,7 @@
 //! explains ship together.
 
 pub mod contracts;
+pub mod skills;
 
 /// One resource's static metadata.
 pub struct ResourceDef {
@@ -43,5 +44,12 @@ pub static RESOURCES: &[ResourceDef] = &[
         description: "Physical setup, typed observations, prepared-file review, staging, control and honest failure recovery.",
         mime_type: "text/markdown",
         body: include_str!("../resources/printing-workflow-v1.md"),
+    },
+    ResourceDef {
+        uri: skills::CAMERA_URI,
+        name: skills::CAMERA_NAME,
+        description: skills::CAMERA_DESCRIPTION,
+        mime_type: "text/markdown",
+        body: skills::CAMERA_BODY,
     },
 ];
