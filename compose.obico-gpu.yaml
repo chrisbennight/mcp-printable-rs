@@ -1,0 +1,12 @@
+services:
+  obico-ml:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${PRINTABLE_GPU_DEVICE:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${PRINTABLE_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
