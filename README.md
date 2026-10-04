@@ -53,6 +53,77 @@ The [modeling guide](crates/printable-server/resources/blender-modeling-v1.md)
 explains inspection, checkpoints, and safe recovery from uncertain requests.
 [Reference products](acceptance/products) demonstrate the reusable OpenSCAD kit.
 
+## Optional print failure detection
+
+The `obico` Compose profile runs the upstream Obico ML API as `obico-ml`.
+Bambuddy's existing failure detection captures camera frames, checks them with
+the ML API, and handles notifications and configured printer actions. Configure
+it in Bambuddy; Printable requires no additional API settings for detection.
+The image is pinned by digest and retains Obico's
+[AGPL-3.0 license](https://github.com/TheSpaghettiDetective/obico-server/blob/release/LICENSE).
+
+After the regular installation, start the service with NVIDIA access:
+
+```sh
+docker compose --env-file .dev/compose.env -f compose.yaml -f compose.obico-gpu.yaml --profile obico up -d --wait obico-ml
+```
+
+The upstream image includes GPU and CPU runtimes and attempts GPU inference
+first. To run that same image on CPU, omit the GPU override:
+
+```sh
+docker compose --env-file .dev/compose.env --profile obico up -d --wait obico-ml
+```
+
+Docker needs NVIDIA support to start a service with a GPU reservation. If that
+is unavailable, use the CPU command. Check `obico-ml` logs for the backend that
+actually loaded; a healthy API alone does not establish GPU execution. The
+service has a separate memory limit and shares the selected GPU with Blender
+when the override is used.
+
+The service has no published port. Its internal network is named
+`printable-printers`; `PRINTABLE_OBICO_NETWORK` can select another name. Attach
+Bambuddy to that network so it can resolve `obico-ml`, and the ML API can fetch
+Bambuddy's cached camera frames. For a Bambuddy service using Compose bridge
+networking, merge this into its Compose file while retaining its existing
+networks:
+
+```yaml
+services:
+  bambuddy:
+    networks: [default, printable-printers]
+
+networks:
+  printable-printers:
+    external: true
+    name: printable-printers
+```
+
+Use the same network name in both deployments, then recreate the Bambuddy
+service to apply its network configuration. In Bambuddy:
+
+| Setting | Value |
+| --- | --- |
+| Settings → Failure Detection → Obico ML API URL | `http://obico-ml:3333` |
+| Settings → Network → External URL | A Bambuddy URL reachable from the ML container, such as `http://bambuddy:8000` on this network |
+| ML API Token | Leave empty unless the ML service has a token configured |
+| Enable, monitored printers, sensitivity, and action | Choose in Bambuddy; start with **Notify only** |
+
+The External URL also supplies notification links; choose an address reachable
+by recipients when using those links. An authenticated reverse proxy must
+allow the temporary `/api/v1/obico/cached-frame/` URLs to reach Bambuddy.
+Use Bambuddy's **Test** button, and enable the **AI Failure Detection** event
+on the notification providers you select. See
+[Bambuddy's setup guide](https://wiki.bambuddy.cool/features/failure-detection/)
+for tuning and monitoring status.
+
+Token authentication is optional on this private service. If desired, inject
+`PRINTABLE_OBICO_ML_API_TOKEN` through the process environment or the private
+`.dev/compose.env` file; Compose passes it as Obico's `ML_API_TOKEN`. Set the
+same value in Bambuddy's **ML API Token** field. Keep credential values out of
+the checked-in environment example and logs. `PRINTABLE_OBICO_IMAGE` can
+override the image with another verified upstream digest.
+
 ## Boundaries
 
 This is a shared service for a trusted person or team. The bearer grants access

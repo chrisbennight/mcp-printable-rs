@@ -32,6 +32,34 @@ x-blender: &blender
             capabilities: [gpu]
 
 services:
+  obico-ml:
+    profiles: [obico]
+    image: ${PRINTABLE_OBICO_IMAGE:-ghcr.io/thespaghettidetective/obico-ml-api-gpu@sha256:5aca73cd62c880eb5575df50f058c8d456c1818551ac51ef455679fedadc2af5}
+    platform: linux/amd64
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 4g
+    cpus: 2
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,size=256m,uid=10001,gid=10001,mode=1770
+    networks: [printers]
+    environment:
+      DEBUG: "False"
+      PYTHONUNBUFFERED: "1"
+      NVIDIA_VISIBLE_DEVICES: void
+      ML_API_TOKEN: ${PRINTABLE_OBICO_ML_API_TOKEN:-}
+    command: [gunicorn, --bind, "0.0.0.0:3333", --workers, "1", --timeout, "120", wsgi]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:3333/hc/', timeout=5).read() == b'ok'"]
+      start_period: 140s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   workspace-init:
     image: ${PRINTABLE_SERVER_IMAGE:?Set PRINTABLE_SERVER_IMAGE to the server image}
     platform: linux/amd64
@@ -130,6 +158,9 @@ networks:
   control:
     internal: true
   frontend: {}
+  printers:
+    name: ${PRINTABLE_OBICO_NETWORK:-printable-printers}
+    internal: true
 
 volumes:
   workspace: {}
