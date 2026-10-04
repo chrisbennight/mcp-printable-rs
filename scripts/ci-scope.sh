@@ -43,7 +43,7 @@ else
       crates/*/tests/*|crates/*/benches/*) rust=true ;;
       crates/printable-scad/fuzz/*) fuzz=true ;;
       crates/*/examples/*) rust=true ;;
-      crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*)
+      crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|skills/*)
         rust=true; images=true ;;
       addon/tests/*) addon=true ;;
       addon/*) addon=true; images=true ;;
@@ -73,7 +73,7 @@ else
     esac
     case "$path" in
       crates/printable-scad/fuzz/*|addon/tests/*|crates/*/tests/*|crates/*/benches/*|crates/*/examples/*) ;;
-      Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|addon/*|Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless) publish=true ;;
+      Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|skills/*|addon/*|Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless) publish=true ;;
     esac
     if [[ ! -e "$path" ]]; then docs=true; fi
   done <"$changed_files"

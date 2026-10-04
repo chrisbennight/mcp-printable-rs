@@ -127,6 +127,10 @@ print workflows. Read `printable://printing/workflow-v1` before physical printin
 The [camera inspection skill](printer-camera-inspection.md) is discoverable with
 `skill.list` and loadable with `skill.get` or its MCP resource. It delegates
 visual assessment to a client sub-agent when available; the parent owns control.
+The [image to mold skill](image-to-mold.md) uses the same discovery and loading
+interface for calibrated relief maps, masters, casting trays, and cavities.
+The client runs the instructions through the existing public modeling and slicing
+tools; loading a skill does not execute the workflow.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.

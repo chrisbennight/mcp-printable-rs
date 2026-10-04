@@ -11,6 +11,11 @@ pub const CAMERA_URI: &str = "printable://skills/inspect-printer-camera/SKILL.md
 pub const CAMERA_DESCRIPTION: &str = "Inspect FDM camera snapshots for spaghetti, collapsed or displaced structures and collision risk using a vision sub-agent; recommend notification or an authorized pause while accepting normal toolhead occlusion.";
 pub const CAMERA_BODY: &str = include_str!("../../../../skills/inspect-printer-camera/SKILL.md");
 
+pub const MOLD_NAME: &str = "image-to-mold";
+pub const MOLD_URI: &str = "printable://skills/image-to-mold/SKILL.md";
+pub const MOLD_DESCRIPTION: &str = "Turn images, logos, or SVG artwork into calibrated relief depth maps and printable positive masters, silicone casting trays, or negative cavities; validate geometry and review requested slices.";
+pub const MOLD_BODY: &str = include_str!("../../../../skills/image-to-mold/SKILL.md");
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListParams {}
@@ -64,14 +69,27 @@ fn camera_metadata() -> SkillMetadata {
     }
 }
 
+fn mold_metadata() -> SkillMetadata {
+    SkillMetadata {
+        name: MOLD_NAME,
+        description: MOLD_DESCRIPTION,
+        uri: MOLD_URI,
+        sha256: crate::tools::sha256_hex(MOLD_BODY.as_bytes()),
+    }
+}
+
 pub fn dispatch(request: SkillRequest) -> Result<Value, ToolError> {
     let result = match request {
         SkillRequest::List(_) => SkillResult::List {
-            skills: vec![camera_metadata()],
+            skills: vec![camera_metadata(), mold_metadata()],
         },
         SkillRequest::Get(params) if params.name == CAMERA_NAME => SkillResult::Get {
             skill: camera_metadata(),
             instructions: CAMERA_BODY,
+        },
+        SkillRequest::Get(params) if params.name == MOLD_NAME => SkillResult::Get {
+            skill: mold_metadata(),
+            instructions: MOLD_BODY,
         },
         SkillRequest::Get(_) => {
             return Err(ToolError::Validation("unknown bundled skill".into()));
