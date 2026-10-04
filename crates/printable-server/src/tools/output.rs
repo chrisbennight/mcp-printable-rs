@@ -175,8 +175,11 @@ fn native_bundle() -> Value {
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
         "skill" => {
-            serde_json::to_value(schemars::schema_for!(crate::resources::skills::SkillResult))
-                .expect("skill output schema serializes")
+            let mut schema =
+                serde_json::to_value(schemars::schema_for!(crate::resources::skills::SkillResult))
+                    .expect("skill output schema serializes");
+            schema["type"] = json!("object");
+            schema
         }
         "slice" => json!({"type":"object","anyOf":[
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
@@ -381,6 +384,11 @@ mod tests {
     fn schemas_cover_every_workflow_and_reject_broken_evidence_shapes() {
         for tool in crate::tools::workflows::TOOLS {
             let definition = Value::Object(schema(tool.name).as_ref().clone());
+            assert_eq!(
+                definition["type"], "object",
+                "{} output schema must declare an object root for MCP clients",
+                tool.name
+            );
             let validator = jsonschema::validator_for(&definition).unwrap();
             assert!(
                 !validator.is_valid(&json!({})),
