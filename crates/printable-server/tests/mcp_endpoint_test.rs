@@ -850,7 +850,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let resources = result["resources"]
         .as_array()
         .expect("resources/list carries a resources array");
-    assert_eq!(resources.len(), 6, "resource catalog: {result}");
+    assert_eq!(resources.len(), 7, "resource catalog: {result}");
     assert_eq!(
         resources[0]["uri"],
         json!("printable://modeling/blender-v1")
@@ -866,39 +866,16 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         resources[4]["uri"],
         json!("printable://skills/inspect-printer-camera/SKILL.md")
     );
-    assert_eq!(resources[5]["uri"], json!("printable://contracts"));
+    assert_eq!(
+        resources[5]["uri"],
+        json!("printable://skills/image-to-mold/SKILL.md")
+    );
+    assert_eq!(resources[6]["uri"], json!("printable://contracts"));
     // Bundled skills remain available with the printer service unconfigured.
     let skill_list = json!({"jsonrpc":"2.0","id":81,"method":"tools/call",
         "params":{"name":"skill","arguments":{"action":"list","params":{}}}});
     let listed = rpc_result(post(&http, &mcp, Some(&session), &skill_list).await).await;
     assert_ne!(listed["isError"], true);
-    let metadata = &listed["structuredContent"]["skills"][0];
-    assert_eq!(metadata["name"], "inspect-printer-camera");
-    let skill_get = json!({"jsonrpc":"2.0","id":82,"method":"tools/call",
-        "params":{"name":"skill","arguments":{"action":"get","params":{"name":metadata["name"]}}}});
-    let loaded = rpc_result(post(&http, &mcp, Some(&session), &skill_get).await).await;
-    assert_ne!(loaded["isError"], true);
-    assert_eq!(loaded["structuredContent"]["skill"], *metadata);
-    let body = loaded["structuredContent"]["instructions"]
-        .as_str()
-        .unwrap();
-    assert_eq!(
-        body,
-        include_str!("../../../skills/inspect-printer-camera/SKILL.md")
-    );
-    use sha2::{Digest, Sha256};
-    assert_eq!(
-        metadata["sha256"],
-        Sha256::digest(body.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    );
-    let skill_read = json!({"jsonrpc":"2.0","id":83,"method":"resources/read",
-        "params":{"uri":metadata["uri"]}});
-    let resource = rpc_result(post(&http, &mcp, Some(&session), &skill_read).await).await;
-    assert_eq!(resource["contents"][0]["text"], body);
-    assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
     let catalog = rpc_result(post(&http, &mcp, Some(&session), &list).await).await;
     let skill_tool = catalog["tools"]
         .as_array()
@@ -910,7 +887,48 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     assert_eq!(skill_tool["annotations"]["idempotentHint"], true);
     let output = jsonschema::validator_for(&skill_tool["outputSchema"]).unwrap();
     assert!(output.is_valid(&listed["structuredContent"]));
-    assert!(output.is_valid(&loaded["structuredContent"]));
+    let skills = listed["structuredContent"]["skills"].as_array().unwrap();
+    assert_eq!(skills.len(), 2);
+    for (metadata, (name, expected_body)) in skills.iter().zip([
+        (
+            "inspect-printer-camera",
+            include_str!("../../../skills/inspect-printer-camera/SKILL.md"),
+        ),
+        (
+            "image-to-mold",
+            include_str!("../../../skills/image-to-mold/SKILL.md"),
+        ),
+    ]) {
+        assert_eq!(metadata["name"], name);
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource["uri"] == metadata["uri"])
+        );
+        let skill_get = json!({"jsonrpc":"2.0","id":82,"method":"tools/call",
+            "params":{"name":"skill","arguments":{"action":"get","params":{"name":metadata["name"]}}}});
+        let loaded = rpc_result(post(&http, &mcp, Some(&session), &skill_get).await).await;
+        assert_ne!(loaded["isError"], true);
+        assert_eq!(loaded["structuredContent"]["skill"], *metadata);
+        let body = loaded["structuredContent"]["instructions"]
+            .as_str()
+            .unwrap();
+        assert_eq!(body, expected_body);
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            metadata["sha256"],
+            Sha256::digest(body.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let skill_read = json!({"jsonrpc":"2.0","id":83,"method":"resources/read",
+            "params":{"uri":metadata["uri"]}});
+        let resource = rpc_result(post(&http, &mcp, Some(&session), &skill_read).await).await;
+        assert_eq!(resource["contents"][0]["text"], body);
+        assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
+        assert!(output.is_valid(&loaded["structuredContent"]));
+    }
     for arguments in [
         json!({"action":"get","params":{"name":"../SKILL.md"}}),
         json!({"action":"get","params":{"name":"missing"}}),

@@ -42,6 +42,8 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 - Measure mesh bounds, topology, overhangs, and clearance between rigid parts.
 - Render previews, product views, galleries, and restart-recoverable video jobs.
 - Transfer workspace artifacts directly without putting file bytes into chat.
+- Load the [image to mold skill](docs/image-to-mold.md) for calibrated relief maps,
+  positive masters, silicone casting trays, and negative cavities.
 
 The [workflow interface](docs/workflow-interface.md) lists the public
 tools and their typed actions. The [product refactor](docs/product-refactor.md)

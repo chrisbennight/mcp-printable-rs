@@ -307,7 +307,7 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "skill",
-        description: "List bundled client-run skills or get complete instructions by exact name. Load inspect-printer-camera for vision sub-agent review of printer snapshots, spaghetti, collapse and collision concerns, notification and authorized pause policy. Loading a skill performs no inspection or control and grants no authority.",
+        description: "List bundled client-run skills or get complete instructions by exact name. Load inspect-printer-camera for vision sub-agent review of printer snapshots, spaghetti, collapse and collision concerns, notification and authorized pause policy. Load image-to-mold for calibrated relief depth maps, positive masters, silicone casting trays, cavity design, geometry validation and requested slicing. Loading instructions performs no modeling, inspection or control and grants no authority.",
         schema: workflow_schema_of::<crate::resources::skills::SkillRequest>,
         annotations: read_only_idempotent,
     },
