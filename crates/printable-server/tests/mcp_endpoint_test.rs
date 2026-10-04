@@ -749,6 +749,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "artifact",
             "printer",
             "print",
+            "skill",
         ]),
         "tool catalog: {result}"
     );
@@ -849,7 +850,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let resources = result["resources"]
         .as_array()
         .expect("resources/list carries a resources array");
-    assert_eq!(resources.len(), 5, "resource catalog: {result}");
+    assert_eq!(resources.len(), 6, "resource catalog: {result}");
     assert_eq!(
         resources[0]["uri"],
         json!("printable://modeling/blender-v1")
@@ -861,7 +862,68 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         resources[3]["uri"],
         json!("printable://printing/workflow-v1")
     );
-    assert_eq!(resources[4]["uri"], json!("printable://contracts"));
+    assert_eq!(
+        resources[4]["uri"],
+        json!("printable://skills/inspect-printer-camera/SKILL.md")
+    );
+    assert_eq!(resources[5]["uri"], json!("printable://contracts"));
+    // Bundled skills remain available with the printer service unconfigured.
+    let skill_list = json!({"jsonrpc":"2.0","id":81,"method":"tools/call",
+        "params":{"name":"skill","arguments":{"action":"list","params":{}}}});
+    let listed = rpc_result(post(&http, &mcp, Some(&session), &skill_list).await).await;
+    assert_ne!(listed["isError"], true);
+    let metadata = &listed["structuredContent"]["skills"][0];
+    assert_eq!(metadata["name"], "inspect-printer-camera");
+    let skill_get = json!({"jsonrpc":"2.0","id":82,"method":"tools/call",
+        "params":{"name":"skill","arguments":{"action":"get","params":{"name":metadata["name"]}}}});
+    let loaded = rpc_result(post(&http, &mcp, Some(&session), &skill_get).await).await;
+    assert_ne!(loaded["isError"], true);
+    assert_eq!(loaded["structuredContent"]["skill"], *metadata);
+    let body = loaded["structuredContent"]["instructions"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        body,
+        include_str!("../../../skills/inspect-printer-camera/SKILL.md")
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        metadata["sha256"],
+        Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let skill_read = json!({"jsonrpc":"2.0","id":83,"method":"resources/read",
+        "params":{"uri":metadata["uri"]}});
+    let resource = rpc_result(post(&http, &mcp, Some(&session), &skill_read).await).await;
+    assert_eq!(resource["contents"][0]["text"], body);
+    assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
+    let catalog = rpc_result(post(&http, &mcp, Some(&session), &list).await).await;
+    let skill_tool = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "skill")
+        .unwrap();
+    assert_eq!(skill_tool["annotations"]["readOnlyHint"], true);
+    assert_eq!(skill_tool["annotations"]["idempotentHint"], true);
+    let output = jsonschema::validator_for(&skill_tool["outputSchema"]).unwrap();
+    assert!(output.is_valid(&listed["structuredContent"]));
+    assert!(output.is_valid(&loaded["structuredContent"]));
+    for arguments in [
+        json!({"action":"get","params":{"name":"../SKILL.md"}}),
+        json!({"action":"get","params":{"name":"missing"}}),
+        json!({"action":"get","params":{}}),
+        json!({"action":"list","params":{"printer_id":1}}),
+        json!({"action":"execute","params":{"name":"inspect-printer-camera"}}),
+    ] {
+        let invalid = json!({"jsonrpc":"2.0","id":84,"method":"tools/call",
+            "params":{"name":"skill","arguments":arguments}});
+        let rejected = rpc_result(post(&http, &mcp, Some(&session), &invalid).await).await;
+        assert_eq!(rejected["isError"], true, "accepted {arguments}");
+        assert_eq!(rejected["structuredContent"]["tool"], "skill");
+    }
     let contract_read = json!({"jsonrpc":"2.0","id":79,"method":"resources/read",
         "params":{"uri":"printable://contracts/view/section"}});
     let contract_result = rpc_result(post(&http, &mcp, Some(&session), &contract_read).await).await;

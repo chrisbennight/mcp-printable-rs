@@ -1,4 +1,5 @@
 # Complete public workflow catalog, verified by the external MCP smoke.
+skill
 status
 inspect
 edit

@@ -5,6 +5,11 @@ readiness answers. Printer integration is optional. Use `printer` for discovery,
 selected status sections, materials, history and project camera artifacts. Use
 `print` for prepared-file import, review, staged jobs, records and physical control.
 Read a selected action schema through `printable://contracts/{tool}/{action}`.
+For visual print checks, load `inspect-printer-camera` through the `skill` tool
+with `action: "get"` and `params: {"name": "inspect-printer-camera"}`, or read
+`printable://skills/inspect-printer-camera/SKILL.md`. The client delegates image
+assessment to a vision sub-agent when available. The parent retains authority,
+current status checks, control, and notification. Loading does not start monitoring.
 
 ## Physical setup
 

@@ -40,7 +40,7 @@ use crate::{
     upload::UploadRegistry,
 };
 
-const SERVER_INSTRUCTIONS: &str = "Printable provides fifteen workflow tools for Blender, OpenSCAD, and CadQuery modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance.";
+const SERVER_INSTRUCTIONS: &str = "Printable provides workflow tools for Blender, OpenSCAD, and CadQuery modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance. Use skill.list and skill.get for bundled client-run skills; inspect-printer-camera delegates visual assessment of snapshots and keeps control with the parent.";
 
 /// The MCP request handler. The backend handles are `Arc`-shared so the server
 /// stays `Clone` (the transport builds one per session); the underlying
@@ -158,6 +158,21 @@ impl PrintableServer {
             Ok(call) => (call.name, call.arguments, call.response),
             Err(error) => return Ok(error_result(&params.name, &error)),
         };
+
+        if operation == "printable_skill" {
+            let result = serde_json::from_value(args)
+                .map_err(|error| ToolError::Validation(error.to_string()))
+                .and_then(resources::skills::dispatch);
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
 
         if operation == INGEST_TOOL || operation == "printable_workspace_transfer_status" {
             let result: Result<Value, ToolError> = async {

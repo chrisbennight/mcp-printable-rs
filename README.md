@@ -43,7 +43,7 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 - Render previews, product views, galleries, and restart-recoverable video jobs.
 - Transfer workspace artifacts directly without putting file bytes into chat.
 
-The [workflow interface](docs/workflow-interface.md) lists all fifteen public
+The [workflow interface](docs/workflow-interface.md) lists the public
 tools and their typed actions. The [product refactor](docs/product-refactor.md)
 records delivery intent and acceptance criteria; deployment verification is
 tracked separately from implementation and merge.

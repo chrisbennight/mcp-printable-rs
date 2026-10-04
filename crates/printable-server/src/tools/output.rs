@@ -174,6 +174,10 @@ fn native_bundle() -> Value {
 
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
+        "skill" => {
+            serde_json::to_value(schemars::schema_for!(crate::resources::skills::SkillResult))
+                .expect("skill output schema serializes")
+        }
         "slice" => json!({"type":"object","anyOf":[
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
