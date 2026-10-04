@@ -81,6 +81,10 @@ actually loaded; a healthy API alone does not establish GPU execution. The
 service has a separate memory limit and shares the selected GPU with Blender
 when the override is used.
 
+The pinned image has passed isolated CPU health and authenticated inference
+checks with this configuration. NVIDIA hardware execution has not been
+qualified; verify the loaded GPU backend on your host before relying on it.
+
 The service has no published port. Its internal network is named
 `printable-printers`; `PRINTABLE_OBICO_NETWORK` can select another name. Attach
 Bambuddy to that network so it can resolve `obico-ml`, and the ML API can fetch
