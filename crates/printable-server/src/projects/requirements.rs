@@ -77,10 +77,10 @@ fn positive(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 fn tolerance(v: f64) -> bool {
-    v.is_finite() && (0.0..=10.0).contains(&v)
+    v.is_finite() && v >= 0.0
 }
 fn description(v: &str) -> bool {
-    !v.trim().is_empty() && v.len() <= 1024
+    !v.trim().is_empty()
 }
 
 #[derive(Deserialize)]
@@ -137,7 +137,6 @@ fn match_holes(expected: &[[f64; 2]], radius: f64, tolerance: f64, measured: &[H
 }
 pub(super) fn name(v: &str) -> bool {
     !v.is_empty()
-        && v.len() <= 64
         && v.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
 }
@@ -145,9 +144,6 @@ pub(super) fn name(v: &str) -> bool {
 impl Manifest {
     pub fn validate(&self) -> Result<(), ToolError> {
         let valid = self.format_version == 1
-            && self.parameters.len() <= 32
-            && self.requirements.len() <= 64
-            && self.assumptions.len() <= 32
             && self.assumptions.iter().all(|s| description(s))
             && self.parameters.iter().all(|(key, p)| {
                 name(key)
@@ -171,7 +167,6 @@ impl Manifest {
                             tolerance_mm,
                         } => {
                             !centers_mm.is_empty()
-                                && centers_mm.len() <= 64
                                 && positive(*radius_mm)
                                 && tolerance(*tolerance_mm)
                                 && centers_mm.iter().flatten().all(|n| n.is_finite())
@@ -190,8 +185,8 @@ impl Manifest {
                         Requirement::PhysicalTest { description: text } => description(text),
                     }
             });
-        if !valid || serde_json::to_vec(self)?.len() > 64 * 1024 {
-            return Err(ToolError::Validation("manifest requires version 1, bounded parameter ranges and descriptions, finite millimetre requirements, and bounded notes".into()));
+        if !valid {
+            return Err(ToolError::Validation("manifest requires version 1, finite parameter values within their declared ranges, finite millimetre requirements, and nonempty descriptions and notes".into()));
         }
         Ok(())
     }
@@ -215,7 +210,6 @@ impl Manifest {
             report["vertical_holes"]["status"] == "measured"
                 && report["valid"] == true
                 && known_mm
-                && holes.len() <= 4096
                 && holes
                     .iter()
                     .all(|h| positive(h.radius_mm) && h.center_mm.iter().all(|n| n.is_finite()))
@@ -281,6 +275,45 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_manifests_and_measured_inventories_keep_their_evidence() {
+        let mut manifest: Manifest = serde_json::from_value(json!({"format_version":1,"units":"mm","requirements":{
+            "mounts":{"kind":"hole_pattern","centers_mm":[[0,0]],"radius_mm":2,"tolerance_mm":0.05}}})).unwrap();
+        for index in 0..65 {
+            manifest.parameters.insert(
+                format!("parameter_{index}"),
+                Parameter {
+                    value: 1.,
+                    unit: Unit::Scalar,
+                    minimum: 0.,
+                    maximum: 2.,
+                    description: "x".repeat(2048),
+                },
+            );
+            manifest.assumptions.push("x".repeat(2048));
+        }
+        manifest.validate().unwrap();
+        let holes: Vec<_> = (0..4097)
+            .map(|index| json!({"center_mm":[index,0],"radius_mm":2}))
+            .collect();
+        let report =
+            json!({"units":"mm","valid":true,"vertical_holes":{"status":"measured","holes":holes}});
+        assert_eq!(
+            manifest.assess(&report)["criteria"]["mounts"]["status"],
+            "passed"
+        );
+        let mut pattern = manifest.clone();
+        pattern.requirements.insert(
+            "large_pattern".into(),
+            Requirement::HolePattern {
+                centers_mm: (0..65).map(|index| [index as f64, 0.]).collect(),
+                radius_mm: 2.,
+                tolerance_mm: 20.,
+            },
+        );
+        pattern.validate().unwrap();
+    }
+
     #[test]
     fn hole_assignment_handles_overlapping_tolerances_without_reusing_a_hole() {
         let holes = vec![

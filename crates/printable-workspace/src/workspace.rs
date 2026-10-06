@@ -511,6 +511,14 @@ impl Workspace {
         Ok(meta_from(rel, suffix, &stat))
     }
 
+    /// Read generated data through an immutable confined snapshot, independently
+    /// of the inline MCP transport boundary.
+    pub fn read_generated_bytes(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
+        let snapshot = self.snapshot_artifact(path)?;
+        let bytes = std::fs::read(snapshot.path())?;
+        Ok((snapshot.meta().clone(), bytes))
+    }
+
     pub fn read_artifact(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
         self.require_confined()?;
         let comps = normalize(path)?;

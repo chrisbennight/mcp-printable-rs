@@ -598,7 +598,7 @@ fn establish_render_isolation(
     integrity: &mut RecoveryIntegrity,
 ) -> RenderIsolation {
     let marker = json!({"version": 1, "mode": "isolated_worker"});
-    let established = match workspace.read_artifact(ISOLATION_PATH) {
+    let established = match workspace.read_generated_bytes(ISOLATION_PATH) {
         Ok((_, bytes))
             if serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| value == marker) =>
         {
@@ -4033,7 +4033,7 @@ fn recover_state(
         order: VecDeque::new(),
     };
     let mut integrity = RecoveryIntegrity::default();
-    let index = match workspace.read_artifact(INDEX_PATH) {
+    let index = match workspace.read_generated_bytes(INDEX_PATH) {
         Ok((_meta, bytes)) => serde_json::from_slice::<JobIndex>(&bytes),
         Err(WsError::NotFound(_)) => {
             match workspace.list_artifacts(JOB_ROOT, 1) {
@@ -4097,7 +4097,7 @@ fn recover_state(
             );
             continue;
         }
-        let bytes = match workspace.read_artifact(&job_metadata_path(&job_id)) {
+        let bytes = match workspace.read_generated_bytes(&job_metadata_path(&job_id)) {
             Ok((_meta, bytes)) => bytes,
             Err(error) => {
                 tracing::error!(job_id, %error, "durable render job metadata is unavailable");

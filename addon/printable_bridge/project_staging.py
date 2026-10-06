@@ -33,7 +33,7 @@ def stage_project_inputs(workspace, project_id: str, files: list[str], *, check_
     Preparation may change its private copies, never the original project files.
     Metadata and hashes describe the retained inputs before native preparation.
     """
-    if not isinstance(project_id, str) or not 1 <= len(project_id) <= 64 or any(
+    if not isinstance(project_id, str) or not project_id or any(
         character not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project_id
     ):
         raise WorkspaceError("invalid export project_id")

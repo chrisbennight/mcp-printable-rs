@@ -742,6 +742,9 @@ fn generated_artifacts_exceed_inline_transfer_size_and_retain_integrity() {
     let snapshot = ws.snapshot_artifact("out.stl").unwrap();
     assert_eq!(snapshot.meta().size_bytes, bytes);
     assert_eq!(std::fs::metadata(snapshot.path()).unwrap().len(), bytes);
+    let (read_meta, generated) = ws.read_generated_bytes("out.stl").unwrap();
+    assert_eq!(read_meta.size_bytes, bytes);
+    assert_eq!(generated.len() as u64, bytes);
     assert_eq!(
         ws.read_artifact("out.stl").unwrap_err().code(),
         "read_too_large"

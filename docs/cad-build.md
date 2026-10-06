@@ -40,11 +40,13 @@ with the same handle to request cancellation. For example:
 {"action":"status","params":{"project_id":"enclosure","output_dir":"builds/revision-1"}}
 ```
 
-Native execution uses the request's `timeout_seconds` (default 600, maximum
-1800). Admission has no queue: an occupied worker rejects the build without
+Native execution uses the request's positive `timeout_seconds` work budget
+(default 600; no configured maximum). Admission has no queue: an occupied worker
+rejects the build without
 creating its output directory. The retained `phase` distinguishes input
 snapshotting from native execution, with admission and native-start timestamps.
-Input snapshotting is bounded by the input count and combined byte limit; the
+Input snapshots stream observed source bytes under the configured workspace
+budget; the
 execution deadline starts when the native command runs. Numeric native progress
 is unavailable and remains null.
 

@@ -60,6 +60,14 @@ class EditorContextTests(unittest.TestCase):
                 raise ValueError("source failed")
         self.assertIsNone(self.bpy.context.area)
 
+    def test_large_editor_indices_resolve_against_actual_windows_and_areas(self):
+        window = self.bpy.context.window_manager.windows[0]
+        self.bpy.context.window_manager.windows = [window] * 65
+        window.screen.areas = [self.areas[0]] * 257
+        selected = resolve_editor(self.bpy, {"area_type":"VIEW_3D", "window":64, "area_index":256})
+        self.assertIs(selected["window"], window)
+        self.assertIs(selected["area"], self.areas[0])
+
     def test_missing_editor_and_mode_mismatch_never_enter_source(self):
         for selector in ({"area_type": "CONSOLE"},
                          {"area_type": "VIEW_3D", "expected_mode": "EDIT_MESH"}):

@@ -339,11 +339,13 @@ fn render_before(
         }
     }
     let size = request.size;
-    let scale = (size as f64 - 32.) / (max[0] - min[0]).max(max[1] - min[1]).max(0.01);
+    let edge = size.saturating_sub(1) as f64;
+    let margin = (edge / 8.).min(16.);
+    let scale = (edge - 2. * margin) / (max[0] - min[0]).max(max[1] - min[1]).max(0.01);
     let map = |point: [f64; 3]| {
         [
-            (16. + (point[0] - min[0]) * scale).round() as i32,
-            (size as f64 - 17. - (point[1] - min[1]) * scale).round() as i32,
+            (margin + (point[0] - min[0]) * scale).round() as i32,
+            (edge - margin - (point[1] - min[1]) * scale).round() as i32,
         ]
     };
     let mut image = RgbImage::from_pixel(size, size, Rgb([20, 24, 30]));
@@ -491,6 +493,24 @@ mod tests {
             };
             parser.line(arc, &filtered).unwrap();
             assert!(parser.segments.is_empty());
+        }
+    }
+
+    #[test]
+    fn small_images_include_the_selected_toolpath() {
+        use std::io::Write;
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        source
+            .write_all(b"; CHANGE_LAYER\nM83\nG1 X10 E1\n")
+            .unwrap();
+        let mut request = review_request();
+        for size in [1, 16, 32] {
+            request.size = size;
+            let (png, evidence) = render(source.path(), &request).unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgb8();
+            assert_eq!(image.dimensions(), (size, size));
+            assert_eq!(evidence["segments"], 1);
+            assert!(image.pixels().any(|pixel| pixel.0 != [20, 24, 30]));
         }
     }
 

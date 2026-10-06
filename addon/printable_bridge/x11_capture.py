@@ -80,7 +80,7 @@ def capture_rgb(window, area):
                     or pixels.bits_per_pixel != 32 or pixels.byte_order != 0
                     or (pixels.red_mask, pixels.green_mask, pixels.blue_mask)
                     != (0xff0000, 0x00ff00, 0x0000ff)
-                    or not width * 4 <= pixels.bytes_per_line <= width * 4 + 64):
+                    or pixels.bytes_per_line < width * 4):
                 raise DisplayCaptureError("private display pixel format is unsupported")
             raw = c.string_at(pixels.data, pixels.bytes_per_line * height)
             return rgb_pixels(raw, width, height, pixels.bytes_per_line), width, height

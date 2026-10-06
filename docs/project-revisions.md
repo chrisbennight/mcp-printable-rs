@@ -12,8 +12,8 @@ Assumptions and descriptions are data; the service never executes them.
 
 Each parameter declares its value, unit (`mm`, `inch`, `degrees`, or `scalar`),
 inclusive minimum and maximum, and description. Values enter the model script
-unchanged; the script must implement the declared units. The manifest allows
-bounded parameters, requirements, and notes, and rejects nonfinite or
+unchanged; the script must implement the declared units. The manifest retains
+caller-defined parameters, requirements, and notes, and rejects nonfinite or
 out-of-range values. It does not infer parameter meaning from Python source.
 
 ## Capture and edit
@@ -46,7 +46,8 @@ Call `project` with `action: "revise"` and these parameters:
 
 Supply the digest of bytes you have read or uploaded; a pathname is not a
 source identity. Include additional project-relative dependencies in `inputs`.
-The combined source snapshot is bounded. The result includes `identity` with
+Source snapshots use configured workspace capacity. The result includes
+`identity` with
 an ID and SHA-256 digest and the complete revision record.
 
 For the next parameter edit, supply that exact identity as `expected_parent`,
@@ -87,7 +88,7 @@ A failed requirement makes the assessment `failed`. Missing measurements or
 physical tests make it `incomplete`. `passed` means only that every declared
 requirement was measured and passed; it never means complete manufacturing
 qualification. Invalid geometry, unsupported hole orientations, partial
-cylindrical faces, and an excessive face inventory do not supply a positive
+cylindrical faces do not supply a positive
 hole match. An empty requirement set remains incomplete.
 
 Manifests can retain sources from other modeling engines; automatic requirement

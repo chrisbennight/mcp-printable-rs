@@ -44,9 +44,10 @@ not a Blender beauty render. The preview supports the implemented XY motion and
 arc commands; unsupported modes fail rather than yielding a misleading image.
 XYZ origin resets retain physical placement, while extruder resets remain
 independent. Excluded arcs update position without generating preview samples.
-Parsing and drawing have a cooperative 30-second processing deadline; bounded
-native encoding is checked before and after it runs. Full-file layer counts and
-estimates remain available when processing completes within that budget.
+Parsing and drawing use the caller's positive `timeout_seconds` processing
+budget, defaulting to thirty seconds; native encoding is checked before and
+after it runs. Full-file layer counts and estimates remain available when
+processing completes within that budget.
 It does not establish adhesion, strength, clearance or a successful physical print.
 
 Completed slices and reviews return retained provenance references. Optional

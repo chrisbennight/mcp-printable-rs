@@ -101,10 +101,8 @@ impl Profiles {
     }
 
     pub fn settings(&self, query: SettingsQuery) -> Result<Value, ToolError> {
-        if query.limit == 0 || query.query.len() > 256 {
-            return Err(invalid(
-                "settings discovery requires a positive limit and a query of at most 256 bytes",
-            ));
+        if query.limit == 0 {
+            return Err(invalid("settings discovery requires a positive limit"));
         }
         let resolved = self.resolve(query.category, &query.profile)?;
         let needle = query.query.to_lowercase();
@@ -141,10 +139,8 @@ impl Profiles {
                     continue;
                 }
                 let metadata = entry.metadata()?;
-                if !metadata.is_file() || metadata.len() > 1024 * 1024 {
-                    return Err(invalid(
-                        "bundled profile must be a regular JSON file below 1 MiB",
-                    ));
+                if !metadata.is_file() {
+                    return Err(invalid("bundled profile must be a regular JSON file"));
                 }
                 let profile: Map<String, Value> =
                     serde_json::from_slice(&std::fs::read(entry.path())?)?;
@@ -232,10 +228,8 @@ impl Profiles {
     }
 
     pub fn discover(&self, query: ProfileQuery) -> Result<Value, ToolError> {
-        if query.limit == 0 || query.query.len() > 256 {
-            return Err(invalid(
-                "profile discovery requires a positive limit and a query of at most 256 bytes",
-            ));
+        if query.limit == 0 {
+            return Err(invalid("profile discovery requires a positive limit"));
         }
         let needle = query.query.to_lowercase();
         let mut candidates = Vec::new();
@@ -294,6 +288,32 @@ fn invalid(message: &str) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_native_profiles_and_long_queries_remain_discoverable() {
+        let root = tempfile::tempdir().unwrap();
+        for category in [Category::Printer, Category::Process, Category::Filament] {
+            std::fs::create_dir(root.path().join(category.directory())).unwrap();
+            std::fs::write(
+                root.path().join(category.directory()).join("profile.json"),
+                serde_json::to_vec(
+                    &json!({"name":"fixture","type":category.directory(),"instantiation":"true"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let name = "p".repeat(257);
+        let profile = json!({"name":name,"type":"process","instantiation":"true","notes":"x".repeat(1024 * 1024 + 1)});
+        std::fs::write(
+            root.path().join("process/large.json"),
+            serde_json::to_vec(&profile).unwrap(),
+        )
+        .unwrap();
+        let profiles = Profiles::load(root.path()).unwrap();
+        let query = serde_json::from_value(json!({"category":"process","query":name})).unwrap();
+        assert_eq!(profiles.discover(query).unwrap()["returned"], 1);
+    }
 
     #[test]
     fn profile_and_setting_pages_honor_positive_counts_and_defaults() {

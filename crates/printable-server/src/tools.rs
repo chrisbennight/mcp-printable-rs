@@ -1262,20 +1262,20 @@ struct BlenderExecuteParams {
 #[serde(deny_unknown_fields)]
 struct EditorContextParams {
     #[serde(default)]
-    #[schemars(range(min = 0, max = 63))]
-    window: u8,
+    #[schemars(range(min = 0))]
+    window: usize,
     /// Blender area type, for example VIEW_3D, NODE_EDITOR, or IMAGE_EDITOR.
-    #[schemars(length(min = 1, max = 64))]
+    #[schemars(length(min = 1))]
     area_type: String,
     /// Index among areas of this type in the selected window.
     #[serde(default)]
-    area_index: u8,
+    area_index: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = 64))]
+    #[schemars(length(min = 1))]
     region_type: Option<String>,
     /// Reject unless the current mode matches; this does not change mode.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = 64))]
+    #[schemars(length(min = 1))]
     expected_mode: Option<String>,
 }
 
