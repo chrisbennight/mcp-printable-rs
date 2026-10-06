@@ -515,10 +515,6 @@ fn list_error_targets() {
     );
 }
 
-// The scan-cap behavior is exercised by a crate-internal unit test in
-// `src/workspace.rs`, because the scan_cap parameter is private (the public
-// API only exposes the fixed MAX_LIST_SCAN_ENTRIES ceiling).
-
 // --- concurrency ---------------------------------------------------------------
 
 #[test]

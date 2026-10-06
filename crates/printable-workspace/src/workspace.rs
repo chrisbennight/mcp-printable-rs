@@ -7,9 +7,9 @@ use rustix::fs::{Access, AtFlags, Dir, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
 use serde::Serialize;
 
+use crate::MAX_TRANSFER_BYTES;
 use crate::error::WsError;
 use crate::media::{allowed_suffix, media_type_for};
-use crate::{MAX_LIST_SCAN_ENTRIES, MAX_TRANSFER_BYTES};
 
 mod storage;
 pub use storage::{CleanupEntry, ManagedScratch, StorageUsage};
@@ -33,7 +33,7 @@ pub struct WorkspaceStatus {
     pub root: Option<String>,
     pub blender_root: Option<String>,
     pub max_transfer_bytes: u64,
-    pub max_list_scan_entries: usize,
+    pub max_list_scan_entries: Option<usize>,
 }
 
 /// A private, immutable copy of a workspace artifact. The backing temporary
@@ -161,7 +161,7 @@ impl Workspace {
             root: self.confined.as_ref().map(|c| c.root.display().to_string()),
             blender_root: self.blender_root.as_ref().map(|p| p.display().to_string()),
             max_transfer_bytes: MAX_TRANSFER_BYTES,
-            max_list_scan_entries: MAX_LIST_SCAN_ENTRIES,
+            max_list_scan_entries: None,
         }
     }
 
@@ -577,22 +577,9 @@ impl Workspace {
     }
 
     /// List allowed-suffix artifacts under the workspace-relative directory
-    /// `path` (empty for the root), recursively, skipping symlinks. Scanning
-    /// refuses an incomplete scan beyond [`MAX_LIST_SCAN_ENTRIES`]. Results are
-    /// sorted by path for deterministic tool output.
+    /// `path` (empty for the root), recursively, skipping symlinks. Results are
+    /// sorted by path and use the caller's positive result count.
     pub fn list_artifacts(&self, path: &str, limit: usize) -> Result<Vec<ArtifactMeta>, WsError> {
-        self.list_with_scan_cap(path, limit, MAX_LIST_SCAN_ENTRIES)
-    }
-
-    /// Private so the `MAX_LIST_SCAN_ENTRIES` ceiling cannot be bypassed by a
-    /// caller passing a larger `scan_cap`; the only public listing entry point
-    /// is [`Workspace::list_artifacts`], which always uses the fixed cap.
-    fn list_with_scan_cap(
-        &self,
-        path: &str,
-        limit: usize,
-        scan_cap: usize,
-    ) -> Result<Vec<ArtifactMeta>, WsError> {
         if limit == 0 {
             return Err(WsError::InvalidLimit);
         }
@@ -603,7 +590,6 @@ impl Workspace {
         // an error, not an empty result). The fd is dropped immediately.
         drop(self.walk_to(&comps, &rel, Missing::Error)?);
 
-        let mut scanned = 0usize;
         let mut found: Vec<ArtifactMeta> = Vec::new();
         // The traversal stack holds directory PATHS, not open descriptors: each
         // directory is re-opened (by walking from the root) when it is popped,
@@ -625,25 +611,17 @@ impl Workspace {
             for entry in dir {
                 let entry = entry.map_err(errno_io)?;
                 let raw = entry.file_name();
-                // `.`/`..` are exactly two trivial entries per directory; skip
-                // them without spending the cap.
                 if matches!(raw.to_str(), Ok(".") | Ok("..")) {
                     continue;
                 }
-                if scanned >= scan_cap {
-                    return Err(WsError::ListScanLimit);
-                }
-                // Count every other entry against the cap BEFORE the UTF-8
-                // filter — otherwise a directory full of non-UTF-8 names could
-                // force an unbounded walk past MAX_LIST_SCAN_ENTRIES.
-                scanned += 1;
                 let Ok(name) = raw.to_str() else {
                     continue;
                 };
                 // Stat without following: symlinks are skipped, not traversed.
-                let Ok(st) = rustix::fs::statat(dir_fd.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW)
-                else {
-                    continue;
+                let st = match rustix::fs::statat(dir_fd.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(stat) => stat,
+                    Err(Errno::NOENT) => continue,
+                    Err(error) => return Err(errno_io(error)),
                 };
                 let ftype = FileType::from_raw_mode(st.st_mode);
                 let child_rel = if prefix.is_empty() {
@@ -1119,26 +1097,6 @@ mod tests {
         assert!(first.try_lock_reserved("../outside.lock").is_err());
         std::os::unix::fs::symlink(dir.path(), dir.path().join(".printable/redirect")).unwrap();
         assert!(first.try_lock_reserved(".printable/redirect/lock").is_err());
-    }
-
-    // Exercises the private scan_cap directly (the public API only exposes the
-    // fixed MAX_LIST_SCAN_ENTRIES ceiling, so a small cap can't be tested there).
-    #[test]
-    fn scan_cap_refuses_an_incomplete_listing() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ws = Workspace::open(Some(dir.path()), None).unwrap();
-        for i in 0..60 {
-            ws.write_artifact(&format!("f{i:03}.stl"), b"x", false)
-                .unwrap();
-        }
-        // A cap below the entry count refuses an incomplete listing. The
-        // internal storage directory also consumes a scanned entry.
-        assert!(matches!(
-            ws.list_with_scan_cap("", usize::MAX, 50),
-            Err(WsError::ListScanLimit)
-        ));
-        // The public API with the real ceiling returns everything.
-        assert_eq!(ws.list_artifacts("", 1000).unwrap().len(), 60);
     }
 
     #[test]

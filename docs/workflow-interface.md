@@ -98,10 +98,9 @@ artifact and project pages report `requested_limit` and `returned`. Scene pages
 also report their effective count within the existing scene-scan budget; follow
 `next_offset` even after an empty filtered page. Job artifact pages report the
 effective count within the native frame-index range. These counts do not change
-dependency-inventory, directory-scan, retention, byte or duration budgets.
-Workspace and project listings refuse an incomplete directory scan with
-`list_scan_limit`; select a narrower directory instead of treating a traversal
-prefix as a complete listing.
+caller-selected work budgets or configured storage policies. Workspace and
+project artifact listings have no fixed directory-scan ceiling; filesystem
+errors propagate rather than returning an arbitrary traversal prefix.
 
 Printer, print and slicing discovery pages report `requested_limit` and
 `returned`. Archive and material-usage history also report `effective_limit`

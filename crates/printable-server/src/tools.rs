@@ -134,7 +134,6 @@ struct StorageQueryParams {}
 #[serde(deny_unknown_fields)]
 struct StorageCleanupParams {
     /// Identifiers returned by cleanup_preview; retained artifact paths are not accepted.
-    #[schemars(length(max = 1000))]
     ids: Vec<String>,
 }
 

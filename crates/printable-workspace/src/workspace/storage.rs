@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 
 const CONTROL: &str = ".printable/storage";
 const SCRATCH: &str = ".printable/storage/scratch";
-const SCAN_LIMIT: usize = 100_000;
 
 #[derive(Debug, Serialize)]
 pub struct StorageUsage {
@@ -19,7 +18,7 @@ pub struct StorageUsage {
     pub project_groups_truncated: bool,
     pub by_class: BTreeMap<String, u64>,
     pub complete: bool,
-    pub scan_limit: usize,
+    pub scan_limit: Option<usize>,
     pub accounting: &'static str,
 }
 
@@ -142,12 +141,11 @@ impl Workspace {
             by_class: BTreeMap::new(),
             project_groups_truncated: false,
             complete: true,
-            scan_limit: SCAN_LIMIT,
+            scan_limit: None,
             accounting: "Logical file bytes plus unused live reservations. Hard links count per name. Symlinks are not followed. Native writes, external temporary directories, filesystem metadata and allocation overhead are outside the enforced service boundary.",
         };
         let mut scratch_bytes = BTreeMap::<String, u64>::new();
         let mut stack = vec![String::new()];
-        let mut scanned = 0;
         while let Some(prefix) = stack.pop() {
             let dir = match self.walk_to(&split_rel(&prefix), &prefix, Missing::Error) {
                 Ok(v) => v,
@@ -161,12 +159,6 @@ impl Workspace {
                 let raw = entry.file_name();
                 if matches!(raw.to_str(), Ok(".") | Ok("..")) {
                     continue;
-                }
-                scanned += 1;
-                if scanned > SCAN_LIMIT {
-                    usage.complete = false;
-                    stack.clear();
-                    break;
                 }
                 let Ok(name) = raw.to_str() else {
                     usage.complete = false;
@@ -185,8 +177,7 @@ impl Workspace {
                     }
                 };
                 match FileType::from_raw_mode(stat.st_mode) {
-                    FileType::Directory if split_rel(&path).len() <= 64 => stack.push(path),
-                    FileType::Directory => usage.complete = false,
+                    FileType::Directory => stack.push(path),
                     FileType::RegularFile => {
                         let bytes = stat.st_size.max(0) as u64;
                         usage.logical_bytes = usage.logical_bytes.saturating_add(bytes);
@@ -310,11 +301,7 @@ impl Workspace {
         let (probe, active) = inspect_lease(&dir)?;
         drop(probe);
         if !active {
-            self.require_storage_capacity(
-                reservation
-                    .bytes
-                    .saturating_sub(tree_bytes(&dir, 0, &mut 0)?),
-            )?;
+            self.require_storage_capacity(reservation.bytes.saturating_sub(tree_bytes(&dir)?))?;
         }
         let lease = lease_file(&dir)?;
         rustix::fs::flock(&lease, FlockOperation::LockShared).map_err(errno_io)?;
@@ -361,13 +348,10 @@ impl Workspace {
             if matches!(name.to_str(), Ok(".") | Ok("..")) {
                 continue;
             }
-            if entries.len() >= 1000 {
-                return Err(WsError::StorageAccountingIncomplete);
-            }
             let id = name.to_str().map_err(|_| WsError::InvalidScratchId)?;
             let dir = self.scratch_directory(id)?;
             let (_lease, active) = inspect_lease(&dir)?;
-            let bytes = tree_bytes(&dir, 0, &mut 0)?;
+            let bytes = tree_bytes(&dir)?;
             entries.push(CleanupEntry {
                 id: id.into(),
                 bytes: Some(bytes),
@@ -384,9 +368,6 @@ impl Workspace {
     }
 
     pub fn cleanup_scratch(&self, ids: &[String]) -> Result<Vec<CleanupEntry>, WsError> {
-        if ids.len() > 1000 {
-            return Err(WsError::InvalidCleanupLimit);
-        }
         for id in ids {
             if id.len() != 32
                 || !id
@@ -423,7 +404,7 @@ impl Workspace {
                 });
                 continue;
             }
-            let deleted = remove_contents(&dir, 0, &mut 0)
+            let deleted = remove_contents(&dir)
                 .and_then(|()| {
                     rustix::fs::unlinkat(&parent, id.as_str(), AtFlags::REMOVEDIR).map_err(errno_io)
                 })
@@ -534,31 +515,50 @@ fn write_json<T: Serialize>(dir: &OwnedFd, name: &str, value: &T) -> Result<(), 
     rustix::fs::fsync(dir).map_err(errno_io)
 }
 
-fn tree_bytes(dir: &OwnedFd, depth: usize, scanned: &mut usize) -> Result<u64, WsError> {
-    if depth > 64 {
-        return Err(WsError::StorageAccountingIncomplete);
+struct DirectoryFrame {
+    dir: OwnedFd,
+    entries: Dir,
+    parent_name: Option<CString>,
+}
+
+impl DirectoryFrame {
+    fn new(dir: OwnedFd, parent_name: Option<CString>) -> Result<Self, WsError> {
+        let entries = Dir::read_from(&dir).map_err(errno_io)?;
+        Ok(Self {
+            dir,
+            entries,
+            parent_name,
+        })
     }
+}
+
+fn tree_bytes(dir: &OwnedFd) -> Result<u64, WsError> {
     let mut bytes = 0;
-    for entry in Dir::read_from(dir).map_err(errno_io)? {
+    let mut stack = vec![DirectoryFrame::new(
+        rustix::io::dup(dir).map_err(errno_io)?,
+        None,
+    )?];
+    while let Some(frame) = stack.last_mut() {
+        let Some(entry) = frame.entries.next() else {
+            stack.pop();
+            continue;
+        };
         let entry = entry.map_err(errno_io)?;
         let name = entry.file_name();
         if matches!(name.to_str(), Ok(".") | Ok("..")) {
             continue;
         }
-        *scanned += 1;
-        if *scanned > SCAN_LIMIT {
-            return Err(WsError::StorageAccountingIncomplete);
-        }
-        let stat = rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW).map_err(errno_io)?;
+        let stat =
+            rustix::fs::statat(&frame.dir, name, AtFlags::SYMLINK_NOFOLLOW).map_err(errno_io)?;
         if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
             let fd = rustix::fs::openat(
-                dir,
+                &frame.dir,
                 name,
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::empty(),
             )
             .map_err(errno_io)?;
-            bytes += tree_bytes(&fd, depth + 1, scanned)?;
+            stack.push(DirectoryFrame::new(fd, None)?);
         } else if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile {
             bytes += stat.st_size.max(0) as u64;
         }
@@ -566,43 +566,107 @@ fn tree_bytes(dir: &OwnedFd, depth: usize, scanned: &mut usize) -> Result<u64, W
     Ok(bytes)
 }
 
-fn remove_contents(dir: &OwnedFd, depth: usize, scanned: &mut usize) -> Result<(), WsError> {
-    if depth > 64 {
-        return Err(WsError::StorageAccountingIncomplete);
-    }
-    for entry in Dir::read_from(dir).map_err(errno_io)? {
+fn remove_contents(dir: &OwnedFd) -> Result<(), WsError> {
+    // Parent descriptors remain pinned until their children are synchronized
+    // and removed. Heap frames keep directory depth off the Rust call stack.
+    let mut stack = vec![DirectoryFrame::new(
+        rustix::io::dup(dir).map_err(errno_io)?,
+        None,
+    )?];
+    while let Some(frame) = stack.last_mut() {
+        let Some(entry) = frame.entries.next() else {
+            let completed = stack.pop().expect("current directory frame");
+            rustix::fs::fsync(&completed.dir).map_err(errno_io)?;
+            if let Some(name) = completed.parent_name {
+                let parent = stack.last().expect("child directory retains its parent");
+                rustix::fs::unlinkat(&parent.dir, name.as_c_str(), AtFlags::REMOVEDIR)
+                    .map_err(errno_io)?;
+            }
+            continue;
+        };
         let entry = entry.map_err(errno_io)?;
         let name = entry.file_name();
         if matches!(name.to_str(), Ok(".") | Ok("..")) {
             continue;
         }
-        *scanned += 1;
-        if *scanned > SCAN_LIMIT {
-            return Err(WsError::StorageAccountingIncomplete);
-        }
-        let stat = rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW).map_err(errno_io)?;
-        let flags = if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
+        let stat =
+            rustix::fs::statat(&frame.dir, name, AtFlags::SYMLINK_NOFOLLOW).map_err(errno_io)?;
+        if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
             let child = rustix::fs::openat(
-                dir,
+                &frame.dir,
                 name,
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::empty(),
             )
             .map_err(errno_io)?;
-            remove_contents(&child, depth + 1, scanned)?;
-            AtFlags::REMOVEDIR
+            stack.push(DirectoryFrame::new(child, Some(name.to_owned()))?);
         } else {
-            AtFlags::empty()
-        };
-        rustix::fs::unlinkat(dir, name, flags).map_err(errno_io)?;
+            rustix::fs::unlinkat(&frame.dir, name, AtFlags::empty()).map_err(errno_io)?;
+        }
     }
-    rustix::fs::fsync(dir).map_err(errno_io)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn large_trees_remain_listable_accounted_and_cleanable() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let mut scratch = ws.scratch(0, "large_tree").unwrap();
+        for i in 0..100_001 {
+            std::fs::File::create(scratch.path().join(format!("f{i:06}.stl"))).unwrap();
+        }
+        std::fs::write(scratch.path().join("last.stl"), b"data").unwrap();
+        let path = format!("{SCRATCH}/{}", scratch.id);
+        let listed = ws.list_artifacts(&path, 1).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].path.ends_with("f000000.stl"));
+        assert_eq!(ws.status().max_list_scan_entries, None);
+        let usage = ws.storage_usage().unwrap();
+        assert!(usage.complete);
+        assert_eq!(usage.scan_limit, None);
+        assert!(usage.logical_bytes >= 4);
+        ws.configure_storage_budget(Some(1024 * 1024)).unwrap();
+        ws.write_artifact("admitted.stl", b"fits actual byte budget", false)
+            .unwrap();
+        assert_eq!(ws.cleanup_preview().unwrap()[0].state, "protected");
+        let id = scratch.id.clone();
+        let directory = scratch.path.clone();
+        scratch.cleanup_on_drop = false;
+        drop(scratch);
+        assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn large_cleanup_inventories_and_batches_preserve_prevalidation() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let parent = root.path().join(SCRATCH);
+        std::fs::create_dir_all(&parent).unwrap();
+        for i in 0..1001 {
+            std::fs::create_dir(parent.join(format!("{i:032x}"))).unwrap();
+        }
+        let preview = ws.cleanup_preview().unwrap();
+        assert_eq!(preview.len(), 1001);
+        assert!(preview.iter().all(|entry| entry.state == "pending"));
+        let ids: Vec<_> = preview.into_iter().map(|entry| entry.id).collect();
+        let mut invalid = ids.clone();
+        invalid.push("../retained".into());
+        assert!(matches!(
+            ws.cleanup_scratch(&invalid),
+            Err(WsError::InvalidScratchId)
+        ));
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), ids.len());
+        let removed = ws.cleanup_scratch(&ids).unwrap();
+        assert_eq!(removed.len(), ids.len());
+        assert!(removed.iter().all(|entry| entry.state == "deleted"));
+        assert_eq!(std::fs::read_dir(parent).unwrap().count(), 0);
+    }
 
     #[test]
     fn native_child_keeps_storage_protected_after_parent_ownership_is_released() {
@@ -743,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_cleanup_stays_pending_and_symlinks_never_reach_external_data() {
+    fn deep_cleanup_preserves_external_symlink_targets() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("keep"), b"outside").unwrap();
@@ -757,15 +821,16 @@ mod tests {
             deep.push("nested");
         }
         std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("data"), b"deep").unwrap();
         scratch.cleanup_on_drop = false;
         drop(scratch);
+        assert!(ws.storage_usage().unwrap().complete);
+        assert!(ws.cleanup_preview().unwrap()[0].bytes.unwrap() >= 4);
         assert_eq!(
             ws.cleanup_scratch(std::slice::from_ref(&id)).unwrap()[0].state,
-            "pending"
+            "deleted"
         );
-        assert!(path.exists());
-        std::fs::remove_dir_all(path.join("deep")).unwrap();
-        assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
+        assert!(!path.exists());
         assert_eq!(
             std::fs::read(outside.path().join("keep")).unwrap(),
             b"outside"
