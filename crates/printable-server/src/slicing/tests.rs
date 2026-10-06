@@ -110,6 +110,41 @@ fn handle() -> SliceHandle {
     }
 }
 
+#[tokio::test]
+async fn cancellation_and_retained_status_do_not_require_free_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    worker
+        .workspace
+        .write_generated_bytes(
+            "projects/part/slice/state.json",
+            b"{\"status\":\"completed\"}",
+            false,
+        )
+        .unwrap();
+    let cancel = CancellationToken::new();
+    *worker.active.lock().await = Some(Active {
+        output: "projects/part/slice".into(),
+        state: json!({"status":"running"}),
+        cancel: cancel.clone(),
+    });
+    worker.workspace.configure_storage_budget(Some(1)).unwrap();
+    let state = worker
+        .dispatch(SliceRequest::Cancel(handle()))
+        .await
+        .unwrap();
+    assert_eq!(state["cancel_requested"], true);
+    assert!(cancel.is_cancelled());
+    *worker.active.lock().await = None;
+    assert_eq!(
+        worker
+            .dispatch(SliceRequest::Status(handle()))
+            .await
+            .unwrap()["status"],
+        "completed"
+    );
+}
+
 async fn terminal(worker: &Arc<SliceWorker>) -> Value {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {

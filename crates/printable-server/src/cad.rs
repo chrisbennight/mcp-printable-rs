@@ -397,10 +397,9 @@ impl CadWorker {
         }
         match self
             .workspace
-            .snapshot_artifact(&format!("{output}/state.json"))
+            .read_generated_bytes(&format!("{output}/state.json"))
         {
-            Ok(snapshot) => {
-                let bytes = std::fs::read(snapshot.path())?;
+            Ok((_, bytes)) => {
                 let mut state: Value = serde_json::from_slice(&bytes)?;
                 if matches!(state["status"].as_str(), Some("admitted" | "running")) {
                     state["status"] = json!("interrupted");
@@ -412,8 +411,8 @@ impl CadWorker {
             }
             Err(printable_workspace::WsError::NotFound(_)) => {
                 // Older completed builds remain retrievable without inventing progress.
-                match self.workspace.snapshot_artifact(&format!("{output}/report.json")) {
-                    Ok(snapshot) => Ok(json!({"build":handle,"status":"completed","phase":"terminal","result":serde_json::from_slice::<Value>(&std::fs::read(snapshot.path())?)?,"history":"legacy_report"})),
+                match self.workspace.read_generated_bytes(&format!("{output}/report.json")) {
+                    Ok((_, bytes)) => Ok(json!({"build":handle,"status":"completed","phase":"terminal","result":serde_json::from_slice::<Value>(&bytes)?,"history":"legacy_report"})),
                     Err(printable_workspace::WsError::NotFound(_)) => Err(ToolError::Cad("no retained CAD state or completed report was found; inspect the output directory before submitting again".into())),
                     Err(error) => Err(error.into()),
                 }
@@ -801,6 +800,32 @@ mod tests {
             project_id: "cad".into(),
             output_dir: "builds/one".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_retained_status_do_not_require_free_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        let output = "projects/cad/builds/one";
+        worker
+            .persist_state(output, &json!({"status":"completed"}), false)
+            .unwrap();
+        let cancel = CancellationToken::new();
+        *worker.active.lock().await = Some(Active {
+            output: output.into(),
+            state: json!({"status":"running"}),
+            cancel: cancel.clone(),
+            alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        worker.workspace.configure_storage_budget(Some(1)).unwrap();
+        let state = worker.build(CadRequest::Cancel(handle())).await.unwrap();
+        assert_eq!(state["cancel_requested"], true);
+        assert!(cancel.is_cancelled());
+        *worker.active.lock().await = None;
+        assert_eq!(
+            worker.build(CadRequest::Status(handle())).await.unwrap()["status"],
+            "completed"
+        );
     }
 
     async fn wait_started(worker: &CadWorker) {

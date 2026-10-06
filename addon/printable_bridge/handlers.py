@@ -1253,7 +1253,7 @@ class BlenderHandlers:
 
     def _loaded_project(self) -> str | None:
         project = self._bpy.context.scene.get("printable_project_id")
-        if isinstance(project, str) and 1 <= len(project) <= 64 and all(
+        if isinstance(project, str) and project and all(
             character in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
         ):
             return project
@@ -1262,7 +1262,7 @@ class BlenderHandlers:
     def _open_project(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"project_id", "mode", "checkpoint", "save_current_to", "discard_current", "timeout_seconds"})
         project = params.get("project_id")
-        if not isinstance(project, str) or not 1 <= len(project) <= 64 or any(
+        if not isinstance(project, str) or not project or any(
             character not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
         ):
             raise HandlerError("invalid project_id")

@@ -56,6 +56,11 @@ fn stat_refuses_unsafe_or_missing_artifacts() {
             code,
             "{path}"
         );
+        assert_eq!(
+            workspace.read_generated_bytes(path).unwrap_err().code(),
+            code,
+            "{path}"
+        );
     }
     assert!(
         Workspace::open(None, None)
@@ -749,6 +754,24 @@ fn generated_artifacts_exceed_inline_transfer_size_and_retain_integrity() {
         ws.read_artifact("out.stl").unwrap_err().code(),
         "read_too_large"
     );
+}
+
+#[test]
+fn generated_metadata_remains_readable_when_storage_is_full() {
+    let dir = tmp();
+    let ws = ws(dir.path());
+    let bytes = b"{\"status\":\"completed\"}";
+    ws.write_generated_bytes("state.json", bytes, false)
+        .unwrap();
+    ws.configure_storage_budget(Some(1)).unwrap();
+    assert!(matches!(
+        ws.snapshot_artifact("state.json"),
+        Err(WsError::StorageBudgetExceeded)
+    ));
+    let (meta, retained) = ws.read_generated_bytes("state.json").unwrap();
+    assert_eq!(retained, bytes);
+    assert_eq!(meta.size_bytes, bytes.len() as u64);
+    assert_eq!(ws.storage_usage().unwrap().reserved_remaining_bytes, 0);
 }
 
 #[test]

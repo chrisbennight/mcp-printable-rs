@@ -36,6 +36,12 @@ admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
 
+The caller's MCP client owns its end-to-end request deadline. Worker forwarding
+imposes no independent fixed HTTP timeout. A lost response or client deadline
+does not establish whether admitted work completed; inspect the same retained
+handle before deciding what to do next. Native work uses its caller-selected
+processing budget.
+
 Completed artifacts include G-code and a `.gcode.3mf` package. Download them using
 the shared `artifact` workflow and verify their recorded hashes. `review` reads
 an exact G-code artifact from a completed slice, verifies its hash and renders a

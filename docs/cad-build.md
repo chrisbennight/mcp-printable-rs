@@ -58,9 +58,11 @@ inputs are retained in either outcome. Cancellation of a terminal build returns
 its existing terminal state. It does not remove files or submit new work.
 
 The default `background: false` still waits for the original synchronous result,
-but disconnecting that waiter leaves admitted work running. The direct client's
-individual HTTP timeout is shorter than a legitimate long build, so prefer
-background admission and separate status calls. Use the original handle after
+but disconnecting that waiter leaves admitted work running. The caller's MCP
+client owns its end-to-end request deadline; worker forwarding imposes no
+independent fixed HTTP timeout. A client deadline can expire while a legitimate
+build continues, so prefer background admission and separate status calls.
+Use the original handle after
 any lost response; never automatically repeat a model/import request. If no
 active worker owns retained unfinished state after restart or interrupted
 completion recording, status reports `interrupted`, even if some output files

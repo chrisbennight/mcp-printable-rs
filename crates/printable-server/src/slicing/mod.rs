@@ -301,10 +301,9 @@ impl SliceWorker {
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
             return Ok(state);
         }
-        let snapshot = self
+        let (_, bytes) = self
             .workspace
-            .snapshot_artifact(&format!("{output}/state.json"))?;
-        let bytes = std::fs::read(snapshot.path())?;
+            .read_generated_bytes(&format!("{output}/state.json"))?;
         let mut state: Value = serde_json::from_slice(&bytes)?;
         if state["status"] == "running" {
             state["status"] = json!("interrupted");

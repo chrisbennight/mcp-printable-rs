@@ -511,15 +511,21 @@ impl Workspace {
         Ok(meta_from(rel, suffix, &stat))
     }
 
-    /// Read generated data through an immutable confined snapshot, independently
-    /// of the inline MCP transport boundary.
+    /// Read generated data from a confined descriptor without allocating disk
+    /// scratch or applying the inline MCP transport boundary.
     pub fn read_generated_bytes(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
-        let snapshot = self.snapshot_artifact(path)?;
-        let bytes = std::fs::read(snapshot.path())?;
-        Ok((snapshot.meta().clone(), bytes))
+        self.read_bytes(path, None)
     }
 
     pub fn read_artifact(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
+        self.read_bytes(path, Some(MAX_TRANSFER_BYTES))
+    }
+
+    fn read_bytes(
+        &self,
+        path: &str,
+        transfer_limit: Option<u64>,
+    ) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
         self.require_confined()?;
         let comps = normalize(path)?;
         let rel = comps.join("/");
@@ -528,7 +534,7 @@ impl Workspace {
             .ok_or(WsError::UnsupportedArtifactType)?
             .clone();
         let suffix = allowed_suffix(&name).ok_or(WsError::UnsupportedArtifactType)?;
-        if suffix == ".mp4" {
+        if transfer_limit.is_some() && suffix == ".mp4" {
             return Err(WsError::NonTransferableArtifact);
         }
         let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Error)?;
@@ -549,15 +555,23 @@ impl Workspace {
         if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
             return Err(WsError::NotRegularFile);
         }
-        if st.st_size as u64 > MAX_TRANSFER_BYTES {
-            return Err(WsError::ReadTooLarge);
-        }
         let mut buf = Vec::new();
-        Read::by_ref(&mut file)
-            .take(MAX_TRANSFER_BYTES + 1)
-            .read_to_end(&mut buf)?;
-        if buf.len() as u64 > MAX_TRANSFER_BYTES {
-            return Err(WsError::ReadTooLarge);
+        if let Some(max_bytes) = transfer_limit {
+            if st.st_size as u64 > max_bytes {
+                return Err(WsError::ReadTooLarge);
+            }
+            Read::by_ref(&mut file)
+                .take(max_bytes + 1)
+                .read_to_end(&mut buf)?;
+            if buf.len() as u64 > max_bytes {
+                return Err(WsError::ReadTooLarge);
+            }
+        } else {
+            file.read_to_end(&mut buf)?;
+        }
+        let after = rustix::fs::fstat(&file).map_err(errno_io)?;
+        if buf.len() as u64 != st.st_size as u64 || !stat_unchanged(&st, &after) {
+            return Err(WsError::ChangedWhileReading);
         }
         Ok((meta_from(rel, suffix, &st), buf))
     }
