@@ -144,7 +144,7 @@ struct ListParams {
     /// Directory under the workspace to list (default `.`).
     #[serde(default = "default_path")]
     path: String,
-    /// Positive artifact count; defaults to 1000. The workspace scan budget applies.
+    /// Positive artifact count; defaults to 1000.
     #[serde(default = "default_limit")]
     #[schemars(range(min = 1))]
     limit: usize,
