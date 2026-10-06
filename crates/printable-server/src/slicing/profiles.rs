@@ -180,8 +180,8 @@ impl Profiles {
         let mut name = selection.name.as_str();
         let mut seen = BTreeSet::new();
         loop {
-            if !seen.insert(name.to_owned()) || chain.len() >= 32 {
-                return Err(invalid("profile inheritance is cyclic or too deep"));
+            if !seen.insert(name.to_owned()) {
+                return Err(invalid("profile inheritance is cyclic"));
             }
             let profile = entries.get(name).ok_or_else(|| {
                 invalid(&format!(

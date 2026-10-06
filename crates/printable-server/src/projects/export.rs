@@ -1,4 +1,4 @@
-//! Explicit, bounded project file bundles; no directory-wide collection.
+//! Explicit project file bundles; no directory-wide collection.
 
 use std::{
     collections::BTreeSet,
@@ -14,10 +14,6 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::error::ToolError;
 
-const MAX_FILES: usize = 256;
-const MAX_SOURCE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES: u64 = MAX_SOURCE_BYTES + 4 * 1024 * 1024;
-
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NativeExportParams {
@@ -28,22 +24,21 @@ pub struct NativeExportParams {
     pub entrypoint: String,
     /// New project-relative ZIP destination, never overwritten.
     pub output_path: String,
-    /// Complete native export work budget, between 1 and 120 seconds.
+    /// Positive caller-selected native export work budget in seconds.
     pub timeout_seconds: u64,
 }
 
 impl NativeExportParams {
     pub fn validate(&self, workspace: &Workspace) -> Result<String, ToolError> {
-        if !(1..=120).contains(&self.timeout_seconds)
+        if self.timeout_seconds == 0
             || self.files.is_empty()
-            || self.files.len() > MAX_FILES
             || !self.entrypoint.ends_with(".blend")
             || !self.output_path.ends_with(".zip")
             || !self.files.contains(&self.entrypoint)
             || self.files.contains(&self.output_path)
             || self.files.iter().collect::<BTreeSet<_>>().len() != self.files.len()
         {
-            return Err(ToolError::Validation("native export requires 1–256 unique files including a blend entrypoint, a separate ZIP output, and a 1–120 second work budget".into()));
+            return Err(ToolError::Validation("native export requires non-empty unique files including a blend entrypoint, a separate ZIP output, and a positive work budget".into()));
         }
         for path in self.files.iter().chain([&self.output_path]) {
             validate_selection_path(path)?;
@@ -89,8 +84,7 @@ pub struct BundleFile {
 }
 
 fn validate_selection_path(path: &str) -> Result<(), ToolError> {
-    if path.len() > 1024
-        || path.chars().any(char::is_control)
+    if path.chars().any(char::is_control)
         || path.split('/').any(|component| {
             let component = component.to_ascii_lowercase();
             component.starts_with('.')
@@ -101,7 +95,8 @@ fn validate_selection_path(path: &str) -> Result<(), ToolError> {
         })
     {
         return Err(ToolError::Validation(
-            "bundle paths must be at most 1024 bytes and exclude hidden files, credentials, secrets, and control characters".into(),
+            "bundle paths must exclude hidden files, credentials, secrets, and control characters"
+                .into(),
         ));
     }
     Ok(())
@@ -129,9 +124,9 @@ pub fn export_files(
     workspace: &Workspace,
     params: ExportFilesParams,
 ) -> Result<ExportFilesResult, ToolError> {
-    if params.files.is_empty() || params.files.len() > MAX_FILES {
+    if params.files.is_empty() {
         return Err(ToolError::Validation(
-            "select 1–256 project files for export".into(),
+            "select at least one project file for export".into(),
         ));
     }
     validate_selection_path(&params.output_path)?;
@@ -153,17 +148,9 @@ pub fn export_files(
         }
     }
     let mut snapshots = Vec::with_capacity(selected.len());
-    let mut remaining = MAX_SOURCE_BYTES;
     for path in selected {
         let source = super::resolve(workspace, &params.project_id, path)?;
-        let snapshot = workspace.snapshot_artifact_bounded(&source, remaining.max(1))?;
-        remaining = remaining
-            .checked_sub(snapshot.meta().size_bytes)
-            .ok_or_else(|| {
-                ToolError::Validation(
-                    "selected project files exceed the 1 GiB export budget".into(),
-                )
-            })?;
+        let snapshot = workspace.snapshot_artifact(&source)?;
         snapshots.push((path, snapshot));
     }
     // All sources must still identify the versions collected for this bundle.
@@ -207,7 +194,7 @@ pub fn export_files(
         &output_path,
         &archive_path,
         false,
-        MAX_ARCHIVE_BYTES,
+        u64::MAX,
     )?;
     Ok(ExportFilesResult {
         artifact,
@@ -281,7 +268,7 @@ mod tests {
             ),
             ("entrypoint", serde_json::json!("unselected.blend")),
             ("output_path", serde_json::json!("../escape.zip")),
-            ("timeout_seconds", serde_json::json!(121)),
+            ("timeout_seconds", serde_json::json!(0)),
         ] {
             let mut invalid = params.clone();
             invalid[key] = value;

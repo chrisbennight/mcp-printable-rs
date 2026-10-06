@@ -56,39 +56,16 @@ const MAX_CONCURRENT_WORKSPACE_OPS: usize = 4;
 static WORKSPACE_OPS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_WORKSPACE_OPS)));
 // Decoding and resampling can temporarily retain input bytes, RGBA and RGB
-// images, fitted tiles, and an output canvas. Serialize those operations
-// process-wide instead of multiplying their bounded peak across MCP sessions.
+// images, tiles, and an output canvas. Serialize those operations
+// process-wide instead of multiplying their allocation across MCP sessions.
 static VISUAL_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
-// Validation retains one cap-sized STL and assembly analysis retains two while
-// expanding vertices, topology, BVHs, and Manifold state. Serialize those
-// bounded peaks so concurrent sessions queue instead of multiplying them.
+// Validation retains one STL and assembly analysis retains two while expanding
+// vertices, topology, BVHs, and Manifold state. Serialize those operations so
+// concurrent sessions queue instead of multiplying their allocation.
 static GEOMETRY_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 pub(crate) const PREVIEW_INLINE_MAX_BYTES: u64 = 1024 * 1024;
-// An 8 Mi-pixel RGB canvas occupies 24 MiB, leaving 1 MiB for PNG framing and
-// compression overhead under the workspace's 25 MiB generated-artifact cap.
-const MAX_COMPOSITE_PIXELS: u64 = 8 * 1024 * 1024;
-const MAX_DECODED_INPUT_PIXELS: u64 = 16 * 1024 * 1024;
-const MAX_DECODER_ALLOC_BYTES: u64 = 67_108_864;
-const MAX_RENDER_VIEWS: usize = 36;
-const MAX_RENDER_VIEW_PIXELS: u64 = 64 * 1024 * 1024;
-pub(crate) const MAX_PRODUCT_RENDER_PIXELS: u64 = 16 * 1024 * 1024;
-pub(crate) const MAX_PRODUCT_RENDER_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_PRODUCT_INSTANCES: u64 = 4096;
-const MAX_PRODUCT_VERTICES: u64 = 1_000_000;
-const MAX_PRODUCT_EDGES: u64 = 3_000_000;
-const MAX_PRODUCT_FACES: u64 = 2_000_000;
-const MAX_PRODUCT_LOOPS: u64 = 6_000_000;
-const MAX_PRODUCT_ATTRIBUTE_VALUES: u64 = 16_000_000;
-const MAX_PRODUCT_MATERIAL_SLOTS: u64 = 4096;
-const MAX_REVIEW_SOURCE_PIXELS: u64 = 8 * 1024 * 1024;
-const MAX_DIAGNOSTIC_VERTICES: u64 = 1_000_000;
-const MAX_DIAGNOSTIC_EDGES: u64 = 3_000_000;
-const MAX_DIAGNOSTIC_FACES: u64 = 2_000_000;
-const MAX_DIAGNOSTIC_LOOPS: u64 = 6_000_000;
-const MAX_DIAGNOSTIC_ATTRIBUTE_VALUES: u64 = 16_000_000;
 // Bounds pass through f32 mesh storage, world transforms, and bisect interpolation.
 const BLENDER_BOUNDS_TOLERANCE_ULPS: f64 = 64.0;
-const MAX_SCAD_SOURCE_BYTES: usize = 1024 * 1024;
 
 fn default_path() -> String {
     ".".to_string()
@@ -111,13 +88,13 @@ fn default_animation_frame_end() -> i32 {
 fn default_render_timeout_seconds() -> f64 {
     3600.0
 }
-fn default_render_dimension() -> u16 {
+fn default_render_dimension() -> u32 {
     512
 }
-fn default_product_render_width() -> u16 {
+fn default_product_render_width() -> u32 {
     1024
 }
-fn default_product_render_height() -> u16 {
+fn default_product_render_height() -> u32 {
     768
 }
 fn default_scad_view() -> String {
@@ -126,13 +103,13 @@ fn default_scad_view() -> String {
 fn default_true() -> bool {
     true
 }
-fn default_gallery_columns() -> u8 {
+fn default_gallery_columns() -> u32 {
     3
 }
-fn default_turntable_columns() -> u8 {
+fn default_turntable_columns() -> u32 {
     4
 }
-fn default_turntable_frames() -> u8 {
+fn default_turntable_frames() -> u32 {
     8
 }
 fn default_turntable_elevation() -> f64 {
@@ -263,7 +240,7 @@ struct SceneInfoParams {
     expected_scene: Option<SceneExpectation>,
     /// Cursor into scene order, before filtering. Reuse next_offset with the same filters.
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: u32,
     /// Positive object count; defaults to 100. The scene scan budget applies.
     #[serde(default = "default_scene_limit")]
@@ -290,7 +267,7 @@ struct ProjectDependenciesParams {
     /// Require the observed scene identity for stable dependency pagination.
     expected_scene: SceneExpectation,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
     #[schemars(range(min = 1))]
@@ -318,7 +295,7 @@ struct ObjectInfoParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     section: Option<ObjectSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: Option<u32>,
     /// Positive section page size; defaults to 20.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,7 +330,7 @@ struct NodeTreeInfoParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Exact material name or Geometry Nodes group name, according to kind.
-    #[schemars(length(min = 1, max = 255))]
+    #[schemars(length(min = 1))]
     name: String,
     #[serde(default)]
     kind: NodeTreeKind,
@@ -361,7 +338,7 @@ struct NodeTreeInfoParams {
     #[serde(default)]
     section: NodeTreeSection,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
     #[schemars(range(min = 1))]
@@ -380,7 +357,7 @@ struct SceneClearParams {
 #[serde(deny_unknown_fields)]
 struct OpenProjectSceneParams {
     #[serde(default = "default_project_scene_timeout")]
-    #[schemars(range(min = 1, max = 1800))]
+    #[schemars(range(min = 1))]
     timeout_seconds: u64,
     project_id: String,
     expected_scene: SceneExpectation,
@@ -405,7 +382,7 @@ enum ProjectSceneMode {
 #[serde(deny_unknown_fields)]
 struct AttachCadParams {
     #[serde(default = "default_project_scene_timeout")]
-    #[schemars(range(min = 1, max = 1800))]
+    #[schemars(range(min = 1))]
     timeout_seconds: u64,
     project_id: String,
     expected_scene: SceneExpectation,
@@ -455,8 +432,8 @@ struct RigidRotationAnimateParams {
     /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
-    /// One to 1000 unique Blender objects with no hierarchy, animation, constraints, or rigid-body state.
-    #[schemars(length(min = 1, max = 1000))]
+    /// Nonempty unique Blender objects with no hierarchy, animation, constraints, or rigid-body state.
+    #[schemars(length(min = 1))]
     objects: Vec<String>,
     /// Unique name for the Empty pivot controller created by this operation.
     controller_name: String,
@@ -498,24 +475,24 @@ struct PrimitiveCreateParams {
     /// Cube edge length (cube only; default 2.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<f64>,
-    /// Radial segments (cylinder only; default 64, maximum 1024).
+    /// Radial segments (cylinder only; default 64).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 3, max = 1024))]
-    vertices: Option<u16>,
+    #[schemars(range(min = 3))]
+    vertices: Option<u32>,
     /// Radius (cylinder or UV sphere; default 1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     radius: Option<f64>,
     /// Cylinder depth (default 2.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     depth: Option<f64>,
-    /// Longitudinal segments (UV sphere only; default 64, maximum 1024).
+    /// Longitudinal segments (UV sphere only; default 64).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 3, max = 1024))]
-    segments: Option<u16>,
-    /// Latitudinal rings (UV sphere only; default 32, maximum 512).
+    #[schemars(range(min = 3))]
+    segments: Option<u32>,
+    /// Latitudinal rings (UV sphere only; default 32).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 3, max = 512))]
-    ring_count: Option<u16>,
+    #[schemars(range(min = 3))]
+    ring_count: Option<u32>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -598,21 +575,21 @@ struct RenderPreviewParams {
     expected_scene: Option<SceneExpectation>,
     /// Destination `.png` path under the confined shared workspace.
     path: String,
-    /// Output width in pixels (default 512, maximum 8192).
+    /// Output width in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    width: u16,
-    /// Output height in pixels (default 512, maximum 8192).
+    #[schemars(range(min = 1))]
+    width: u32,
+    /// Output height in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    height: u16,
+    #[schemars(range(min = 1))]
+    height: u32,
     /// EEVEE for fast review or CYCLES for final-quality rendering.
     #[serde(default = "default_render_engine")]
     engine: RenderEngine,
-    /// CYCLES sample count (default 128, maximum 4096); invalid for EEVEE.
+    /// CYCLES sample count (default 128); invalid for EEVEE.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 4096))]
-    samples: Option<u16>,
+    #[schemars(range(min = 1))]
+    samples: Option<u32>,
     /// Caller-selected positive, runtime-representable render budget in seconds.
     /// Defaults to one hour; there is no configured maximum.
     #[serde(default = "default_render_timeout_seconds")]
@@ -724,7 +701,7 @@ impl Default for ProductPresentationView {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProductMaterialOverride {
     /// Selected object names that receive this presentation-only material.
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     pub(crate) objects: Vec<String>,
     /// Display-referred sRGB color components from 0 through 1.
     pub(crate) base_color_srgb: [f64; 3],
@@ -764,19 +741,17 @@ pub(crate) struct ProductPresentation {
     pub(crate) view: ProductPresentationView,
     /// Presentation-only material assignments. An object can appear once.
     #[serde(default)]
-    #[schemars(length(max = 64))]
     pub(crate) materials: Vec<ProductMaterialOverride>,
     /// Optional override for the profile's preserve/smooth-by-angle choice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) surface_shading: Option<ProductSurfaceShading>,
-    /// Presentation-only exposure in stops; bounded to -10 through 10.
+    /// Presentation-only finite exposure in stops; Blender owns its native range.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = -10, max = 10))]
     pub(crate) exposure_stops: Option<f64>,
-    /// Scale all profile area lights and world illumination together (0 through 10).
+    /// Scale all profile area lights and world illumination by a nonnegative value.
     /// Defaults to 1. Zero disables this illumination, not emissive materials.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 10))]
+    #[schemars(range(min = 0))]
     pub(crate) light_intensity_scale: Option<f64>,
 }
 
@@ -790,27 +765,25 @@ struct RenderProductParams {
     path: String,
     /// Unique renderable source object names. Every evaluated collection
     /// instance of a selected source object is included.
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     objects: Vec<String>,
     /// Deterministic disposable product-presentation setup.
     presentation: ProductPresentation,
-    /// Output width in pixels (default 1024, maximum 8192). Width multiplied
-    /// by height may not exceed 16,777,216 pixels.
+    /// Output width in pixels (default 1024).
     #[serde(default = "default_product_render_width")]
-    #[schemars(range(min = 1, max = 8192))]
-    width: u16,
-    /// Output height in pixels (default 768, maximum 8192). Width multiplied
-    /// by height may not exceed 16,777,216 pixels.
+    #[schemars(range(min = 1))]
+    width: u32,
+    /// Output height in pixels (default 768).
     #[serde(default = "default_product_render_height")]
-    #[schemars(range(min = 1, max = 8192))]
-    height: u16,
+    #[schemars(range(min = 1))]
+    height: u32,
     /// EEVEE for fast product review or CYCLES for final-quality rendering.
     #[serde(default = "default_render_engine")]
     engine: RenderEngine,
-    /// CYCLES sample count (default 128, maximum 4096); invalid for EEVEE.
+    /// CYCLES sample count (default 128); invalid for EEVEE.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 4096))]
-    samples: Option<u16>,
+    #[schemars(range(min = 1))]
+    samples: Option<u32>,
     /// Caller-selected positive render budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
@@ -847,23 +820,21 @@ struct MultiViewRenderSettings {
     /// Reject stale scene state before rendering starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
-    /// Per-view width in pixels (default 512, maximum 8192). Width × height
-    /// must not exceed 8,388,608 pixels so every RGB8 source is compositable.
+    /// Per-view width in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    width: u16,
-    /// Per-view height in pixels (default 512, maximum 8192). Width × height
-    /// must not exceed 8,388,608 pixels so every RGB8 source is compositable.
+    #[schemars(range(min = 1))]
+    width: u32,
+    /// Per-view height in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    height: u16,
+    #[schemars(range(min = 1))]
+    height: u32,
     /// EEVEE for fast review or CYCLES for final-quality rendering.
     #[serde(default = "default_render_engine")]
     engine: RenderEngine,
-    /// CYCLES sample count (default 128, maximum 4096); invalid for EEVEE.
+    /// CYCLES sample count (default 128); invalid for EEVEE.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 4096))]
-    samples: Option<u16>,
+    #[schemars(range(min = 1))]
+    samples: Option<u32>,
     /// Caller-selected budget for the complete multi-view render in seconds.
     /// Defaults to one hour; there is no configured maximum.
     #[serde(default = "default_render_timeout_seconds")]
@@ -877,12 +848,12 @@ struct RenderGalleryParams {
     path: String,
     /// Unique preset views to render. Defaults to front/right/back/left/top/isometric.
     #[serde(default = "default_gallery_views")]
-    #[schemars(length(min = 1, max = 7))]
+    #[schemars(length(min = 1))]
     views: Vec<GalleryView>,
-    /// Tile columns in the composite (default 3, maximum 7).
+    /// Tile columns in the composite (default 3).
     #[serde(default = "default_gallery_columns")]
-    #[schemars(range(min = 1, max = 7))]
-    columns: u8,
+    #[schemars(range(min = 1))]
+    columns: u32,
     /// Optional deterministic product presentation. When omitted, the existing
     /// engineering-review renderer and output remain unchanged.
     presentation: Option<ProductPresentation>,
@@ -953,7 +924,7 @@ struct RenderCrossSectionParams {
     path: String,
     /// Optional renderable object names. Omit to section the complete visible scene.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     objects: Option<Vec<String>>,
     /// World axis normal to the cut plane (default Z).
     #[serde(default = "default_section_axis")]
@@ -978,7 +949,7 @@ struct RenderHeatmapParams {
     path: String,
     /// Optional renderable object names. Omit to analyze the complete visible scene.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     objects: Option<Vec<String>>,
     /// World-space build-up direction. Magnitude is normalized (default +Z).
     #[serde(default = "default_build_direction")]
@@ -1059,8 +1030,8 @@ struct AnalyzeAssemblyParams {
 enum ScadDefineValue {
     Bool(bool),
     Number(f64),
-    String(#[schemars(length(max = 4096))] String),
-    NumberVector(#[schemars(length(max = 16))] Vec<f64>),
+    String(String),
+    NumberVector(Vec<f64>),
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -1073,13 +1044,7 @@ impl schemars::JsonSchema for ScadDefinitions {
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let mut schema =
-            <BTreeMap<String, ScadDefineValue> as schemars::JsonSchema>::json_schema(generator);
-        schema.insert(
-            "maxProperties".to_string(),
-            json!(printable_scad::MAX_DEFINITIONS),
-        );
-        schema
+        <BTreeMap<String, ScadDefineValue> as schemars::JsonSchema>::json_schema(generator)
     }
 }
 
@@ -1140,7 +1105,7 @@ impl ProductDesignProfile {
 #[serde(deny_unknown_fields)]
 struct ScadCompileParams {
     /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
-    #[schemars(length(min = 1, max = 1048576))]
+    #[schemars(length(min = 1))]
     source: String,
     /// Destination `.stl` path under the confined workspace.
     path: String,
@@ -1148,7 +1113,6 @@ struct ScadCompileParams {
     #[serde(default)]
     defines: ScadDefinitions,
     /// Optional product variant exposed to source as the reserved pbl_variant definition.
-    #[schemars(length(max = 64))]
     variant: Option<String>,
     /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
     design_profile: Option<ProductDesignProfile>,
@@ -1164,7 +1128,7 @@ struct ScadCompileParams {
 #[serde(deny_unknown_fields)]
 struct ScadRenderParams {
     /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
-    #[schemars(length(min = 1, max = 1048576))]
+    #[schemars(length(min = 1))]
     source: String,
     /// Destination `.png` path under the confined workspace.
     path: String,
@@ -1172,17 +1136,16 @@ struct ScadRenderParams {
     #[serde(default)]
     defines: ScadDefinitions,
     /// Optional product variant exposed to source as the reserved pbl_variant definition.
-    #[schemars(length(max = 64))]
     variant: Option<String>,
     /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
     design_profile: Option<ProductDesignProfile>,
     /// Named camera: iso, front, back, right, left, top, or bottom.
     #[serde(default = "default_scad_view")]
     view: String,
-    /// Square output size in pixels (default 512, maximum 8192).
+    /// Square output size in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    size: u16,
+    #[schemars(range(min = 1))]
+    size: u32,
     /// Use fast OpenCSG preview mode (default true); false requests a full render.
     #[serde(default = "default_true")]
     preview: bool,
@@ -1201,7 +1164,7 @@ struct ScadRenderParams {
 #[serde(deny_unknown_fields)]
 struct ScadCrossSectionParams {
     /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
-    #[schemars(length(min = 1, max = 1048576))]
+    #[schemars(length(min = 1))]
     source: String,
     /// Destination `.svg` path under the confined workspace.
     path: String,
@@ -1209,7 +1172,6 @@ struct ScadCrossSectionParams {
     #[serde(default)]
     defines: ScadDefinitions,
     /// Optional product variant exposed to source as the reserved pbl_variant definition.
-    #[schemars(length(max = 64))]
     variant: Option<String>,
     /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
     design_profile: Option<ProductDesignProfile>,
@@ -1229,20 +1191,20 @@ struct ScadCrossSectionParams {
 struct RenderTurntableParams {
     /// Destination path for the labeled turntable contact-sheet PNG.
     path: String,
-    /// Evenly spaced frames around the model (default 8, maximum 36).
+    /// Evenly spaced frames around the model (default 8).
     #[serde(default = "default_turntable_frames")]
-    #[schemars(range(min = 3, max = 36))]
-    frames: u8,
+    #[schemars(range(min = 1))]
+    frames: u32,
     /// Camera elevation in degrees from -89 through 89 (default 20).
     #[serde(default = "default_turntable_elevation")]
     elevation_degrees: f64,
     /// Orbit clockwise instead of counter-clockwise (default false).
     #[serde(default)]
     clockwise: bool,
-    /// Tile columns in the contact sheet (default 4, maximum 12).
+    /// Tile columns in the contact sheet (default 4).
     #[serde(default = "default_turntable_columns")]
-    #[schemars(range(min = 1, max = 12))]
-    columns: u8,
+    #[schemars(range(min = 1))]
+    columns: u32,
     /// Optional deterministic product presentation. Orbit controls remain
     /// authoritative for each turntable view.
     presentation: Option<ProductPresentation>,
@@ -1262,14 +1224,14 @@ struct CompareRendersParams {
     after_path: String,
     /// Destination path for the labeled comparison PNG.
     path: String,
-    /// Width of each output panel (default 512, maximum 4096).
+    /// Width of each output panel (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 4096))]
-    panel_width: u16,
-    /// Height of each output panel (default 512, maximum 4096).
+    #[schemars(range(min = 1))]
+    panel_width: u32,
+    /// Height of each output panel (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 4096))]
-    panel_height: u16,
+    #[schemars(range(min = 1))]
+    panel_height: u32,
     /// Include the comparison as MCP image content when it is at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
@@ -1332,7 +1294,7 @@ struct EditingStateParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     section: Option<EditingStateSection>,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: u32,
     #[serde(default = "default_inspection_limit")]
     #[schemars(range(min = 1))]
@@ -2199,9 +2161,9 @@ async fn blender_project_command<T: serde::Serialize>(
     params: &T,
     timeout_seconds: u64,
 ) -> Result<Value, ToolError> {
-    if !(1..=1800).contains(&timeout_seconds) {
+    if timeout_seconds == 0 {
         return Err(ToolError::Validation(
-            "timeout_seconds must be between 1 and 1800".into(),
+            "timeout_seconds must be positive".into(),
         ));
     }
     let Value::Object(params) = serde_json::to_value(params)? else {
@@ -2300,14 +2262,14 @@ fn validate_primitive(params: &PrimitiveCreateParams) -> Result<(), ToolError> {
             )));
         }
     }
-    for (name, value, maximum) in [
-        ("vertices", params.vertices, 1024),
-        ("segments", params.segments, 1024),
-        ("ring_count", params.ring_count, 512),
+    for (name, value) in [
+        ("vertices", params.vertices),
+        ("segments", params.segments),
+        ("ring_count", params.ring_count),
     ] {
-        if value.is_some_and(|number| number < 3 || number > maximum) {
+        if value.is_some_and(|number| number < 3) {
             return Err(ToolError::Validation(format!(
-                "{name} must be an integer between 3 and {maximum}"
+                "{name} must be an integer at least 3"
             )));
         }
     }
@@ -2325,11 +2287,6 @@ fn validate_scene_page(params: &SceneInfoParams) -> Result<(), ToolError> {
     {
         validate_inspection_name(name)?;
     }
-    if params.offset > 1_000_000 {
-        return Err(ToolError::Validation(
-            "offset must be an integer between 0 and 1000000".to_string(),
-        ));
-    }
     if params.limit == 0 {
         return Err(ToolError::Validation(
             "limit must be a positive integer".to_string(),
@@ -2339,19 +2296,18 @@ fn validate_scene_page(params: &SceneInfoParams) -> Result<(), ToolError> {
 }
 
 fn validate_inspection_name(name: &str) -> Result<(), ToolError> {
-    if name.is_empty() || name.chars().count() > 255 {
+    if name.is_empty() {
         return Err(ToolError::Validation(
-            "inspection names must contain between 1 and 255 characters".to_string(),
+            "inspection names must be nonempty".to_string(),
         ));
     }
     Ok(())
 }
 
-fn validate_inspection_page(offset: u32, limit: usize) -> Result<(), ToolError> {
-    if offset > 1_000_000 || limit == 0 {
+fn validate_inspection_page(_offset: u32, limit: usize) -> Result<(), ToolError> {
+    if limit == 0 {
         return Err(ToolError::Validation(
-            "inspection offset must be between 0 and 1000000 and limit must be positive"
-                .to_string(),
+            "inspection limit must be positive".to_string(),
         ));
     }
     Ok(())
@@ -2419,11 +2375,6 @@ fn validate_render_preview(params: &RenderPreviewParams) -> Result<Duration, Too
 fn validate_render_product(params: &RenderProductParams) -> Result<Duration, ToolError> {
     validate_object_subset(Some(&params.objects))?;
     validate_product_presentation(&params.presentation, Some(&params.objects))?;
-    if u64::from(params.width) * u64::from(params.height) > MAX_PRODUCT_RENDER_PIXELS {
-        return Err(ToolError::Validation(format!(
-            "product render exceeds the {MAX_PRODUCT_RENDER_PIXELS}-pixel output limit; reduce width or height"
-        )));
-    }
     validate_render_settings(
         params.width,
         params.height,
@@ -2437,20 +2388,21 @@ pub(crate) fn validate_product_presentation(
     presentation: &ProductPresentation,
     selected_objects: Option<&[String]>,
 ) -> Result<(), ToolError> {
-    for (name, value, minimum, maximum) in [
-        ("exposure_stops", presentation.exposure_stops, -10.0, 10.0),
-        (
-            "light_intensity_scale",
-            presentation.light_intensity_scale,
-            0.0,
-            10.0,
-        ),
-    ] {
-        if value.is_some_and(|value| !value.is_finite() || !(minimum..=maximum).contains(&value)) {
-            return Err(ToolError::Validation(format!(
-                "{name} must be a finite number from {minimum} through {maximum}"
-            )));
-        }
+    if presentation
+        .exposure_stops
+        .is_some_and(|value| !value.is_finite())
+    {
+        return Err(ToolError::Validation(
+            "exposure_stops must be finite".into(),
+        ));
+    }
+    if presentation
+        .light_intensity_scale
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(ToolError::Validation(
+            "light_intensity_scale must be finite and nonnegative".into(),
+        ));
     }
     if !presentation.view.azimuth_degrees.is_finite()
         || !(-360.0..=360.0).contains(&presentation.view.azimuth_degrees)
@@ -2470,11 +2422,6 @@ pub(crate) fn validate_product_presentation(
     {
         return Err(ToolError::Validation(
             "studio presentation elevation_degrees must be from 0 through 89 so the ground cannot occlude the product".to_string(),
-        ));
-    }
-    if presentation.materials.len() > 64 {
-        return Err(ToolError::Validation(
-            "presentation materials must contain at most 64 entries".to_string(),
         ));
     }
     let selected =
@@ -2521,15 +2468,15 @@ pub(crate) fn validate_product_presentation(
 }
 
 fn validate_render_settings(
-    width: u16,
-    height: u16,
+    width: u32,
+    height: u32,
     engine: RenderEngine,
-    samples: Option<u16>,
+    samples: Option<u32>,
     timeout_seconds: f64,
 ) -> Result<Duration, ToolError> {
-    if !(1..=8192).contains(&width) || !(1..=8192).contains(&height) {
+    if width == 0 || height == 0 {
         return Err(ToolError::Validation(
-            "width and height must be integers between 1 and 8192".to_string(),
+            "width and height must be positive integers".to_string(),
         ));
     }
     match engine {
@@ -2538,9 +2485,9 @@ fn validate_render_settings(
                 "samples is only valid for CYCLES renders".to_string(),
             ));
         }
-        RenderEngine::Cycles if samples.is_some_and(|samples| !(1..=4096).contains(&samples)) => {
+        RenderEngine::Cycles if samples == Some(0) => {
             return Err(ToolError::Validation(
-                "samples must be an integer between 1 and 4096".to_string(),
+                "samples must be a positive integer".to_string(),
             ));
         }
         _ => {}
@@ -2804,16 +2751,16 @@ fn validate_object_subset(objects: Option<&[String]>) -> Result<(), ToolError> {
     let Some(objects) = objects else {
         return Ok(());
     };
-    if objects.is_empty() || objects.len() > 1000 {
+    if objects.is_empty() {
         return Err(ToolError::Validation(
-            "objects must contain between 1 and 1000 unique names".to_string(),
+            "objects must contain non-empty unique names".to_string(),
         ));
     }
     let mut unique = HashSet::with_capacity(objects.len());
     for name in objects {
-        if name.is_empty() || name.len() > 255 || !unique.insert(name) {
+        if name.is_empty() || !unique.insert(name) {
             return Err(ToolError::Validation(
-                "objects must contain between 1 and 1000 unique names".to_string(),
+                "objects must contain non-empty unique names".to_string(),
             ));
         }
     }
@@ -2853,7 +2800,6 @@ async fn render_diagnostic_source(
     settings: &MultiViewRenderSettings,
     params: serde_json::Map<String, Value>,
 ) -> Result<Value, ToolError> {
-    validate_render_view_surface(1, settings.width, settings.height)?;
     let work_budget = validate_render_settings(
         settings.width,
         settings.height,
@@ -2893,10 +2839,7 @@ async fn render_product(
         ToolError::Validation("Blender command parameters must be an object".to_string())
     })?;
     command_params.remove("include_inline");
-    command_params.insert(
-        "max_output_bytes".to_string(),
-        json!(MAX_PRODUCT_RENDER_BYTES),
-    );
+    command_params.insert("max_output_bytes".to_string(), json!(u64::MAX));
     let rendered = blender
         .send_value_with_work_budget("render_product", command_params, work_budget)
         .await?;
@@ -2939,10 +2882,10 @@ struct ProductRenderExpectation<'a> {
     exposure: f64,
     light_intensity_scale: f64,
     path: &'a str,
-    width: u16,
-    height: u16,
+    width: u32,
+    height: u32,
     engine: RenderEngine,
-    samples: Option<u16>,
+    samples: Option<u32>,
     objects: &'a [String],
     profile: ProductPresentationProfile,
     azimuth: f64,
@@ -3156,21 +3099,19 @@ fn validate_product_render_response(
         .and_then(Value::as_object)
         .ok_or_else(malformed)?;
     let geometry_fields = [
-        ("instances", MAX_PRODUCT_INSTANCES),
-        ("unique_evaluated_meshes", MAX_PRODUCT_INSTANCES),
-        ("vertices", MAX_PRODUCT_VERTICES),
-        ("edges", MAX_PRODUCT_EDGES),
-        ("faces", MAX_PRODUCT_FACES),
-        ("loops", MAX_PRODUCT_LOOPS),
-        ("attribute_values", MAX_PRODUCT_ATTRIBUTE_VALUES),
-        ("material_slots", MAX_PRODUCT_MATERIAL_SLOTS),
+        "instances",
+        "unique_evaluated_meshes",
+        "vertices",
+        "edges",
+        "faces",
+        "loops",
+        "attribute_values",
+        "material_slots",
     ];
-    if geometry_fields.iter().any(|(field, maximum)| {
-        geometry
-            .get(*field)
-            .and_then(Value::as_u64)
-            .is_none_or(|count| count > *maximum)
-    }) || geometry.get("instances") != framing.get("instance_count")
+    if geometry_fields
+        .iter()
+        .any(|field| geometry.get(*field).and_then(Value::as_u64).is_none())
+        || geometry.get("instances") != framing.get("instance_count")
         || geometry.get("instances").and_then(Value::as_u64) == Some(0)
         || geometry
             .get("unique_evaluated_meshes")
@@ -3335,7 +3276,7 @@ pub(crate) async fn verify_product_png_artifact(
         })?
         .to_string();
     visual_blocking(move || {
-        let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_PRODUCT_RENDER_BYTES)?;
+        let snapshot = workspace.snapshot_artifact(&path)?;
         let bytes = std::fs::read(snapshot.path())?;
         if bytes.len() as u64 != reported_size || sha256_hex(&bytes) != reported_sha256 {
             return Err(ToolError::Validation(
@@ -3375,19 +3316,14 @@ async fn render_gallery(
     params: RenderGalleryParams,
 ) -> Result<ToolOutput, ToolError> {
     validate_blender_artifact(&workspace, &params.path, ".png", false)?;
-    if params.views.len() > 7 {
-        return Err(ToolError::Validation(
-            "views must contain between 1 and 7 entries".to_string(),
-        ));
-    }
     if params.views.iter().copied().collect::<HashSet<_>>().len() != params.views.len() {
         return Err(ToolError::Validation(
             "gallery views must be unique".to_string(),
         ));
     }
-    if !(1..=7).contains(&params.columns) {
+    if params.columns == 0 {
         return Err(ToolError::Validation(
-            "columns must be an integer between 1 and 7".to_string(),
+            "columns must be a positive integer".into(),
         ));
     }
     let layout = fit_composite_layout(
@@ -3435,14 +3371,14 @@ async fn render_turntable(
     params: RenderTurntableParams,
 ) -> Result<ToolOutput, ToolError> {
     validate_blender_artifact(&workspace, &params.path, ".png", false)?;
-    if !(3..=MAX_RENDER_VIEWS as u8).contains(&params.frames) {
+    if params.frames == 0 {
         return Err(ToolError::Validation(
-            "frames must be an integer between 3 and 36".to_string(),
+            "frames must be a positive integer".to_string(),
         ));
     }
-    if !(1..=12).contains(&params.columns) {
+    if params.columns == 0 {
         return Err(ToolError::Validation(
-            "columns must be an integer between 1 and 12".to_string(),
+            "columns must be a positive integer".to_string(),
         ));
     }
     if !params.elevation_degrees.is_finite() || !(-89.0..=89.0).contains(&params.elevation_degrees)
@@ -3452,7 +3388,9 @@ async fn render_turntable(
         ));
     }
     let layout = fit_composite_layout(
-        usize::from(params.frames),
+        usize::try_from(params.frames).map_err(|_| {
+            ToolError::Validation("frame count exceeds the runtime integer range".into())
+        })?,
         params.columns,
         params.render.width,
         params.render.height,
@@ -3547,53 +3485,32 @@ fn allocate_render_views<'a>(
 
 fn fit_composite_layout(
     view_count: usize,
-    requested_columns: u8,
-    tile_width: u16,
-    tile_height: u16,
+    requested_columns: u32,
+    tile_width: u32,
+    tile_height: u32,
 ) -> Result<TileLayout, ToolError> {
     if view_count == 0 || requested_columns == 0 || tile_width == 0 || tile_height == 0 {
         return Err(ToolError::Validation(
             "a visual composite requires views, columns, and non-zero tile dimensions".to_string(),
         ));
     }
-    let columns = u32::from(requested_columns).min(view_count as u32);
-    let rows = (view_count as u64).div_ceil(u64::from(columns));
-    let source_width = u32::from(tile_width);
-    let source_height = u32::from(tile_height);
-    let width_is_longest = source_width >= source_height;
-    let source_longest = source_width.max(source_height);
-    let dimensions = |longest: u32| {
-        if width_is_longest {
-            (
-                longest,
-                (u64::from(source_height) * u64::from(longest) / u64::from(source_width)).max(1)
-                    as u32,
-            )
-        } else {
-            (
-                (u64::from(source_width) * u64::from(longest) / u64::from(source_height)).max(1)
-                    as u32,
-                longest,
-            )
-        }
+    let invalid = || {
+        ToolError::Validation("composite dimensions exceed the image format's integer range".into())
     };
-    let fits = |longest: u32| {
-        let (width, height) = dimensions(longest);
-        u64::from(columns)
-            * u64::from(width)
-            * rows
-            * (u64::from(height) + u64::from(constants::LABEL_BAR_HEIGHT))
-            <= MAX_COMPOSITE_PIXELS
-    };
-    let longest = (1..=source_longest)
-        .rev()
-        .find(|candidate| fits(*candidate))
-        .ok_or_else(|| {
-            ToolError::Validation(
-                "visual composite cannot fit within the generated-artifact limit".to_string(),
-            )
-        })?;
-    let (tile_w, tile_h) = dimensions(longest);
+    let view_count = u32::try_from(view_count).map_err(|_| invalid())?;
+    let columns = requested_columns.min(view_count);
+    let rows = u64::from(view_count).div_ceil(u64::from(columns));
+    let source_width = tile_width;
+    let source_height = tile_height;
+    source_width.checked_mul(columns).ok_or_else(invalid)?;
+    let cell_height = source_height
+        .checked_add(constants::LABEL_BAR_HEIGHT)
+        .ok_or_else(invalid)?;
+    u32::try_from(rows)
+        .ok()
+        .and_then(|rows| cell_height.checked_mul(rows))
+        .ok_or_else(invalid)?;
+    let (tile_w, tile_h) = (source_width, source_height);
     Ok(TileLayout {
         columns,
         tile_w,
@@ -3608,7 +3525,6 @@ async fn render_view_artifacts(
     views: &[RenderViewRequest],
     presentation: Option<&ProductPresentation>,
 ) -> Result<Value, ToolError> {
-    validate_render_view_surface(views.len(), settings.width, settings.height)?;
     let work_budget = validate_render_settings(
         settings.width,
         settings.height,
@@ -3659,26 +3575,6 @@ fn validate_multiview_presentation(
             "grounded studio presentation cannot render a below-ground gallery or turntable view"
                 .to_string(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_render_view_surface(
-    view_count: usize,
-    width: u16,
-    height: u16,
-) -> Result<(), ToolError> {
-    let view_pixels = u64::from(width) * u64::from(height);
-    if view_pixels > MAX_REVIEW_SOURCE_PIXELS {
-        return Err(ToolError::Validation(format!(
-            "each review source must be at most {MAX_REVIEW_SOURCE_PIXELS} pixels so its RGB8 PNG remains compositable; use printable_render_preview for a larger single image"
-        )));
-    }
-    let render_pixels = view_count as u64 * view_pixels;
-    if render_pixels > MAX_RENDER_VIEW_PIXELS {
-        return Err(ToolError::Validation(format!(
-            "view renders exceed the {MAX_RENDER_VIEW_PIXELS}-pixel aggregate surface limit"
-        )));
     }
     Ok(())
 }
@@ -4016,21 +3912,11 @@ fn validate_diagnostic_response(
         .get("evaluated_loops")
         .and_then(Value::as_u64)
         .ok_or_else(malformed)?;
-    let attribute_values = analysis
+    let _attribute_values = analysis
         .get("copied_attribute_values")
         .and_then(Value::as_u64)
         .ok_or_else(malformed)?;
-    if source_instances == 0
-        || vertices == 0
-        || edges == 0
-        || faces == 0
-        || loops < faces
-        || vertices > MAX_DIAGNOSTIC_VERTICES
-        || edges > MAX_DIAGNOSTIC_EDGES
-        || faces > MAX_DIAGNOSTIC_FACES
-        || loops > MAX_DIAGNOSTIC_LOOPS
-        || attribute_values > MAX_DIAGNOSTIC_ATTRIBUTE_VALUES
-    {
+    if source_instances == 0 || vertices == 0 || edges == 0 || faces == 0 || loops < faces {
         return Err(malformed());
     }
     match expected_mode {
@@ -4181,7 +4067,7 @@ async fn composite_render_views(
         let composite = tile_images(&tiles, &layout);
         let (width, height) = composite.dimensions();
         let bytes = encode_png(composite)?;
-        let meta = workspace.write_artifact(&output_path, &bytes, true)?;
+        let meta = workspace.write_generated_bytes(&output_path, &bytes, true)?;
         let (inline, inline_png_base64) = capture_inline_png(include_inline, &bytes);
         let mut value = json!({
             "kind": kind,
@@ -4245,10 +4131,10 @@ async fn composite_diagnostic(
     let layout = fit_composite_layout(
         1,
         1,
-        u16::try_from(source_width).map_err(|_| {
+        u32::try_from(source_width).map_err(|_| {
             ToolError::Validation("Blender diagnostic response width was invalid".to_string())
         })?,
-        u16::try_from(source_height).map_err(|_| {
+        u32::try_from(source_height).map_err(|_| {
             ToolError::Validation("Blender diagnostic response height was invalid".to_string())
         })?,
     )?;
@@ -4277,7 +4163,7 @@ async fn composite_diagnostic(
         let composite = tile_images(&[tile], &layout);
         let (width, height) = composite.dimensions();
         let bytes = encode_png(composite)?;
-        let meta = workspace.write_artifact(&output_path, &bytes, true)?;
+        let meta = workspace.write_generated_bytes(&output_path, &bytes, true)?;
         let (inline, inline_png_base64) = capture_inline_png(include_inline, &bytes);
         Ok::<ToolOutput, ToolError>(ToolOutput {
             value: json!({
@@ -4323,8 +4209,8 @@ async fn compare_renders(
         let before = workspace.snapshot_artifact(&params.before_path)?;
         let after = workspace.snapshot_artifact(&params.after_path)?;
         let layout = PanelLayout {
-            width: u32::from(params.panel_width),
-            height: u32::from(params.panel_height),
+            width: params.panel_width,
+            height: params.panel_height,
             label_height: constants::LABEL_BAR_HEIGHT,
         };
         let before_image =
@@ -4334,7 +4220,7 @@ async fn compare_renders(
         let composite = side_by_side(&before_image, &after_image, &layout);
         let (width, height) = composite.dimensions();
         let bytes = encode_png(composite)?;
-        let meta = workspace.write_artifact(&params.path, &bytes, true)?;
+        let meta = workspace.write_generated_bytes(&params.path, &bytes, true)?;
         let (inline, inline_png_base64) = capture_inline_png(params.include_inline, &bytes);
         Ok::<ToolOutput, ToolError>(ToolOutput {
             value: json!({
@@ -4360,21 +4246,16 @@ async fn compare_renders(
 }
 
 fn validate_comparison_layout(
-    panel_width: u16,
-    panel_height: u16,
+    panel_width: u32,
+    panel_height: u32,
 ) -> Result<(u32, u32), ToolError> {
-    if !(1..=4096).contains(&panel_width) || !(1..=4096).contains(&panel_height) {
+    if panel_width == 0 || panel_height == 0 {
         return Err(ToolError::Validation(
-            "panel_width and panel_height must be integers between 1 and 4096".to_string(),
+            "panel_width and panel_height must be positive integers".to_string(),
         ));
     }
     let width = u64::from(panel_width) * 2;
     let height = u64::from(panel_height) + u64::from(constants::LABEL_BAR_HEIGHT);
-    if width * height > MAX_COMPOSITE_PIXELS {
-        return Err(ToolError::Validation(format!(
-            "comparison exceeds the {MAX_COMPOSITE_PIXELS}-pixel decoded-memory limit; reduce panel dimensions"
-        )));
-    }
     Ok((
         u32::try_from(width)
             .map_err(|_| ToolError::Validation("comparison width is unsupported".to_string()))?,
@@ -4384,16 +4265,17 @@ fn validate_comparison_layout(
 }
 
 fn decode_png(bytes: &[u8]) -> Result<RgbImage, ToolError> {
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(MAX_DECODER_ALLOC_BYTES);
+    let limits = Limits::no_limits();
     let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
     reader.limits(limits.clone());
     let dimensions = reader.into_dimensions().map_err(|_| {
         ToolError::Validation("input artifact is not a decodable PNG image".to_string())
     })?;
-    validate_decoded_dimensions(dimensions.0, dimensions.1)?;
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return Err(ToolError::Validation(
+            "input image dimensions must be positive".into(),
+        ));
+    }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
     reader.limits(limits);
     let image = reader.decode().map_err(|_| {
@@ -4411,18 +4293,6 @@ fn decode_png(bytes: &[u8]) -> Result<RgbImage, ToolError> {
 fn decode_fitted_png(bytes: &[u8], width: u32, height: u32) -> Result<RgbImage, ToolError> {
     let decoded = decode_png(bytes)?;
     Ok(resize(&decoded, width, height, FilterType::Lanczos3))
-}
-
-fn validate_decoded_dimensions(width: u32, height: u32) -> Result<(), ToolError> {
-    if u64::from(width)
-        .checked_mul(u64::from(height))
-        .is_none_or(|pixels| pixels > MAX_DECODED_INPUT_PIXELS)
-    {
-        return Err(ToolError::Validation(format!(
-            "input image exceeds the {MAX_DECODED_INPUT_PIXELS}-pixel decoded-memory limit"
-        )));
-    }
-    Ok(())
 }
 
 fn composite_channel(foreground: u8, background: u8, alpha: u8) -> u8 {
@@ -4526,7 +4396,7 @@ fn validate_render_response(
 fn validate_render_backend(
     object: &serde_json::Map<String, Value>,
     requested_engine: RenderEngine,
-    requested_samples: Option<u16>,
+    requested_samples: Option<u32>,
 ) -> Result<(), ToolError> {
     let engine = object.get("engine").and_then(Value::as_str);
     let render_device = object.get("render_device").and_then(Value::as_str);
@@ -4611,25 +4481,12 @@ fn validate_png(bytes: &[u8], expected_width: u64, expected_height: u64) -> Resu
     let expected_height = u32::try_from(expected_height).map_err(|_| {
         ToolError::Validation("render artifact dimensions are unsupported".to_string())
     })?;
-    if expected_width == 0
-        || expected_height == 0
-        || expected_width > 8192
-        || expected_height > 8192
-    {
+    if expected_width == 0 || expected_height == 0 {
         return Err(ToolError::Validation(
             "render artifact dimensions are unsupported".to_string(),
         ));
     }
-    let pixel_bytes = u64::from(expected_width)
-        .checked_mul(u64::from(expected_height))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| {
-            ToolError::Validation("render artifact dimensions are unsupported".to_string())
-        })?;
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(expected_width);
-    limits.max_image_height = Some(expected_height);
-    limits.max_alloc = Some(pixel_bytes.saturating_add(16 * 1024 * 1024));
+    let limits = Limits::no_limits();
     let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
     reader.limits(limits);
     let image = reader.decode().map_err(|_| {
@@ -4768,7 +4625,9 @@ async fn validate_mesh_artifact(
 ) -> Result<Value, ToolError> {
     validate_blender_artifact(&workspace, &params.path, ".stl", true)?;
     geometry_blocking(move || {
-        let (artifact, bytes) = workspace.read_artifact(&params.path)?;
+        let snapshot = workspace.snapshot_artifact(&params.path)?;
+        let artifact = snapshot.meta().clone();
+        let bytes = std::fs::read(snapshot.path())?;
         let report = analyze_stl(
             &bytes,
             ValidationOptions {
@@ -4811,8 +4670,12 @@ async fn analyze_assembly_artifacts(
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     geometry_blocking(move || {
-        let (fixed_artifact, fixed_bytes) = workspace.read_artifact(&params.fixed_path)?;
-        let (moving_artifact, moving_bytes) = workspace.read_artifact(&params.moving_path)?;
+        let fixed_snapshot = workspace.snapshot_artifact(&params.fixed_path)?;
+        let fixed_artifact = fixed_snapshot.meta().clone();
+        let fixed_bytes = std::fs::read(fixed_snapshot.path())?;
+        let moving_snapshot = workspace.snapshot_artifact(&params.moving_path)?;
+        let moving_artifact = moving_snapshot.meta().clone();
+        let moving_bytes = std::fs::read(moving_snapshot.path())?;
         let report = run_geometry_worker(
             &worker_bin,
             worker_memory_bytes,
@@ -5009,11 +4872,6 @@ fn validate_scad_source(source: &str) -> Result<(), ToolError> {
             "source must not be empty".to_string(),
         ));
     }
-    if source.len() > MAX_SCAD_SOURCE_BYTES {
-        return Err(ToolError::Validation(format!(
-            "source exceeds {MAX_SCAD_SOURCE_BYTES} UTF-8 bytes"
-        )));
-    }
     Ok(())
 }
 
@@ -5067,10 +4925,16 @@ async fn prepare_scad_job(
             snapshots.push(snapshot);
             Ok(snapshot_path)
         })?;
-        let staging = workspace.scratch(
-            2 * MAX_PRODUCT_RENDER_BYTES + 4 * MAX_SCAD_SOURCE_BYTES as u64,
-            "openscad",
-        )?;
+        let source_bytes = u64::try_from(confined.len()).map_err(|_| {
+            ToolError::Validation("OpenSCAD source size is not representable".into())
+        })?;
+        let kit_bytes = if product_v1 {
+            printable_scad::PRODUCT_V1_SOURCE.len() as u64
+                + printable_scad::product_v1_wrapper().len() as u64
+        } else {
+            0
+        };
+        let staging = workspace.scratch(source_bytes + kit_bytes, "openscad")?;
         let confined_source = if product_v1 {
             std::fs::write(
                 staging.path().join(printable_scad::PRODUCT_V1_CALLER_FILE),
@@ -5146,15 +5010,12 @@ fn generated_file_size(path: &std::path::Path) -> Result<usize, ToolError> {
             "OpenSCAD produced an empty artifact".to_string(),
         ));
     }
-    if metadata.len() > printable_workspace::MAX_TRANSFER_BYTES {
-        return Err(printable_workspace::WsError::WriteTooLarge.into());
-    }
     usize::try_from(metadata.len()).map_err(|_| {
         ToolError::Validation("OpenSCAD artifact size is not representable".to_string())
     })
 }
 
-fn read_generated_bounded(path: &std::path::Path) -> Result<Vec<u8>, ToolError> {
+fn read_generated_file(path: &std::path::Path) -> Result<Vec<u8>, ToolError> {
     let expected_len = generated_file_size(path)?;
     let mut file = std::fs::File::open(path)?;
     let mut bytes = vec![0; expected_len];
@@ -5259,10 +5120,10 @@ fn invalid_scad_svg() -> ToolError {
     )
 }
 
-fn validate_scad_render_size(size: u16) -> Result<(), ToolError> {
-    if size == 0 || size > 8192 {
+fn validate_scad_render_size(size: u32) -> Result<(), ToolError> {
+    if size == 0 {
         return Err(ToolError::Validation(
-            "size must be an integer between 1 and 8192".to_string(),
+            "size must be a positive integer".to_string(),
         ));
     }
     Ok(())
@@ -5383,14 +5244,12 @@ async fn scad_compile(
         &job.source_path.to_string_lossy(),
         definitions.argv(),
     );
-    let (permit, output) = permit
-        .run(args, budget, printable_workspace::MAX_TRANSFER_BYTES)
-        .await?;
+    let (permit, output) = permit.run(args, budget, u64::MAX).await?;
     geometry_blocking(move || {
         let _permit = permit;
-        let bytes = read_generated_bounded(&job.output_path)?;
+        let bytes = read_generated_file(&job.output_path)?;
         let validation = analyze_stl(&bytes, validation_options)?;
-        let artifact = workspace.write_artifact(&params.path, &bytes, params.overwrite)?;
+        let artifact = workspace.write_generated_bytes(&params.path, &bytes, params.overwrite)?;
         let mut result = json!({
             "artifact": artifact,
             "validation": validation,
@@ -5445,19 +5304,17 @@ async fn scad_render(
         &job.output_path.to_string_lossy(),
         &job.source_path.to_string_lossy(),
         &params.view,
-        u32::from(params.size),
+        params.size,
         params.preview,
         definitions.argv(),
     )
     .ok_or_else(|| ToolError::Validation("unknown OpenSCAD view".to_string()))?;
-    let (permit, output) = permit
-        .run(args, budget, printable_workspace::MAX_TRANSFER_BYTES)
-        .await?;
+    let (permit, output) = permit.run(args, budget, u64::MAX).await?;
     visual_blocking(move || {
         let _permit = permit;
-        let bytes = read_generated_bounded(&job.output_path)?;
+        let bytes = read_generated_file(&job.output_path)?;
         validate_png(&bytes, u64::from(params.size), u64::from(params.size))?;
-        let artifact = workspace.write_artifact(&params.path, &bytes, params.overwrite)?;
+        let artifact = workspace.write_generated_bytes(&params.path, &bytes, params.overwrite)?;
         let (inline, inline_png_base64) = capture_inline_png(params.include_inline, &bytes);
         Ok::<_, ToolError>(ToolOutput {
             value: {
@@ -5514,58 +5371,49 @@ async fn scad_cross_section(
         product_profile.is_some(),
     )
     .await?;
-    let (permit, model_output, projection_output) =
-        if let Some(cross_section) = job.cross_section.as_ref() {
-            let deadline = tokio::time::Instant::now()
-                .checked_add(budget)
-                .ok_or_else(|| {
-                    ToolError::Validation(
-                        "timeout_seconds exceeds the supported monotonic clock range".to_string(),
-                    )
-                })?;
-            let model_args = printable_scad::compile_args(
-                &cross_section.model_path.to_string_lossy(),
-                &job.source_path.to_string_lossy(),
-                definitions.argv(),
-            );
-            let (permit, model_output) = permit
-                .run(model_args, budget, printable_workspace::MAX_TRANSFER_BYTES)
-                .await?;
-            let model_path = cross_section.model_path.clone();
-            blocking(move || generated_file_size(&model_path)).await?;
-            let remaining = deadline
-                .checked_duration_since(tokio::time::Instant::now())
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or(printable_scad::ScadError::Timeout)?;
-            let projection_args = printable_scad::compile_args(
-                &job.output_path.to_string_lossy(),
-                &cross_section.projection_source_path.to_string_lossy(),
-                &[],
-            );
-            let (permit, projection_output) = permit
-                .run(
-                    projection_args,
-                    remaining,
-                    printable_workspace::MAX_TRANSFER_BYTES,
+    let (permit, model_output, projection_output) = if let Some(cross_section) =
+        job.cross_section.as_ref()
+    {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(budget)
+            .ok_or_else(|| {
+                ToolError::Validation(
+                    "timeout_seconds exceeds the supported monotonic clock range".to_string(),
                 )
-                .await?;
-            (permit, model_output, Some(projection_output))
-        } else {
-            let args = printable_scad::compile_args(
-                &job.output_path.to_string_lossy(),
-                &job.source_path.to_string_lossy(),
-                definitions.argv(),
-            );
-            let (permit, output) = permit
-                .run(args, budget, printable_workspace::MAX_TRANSFER_BYTES)
-                .await?;
-            (permit, output, None)
-        };
+            })?;
+        let model_args = printable_scad::compile_args(
+            &cross_section.model_path.to_string_lossy(),
+            &job.source_path.to_string_lossy(),
+            definitions.argv(),
+        );
+        let (permit, model_output) = permit.run(model_args, budget, u64::MAX).await?;
+        let model_path = cross_section.model_path.clone();
+        blocking(move || generated_file_size(&model_path)).await?;
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(printable_scad::ScadError::Timeout)?;
+        let projection_args = printable_scad::compile_args(
+            &job.output_path.to_string_lossy(),
+            &cross_section.projection_source_path.to_string_lossy(),
+            &[],
+        );
+        let (permit, projection_output) = permit.run(projection_args, remaining, u64::MAX).await?;
+        (permit, model_output, Some(projection_output))
+    } else {
+        let args = printable_scad::compile_args(
+            &job.output_path.to_string_lossy(),
+            &job.source_path.to_string_lossy(),
+            definitions.argv(),
+        );
+        let (permit, output) = permit.run(args, budget, u64::MAX).await?;
+        (permit, output, None)
+    };
     blocking(move || {
         let _permit = permit;
-        let bytes = read_generated_bounded(&job.output_path)?;
+        let bytes = read_generated_file(&job.output_path)?;
         validate_scad_svg(&bytes)?;
-        let artifact = workspace.write_artifact(&params.path, &bytes, params.overwrite)?;
+        let artifact = workspace.write_generated_bytes(&params.path, &bytes, params.overwrite)?;
         let mut result = json!({
             "artifact": artifact,
             "z_mm": params.z_mm,
@@ -6042,11 +5890,18 @@ mod visual_contract_tests {
     }
 
     #[test]
-    fn scad_source_accepts_the_exact_cap_and_rejects_the_next_byte() {
-        assert!(validate_scad_source(&" ".repeat(1024 * 1024)).is_ok());
-        let error = validate_scad_source(&" ".repeat(1024 * 1024 + 1))
-            .expect_err("source over cap rejected");
-        assert_eq!(error.code(), "validation");
+    fn large_object_selections_reach_blender_without_name_or_count_ceilings() {
+        let objects = (0..1001)
+            .map(|i| format!("{}-{i}", "x".repeat(256)))
+            .collect::<Vec<_>>();
+        assert!(validate_object_subset(Some(&objects)).is_ok());
+        assert!(validate_inspection_name(&objects[0]).is_ok());
+    }
+
+    #[test]
+    fn scad_source_accepts_large_input_and_rejects_empty_input() {
+        assert!(validate_scad_source(&" ".repeat(1024 * 1024 + 1)).is_ok());
+        assert_eq!(validate_scad_source("").unwrap_err().code(), "validation");
     }
 
     #[test]
@@ -6058,7 +5913,7 @@ mod visual_contract_tests {
             .set_len(25 * 1024 * 1024)
             .expect("size exact output");
         assert_eq!(
-            read_generated_bounded(&exact)
+            read_generated_file(&exact)
                 .expect("exact-cap output accepted")
                 .len(),
             25 * 1024 * 1024
@@ -6070,22 +5925,22 @@ mod visual_contract_tests {
             .set_len(25 * 1024 * 1024 + 1)
             .expect("size oversized output");
         assert_eq!(
-            read_generated_bounded(&oversized)
-                .expect_err("oversized output rejected")
-                .code(),
-            "write_too_large"
+            read_generated_file(&oversized)
+                .expect("large output accepted")
+                .len(),
+            25 * 1024 * 1024 + 1
         );
 
         let empty = directory.path().join("empty-output");
         std::fs::File::create(&empty).expect("create empty output");
         assert_eq!(
-            read_generated_bounded(&empty)
+            read_generated_file(&empty)
                 .expect_err("empty output rejected")
                 .code(),
             "validation"
         );
         assert_eq!(
-            read_generated_bounded(directory.path())
+            read_generated_file(directory.path())
                 .expect_err("directory output rejected")
                 .code(),
             "validation"
@@ -6145,9 +6000,9 @@ mod visual_contract_tests {
             encode_png(RgbImage::new(3000, 3000)).expect("encode large valid PNG");
         assert!(validate_png(&high_resolution, 3000, 3000).is_ok());
         let over_width = encode_png(RgbImage::new(8193, 1)).expect("encode over-width PNG");
-        assert!(validate_png(&over_width, 8193, 1).is_err());
+        assert!(validate_png(&over_width, 8193, 1).is_ok());
         let over_height = encode_png(RgbImage::new(1, 8193)).expect("encode over-height PNG");
-        assert!(validate_png(&over_height, 1, 8193).is_err());
+        assert!(validate_png(&over_height, 1, 8193).is_ok());
     }
 
     #[tokio::test]
@@ -6227,7 +6082,7 @@ mod visual_contract_tests {
         assert!(validate_scad_render_size(1).is_ok());
         assert!(validate_scad_render_size(8192).is_ok());
         assert!(validate_scad_render_size(0).is_err());
-        assert!(validate_scad_render_size(8193).is_err());
+        assert!(validate_scad_render_size(16384).is_ok());
     }
 
     #[test]
@@ -6340,37 +6195,19 @@ mod visual_contract_tests {
     }
 
     #[test]
-    fn diagnostic_topology_accepts_exact_boundaries_and_rejects_each_violation() {
-        for counts in [
-            [1, 1, 1, 1, 3, 0],
-            [1, 1, 1, 1, 1, 0],
-            [1, MAX_DIAGNOSTIC_VERTICES, 1, 1, 3, 0],
-            [1, 1, MAX_DIAGNOSTIC_EDGES, 1, 3, 0],
-            [1, 1, 1, MAX_DIAGNOSTIC_FACES, MAX_DIAGNOSTIC_FACES, 0],
-            [1, 1, 1, 1, MAX_DIAGNOSTIC_LOOPS, 0],
-            [1, 1, 1, 1, 3, MAX_DIAGNOSTIC_ATTRIBUTE_VALUES],
-        ] {
-            assert!(validate_diagnostic_counts(counts).is_ok(), "{counts:?}");
-        }
-
+    fn diagnostic_response_accepts_large_counts_and_rejects_invalid_geometry() {
+        assert!(
+            validate_diagnostic_counts([
+                4097, 1_000_001, 3_000_001, 2_000_001, 6_000_001, 16_000_001
+            ])
+            .is_ok()
+        );
         for counts in [
             [0, 1, 1, 1, 3, 0],
             [1, 0, 1, 1, 3, 0],
             [1, 1, 0, 1, 3, 0],
             [1, 1, 1, 0, 3, 0],
             [1, 1, 1, 2, 1, 0],
-            [1, MAX_DIAGNOSTIC_VERTICES + 1, 1, 1, 3, 0],
-            [1, 1, MAX_DIAGNOSTIC_EDGES + 1, 1, 3, 0],
-            [
-                1,
-                1,
-                1,
-                MAX_DIAGNOSTIC_FACES + 1,
-                MAX_DIAGNOSTIC_FACES + 1,
-                0,
-            ],
-            [1, 1, 1, 1, MAX_DIAGNOSTIC_LOOPS + 1, 0],
-            [1, 1, 1, 1, 3, MAX_DIAGNOSTIC_ATTRIBUTE_VALUES + 1],
         ] {
             assert!(validate_diagnostic_counts(counts).is_err(), "{counts:?}");
         }
@@ -6555,70 +6392,28 @@ mod visual_contract_tests {
     }
 
     #[test]
-    fn gallery_layout_fits_the_maximum_default_turntable_without_losing_sources() {
-        let layout = fit_composite_layout(36, 4, 512, 512).unwrap();
-        assert_eq!((layout.tile_w, layout.tile_h), (468, 468));
-        let pixels = u64::from(layout.columns)
-            * u64::from(layout.tile_w)
-            * 9
-            * u64::from(layout.tile_h + layout.label_height);
-        assert!(pixels <= MAX_COMPOSITE_PIXELS);
-        let next_pixels = u64::from(layout.columns)
-            * u64::from(layout.tile_w + 1)
-            * 9
-            * u64::from(layout.tile_h + 1 + layout.label_height);
-        assert!(next_pixels > MAX_COMPOSITE_PIXELS);
-    }
-
-    #[test]
-    fn gallery_layout_fits_maximum_frame_portrait_and_landscape_sets() {
-        for (source_width, source_height) in [(1024, 2048), (2048, 1024)] {
-            let layout = fit_composite_layout(36, 4, source_width, source_height).unwrap();
-            let rows = 9;
-            let pixels = u64::from(layout.columns)
-                * u64::from(layout.tile_w)
-                * rows
-                * u64::from(layout.tile_h + layout.label_height);
-            assert!(pixels <= MAX_COMPOSITE_PIXELS);
-            assert!(
-                (u64::from(layout.tile_w) * u64::from(source_height))
-                    .abs_diff(u64::from(layout.tile_h) * u64::from(source_width))
-                    < u64::from(source_width.max(source_height))
+    fn gallery_layout_preserves_requested_resolution_and_large_frame_sets() {
+        for (width, height) in [(512, 512), (1024, 2048), (2048, 1024), (16384, 8192)] {
+            let layout = fit_composite_layout(100, 4, width, height).unwrap();
+            assert_eq!(
+                (layout.columns, layout.tile_w, layout.tile_h),
+                (4, width, height)
             );
-            let (next_width, next_height) = if source_width > source_height {
-                (layout.tile_w + 1, layout.tile_w.div_ceil(2))
-            } else {
-                (layout.tile_h.div_ceil(2), layout.tile_h + 1)
-            };
-            let next_pixels = u64::from(layout.columns)
-                * u64::from(next_width)
-                * rows
-                * u64::from(next_height + layout.label_height);
-            assert!(next_pixels > MAX_COMPOSITE_PIXELS);
         }
+        assert!(fit_composite_layout(2, 2, u32::MAX, 1).is_err());
+        assert!(fit_composite_layout(1, 1, 1, u32::MAX).is_err());
     }
 
     #[test]
-    fn review_source_and_batch_surfaces_accept_only_the_exact_boundaries() {
-        assert!(validate_render_view_surface(1, 8192, 1024).is_ok());
-        assert!(validate_render_view_surface(1, 8192, 1025).is_err());
-        assert!(validate_render_view_surface(8, 8192, 1024).is_ok());
-        assert!(validate_render_view_surface(9, 8192, 1024).is_err());
-    }
-
-    #[test]
-    fn comparison_layout_validates_each_axis_and_the_exact_memory_boundary() {
-        for (width, height) in [(0, 1), (1, 0), (4097, 1), (1, 4097)] {
-            assert!(validate_comparison_layout(width, height).is_err());
-        }
-        assert_eq!(validate_comparison_layout(4096, 996).unwrap(), (8192, 1024));
-        assert!(validate_comparison_layout(4096, 997).is_err());
-    }
-
-    #[test]
-    fn decoded_image_dimensions_accept_the_exact_pixel_boundary_only() {
-        assert!(validate_decoded_dimensions(4096, 4096).is_ok());
-        assert!(validate_decoded_dimensions(4096, 4097).is_err());
+    fn comparison_layout_accepts_large_panels_and_rejects_integer_overflow() {
+        assert!(validate_comparison_layout(0, 1).is_err());
+        assert!(validate_comparison_layout(1, 0).is_err());
+        assert_eq!(
+            validate_comparison_layout(8192, 4096).unwrap(),
+            (16384, 4124)
+        );
+        assert!(validate_comparison_layout(u32::MAX, 1).is_err());
+        assert!(validate_comparison_layout(1, u32::MAX).is_err());
     }
 
     #[test]

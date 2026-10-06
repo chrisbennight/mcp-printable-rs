@@ -11,8 +11,6 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-const MAX_INPUT: u64 = 1024 * 1024 * 1024;
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
@@ -119,11 +117,12 @@ pub fn get(
 ) -> Result<Revision, ToolError> {
     super::get(workspace, project)?;
     validate_identity(identity)?;
-    let (_, bytes) = workspace.read_artifact(&format!(
+    let snapshot = workspace.snapshot_artifact(&format!(
         "{}/{}/revision.json",
         directory(project),
         identity.id
     ))?;
+    let bytes = std::fs::read(snapshot.path())?;
     if digest(&bytes) != identity.sha256 {
         return Err(invalid(
             "retained revision digest does not match its identity",
@@ -137,14 +136,13 @@ pub fn get(
         ));
     }
     revision.manifest.validate()?;
-    if !revision.files.contains_key(&revision.source) || revision.files.len() > 129 {
+    if !revision.files.contains_key(&revision.source) {
         return Err(invalid("retained revision has inconsistent source files"));
     }
     for (name, file) in &revision.files {
         if file.path != resolve(workspace, project, name)?
             || file.snapshot != format!("{}/{}/inputs/{name}", directory(project), identity.id)
             || !is_digest(&file.sha256)
-            || file.size_bytes > MAX_INPUT
         {
             return Err(invalid(
                 "retained revision has inconsistent source identity",
@@ -179,10 +177,8 @@ pub fn read(workspace: &Workspace, params: GetParams) -> Result<Value, ToolError
 pub fn revise(workspace: &Workspace, params: ReviseParams) -> Result<Value, ToolError> {
     super::get(workspace, &params.project_id)?;
     params.manifest.validate()?;
-    if params.inputs.len() > 128 || !is_digest(&params.expected_source_sha256) {
-        return Err(invalid(
-            "revision requires a source SHA-256 digest and at most 128 input files",
-        ));
+    if !is_digest(&params.expected_source_sha256) {
+        return Err(invalid("revision requires a source SHA-256 digest"));
     }
     if let Some(parent) = &params.expected_parent {
         get(workspace, &params.project_id, parent)?;
@@ -194,14 +190,9 @@ pub fn revise(workspace: &Workspace, params: ReviseParams) -> Result<Value, Tool
     // Complete source reads before the cross-process update lock. Copying the
     // immutable inputs is part of the guarded commit; contenders return busy.
     let mut snapshots = BTreeMap::new();
-    let mut total = 0u64;
     for name in names {
         let path = resolve(workspace, &params.project_id, &name)?;
-        let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_INPUT)?;
-        total += snapshot.meta().size_bytes;
-        if total > MAX_INPUT {
-            return Err(invalid("revision input set exceeds 1 GiB"));
-        }
+        let snapshot = workspace.snapshot_artifact(&path)?;
         let sha256 = hash_file(snapshot.path())?;
         if name == params.source && sha256 != params.expected_source_sha256 {
             return Err(invalid(
@@ -235,7 +226,7 @@ pub fn revise(workspace: &Workspace, params: ReviseParams) -> Result<Value, Tool
             &retained,
             snapshot.path(),
             false,
-            MAX_INPUT,
+            u64::MAX,
         )?;
         files.insert(
             name,
@@ -317,6 +308,26 @@ mod tests {
             "format_version":1,"units":"mm","parameters":{"width":{"value":40,"unit":"mm","minimum":30,"maximum":80,"description":"Enclosure width"}},
             "requirements":{"envelope":{"kind":"build_envelope","size_mm":[80,40,20]}},"assumptions":["FDM prototype; fit needs a physical sample"]}});
         (root, workspace, params)
+    }
+
+    #[test]
+    fn revisions_retain_more_than_the_former_input_count() {
+        let (_root, workspace, mut params) = setup();
+        let mut inputs = Vec::new();
+        for index in 0..129 {
+            let name = format!("input-{index}.json");
+            workspace
+                .write_artifact(&format!("projects/housing/{name}"), b"{}", false)
+                .unwrap();
+            inputs.push(name);
+        }
+        params["inputs"] = json!(inputs);
+        let result = revise(&workspace, serde_json::from_value(params).unwrap()).unwrap();
+        let identity: Identity = serde_json::from_value(result["identity"].clone()).unwrap();
+        assert_eq!(
+            get(&workspace, "housing", &identity).unwrap().files.len(),
+            130
+        );
     }
 
     #[test]

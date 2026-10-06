@@ -214,7 +214,8 @@ Printable stages at most two incoming files, each bounded by
 `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). It checks the declared size
 and SHA-256 digest before atomic workspace publication. STEP/STP and Python
 source are accepted as stored artifacts; this alone does not execute or convert
-them. The existing base64 chunk operations retain their smaller limits.
+them. Base64 chunks retain a per-request transport limit; their cumulative
+artifact size is governed by the configured workspace budget.
 
 An authorized transfer expires after one hour; an idle body times out after one
 minute. The private Printable URI can be queried with `transfer_status` and
@@ -294,8 +295,9 @@ project-relative paths, and a new `.zip` `output_path` in the same project.
 It preserves the selected hierarchy under `files/` and writes `manifest.json`
 with paths, sizes, media types, and SHA-256 hashes. Sources are copied into
 confined snapshots and checked for changes before the archive is assembled.
-An existing output is never overwritten. The selection is limited to 256 files
-and 1 GiB total source bytes; bytes are streamed rather than buffered in chat.
+An existing output is never overwritten. Selected bytes are streamed rather
+than buffered in chat. File counts and sizes have no product capacity ceiling;
+configured workspace budgets and filesystem errors remain applicable.
 
 This action exports exactly the selected files, not a verified portable native
 project. Its manifest reports `scope: "selected_files"` and
@@ -318,7 +320,7 @@ URLs, embed credentials, or initiate printing.
 
 `project.export_blender` takes `project_id`, explicitly selected project-relative
 `files`, a selected `.blend` `entrypoint`, a new `.zip` `output_path`, and
-`timeout_seconds` from 1 to 120. Save the intended scene first: this operation
+`timeout_seconds` as a positive caller-selected work budget. Save the intended scene first: this operation
 reads project files, not unsaved live changes, and never switches the live scene.
 The work budget is checked during source copying, hashing and publication;
 an individual filesystem operation can delay cancellation. Export does not arm
@@ -328,15 +330,14 @@ The bundle retains the exact source hierarchy under `sources/` and a prepared,
 editable entrypoint under `prepared/`. Its `manifest.json` records each retained
 file's size and SHA-256, Blender version, unit settings, library count, and
 dependency limitations. Follow the manifest's `entrypoint` when reopening.
-Original source files remain unchanged. The selection is limited to 256 files;
-both input staging and the final ZIP have a 1 GiB limit. Keeping originals and
-packed data can therefore exceed the output budget even when the inputs fit.
-The isolated child's request metadata is limited to 64 KiB, including selected
-path names; large path lists can reach that limit before the file-count limit.
+Original source files remain unchanged. File counts, staged bytes, ZIP bytes,
+and preparation metadata have no fixed product capacity ceiling. The caller's
+work budget, configured workspace budget, and actual backend failures govern
+completion.
 
 Preparation runs in a disposable Blender child with script autoexecution
-disabled, fixed argv arguments, CPU/address-space limits, cancellation, and a
-deadline. It packs supported assets and linked libraries in dependency order,
+disabled, fixed argv arguments, cancellation, and the caller-selected
+deadline. Runtime resource controls belong to the deployment. It packs supported assets and linked libraries in dependency order,
 resolving selected absolute and relative references to their staged copies.
 Cycles, missing or unselected dependencies, image sequences, tiled images and
 remaining unsupported external data fail without publishing a partial bundle.

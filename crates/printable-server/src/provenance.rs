@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const MAX_RECORD_BYTES: u64 = 2 * 1024 * 1024;
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RecordRef {
@@ -76,9 +74,6 @@ pub fn store(
         project_id: project_id.into(),
         data,
     })?;
-    if bytes.len() as u64 > MAX_RECORD_BYTES {
-        return Err(invalid("provenance metadata exceeds its size limit"));
-    }
     let sha256 = digest(&bytes);
     let reference = RecordRef {
         path: format!(".printable/evidence/{}/{sha256}.json", kind.directory()),
@@ -105,7 +100,7 @@ pub fn read_value(workspace: &Workspace, reference: &RecordRef) -> Result<Value,
     {
         return Err(invalid("provenance requires a lowercase SHA-256 digest"));
     }
-    let snapshot = workspace.snapshot_artifact_bounded(&reference.path, MAX_RECORD_BYTES)?;
+    let snapshot = workspace.snapshot_artifact(&reference.path)?;
     if snapshot.meta().path != reference.path || !snapshot.meta().path.starts_with(".printable/") {
         return Err(invalid(
             "provenance must reference canonical retained metadata",
@@ -229,6 +224,18 @@ pub fn verify_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_metadata_can_exceed_the_former_record_size() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let data = json!({"backend_metadata": "x".repeat(2 * 1024 * 1024 + 1)});
+        let reference = store(&ws, Kind::Observation, "p", data.clone()).unwrap();
+        assert_eq!(
+            read(&ws, &reference, Kind::Observation, "p").unwrap().data,
+            data
+        );
+    }
 
     #[test]
     fn cad_measurement_links_only_the_identified_output_and_preserves_scope() {

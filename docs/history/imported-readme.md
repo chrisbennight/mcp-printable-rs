@@ -141,11 +141,9 @@ slots receive a neutral fallback and typed explicit overrides win. Mixed
 real/empty slots report both preservation and fallback honestly. The response
 records the effective camera,
 lights, color management, ground, material decisions, shading, and evaluated
-geometry totals. Grounded studio cameras stay above the ground plane. A
-16,777,216-pixel limit and matching 64 MiB render/verification budget keep
-high-resolution output behavior predictable, while topology and instance
-preflight rejects scenes that would multiply copied meshes beyond the
-presentation budget. Smooth-by-angle affects copied presentation geometry
+geometry totals. Grounded studio cameras stay above the ground plane. Render dimensions, samples, topology, attributes, instances, and material
+slots have no fixed product capacity ceiling. Valid work reaches Blender,
+and its actual failures remain visible. Smooth-by-angle affects copied presentation geometry
 only, and the renderer never adds a bevel modifier. The PNG is promoted only
 after cleanup and source-state verification. Blender application handlers are
 suspended for the complete presentation operation and restored before
@@ -154,7 +152,7 @@ promotion, so live-scene callbacks cannot mutate source product data. See
 
 Without presentation, `render` with `action: "gallery"` renders any unique selection
 of front, right, back, left, top, bottom, and isometric orthographic views, and
-`render` with `action: "turntable"` renders 3–36 evenly spaced orthographic orbit
+`render` with `action: "turntable"` renders a positive caller-selected count of orthographic orbit
 views at a caller-selected elevation. Each tool optionally accepts the same
 `engineering`, `studio_neutral`, or
 `studio_dark` presentation used by `render` with `action: "product"`; omitting it
@@ -167,14 +165,9 @@ shading, lights, world, and ground inside disposable scenes. Individual PNGs
 are retained under a unique
 `visual/renders/<batch>/` directory and a
 labeled contact sheet is written to the requested path. Contact sheets up to
-1 MiB can be returned inline. If the requested source set would make the
-contact sheet exceed the generated-artifact memory budget, only the sheet is
-fitted down; every individual view remains at the requested resolution. Each
-multi-view RGB8 source is capped at 8,388,608 pixels so it can always pass the
-confined snapshot and decoder path; use `render` with `action: "scene"` for a larger
-single image. Composition immediately resizes each decoded source to its fitted
-tile and runs through one process-wide visual-memory lane, preventing concurrent
-valid calls from multiplying full-resolution decode memory.
+1 MiB can be returned inline. Contact sheets preserve the requested tile resolution. Composition uses one
+process-wide lane; decoder and image-format errors remain visible without
+invented pixel or allocation ceilings.
 
 `view` with `action: "dimensions"` measures evaluated world-space scene bounds,
 including collection instances, and returns exact bounds metadata with labeled
@@ -187,21 +180,12 @@ build direction and returns exact face and area totals for each category.
 Cross-sections and heatmaps do not modify source objects. They preserve a
 full-resolution source PNG under `visual/diagnostics/`, persist a labeled PNG
 at the requested path, and use the same optional 1 MiB inline-image contract.
-The add-on preflights evaluated mesh counts before allocating diagnostic
-materials or BMeshes. The copied-diagnostic limit covers 1,000,000 vertices,
-3,000,000 edges, 2,000,000 faces, 6,000,000 face loops, and 16,000,000 bounded
-attribute/weight values. Callers can hide unrelated objects or pass an explicit
-object subset instead of losing the workflow.
-Cross-sections recheck the exact expanded vertex, edge, face, and loop totals
-after bisecting and capping, before appending combined buffers. Direction vectors
-are normalized with overflow-safe magnitude checks before scene mutation.
-Explicit-subset discovery retains only the at-most-1,000 requested names.
-Selected instances are processed through one transient BMesh at a time and
-assembled into one bounded diagnostic Mesh/Object pair, so instance count does
-not multiply retained Blender datablocks.
-Diagnostics require mesh objects so the preflight never has to allocate an
-unbounded conversion merely to discover its size; convert non-mesh geometry,
-hide it, or select only mesh objects.
+Evaluated instance, topology, attribute, and material-slot totals remain
+metadata. Selected instances are processed through one transient BMesh at a
+time and assembled into one diagnostic Mesh/Object pair. Diagnostics require
+mesh objects; convert non-mesh geometry, hide it, or select only mesh objects.
+Direction vectors are normalized with overflow-safe magnitude checks before
+scene mutation.
 The independent Blender supervisor budget begins before object discovery,
 evaluated-mesh preflight, and bounds measurement, so those scans cannot outlive
 the caller budget and retain the serialized Blender lane.
@@ -211,8 +195,7 @@ cross-section bounds to stay inside the source on the retained side of the cut.
 `edit` with `action: "rigid_rotation"` authors a mechanical rotation without
 requiring caller-written Blender parenting code. It creates a named Empty at a
 world-space pivot, normalizes the right-hand-rule axis, and inserts linear
-axis-angle keyframes for a positive angular travel. One to 1000 named objects
-can move as a rigid group. Every target must have no existing parent, object
+axis-angle keyframes for a positive angular travel. A nonempty selection of named objects can move as a rigid group. Every target must have no existing parent, object
 children, animation data, constraints, rigid-body simulation, or rigid-body
 constraint; competing target motion, duplicate names, missing objects, invalid
 frame ranges, and a pivot controller name collision fail before scene mutation.
@@ -266,7 +249,7 @@ interpolation. Literal `import()` and `surface()` workspace paths are copied to
 private immutable snapshots before the process starts; dynamic paths and other
 file-loading directives are rejected. All three tools accept the same optional
 typed `defines` object plus a `variant` exposed as `pbl_variant`. Boolean,
-finite-number, bounded-string, and bounded numeric-vector values are serialized
+finite-number, string, and numeric-vector values are serialized
 once into deterministic `-D` argv pairs; names beginning with `pbl_` are
 reserved. Server-generated definition metadata reports only the sorted names
 and count, never their values; ordinary OpenSCAD compiler diagnostics remain
@@ -283,9 +266,9 @@ contract as Blender renders. Cross-section projects the model at a
 caller-selected Z plane and persists UTF-8 SVG. Calls queue behind
 `PRINTABLE_SCAD_CONCURRENCY`; one permit covers snapshot staging, subprocess
 execution, output validation, and atomic commit.
-Source is capped at 1 MiB and generated artifacts at the workspace's 25 MiB
-cap; the child inherits that per-file ceiling so oversized output cannot fill
-temporary storage before rejection. Standard output and error are drained with
+Source, definition values, import counts, and generated files have no fixed
+product capacity ceiling. Internal snapshots and artifact processing are
+independent of the small MCP/base64 transfer boundary. Standard output and error are drained with
 bounded diagnostics inside the same work budget as process execution. PNGs
 must completely decode and SVGs must be complete well-formed documents before
 publication. Work defaults to one hour but has no configured maximum; callers
@@ -337,19 +320,14 @@ analysis before its durable job starts; every video frame and the final MP4 are
 fully decoded, with the stored certificate still attached.
 
 `compare_renders` decodes two existing confined PNG artifacts and
-creates a labeled BEFORE/AFTER composite without consuming Blender. Composite
-surfaces are capped at 8,388,608 pixels. That keeps the raw RGB canvas plus PNG
-encoder overhead inside the workspace's 25 MiB generated-artifact commit cap
-while bounding decoded tiles and canvas memory. Callers needing larger
-inspection images keep the individual view artifacts or render a
-high-resolution single preview. Each input decode is separately capped at
-16,777,216 pixels and 64 MiB of decoder allocation, so a small compressed file
-cannot expand without limit.
+creates a labeled BEFORE/AFTER composite without consuming Blender. Requested panel dimensions are retained. Image-format integer ranges,
+configured runtime resources, and underlying decoder/allocation failures govern
+composition; Printable adds no pixel or decoded-byte ceiling.
 
 Durable renders start from a streamed, immutable confined `.blend` checkpoint
 so queued and resumed work never depends on mutable live-scene state. The
-caller-selected snapshot budget supports Blender's existing 1 GiB staging
-boundary without loading large scenes into MCP memory. `job` with `action: "submit"`
+caller-selected snapshot budget supports large checkpoints without loading
+scene bytes into MCP memory or imposing an additional staging ceiling. `job` with `action: "submit"`
 accepts still, orbiting turntable, Blender timeline animation, and
 `mechanical_rotation` jobs. Any kind can persist the same optional product
 presentation as still and gallery rendering. Presented stills and turntables

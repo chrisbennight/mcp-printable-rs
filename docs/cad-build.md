@@ -134,8 +134,9 @@ clients check completion and qualification separately, then inspect all
 remaining physical and manufacturing requirements before fabrication.
 
 Linear meshing tolerance defaults to 0.05 mm and angular tolerance to 0.1 radians.
-STL uses absolute linear tolerance. Builds accept a deadline up to 1800 seconds,
-defaulting to 600, and a combined input budget of 1 GiB. The worker accepts one
+STL uses absolute linear tolerance. Builds accept a positive caller-selected
+deadline, defaulting to 600 seconds. Input counts, source sizes, and generated
+artifacts have no product capacity ceiling. The worker accepts one
 active build; busy responses do not enqueue hidden work. A timeout kills the
 native process group. Render jobs retain their separate lifecycle.
 

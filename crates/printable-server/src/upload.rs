@@ -10,9 +10,8 @@
 //!
 //! Abandoned uploads are reclaimed lazily by an idle timeout; each upload's
 //! staging directory is removed when its registry entry is dropped. The registry
-//! is shared across all MCP sessions, so its bounds (concurrent-upload cap,
-//! per-upload size cap) protect process memory and staging disk regardless of
-//! how many clients are connected.
+//! is shared across all MCP sessions. Per-request chunks bound transport memory;
+//! streamed artifacts use the configured workspace storage budget.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -24,7 +23,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::Mutex as AsyncMutex;
 
-use printable_workspace::{ArtifactMeta, MAX_TRANSFER_BYTES, Workspace, WsError};
+use printable_workspace::{ArtifactMeta, Workspace};
 
 use crate::error::ToolError;
 use crate::tools::blocking;
@@ -35,8 +34,7 @@ use crate::tools::blocking;
 /// dispatch; larger artifacts are streamed as a sequence of these chunks.
 pub const CHUNK_MAX_DECODED: usize = 1024 * 1024;
 
-/// Largest number of uploads open at once, across all sessions. Bounds staging
-/// disk (each upload stages up to [`MAX_TRANSFER_BYTES`]) and registry size.
+/// Largest number of uploads open at once, across all sessions. Bounds registry size.
 pub const MAX_CONCURRENT_UPLOADS: usize = 8;
 
 /// An upload with no `begin`/`chunk` activity for this long is reclaimable on the
@@ -115,7 +113,7 @@ impl UploadRegistry {
         // taking the registry lock (so the lock is never held across I/O).
         let workspace = Arc::clone(workspace);
         let (dir, staging) = blocking(move || {
-            let dir = workspace.scratch(MAX_TRANSFER_BYTES, "chunked_upload")?;
+            let dir = workspace.scratch(0, "chunked_upload")?;
             let staging = dir.path().join("blob");
             std::fs::File::create(&staging)?;
             Ok::<_, ToolError>((dir, staging))
@@ -154,8 +152,8 @@ impl UploadRegistry {
     }
 
     /// Append one decoded chunk to an open upload, returning the running total.
-    /// Chunks for one upload are serialized; the cumulative size is capped at
-    /// [`MAX_TRANSFER_BYTES`].
+    /// Chunks for one upload are serialized; the configured workspace budget
+    /// governs their cumulative storage.
     pub async fn chunk(&self, upload_id: &str, decoded: Vec<u8>) -> Result<u64, ToolError> {
         if decoded.len() > CHUNK_MAX_DECODED {
             return Err(ToolError::PayloadTooLarge(CHUNK_MAX_DECODED));
@@ -182,15 +180,18 @@ impl UploadRegistry {
             if state.committed {
                 return Err(ToolError::UploadNotFound);
             }
-            let new_total = state.written + decoded.len() as u64;
-            if new_total > MAX_TRANSFER_BYTES {
-                return Err(WsError::WriteTooLarge.into());
-            }
+            let new_total = state
+                .written
+                .checked_add(decoded.len() as u64)
+                .ok_or_else(|| {
+                    ToolError::Validation("upload size exceeds the runtime integer range".into())
+                })?;
             // A prior append may have written a partial prefix before erroring
             // (write_all can write some bytes then fail), leaving the file longer
             // than `written`. Roll it back to the tracked length so it holds only
             // fully-appended chunks, then append this one.
             truncate(&upload.staging, state.written)?;
+            let _storage = upload._dir.admit_growth(decoded.len() as u64)?;
             append(&upload.staging, &decoded)?;
             state.written = new_total;
             state.last_activity = Instant::now();
@@ -202,7 +203,7 @@ impl UploadRegistry {
     /// Promote a completed upload's staging file into the workspace atomically,
     /// removing the registry entry on success. Waits for any in-flight chunk, then
     /// commits through the workspace's server-generated-artifact path (which
-    /// enforces path confinement, the transfer cap, and overwrite/symlink rules).
+    /// enforces path confinement, storage admission, and overwrite/symlink rules).
     pub async fn commit(
         &self,
         upload_id: &str,
@@ -325,11 +326,45 @@ pub(crate) fn random_hex_id() -> Result<String, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use printable_workspace::{MAX_TRANSFER_BYTES, WsError};
+
+    #[tokio::test]
+    async fn chunked_upload_exceeds_inline_transfer_size_and_honors_workspace_budget() {
+        let root = TempDir::new().unwrap();
+        let ws = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let registry = UploadRegistry::new();
+        let id = registry
+            .begin(&ws, "large.stl".into(), false)
+            .await
+            .unwrap();
+        for _ in 0..26 {
+            registry
+                .chunk(&id, vec![0; CHUNK_MAX_DECODED])
+                .await
+                .unwrap();
+        }
+        let artifact = registry.commit(&id, &ws).await.unwrap();
+        assert!(artifact.size_bytes > MAX_TRANSFER_BYTES);
+        ws.configure_storage_budget(Some(artifact.size_bytes + 8192))
+            .unwrap();
+        let id = registry
+            .begin(&ws, "budget.stl".into(), false)
+            .await
+            .unwrap();
+        registry.chunk(&id, b"complete".to_vec()).await.unwrap();
+        let error = registry
+            .chunk(&id, vec![0; CHUNK_MAX_DECODED])
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ToolError::Workspace(WsError::StorageBudgetExceeded)
+        ));
+        assert_eq!(registry.get(&id).unwrap().state.lock().await.written, 8);
+    }
 
     fn staged_upload(workspace: &Workspace, last_activity: Instant) -> Arc<Upload> {
-        let dir = workspace
-            .scratch(MAX_TRANSFER_BYTES, "test_upload")
-            .unwrap();
+        let dir = workspace.scratch(0, "test_upload").unwrap();
         let staging = dir.path().join("blob");
         std::fs::File::create(&staging).expect("touch staging file");
         Arc::new(Upload {
@@ -392,7 +427,7 @@ mod tests {
     async fn expired_upload_releases_its_budget_before_new_admission() {
         let root = TempDir::new().unwrap();
         let ws = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
-        ws.configure_storage_budget(Some(26 * 1024 * 1024)).unwrap();
+        ws.configure_storage_budget(Some(5000)).unwrap();
         let registry = UploadRegistry::new();
         let first = registry
             .begin(&ws, "first.stl".into(), false)

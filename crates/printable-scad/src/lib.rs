@@ -21,8 +21,7 @@ pub mod runner;
 pub use args::{compile_args, cross_section_source, render_args};
 pub use camera::{VIEW_CAMERAS, camera};
 pub use defines::{
-    DefineError, DefineValue, MAX_DEFINITIONS, MAX_SERIALIZED_BYTES, MAX_STRING_BYTES,
-    MAX_VARIANT_CHARS, MAX_VECTOR_ELEMENTS, SerializedDefinitions, serialize_definitions,
+    DefineError, DefineValue, SerializedDefinitions, serialize_definitions,
     serialize_product_definitions,
 };
 pub use discovery::{NOT_FOUND_MESSAGE, find_openscad, resolve};

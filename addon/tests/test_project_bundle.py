@@ -77,13 +77,27 @@ class BundleTests(unittest.TestCase):
             else:
                 self.assertEqual(target.read_bytes(), b"another writer")
 
-    def test_byte_budget_failure_leaves_no_bundle(self):
-        with patch("printable_bridge.project_bundle.MAX_ARTIFACT_BYTES", 1024 * 1024 + 2), \
-                patch("printable_bridge.project_bundle.prepare_in_child") as prepare, \
-                self.assertRaisesRegex(WorkspaceError, "artifact limit"):
-            self.export()
-        prepare.assert_not_called()
-        self.assertFalse((self.project / "exports/project.zip").exists())
+    def test_backend_failure_leaves_no_bundle(self):
+        with patch('printable_bridge.project_bundle.prepare_in_child', side_effect=OSError('disk full')) as prepare:
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.export()
+        prepare.assert_called_once()
+        self.assertFalse((self.project / 'exports/project.zip').exists())
+
+    def test_more_than_the_previous_file_count_reaches_native_preparation(self):
+        names = ['model.blend']
+        for index in range(256):
+            name = f'dependencies/{index}.json'
+            path = self.project / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b'{}')
+            names.append(name)
+        with patch('printable_bridge.project_bundle.prepare_in_child', side_effect=self.prepare) as prepare:
+            result = export_blender_bundle(self.workspace, self.root, '/opt/blender/blender',
+                project_id='organic', files=names, entrypoint='model.blend',
+                output_path='exports/many.zip', timeout_seconds=121)
+        prepare.assert_called_once()
+        self.assertEqual(len(result['manifest']['files']), 258)
 
     def test_handler_exports_saved_files_without_rebinding_or_changing_the_live_scene(self):
         handler = BlenderHandlers.__new__(BlenderHandlers)
@@ -115,14 +129,14 @@ class BundleTests(unittest.TestCase):
         handler._shutdown_requested = lambda: False
         handler._execution_watchdog = Mock()
         clock = [0.0]
-        original_copy = self.workspace._copy_limited
+        original_copy = self.workspace._copy_file
 
         def slow_copy(source, destination, **kwargs):
             clock[0] = 10.0
             return original_copy(source, destination, **kwargs)
 
         with patch("printable_bridge.project_bundle.time.monotonic", side_effect=lambda: clock[0]), \
-                patch.object(self.workspace, "_copy_limited", side_effect=slow_copy), \
+                patch.object(self.workspace, "_copy_file", side_effect=slow_copy), \
                 patch("printable_bridge.project_bundle.prepare_in_child") as prepare, \
                 self.assertRaisesRegex(HandlerError, "deadline"):
             handler._export_project_blender({
@@ -136,7 +150,7 @@ class BundleTests(unittest.TestCase):
         self.assertEqual((self.project / "model.blend").read_bytes(), b"original source")
 
     def test_publication_copy_checks_budget_before_linking_destination(self):
-        original_copy = self.workspace._copy_limited
+        original_copy = self.workspace._copy_file
         clock = [0.0]
 
         def expire_during_publication(source, destination, **kwargs):
@@ -152,7 +166,7 @@ class BundleTests(unittest.TestCase):
             return result
 
         with patch("printable_bridge.project_bundle.time.monotonic", side_effect=lambda: clock[0]), \
-                patch.object(self.workspace, "_copy_limited", side_effect=expire_during_publication), \
+                patch.object(self.workspace, "_copy_file", side_effect=expire_during_publication), \
                 patch("printable_bridge.project_bundle.prepare_in_child", side_effect=prepare), \
                 self.assertRaisesRegex(ProjectPackingError, "deadline"):
             self.export()

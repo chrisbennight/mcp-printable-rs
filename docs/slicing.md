@@ -54,7 +54,10 @@ Completed slices and reviews return retained provenance references. Optional
 review references to printer import to check their applicability before upload;
 see [design and print evidence](delivery-evidence.md).
 
-The worker accepts source artifacts up to 1 GiB, one to sixteen material profiles
-and a preparation timeout up to two hours. Container memory, CPU and temporary
-storage limits remain separate limits. Neither preparation nor review uploads a
+The worker accepts source artifacts and nonempty material-profile lists without
+fixed product capacity ceilings. Preparation uses a positive caller-selected
+timeout. Toolpath reviews accept ordered layer ranges, feature selections, and
+positive image dimensions without fixed count ceilings; their caller-selected
+`timeout_seconds` defaults to thirty seconds. Container memory, CPU and temporary
+storage controls remain separate runtime boundaries. Neither preparation nor review uploads a
 job to a printer or starts physical work.

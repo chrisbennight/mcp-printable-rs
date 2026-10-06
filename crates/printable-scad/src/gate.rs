@@ -34,17 +34,6 @@ const FORBIDDEN: &[&str] = &[
     "dxf_cross",
 ];
 
-/// Upper bound on the number of `import`/`surface` file references a single
-/// confined source may contain. Snapshotting each reference is real work — a
-/// temp directory plus up to the workspace transfer cap copied — so an
-/// unbounded count would let one source drive unbounded snapshot I/O. The cap
-/// is enforced during the side-effect-free validation pass, so an over-limit
-/// source is rejected before any snapshot runs, and it bounds the worst-case
-/// snapshot I/O of an accepted source to `MAX_IMPORTS` × the transfer cap. It
-/// is far above any legitimate print-in-place model, which imports a handful of
-/// meshes; raise it if a real assembly ever needs more.
-const MAX_IMPORTS: usize = 64;
-
 /// Errors from the source gate. The messages are stable operator-facing text.
 #[derive(Debug, Clone, PartialEq, Eq, Default, thiserror::Error)]
 pub enum GateError {
@@ -64,8 +53,6 @@ pub enum GateError {
     RequiresLiteralPath(String),
     #[error("OpenSCAD {0} requires exactly one literal file argument")]
     RequiresOneFileArgument(String),
-    #[error("OpenSCAD source references too many files (maximum {0})")]
-    TooManyImports(usize),
     #[error("OpenSCAD caller cannot declare reserved product symbol {0}")]
     ReservedProductSymbol(String),
     /// A snapshot of a referenced path could not be taken. Carries the injected
@@ -83,7 +70,6 @@ impl GateError {
             GateError::UnterminatedCall(_) => "unterminated_call",
             GateError::RequiresLiteralPath(_) => "requires_literal_path",
             GateError::RequiresOneFileArgument(_) => "requires_one_file_argument",
-            GateError::TooManyImports(_) => "too_many_imports",
             GateError::ReservedProductSymbol(_) => "reserved_product_symbol",
             GateError::Snapshot(_) => "snapshot",
         }
@@ -274,14 +260,10 @@ fn json_quote(s: &str) -> String {
 /// `snapshot(path)` (JSON-quoted). `snapshot` maps a referenced workspace path
 /// to its private snapshot path, or returns a [`GateError::Snapshot`] message.
 ///
-/// Validation is a side-effect-free first pass — the forbidden set, import
-/// arity and literal-ness, and the [`MAX_IMPORTS`] count cap are all checked
-/// before `snapshot` is called even once — so a source rejected as malformed or
-/// over-limit performs **zero** snapshots. Snapshotting then runs as a second
-/// pass over the (capped) collected paths; it is not transactional, so a
-/// snapshot that fails on a later path does not undo earlier ones, but the
-/// total snapshot work is bounded by `MAX_IMPORTS` × the workspace transfer cap
-/// regardless of where a failure lands.
+/// Validation is a side-effect-free first pass: forbidden directives,
+/// import arity, and literal paths are checked before any snapshot is made.
+/// Snapshotting then visits every collected path. A later snapshot failure
+/// does not undo earlier snapshots; the caller owns their cleanup.
 ///
 /// The unconfined case (pass the source through untouched) is the caller's
 /// decision; this function always confines.
@@ -316,9 +298,6 @@ pub fn confine_source(
         }
         let arg = literal_file_argument(&tokens, open, name)?;
         pending.push((arg.span.start, arg.span.end, arg.value));
-        if pending.len() > MAX_IMPORTS {
-            return Err(GateError::TooManyImports(MAX_IMPORTS));
-        }
     }
 
     // Pass 2 — the source validated; snapshot each referenced path, then splice.
@@ -549,28 +528,11 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(calls.get(), 0, "a malformed source snapshotted an import");
-
-        // More imports than the cap: rejected during validation, zero snapshots.
-        let calls = std::cell::Cell::new(0usize);
-        let src: String = (0..=MAX_IMPORTS)
-            .map(|i| format!("import(\"m{i}.stl\");\n"))
-            .collect();
-        let result = confine_source(&src, |p| {
-            calls.set(calls.get() + 1);
-            Ok::<_, GateError>(format!("/snap/{p}"))
-        });
-        assert!(matches!(
-            result,
-            Err(GateError::TooManyImports(MAX_IMPORTS))
-        ));
-        assert_eq!(calls.get(), 0, "an over-limit source snapshotted an import");
     }
 
     #[test]
-    fn import_count_at_the_cap_is_accepted() {
-        // Exactly MAX_IMPORTS references are fine — the cap only rejects strictly
-        // more — and each is snapshotted once.
-        let src: String = (0..MAX_IMPORTS)
+    fn large_import_sets_are_all_snapshotted() {
+        let src: String = (0..65)
             .map(|i| format!("import(\"m{i}.stl\");\n"))
             .collect();
         let calls = std::cell::Cell::new(0usize);
@@ -579,9 +541,9 @@ mod tests {
             Ok::<_, GateError>(format!("/snap/{p}"))
         })
         .unwrap();
-        assert_eq!(calls.get(), MAX_IMPORTS);
+        assert_eq!(calls.get(), 65);
         for path in import_surface_paths(&out).unwrap() {
-            assert!(path.starts_with("/snap/"), "un-snapshotted path: {path:?}");
+            assert!(path.starts_with("/snap/"));
         }
     }
 

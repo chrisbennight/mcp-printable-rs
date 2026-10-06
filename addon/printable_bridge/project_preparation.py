@@ -17,8 +17,8 @@ class ProjectInputs:
         self.original = Path(os.path.abspath(original_root))
         self.staged = staged_root.resolve(strict=True)
         self.files = frozenset(files)
-        if not 1 <= len(files) <= 256 or len(self.files) != len(files):
-            raise ProjectPackingError("native preparation requires 1–256 unique staged files")
+        if not files or len(self.files) != len(files):
+            raise ProjectPackingError("native preparation requires nonempty unique staged files")
         for name in files:
             candidate = self.staged / name
             if (not name or Path(name).is_absolute()
@@ -51,8 +51,6 @@ def _open(bpy, path):
 
 def _library_paths(bpy, inputs):
     references = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
-    if len(references) > 10_000:
-        raise ProjectPackingError("project preparation exceeds 10000 file references")
     for raw in references:
         inputs.relative(raw)
     return sorted({inputs.relative(bpy.path.abspath(library.filepath))
@@ -65,7 +63,7 @@ def _rebase_loaded_file(bpy, inputs):
     # Reload one library at a time: reload can invalidate every linked ID and
     # library reference obtained before that call. Packed dependencies are
     # already prepared and must not be replaced with original library bytes.
-    for _ in range(256):
+    while True:
         pending = next((library for library in bpy.data.libraries
                         if library.parent is None and library.packed_file is None
                         and not library.is_archive
@@ -75,8 +73,6 @@ def _rebase_loaded_file(bpy, inputs):
             break
         pending.filepath = str(inputs.path(bpy.path.abspath(pending.filepath)))
         pending.reload()
-    else:
-        raise ProjectPackingError("native library relocation exceeds the input limit")
 
     for collection in (bpy.data.images, bpy.data.fonts, bpy.data.sounds,
                        bpy.data.movieclips, bpy.data.cache_files, bpy.data.volumes):

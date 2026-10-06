@@ -21,7 +21,7 @@ from .lifecycle import WorkItem
 from .server import BridgeServer
 from .state import SceneStateError
 from .watchdog import ExecutionWatchdog, WatchdogError
-from .workspace import WorkspaceError, enforce_process_file_size_limit
+from .workspace import WorkspaceError
 
 
 LOG = logging.getLogger("printable_bridge.runtime")
@@ -81,7 +81,6 @@ class BridgeRuntime:
 
     def _start(self) -> None:
         self._install_signal_handlers()
-        enforce_process_file_size_limit()
         self._prepare_directories()
         self._handlers = BlenderHandlers(
             self._config,

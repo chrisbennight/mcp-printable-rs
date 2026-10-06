@@ -35,10 +35,6 @@ pub enum ToolError {
     /// The concurrent-upload cap is reached; commit or abandon an upload first.
     #[error("too many concurrent uploads (max {0})")]
     TooManyUploads(usize),
-    /// The retained immutable-publish cap is reached. Published files expire
-    /// automatically, so callers can retry after an earlier handoff completes.
-    #[error("too many artifacts awaiting file transfer (max {0}); retry shortly")]
-    TooManyPublishedFiles(usize),
     /// A filesystem error staging or committing an upload.
     #[error("upload io error: {0}")]
     Io(#[from] std::io::Error),
@@ -85,7 +81,6 @@ impl ToolError {
             ToolError::PayloadTooLarge(_) => "payload_too_large",
             ToolError::UploadNotFound => "upload_not_found",
             ToolError::TooManyUploads(_) => "too_many_uploads",
-            ToolError::TooManyPublishedFiles(_) => "too_many_published_files",
             ToolError::Io(_) => "io",
             ToolError::Serde(_) => "serde",
             ToolError::Workspace(e) => e.code(),

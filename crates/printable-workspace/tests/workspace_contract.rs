@@ -722,33 +722,30 @@ fn blender_path_without_blender_root_uses_local_root() {
     assert_eq!(mapped, canonical_root.join("c.stl").display().to_string());
 }
 
-// --- transfer-cap enforcement on the commit and snapshot paths ----------------------
-// Public paths must not bypass the transfer cap.
+// --- streamed artifacts and explicit caller budgets --------------------------------
 
 #[test]
-fn commit_generated_artifact_enforces_cap_before_reading() {
+fn generated_artifacts_exceed_inline_transfer_size_and_retain_integrity() {
     let dir = tmp();
     let ws = ws(dir.path());
     let src_dir = tmp();
-    let big = src_dir.path().join("big.stl");
-    // A source larger than the cap must be rejected by size check, never read
-    // wholesale into memory.
-    let max = usize::try_from(MAX_TRANSFER_BYTES).unwrap();
-    std::fs::write(&big, vec![0u8; max + 1]).unwrap();
-    let err = ws
-        .commit_generated_artifact("out.stl", &big, false)
-        .unwrap_err();
-    assert_eq!(err.to_string(), "decoded artifact exceeds 26214400 bytes");
-    assert!(!dir.path().join("out.stl").exists());
-
-    // A source at the boundary commits and matches byte-for-byte.
-    let ok_src = src_dir.path().join("ok.stl");
-    std::fs::write(&ok_src, b"generated stl").unwrap();
-    let meta = ws
-        .commit_generated_artifact("gen/out.stl", &ok_src, false)
+    let source = src_dir.path().join("big.stl");
+    let bytes = MAX_TRANSFER_BYTES + 1;
+    std::fs::File::create(&source)
+        .unwrap()
+        .set_len(bytes)
         .unwrap();
-    assert_eq!(meta.path, "gen/out.stl");
-    assert_eq!(ws.read_artifact("gen/out.stl").unwrap().1, b"generated stl");
+    let meta = ws
+        .commit_generated_artifact("out.stl", &source, false)
+        .unwrap();
+    assert_eq!(meta.size_bytes, bytes);
+    let snapshot = ws.snapshot_artifact("out.stl").unwrap();
+    assert_eq!(snapshot.meta().size_bytes, bytes);
+    assert_eq!(std::fs::metadata(snapshot.path()).unwrap().len(), bytes);
+    assert_eq!(
+        ws.read_artifact("out.stl").unwrap_err().code(),
+        "read_too_large"
+    );
 }
 
 #[test]
@@ -795,18 +792,6 @@ fn video_artifacts_never_enter_the_base64_read_path_at_any_size() {
         ws.list_artifacts("", 10).unwrap()[0].media_type,
         "video/mp4"
     );
-}
-
-#[test]
-fn snapshot_enforces_cap() {
-    let dir = tmp();
-    let ws = ws(dir.path());
-    // Place an over-cap file directly in the workspace (write_artifact can't
-    // create one), then snapshot must refuse it rather than copy unbounded.
-    let max = usize::try_from(MAX_TRANSFER_BYTES).unwrap();
-    std::fs::write(dir.path().join("huge.stl"), vec![0u8; max + 1]).unwrap();
-    let err = ws.snapshot_artifact("huge.stl").unwrap_err();
-    assert_eq!(err.code(), "read_too_large");
 }
 
 #[test]

@@ -19,9 +19,8 @@ class _XImage(c.Structure):
 
 
 def editor_rectangle(window, area, display_width, display_height):
-    if (area.width <= 0 or area.height <= 0 or area.width * area.height > 8388608
-            or max(area.width, area.height) > 4096):
-        raise DisplayCaptureError("editor capture exceeds its source pixel budget")
+    if area.width <= 0 or area.height <= 0:
+        raise DisplayCaptureError("editor capture dimensions must be positive")
     if (area.x < 0 or area.y < 0 or area.x + area.width > window.width
             or area.y + area.height > window.height):
         raise DisplayCaptureError("editor does not fit the selected window at native pixel scale")

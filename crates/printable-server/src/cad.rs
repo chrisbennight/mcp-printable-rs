@@ -18,7 +18,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{error::ToolError, projects};
 
-const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -164,10 +163,12 @@ impl CadRequest {
             || (action == "import_step" && !matches!(extension.as_str(), "step" | "stp"))
             || !(0.001..=10.0).contains(&p.linear_tolerance_mm)
             || !(0.01..=1.0).contains(&p.angular_tolerance_rad)
-            || !(1..=1800).contains(&p.timeout_seconds)
-            || p.inputs.len() > 128
+            || p.timeout_seconds == 0
+            || std::time::Instant::now()
+                .checked_add(Duration::from_secs(p.timeout_seconds))
+                .is_none()
         {
-            return Err(ToolError::Validation("CAD requires a Python/STEP source, linear tolerance 0.001–10 mm, angular tolerance 0.01–1 rad, timeout 1–1800 seconds, and at most 128 input files".into()));
+            return Err(ToolError::Validation("CAD requires a Python/STEP source, linear tolerance 0.001–10 mm, angular tolerance 0.01–1 rad, a positive runtime-representable timeout".into()));
         }
         projects::resolve(workspace, &p.project_id, &p.source)?;
         for input in &p.inputs {
@@ -200,7 +201,9 @@ pub async fn forward(
         }
     };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout + 30))
+        .timeout(Duration::from_secs(timeout.checked_add(30).ok_or_else(
+            || ToolError::Validation("CAD timeout exceeds the runtime integer range".into()),
+        )?))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .build()
@@ -439,12 +442,6 @@ impl CadWorker {
     ) -> Result<Value, ToolError> {
         let workspace = Arc::clone(&self.workspace);
         let (action, params) = request.parts()?;
-        let staging = Arc::new(
-            self.workspace
-                .scratch(5 * MAX_FILE_BYTES + MAX_LOG_BYTES, "cad")?,
-        );
-        let input_root = staging.path().join("inputs");
-        std::fs::create_dir(&input_root)?;
         let mut names = params.inputs.clone();
         names.push(params.source.clone());
         names.sort();
@@ -455,18 +452,29 @@ impl CadWorker {
             .as_ref()
             .map(|identity| projects::revisions::get(&workspace, &id, identity))
             .transpose()?;
+        let input_bytes = names.iter().try_fold(0_u64, |total, name| {
+            let path = projects::resolve(&workspace, &id, name)?;
+            let retained = revision
+                .as_ref()
+                .map_or(path.as_str(), |r| r.files[name].snapshot.as_str());
+            total
+                .checked_add(workspace.stat_artifact(retained)?.size_bytes)
+                .ok_or_else(|| {
+                    ToolError::Cad("CAD input sizes exceed the runtime integer range".into())
+                })
+        })?;
+        let staging = Arc::new(self.workspace.scratch(input_bytes, "cad")?);
+        let input_root = staging.path().join("inputs");
+        std::fs::create_dir(&input_root)?;
         let staging_inputs = input_root.clone();
         let staging_owner = Arc::clone(&staging);
         let sources = tokio::task::spawn_blocking(move || {
             let _staging_owner = staging_owner;
             let mut sources = Vec::new();
-            let mut total = 0;
             for name in names {
                 let path = projects::resolve(&workspace, &id, &name)?;
                 let retained = revision.as_ref().map(|r| &r.files[&name]);
-                let snapshot = workspace.snapshot_artifact_bounded(retained.map_or(path.as_str(), |s| s.snapshot.as_str()), MAX_FILE_BYTES)?;
-                total += snapshot.meta().size_bytes;
-                if total > MAX_FILE_BYTES { return Err(ToolError::Cad("CAD input set exceeds 1 GiB".into())); }
+                let snapshot = workspace.snapshot_artifact(retained.map_or(path.as_str(), |s| s.snapshot.as_str()))?;
                 let destination = staging_inputs.join(&name);
                 std::fs::create_dir_all(destination.parent().expect("input parent"))?;
                 std::fs::copy(snapshot.path(), &destination)?;
@@ -499,7 +507,7 @@ impl CadWorker {
                     &destination,
                     &input_root.join(name),
                     false,
-                    MAX_FILE_BYTES,
+                    u64::MAX,
                 )?;
             }
             if cancel.is_cancelled() {
@@ -602,15 +610,9 @@ impl CadWorker {
         identity: Option<&projects::revisions::Identity>,
         requirements: &qualification::Requirements,
     ) -> Result<Value, ToolError> {
-        let report_file = open_native_file(&staging.join("output/report.json"))?;
+        let mut report_file = open_native_file(&staging.join("output/report.json"))?;
         let mut report_bytes = Vec::new();
-        std::io::Read::read_to_end(
-            &mut std::io::Read::take(report_file, 1024 * 1024 + 1),
-            &mut report_bytes,
-        )?;
-        if report_bytes.len() > 1024 * 1024 {
-            return Err(ToolError::Cad("CAD report exceeds metadata limit".into()));
-        }
+        std::io::Read::read_to_end(&mut report_file, &mut report_bytes)?;
         let report: Value = serde_json::from_slice(&report_bytes)?;
         let mut artifacts = Vec::new();
         for name in ["model.step", "model.stl", "model.glb", "components.json"] {
@@ -619,7 +621,7 @@ impl CadWorker {
                 &format!("{output}/{name}"),
                 &path,
                 false,
-                MAX_FILE_BYTES,
+                u64::MAX,
             )?;
             artifacts.push(json!({"artifact":meta,"sha256":hash_file(&path)?}));
         }
@@ -733,6 +735,20 @@ mod tests {
 
     fn request() -> CadRequest {
         serde_json::from_value(json!({"action":"model","params":{"project_id":"cad","source":"source.py","output_dir":"builds/one"}})).unwrap()
+    }
+
+    #[test]
+    fn large_input_selection_and_work_budget_reach_native_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let mut request = request();
+        if let CadRequest::Model(params) = &mut request {
+            params.inputs = (0..129).map(|i| format!("inputs/part-{i}.stl")).collect();
+            params.timeout_seconds = 7200;
+        }
+        request
+            .validate(&workspace)
+            .expect("native capacity is not preempted");
     }
 
     fn lifecycle_worker(root: &Path) -> Arc<CadWorker> {

@@ -10,8 +10,8 @@ class InspectionError(ValueError):
 def page_arguments(params, default_limit=20):
     offset = params.get("offset", 0)
     limit = params.get("limit", default_limit)
-    if type(offset) is not int or not 0 <= offset <= 1_000_000:
-        raise InspectionError("offset must be between 0 and 1000000")
+    if type(offset) is not int or offset < 0:
+        raise InspectionError("offset must be nonnegative")
     if type(limit) is not int or limit < 1:
         raise InspectionError("limit must be positive")
     return offset, limit
@@ -59,8 +59,8 @@ def node_tree_info(bpy, params):
     if set(params) - {"name", "kind", "section", "offset", "limit"}:
         raise InspectionError("unknown node-tree inspection parameter")
     name = params.get("name")
-    if not isinstance(name, str) or not name or len(name) > 255:
-        raise InspectionError("name must contain between 1 and 255 characters")
+    if not isinstance(name, str) or not name:
+        raise InspectionError("name must be nonempty")
     kind = params.get("kind", "material")
     section = params.get("section", "nodes")
     if kind not in ("material", "geometry") or section not in ("nodes", "links"):

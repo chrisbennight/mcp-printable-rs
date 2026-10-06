@@ -7,7 +7,6 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import queue
-import resource
 import signal
 import socket
 import struct
@@ -34,12 +33,6 @@ from printable_bridge.framing import (
     send_json as framing_send_json,
 )
 from printable_bridge.handlers import (
-    MAX_DIAGNOSTIC_ATTRIBUTE_VALUES,
-    MAX_DIAGNOSTIC_EDGES,
-    MAX_DIAGNOSTIC_FACES,
-    MAX_DIAGNOSTIC_LOOPS,
-    MAX_DIAGNOSTIC_VERTICES,
-    MAX_PRODUCT_VERTICES,
     BlenderHandlers,
     HandlerError,
     HandlerStartupError,
@@ -56,10 +49,8 @@ from printable_bridge.watchdog import (
     NoopExecutionWatchdog,
 )
 from printable_bridge.workspace import (
-    MAX_ARTIFACT_BYTES,
     SecureWorkspace,
     WorkspaceError,
-    enforce_process_file_size_limit,
 )
 
 
@@ -669,60 +660,17 @@ class LifecycleTests(unittest.TestCase):
 
 
 class WorkspaceTests(unittest.TestCase):
-    def test_process_file_limit_is_enforced_before_blender_writes(self) -> None:
-        unlimited = resource.RLIM_INFINITY
-        for current, expected in (
-            (unlimited, MAX_ARTIFACT_BYTES),
-            (MAX_ARTIFACT_BYTES * 2, MAX_ARTIFACT_BYTES),
-            (MAX_ARTIFACT_BYTES // 2, MAX_ARTIFACT_BYTES // 2),
-        ):
-            with self.subTest(current=current), patch(
-                "printable_bridge.workspace.resource.getrlimit",
-                return_value=(current, unlimited),
-            ), patch(
-                "printable_bridge.workspace.resource.setrlimit"
-            ) as set_limit:
-                enforce_process_file_size_limit()
 
-            set_limit.assert_called_once_with(
-                resource.RLIMIT_FSIZE,
-                (expected, unlimited),
-            )
-
-    def test_process_file_limit_stops_staging_growth(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "oversized.stl"
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    """
-import signal
-import sys
-from pathlib import Path
-import errno
-import printable_bridge.workspace as workspace
-
-workspace.MAX_ARTIFACT_BYTES = 1024
-signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
-workspace.enforce_process_file_size_limit()
-try:
-    Path(sys.argv[1]).write_bytes(b"x" * 2048)
-except OSError as error:
-    if error.errno != errno.EFBIG:
-        raise
-else:
-    raise SystemExit("file-size limit allowed an oversized staging file")
-if Path(sys.argv[1]).stat().st_size > workspace.MAX_ARTIFACT_BYTES:
-    raise SystemExit("staging file exceeded the enforced limit")
-""",
-                    str(output),
-                ],
-                check=False,
-                env=os.environ.copy(),
-            )
-
-            self.assertEqual(completed.returncode, 0)
+    def test_streamed_artifact_copy_has_no_fixed_file_size_ceiling(self):
+        chunk = b'x' * (1024 * 1024)
+        source = Mock()
+        source.read.side_effect = [chunk] * 1025 + [b'']
+        destination = Mock()
+        check_budget = Mock()
+        SecureWorkspace._copy_file(source, destination, check_budget=check_budget)
+        self.assertEqual(destination.write.call_count, 1025)
+        self.assertEqual(check_budget.call_count, 1026)
+        self.assertEqual(sum(len(args[0]) for args, _ in destination.write.call_args_list), 1025 * len(chunk))
 
     def test_input_is_snapshotted_from_a_descriptor_and_symlinks_are_refused(
         self,
@@ -1147,7 +1095,7 @@ class HandlerValidationTests(unittest.TestCase):
             handlers.close()
 
     def test_product_presentation_exposure_and_light_controls(self) -> None:
-        for exposure, intensity in ((-10.0, 0.0), (1.25, 0.5), (10.0, 10.0)):
+        for exposure, intensity in ((-20.0, 0.0), (1.25, 0.5), (20.0, 100.0)):
             normalized = BlenderHandlers._validate_product_presentation(
                 {"profile": "studio_neutral", "exposure_stops": exposure,
                  "light_intensity_scale": intensity}, ["Body"]
@@ -1155,8 +1103,8 @@ class HandlerValidationTests(unittest.TestCase):
             self.assertEqual(normalized["exposure_stops"], exposure)
             self.assertEqual(normalized["light_intensity_scale"], intensity)
         for field, values in (
-            ("exposure_stops", (-10.1, 10.1, float("nan"), float("inf"), True, "1")),
-            ("light_intensity_scale", (-0.1, 10.1, float("nan"), float("inf"), True, "1")),
+            ("exposure_stops", (float("nan"), float("inf"), True, "1")),
+            ("light_intensity_scale", (-0.1, float("nan"), float("inf"), True, "1")),
         ):
             for value in values:
                 with self.subTest(field=field, value=value), self.assertRaises(HandlerError):
@@ -1680,7 +1628,7 @@ class HandlerValidationTests(unittest.TestCase):
             self.assertEqual(render_pre, [original_render_handler])
             handlers.close()
 
-    def test_product_geometry_budget_preflights_instance_multiplication(
+    def test_product_geometry_reports_large_instanced_meshes(
         self,
     ) -> None:
         class Sized:
@@ -1694,7 +1642,7 @@ class HandlerValidationTests(unittest.TestCase):
                 return iter(())
 
         mesh = SimpleNamespace(
-            vertices=Sized(MAX_PRODUCT_VERTICES // 2 + 1),
+            vertices=Sized(500_001),
             edges=Sized(12),
             polygons=Sized(6),
             loops=Sized(24),
@@ -1733,10 +1681,10 @@ class HandlerValidationTests(unittest.TestCase):
             )
             handlers = BlenderHandlers(config(root, 9876), lambda: False, bpy)
 
-            with self.assertRaisesRegex(
-                HandlerError, "evaluated vertices"
-            ):
-                handlers._product_geometry_preflight({"Body"})
+            usage = handlers._product_geometry_preflight({"Body"})
+            self.assertEqual(usage["vertices"], 1_000_002)
+            self.assertEqual(usage["instances"], 2)
+            self.assertEqual(usage["unique_evaluated_meshes"], 1)
 
             scenes.new.assert_not_called()
             copied_meshes.new_from_object.assert_not_called()
@@ -2443,12 +2391,7 @@ class HandlerValidationTests(unittest.TestCase):
                 {"views": []},
                 {"views": [valid, valid]},
                 {"views": [{**valid, "direction": [0.0, 0.0, 0.0]}]},
-                {
-                    "views": [valid, {**valid, "path": "renders/right.png"}],
-                    "width": 8192,
-                    "height": 8192,
-                },
-                {"views": [valid], "width": 8192, "height": 1025},
+                {"views": [valid], "width": 0},
             ):
                 with self.subTest(params=params), self.assertRaises(HandlerError):
                     handlers.dispatch("render_views", params)
@@ -2698,8 +2641,7 @@ class HandlerValidationTests(unittest.TestCase):
                 {
                     "path": "diagnostics/c.png",
                     "mode": "overhang",
-                    "width": 8192,
-                    "height": 1025,
+                    "width": 0,
                 },
             ):
                 with self.subTest(params=params), self.assertRaises(HandlerError):
@@ -3303,237 +3245,42 @@ class HandlerValidationTests(unittest.TestCase):
                 bm, Matrix(0.0), bmesh_module
             )
 
-    def test_diagnostic_geometry_limit_is_checked_before_bmesh_allocation(self) -> None:
+    def test_geometry_reporting_accepts_large_meshes_and_string_attributes(self):
         class Sized:
-            def __init__(self, length: int):
-                self._length = length
-
-            def __len__(self) -> int:
-                return self._length
-
-            def __iter__(self):
-                return iter(
-                    SimpleNamespace(groups=()) for _ in range(self._length)
-                )
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            depsgraph = SimpleNamespace(object_instances=[])
-            materials = SimpleNamespace(new=Mock())
-            scene = SimpleNamespace(cycles=SimpleNamespace(device=None))
-            bpy = SimpleNamespace(
-                data=SimpleNamespace(scenes=[scene], materials=materials),
-                context=SimpleNamespace(
-                    scene=scene,
-                    evaluated_depsgraph_get=Mock(return_value=depsgraph),
-                ),
-            )
-            handlers = BlenderHandlers(config(root, 9876), lambda: False, bpy)
-            bmesh_module = SimpleNamespace(new=Mock())
-            cases = [
-                ("vertices", "vertices", MAX_DIAGNOSTIC_VERTICES),
-                ("edges", "edges", MAX_DIAGNOSTIC_EDGES),
-                ("faces", "polygons", MAX_DIAGNOSTIC_FACES),
-                ("loops", "loops", MAX_DIAGNOSTIC_LOOPS),
-                ("copied attribute values", "attributes", MAX_DIAGNOSTIC_ATTRIBUTE_VALUES),
-            ]
-            for message, field, limit in cases:
-                data = SimpleNamespace(
-                    vertices=Sized(3),
-                    edges=Sized(3),
-                    polygons=Sized(1),
-                    loops=Sized(3),
-                    attributes=[],
-                )
-                if field == "attributes":
-                    data.attributes = [
-                        SimpleNamespace(
-                            data_type="FLOAT", data=Sized(limit + 1)
-                        )
-                    ]
-                else:
-                    setattr(data, field, Sized(limit + 1))
-                geometry = SimpleNamespace(
-                    name="Oversized",
-                    type="MESH",
-                    hide_render=False,
-                    visible_camera=True,
-                    data=data,
-                )
-                depsgraph.object_instances = [
-                    SimpleNamespace(object=geometry, show_self=True)
-                ]
-                with (
-                    self.subTest(field=field),
-                    patch.dict(
-                        sys.modules,
-                        {
-                            "bmesh": bmesh_module,
-                            "mathutils": SimpleNamespace(Vector=FakeVector),
-                        },
-                    ),
-                    self.assertRaisesRegex(HandlerError, message),
-                ):
-                    handlers._create_diagnostic_geometry(
-                        "overhang",
-                        None,
-                        {
-                            "build_direction": (0.0, 0.0, 1.0),
-                            "overhang_angle_degrees": 45.0,
-                        },
-                        None,
-                        [],
-                        [],
-                        [],
-                    )
-
-                bmesh_module.new.assert_not_called()
-                materials.new.assert_not_called()
-
-            for case, vertices, attributes, message in (
-                (
-                    "vertex_groups",
-                    [
-                        SimpleNamespace(
-                            groups=Sized(MAX_DIAGNOSTIC_ATTRIBUTE_VALUES + 1)
-                        )
-                    ],
-                    [],
-                    "copied attribute values",
-                ),
-                (
-                    "string_attribute",
-                    Sized(3),
-                    [SimpleNamespace(data_type="STRING", data=Sized(1))],
-                    "unbounded string attribute",
-                ),
-            ):
-                geometry = SimpleNamespace(
-                    name="Oversized",
-                    type="MESH",
-                    hide_render=False,
-                    visible_camera=True,
-                    data=SimpleNamespace(
-                        vertices=vertices,
-                        edges=Sized(3),
-                        polygons=Sized(1),
-                        loops=Sized(3),
-                        attributes=attributes,
-                    ),
-                )
-                depsgraph.object_instances = [
-                    SimpleNamespace(object=geometry, show_self=True)
-                ]
-                with (
-                    self.subTest(case=case),
-                    patch.dict(
-                        sys.modules,
-                        {
-                            "bmesh": bmesh_module,
-                            "mathutils": SimpleNamespace(Vector=FakeVector),
-                        },
-                    ),
-                    self.assertRaisesRegex(HandlerError, message),
-                ):
-                    handlers._create_diagnostic_geometry(
-                        "overhang",
-                        None,
-                        {
-                            "build_direction": (0.0, 0.0, 1.0),
-                            "overhang_angle_degrees": 45.0,
-                        },
-                        None,
-                        [],
-                        [],
-                        [],
-                    )
-
-                bmesh_module.new.assert_not_called()
-                materials.new.assert_not_called()
-            handlers.close()
-
-    def test_diagnostic_expanded_topology_is_checked_before_combined_buffers(self) -> None:
-        class Sized:
-            def __init__(self, length: int, values: list[object]) -> None:
+            def __init__(self, length):
                 self.length = length
-                self.values = values
-
-            def __len__(self) -> int:
+            def __len__(self):
                 return self.length
-
             def __iter__(self):
-                return iter(self.values)
+                return iter(())
 
-        vertices = Sized(3, [object(), object(), object()])
-        edges = Sized(3, [object(), object(), object()])
-        face = SimpleNamespace(loops=[object(), object(), object()], material_index=0)
-        bm = SimpleNamespace(
-            verts=vertices,
-            edges=edges,
-            faces=[face],
-            from_mesh=Mock(),
-            free=Mock(),
-        )
+        mesh = SimpleNamespace(vertices=Sized(1_000_001), edges=Sized(3_000_001),
+                               polygons=Sized(2_000_001), loops=Sized(6_000_001),
+                               attributes=[SimpleNamespace(data_type='STRING', data=Sized(16_000_001))],
+                               materials=Sized(4097))
+        geometry = SimpleNamespace(name='Body', type='MESH', hide_render=False,
+                                   visible_camera=True, data=mesh)
+        instance = SimpleNamespace(object=geometry, show_self=True,
+                                   matrix_world=SimpleNamespace(determinant=lambda: 1.0))
+        depsgraph = SimpleNamespace(object_instances=[instance] * 4097)
+        handler = BlenderHandlers.__new__(BlenderHandlers)
+        handler._bpy = SimpleNamespace(context=SimpleNamespace(evaluated_depsgraph_get=lambda: depsgraph))
+        usage = handler._product_geometry_preflight({'Body'})
+        self.assertEqual(usage['instances'], 4097)
+        self.assertEqual(usage['attribute_values'], 4097 * 16_000_001)
+        self.assertEqual(usage['material_slots'], 4097 * 4097)
+        counts = handler._diagnostic_geometry_counts(depsgraph, {'Body'})
+        self.assertEqual(counts, (4097, 4097 * 1_000_001, 4097 * 3_000_001,
+                                  4097 * 2_000_001, 4097 * 6_000_001, 4097 * 16_000_001))
 
-        def expand_geometry(
-            *_args: object, **_kwargs: object
-        ) -> dict[str, list[object]]:
-            vertices.length = MAX_DIAGNOSTIC_VERTICES + 1
-            return {"geom_cut": []}
+    def test_render_arguments_accept_large_dimensions_and_quality(self):
+        from printable_bridge.handlers import _render_parameters, _required_object_names
+        self.assertEqual(_render_parameters({'width': 16384, 'height': 8192,
+                                            'engine': 'CYCLES', 'samples': 8192}),
+                         (16384, 8192, 3600.0, 'CYCLES', 8192))
+        objects = [f'Part{index}' for index in range(1001)]
+        self.assertEqual(_required_object_names({'objects': objects}), objects)
 
-        bmesh_module = SimpleNamespace(
-            new=Mock(return_value=bm),
-            ops=SimpleNamespace(bisect_plane=Mock(side_effect=expand_geometry)),
-        )
-        geometry = SimpleNamespace(
-            name="Body",
-            type="MESH",
-            hide_render=False,
-            visible_camera=True,
-            data=object(),
-        )
-        instance = SimpleNamespace(object=geometry, show_self=True, matrix_world=object())
-        depsgraph = SimpleNamespace(object_instances=[instance])
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            scene = SimpleNamespace(cycles=SimpleNamespace(device=None))
-            meshes = SimpleNamespace(new=Mock())
-            bpy = SimpleNamespace(
-                data=SimpleNamespace(scenes=[scene], meshes=meshes),
-                context=SimpleNamespace(
-                    evaluated_depsgraph_get=Mock(return_value=depsgraph)
-                ),
-            )
-            handlers = BlenderHandlers(config(root, 9876), lambda: False, bpy)
-
-            with (
-                patch.dict(
-                    sys.modules,
-                    {
-                        "bmesh": bmesh_module,
-                        "mathutils": SimpleNamespace(Vector=FakeVector),
-                    },
-                ),
-                patch.object(handlers, "_create_diagnostic_material", return_value=object()),
-                patch.object(handlers, "_transform_diagnostic_mesh"),
-                patch.object(handlers, "_append_diagnostic_faces") as append_faces,
-                self.assertRaisesRegex(HandlerError, "rendered geometry exceeds.*vertices"),
-            ):
-                handlers._create_diagnostic_geometry(
-                    "cross_section",
-                    None,
-                    {"axis": "Z", "axis_index": 2, "position": 0.0},
-                    (1, 3, 3, 1, 3, 0),
-                    [],
-                    [],
-                    [],
-                )
-
-            append_faces.assert_not_called()
-            meshes.new.assert_not_called()
-            bm.free.assert_called_once_with()
-            handlers.close()
 
     def test_diagnostic_preflight_does_not_allocate_non_mesh_conversion(self) -> None:
         geometry = SimpleNamespace(
@@ -3760,7 +3507,7 @@ class HandlerValidationTests(unittest.TestCase):
             )
             handlers = BlenderHandlers(config(root, 9876), lambda: False, bpy)
 
-            with self.assertRaisesRegex(HandlerError, "between 3 and 1024"):
+            with self.assertRaisesRegex(HandlerError, "at least 3"):
                 handlers.dispatch(
                     "create_primitive", {"primitive": "cylinder", "vertices": 2}
                 )
@@ -3785,16 +3532,6 @@ class HandlerValidationTests(unittest.TestCase):
                     {"path": "new/render.png", "width": 0, "height": 256},
                 )
             for params, message in (
-                (
-                    {
-                        "path": "new/product.png",
-                        "objects": ["Body"],
-                        "presentation": {"profile": "studio_neutral"},
-                        "width": 8192,
-                        "height": 8192,
-                    },
-                    "pixel output limit",
-                ),
                 (
                     {
                         "path": "new/product.png",
@@ -4249,8 +3986,6 @@ class RuntimeShutdownTests(unittest.TestCase):
             with patch(
                 "printable_bridge.runtime.BlenderHandlers",
                 side_effect=HandlerStartupError(diagnostic),
-            ), patch(
-                "printable_bridge.runtime.enforce_process_file_size_limit"
             ), self.assertLogs("printable_bridge.runtime", level="ERROR") as logs:
                 self.assertEqual(runtime.run(), 1)
 

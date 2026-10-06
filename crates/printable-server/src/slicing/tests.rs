@@ -125,6 +125,20 @@ async fn terminal(worker: &Arc<SliceWorker>) -> Value {
 }
 
 #[tokio::test]
+async fn large_material_selection_and_work_budget_reach_the_native_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    let mut request = params();
+    request.filaments = vec![request.filaments[0].clone(); 17];
+    request.timeout_seconds = 7201;
+    worker
+        .prepare(request)
+        .await
+        .expect("native admission accepts caller budgets");
+    assert_eq!(terminal(&worker).await["status"], "completed");
+}
+
+#[tokio::test]
 async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
     let directory = tempfile::tempdir().unwrap();
     let worker = fixture(directory.path(), false);
@@ -152,6 +166,7 @@ async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
         material: None,
         include_travel: false,
         size: 128,
+        timeout_seconds: 30,
     };
     let reviewed = worker.review(request()).await.unwrap();
     assert!(reviewed["segments"].as_u64().unwrap() > 0);

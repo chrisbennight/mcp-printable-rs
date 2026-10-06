@@ -27,7 +27,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_LOG: usize = 1024 * 1024;
 pub const ENGINE_VERSION: &str = "2.4.2";
 
@@ -238,7 +237,7 @@ impl SliceWorker {
         let slice_provenance = state.get("provenance").cloned();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_BYTES)?;
+            let snapshot = workspace.snapshot_artifact(&path)?;
             if hash_file(snapshot.path())? != expected_hash {
                 return Err(slice_error(
                     "toolpath changed since slicing; prepare a new revision",
@@ -264,7 +263,7 @@ impl SliceWorker {
             let (bytes, mut evidence) = review::render(snapshot.path(), &params)?;
             let review_id = random_hex_id()?;
             let image_path = format!("{output}/review-{review_id}.png");
-            let artifact = workspace.write_artifact(&image_path, &bytes, false)?;
+            let artifact = workspace.write_generated_bytes(&image_path, &bytes, false)?;
             evidence["source_sha256"] = json!(expected_hash);
             evidence["slice"] = json!(params.slice);
             evidence["toolpath"] = json!(path);
@@ -316,11 +315,14 @@ impl SliceWorker {
     }
 
     async fn prepare(self: &Arc<Self>, params: PrepareParams) -> Result<Value, ToolError> {
-        if !(1..=7200).contains(&params.timeout_seconds)
-            || !(1..=16).contains(&params.filaments.len())
+        if params.timeout_seconds == 0
+            || params.filaments.is_empty()
+            || std::time::Instant::now()
+                .checked_add(Duration::from_secs(params.timeout_seconds))
+                .is_none()
         {
             return Err(invalid(
-                "slicing requires 1–16 material profiles and a 1–7200 second budget",
+                "slicing requires material profiles and a positive runtime-representable budget",
             ));
         }
         let extension = Path::new(&params.source)
@@ -357,10 +359,10 @@ impl SliceWorker {
         let permit = Arc::clone(&self.admission)
             .try_acquire_owned()
             .map_err(|_| slice_error("slicer is busy; inspect the active slice before retrying"))?;
-        let staging = Arc::new(
-            self.workspace
-                .scratch(3 * MAX_BYTES + MAX_LOG as u64, "slice")?,
-        );
+        let staging = Arc::new(self.workspace.scratch(
+            self.workspace.stat_artifact(&source_path)?.size_bytes,
+            "slice",
+        )?);
         let source_name = format!("source.{extension}");
         let local_source = staging.path().join(&source_name);
         let workspace = Arc::clone(&self.workspace);
@@ -369,7 +371,7 @@ impl SliceWorker {
         let staging_owner = Arc::clone(&staging);
         let source_hash = tokio::task::spawn_blocking(move || {
             let _staging_owner = staging_owner;
-            let snapshot = workspace.snapshot_artifact_bounded(&source_path, MAX_BYTES)?;
+            let snapshot = workspace.snapshot_artifact(&source_path)?;
             std::fs::copy(snapshot.path(), &copy_to)?;
             hash_file(&copy_to)
         })
@@ -413,7 +415,7 @@ impl SliceWorker {
             &format!("{output}/{source_name}"),
             &local_source,
             false,
-            MAX_BYTES,
+            u64::MAX,
         )?;
         self.workspace.write_artifact(
             &format!("{output}/request.json"),
@@ -619,17 +621,12 @@ impl SliceWorker {
                 {
                     continue;
                 }
-                if artifacts.len() >= 128 {
-                    return Err(slice_error(
-                        "native output set exceeds supported plate count",
-                    ));
-                }
                 let hash = hash_file(&entry.path())?;
                 let artifact = workspace.commit_generated_artifact_bounded(
                     &format!("{destination}/{name}"),
                     &entry.path(),
                     false,
-                    MAX_BYTES,
+                    u64::MAX,
                 )?;
                 artifacts.insert(name, json!({"artifact":artifact,"sha256":hash}));
             }
@@ -709,22 +706,15 @@ pub fn hash_file(path: &Path) -> Result<String, ToolError> {
         .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_BYTES {
-        return Err(slice_error(
-            "slice artifact requires a regular file below 1 GiB",
-        ));
+    if !metadata.is_file() {
+        return Err(slice_error("slice artifact requires a regular file"));
     }
     let mut digest = Sha256::new();
     let mut buffer = [0; 65536];
-    let mut count = 0;
     loop {
         let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
-        }
-        count += n as u64;
-        if count > MAX_BYTES {
-            return Err(slice_error("slice artifact grew beyond its byte limit"));
         }
         digest.update(&buffer[..n]);
     }

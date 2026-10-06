@@ -4,6 +4,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
 
+from printable_bridge.x11_capture import DisplayCaptureError
 from printable_bridge.native_view import NativeViewError, _editor_png, _viewport_png, capture, view_options
 
 
@@ -19,7 +20,7 @@ class NativeViewTests(unittest.TestCase):
         self.assertEqual(source["rotation"], [2, 0, 0, 0])
 
     def test_invalid_capture_target_does_not_change_persistent_view(self):
-        for method, region_type, width in [("viewport", "HEADER", 800), ("editor", "WINDOW", 8192)]:
+        for method, region_type, width in [("viewport", "HEADER", 800), ("editor", "WINDOW", 0)]:
             context = NS(window=object(), area=NS(type="VIEW_3D", width=width, height=600),
                          region=NS(type=region_type, width=800, height=600), view_layer=Mock())
             bpy = NS(app=NS(background=False), context=context)
@@ -75,12 +76,15 @@ class NativeViewTests(unittest.TestCase):
         image.save.assert_called_once_with()
         images.remove.assert_called_once_with(image)
 
-    def test_oversized_editor_is_rejected_before_redraw_or_image_allocation(self):
-        bpy = NS(context=NS(area=NS(width=8192, height=8192), window=object(), region=object()), ops=Mock(), data=Mock())
-        with self.assertRaises(NativeViewError):
-            _editor_png(bpy, Path("editor.png"), 1024)
-        bpy.ops.wm.redraw_timer.assert_not_called()
-        bpy.data.images.load.assert_not_called()
+    def test_large_editor_reaches_capture_and_preserves_backend_failure(self):
+        bpy = NS(context=NS(area=NS(width=16384, height=8192), window=object(), region=object(), temp_override=Mock(return_value=nullcontext())), ops=Mock(), data=Mock())
+        bpy.ops.wm.redraw_timer.return_value = {'FINISHED'}
+        with patch("printable_bridge.native_view.capture_rgb", side_effect=DisplayCaptureError("display allocation failed")) as capture:
+            with self.assertRaisesRegex(NativeViewError, "display allocation failed"):
+                _editor_png(bpy, Path("editor.png"), 16384)
+        bpy.ops.wm.redraw_timer.assert_called_once()
+        capture.assert_called_once()
+        bpy.data.images.new.assert_not_called()
 
 
 if __name__ == "__main__":

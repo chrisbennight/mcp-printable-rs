@@ -20,8 +20,8 @@ def prepare_in_child(binary: str, original_root: Path, staged_root: Path,
                      files: list[str], entrypoint: str, timeout_seconds: float,
                      cancelled=lambda: False):
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(timeout_seconds) or not 0.1 <= timeout_seconds <= 120):
-        raise ProjectPackingError("native preparation timeout must be between 0.1 and 120 seconds")
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ProjectPackingError("native preparation timeout must be a positive finite number")
     if not Path(binary).is_absolute():
         raise ProjectPackingError("native preparation requires the installed Blender binary")
     if cancelled():
@@ -32,8 +32,6 @@ def prepare_in_child(binary: str, original_root: Path, staged_root: Path,
         response = control / "result.json"
         payload = json.dumps({"original_root": str(original_root), "staged_root": str(staged_root),
                               "files": files, "entrypoint": entrypoint}, allow_nan=False)
-        if len(payload.encode("utf-8")) > 64 * 1024:
-            raise ProjectPackingError("native preparation request exceeds its metadata limit")
         request.write_text(payload, encoding="utf-8")
         worker = Path(__file__).with_name("project_prepare_worker.py")
         command = [binary, "--background", "--factory-startup", "--disable-autoexec",
@@ -65,8 +63,8 @@ def prepare_in_child(binary: str, original_root: Path, staged_root: Path,
                     except ProcessLookupError:
                         pass
                     child.wait()
-        if not response.is_file() or response.stat().st_size > 64 * 1024:
-            raise ProjectPackingError("native preparation returned no bounded metadata")
+        if not response.is_file():
+            raise ProjectPackingError("native preparation returned no metadata")
         result = json.loads(response.read_text(encoding="utf-8"))
         if not isinstance(result, dict):
             raise ProjectPackingError("native preparation returned invalid metadata")

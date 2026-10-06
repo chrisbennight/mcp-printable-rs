@@ -120,8 +120,9 @@ python3 scripts/printable_client.py download model.stl ./model.stl
 
 The download command publishes an immutable snapshot, requests a one-use HTTP
 grant, streams the bytes, and verifies size and SHA-256 before creating the
-destination. It refuses redirects and overwriting existing files. Its download
-limit is 1 GiB. Ordinary MCP clients may support tools but lack the custom
+destination. It refuses redirects and overwriting existing files. Downloads
+stream at the artifact's declared size without a client capacity ceiling.
+Ordinary MCP clients may support tools but lack the custom
 `files/authorizeDownload` extension; use this command to retrieve their files.
 No gateway is required, and file bytes are not returned as chat text.
 

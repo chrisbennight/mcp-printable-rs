@@ -227,14 +227,16 @@ async fn run_process(
                 for lease in &leases {
                     rustix::io::fcntl_setfd(lease, rustix::io::FdFlags::empty())?;
                 }
-                setrlimit(
-                    Resource::Fsize,
-                    Rlimit {
-                        current: Some(max_file_bytes),
-                        maximum: Some(max_file_bytes),
-                    },
-                )
-                .map_err(Into::into)
+                if max_file_bytes != u64::MAX {
+                    setrlimit(
+                        Resource::Fsize,
+                        Rlimit {
+                            current: Some(max_file_bytes),
+                            maximum: Some(max_file_bytes),
+                        },
+                    )?;
+                }
+                Ok(())
             });
         }
     }

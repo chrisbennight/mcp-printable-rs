@@ -26,9 +26,15 @@ pub struct ReviewParams {
     #[serde(default)]
     pub include_travel: bool,
     #[serde(default = "default_size")]
-    pub size: u16,
+    pub size: u32,
+    /// Positive caller-selected processing budget; defaults to thirty seconds.
+    #[serde(default = "default_review_timeout")]
+    pub timeout_seconds: u64,
 }
-fn default_size() -> u16 {
+fn default_review_timeout() -> u64 {
+    30
+}
+fn default_size() -> u32 {
     768
 }
 
@@ -42,6 +48,7 @@ struct Segment {
 }
 
 struct Parser {
+    deadline: Option<Instant>,
     position: [f64; 4],
     coordinate_offset: [f64; 3],
     relative: bool,
@@ -59,6 +66,7 @@ struct Parser {
 impl Parser {
     fn new() -> Self {
         Self {
+            deadline: None,
             position: [0.; 4],
             coordinate_offset: [0.; 3],
             relative: false,
@@ -202,11 +210,11 @@ impl Parser {
                         };
                     }
                     let steps = (radius * sweep.abs() / 0.2).ceil().max(1.) as usize;
-                    if steps > 20000 {
-                        return Err(slice_error("arc exceeds bounded review complexity"));
-                    }
                     let mut previous = from;
                     for step in 1..=steps {
+                        if let Some(deadline) = self.deadline {
+                            check_deadline(deadline)?;
+                        }
                         let fraction = step as f64 / steps as f64;
                         let angle = start + sweep * fraction;
                         let next = if step == steps {
@@ -253,11 +261,6 @@ impl Parser {
         if from == to {
             return Ok(());
         }
-        if self.segments.len() >= 2_000_000 {
-            return Err(slice_error(
-                "review selection is too large; select fewer layers or features",
-            ));
-        }
         let length = (0..3)
             .map(|i| (to[i] - from[i]).powi(2))
             .sum::<f64>()
@@ -282,7 +285,11 @@ impl Parser {
 }
 
 pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value), ToolError> {
-    render_before(source, request, Instant::now() + Duration::from_secs(30))
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(request.timeout_seconds))
+        .filter(|_| request.timeout_seconds > 0)
+        .ok_or_else(|| invalid("review timeout must be positive and runtime-representable"))?;
+    render_before(source, request, deadline)
 }
 
 fn check_deadline(deadline: Instant) -> Result<(), ToolError> {
@@ -299,29 +306,21 @@ fn render_before(
     request: &ReviewParams,
     deadline: Instant,
 ) -> Result<(Vec<u8>, Value), ToolError> {
-    if request.first_layer == 0
-        || request.last_layer < request.first_layer
-        || request.last_layer - request.first_layer > 1000
-        || !(128..=2048).contains(&request.size)
-        || request.features.len() > 32
-    {
+    if request.first_layer == 0 || request.last_layer < request.first_layer || request.size == 0 {
         return Err(invalid(
-            "review requires a one-based range of at most 1001 layers, size 128–2048, and at most 32 feature filters",
+            "review requires a one-based ordered layer range and a positive image size",
         ));
     }
     let mut parser = Parser::new();
+    parser.deadline = Some(deadline);
     let mut reader = BufReader::new(std::fs::File::open(source)?);
     let mut line = String::new();
     loop {
         check_deadline(deadline)?;
         line.clear();
-        let n =
-            std::io::Read::take(std::io::Read::by_ref(&mut reader), 65537).read_line(&mut line)?;
+        let n = reader.read_line(&mut line)?;
         if n == 0 {
             break;
-        }
-        if n > 65536 {
-            return Err(slice_error("toolpath line exceeds review limit"));
         }
         parser.line(&line, request)?;
     }
@@ -341,7 +340,7 @@ fn render_before(
             }
         }
     }
-    let size = request.size as u32;
+    let size = request.size;
     let scale = (size as f64 - 32.) / (max[0] - min[0]).max(max[1] - min[1]).max(0.01);
     let map = |point: [f64; 3]| {
         [
@@ -432,6 +431,7 @@ mod tests {
             material: None,
             include_travel: false,
             size: 128,
+            timeout_seconds: 30,
         }
     }
 
@@ -467,7 +467,7 @@ mod tests {
         let request = review_request();
         let mut parser = Parser::new();
         parser.line("M83", &request).unwrap();
-        // This valid semicircle would exceed the selected-arc sample cap.
+        // Unselected arcs update position without allocating interpolated segments.
         parser.line("G3 X20000 I10000 E1", &request).unwrap();
         assert!(parser.segments.is_empty());
         assert_eq!(parser.position[0], 20000.);
@@ -497,6 +497,19 @@ mod tests {
     }
 
     #[test]
+    fn selected_arcs_can_exceed_the_former_sample_limit() {
+        let request = review_request();
+        let mut parser = Parser::new();
+        parser.line("; CHANGE_LAYER", &request).unwrap();
+        parser.line("M83", &request).unwrap();
+        parser.line("G3 X3000 I1500 E1", &request).unwrap();
+        assert!(parser.segments.len() > 20000);
+        parser.deadline = Some(Instant::now());
+        let error = parser.line("G3 X0 I-1500 E1", &request).unwrap_err();
+        assert!(error.to_string().contains("processing deadline"));
+    }
+
+    #[test]
     fn review_processing_deadline_is_enforced_without_sleeping() {
         let source = tempfile::NamedTempFile::new().unwrap();
         let error = render_before(source.path(), &review_request(), Instant::now()).unwrap_err();
@@ -516,6 +529,7 @@ mod tests {
             material: None,
             include_travel: false,
             size: 128,
+            timeout_seconds: 30,
         };
         let mut parser = Parser::new();
         for line in [
