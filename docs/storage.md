@@ -53,9 +53,8 @@ cleanup acquires the shared controller lock and checks live ownership again.
 A new owner makes the entry protected. `deleted` means absence was observed or
 directory removal and parent synchronization succeeded. Failure or uncertain
 durability remains `pending`; retry to reconcile. Deletion results use null
-bytes when no size was measured. Preview and deletion are bounded to 1,000
-entries per operation; larger or damaged temporary inventories require
-operator inspection with services stopped.
+bytes when no size was measured. Preview and deletion have no fixed entry-count
+ceiling. Invalid identifiers and actual filesystem errors remain errors.
 
 Cleanup only traverses managed temporary directories and never follows symbolic
 links. All public artifacts and retained internal data stay protected, including
@@ -65,9 +64,11 @@ disk. There is no age-based whole-workspace collector. Follow the
 [operations guide](operations.md#storage-and-cleanup) before removing retained
 data or externally referenced Blender assets.
 
-Accounting scans at most 100,000 entries and 64 directory levels. Inaccessible,
-changing, or unsupported names can make the scan incomplete; a configured
-budget then refuses admission. Symlinks are not followed. Hard links count per
+Accounting, inspection, and cleanup have no fixed entry-count or directory-depth
+ceiling. `scan_limit` in usage and `max_list_scan_entries` in workspace status
+are null. Inaccessible, changing, or unsupported names can make the scan
+incomplete; a configured budget then refuses admission. Symlinks are not
+followed. Hard links count per
 name. Logical sizes exclude filesystem metadata, allocation overhead, storage
 outside the workspace, backups, and small unmanaged geometry-worker temporary
 files. Live native writes can change observed usage during a scan or exceed a
@@ -77,5 +78,5 @@ Use filesystem/container quotas and monitor free blocks and inodes separately.
 
 The isolated workspace tests cover competing reservations, lost-owner recovery,
 disk-pressure rejection and recovery, retained-file preservation, a new owner
-after preview, failed deletion, and symlink confinement. They do not operate on
-production workspaces.
+after preview, large inventories, deep cleanup, and symlink confinement. They
+do not operate on production workspaces.

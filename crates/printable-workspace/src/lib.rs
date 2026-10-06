@@ -63,9 +63,5 @@ pub use workspace::{
 /// Hard cap on a single artifact transfer.
 pub const MAX_TRANSFER_BYTES: u64 = 25 * 1024 * 1024;
 
-/// Directory-scan work bound for listings. An incomplete scan returns an error
-/// rather than presenting an arbitrary traversal prefix as a complete listing.
-pub const MAX_LIST_SCAN_ENTRIES: usize = 10_000;
-
 /// Default artifact count for MCP workspace listings.
 pub const DEFAULT_LIST_LIMIT: usize = 1000;

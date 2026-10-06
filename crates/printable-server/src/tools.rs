@@ -134,7 +134,6 @@ struct StorageQueryParams {}
 #[serde(deny_unknown_fields)]
 struct StorageCleanupParams {
     /// Identifiers returned by cleanup_preview; retained artifact paths are not accepted.
-    #[schemars(length(max = 1000))]
     ids: Vec<String>,
 }
 
@@ -145,7 +144,7 @@ struct ListParams {
     /// Directory under the workspace to list (default `.`).
     #[serde(default = "default_path")]
     path: String,
-    /// Positive artifact count; defaults to 1000. The workspace scan budget applies.
+    /// Positive artifact count; defaults to 1000.
     #[serde(default = "default_limit")]
     #[schemars(range(min = 1))]
     limit: usize,

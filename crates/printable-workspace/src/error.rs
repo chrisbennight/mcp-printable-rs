@@ -37,14 +37,10 @@ pub enum WsError {
     ChangedWhileReading,
     #[error("limit must be positive")]
     InvalidLimit,
-    #[error("cleanup batch must contain at most 1000 identifiers")]
-    InvalidCleanupLimit,
-    #[error("workspace listing exceeds its directory-scan budget; list a narrower directory")]
-    ListScanLimit,
     #[error("workspace storage budget exceeded; inspect artifact usage and cleanup preview")]
     StorageBudgetExceeded,
     #[error(
-        "workspace storage accounting is incomplete; resolve inaccessible or oversized directory trees before admission"
+        "workspace storage accounting is incomplete; resolve inaccessible or unreadable directory entries before admission"
     )]
     StorageAccountingIncomplete,
     #[error("invalid managed scratch identifier")]
@@ -72,8 +68,6 @@ impl WsError {
             WsError::SnapshotTooLarge(_) => "read_too_large",
             WsError::ChangedWhileReading => "changed_while_reading",
             WsError::InvalidLimit => "invalid_limit",
-            WsError::InvalidCleanupLimit => "invalid_limit",
-            WsError::ListScanLimit => "list_scan_limit",
             WsError::StorageBudgetExceeded => "storage_budget_exceeded",
             WsError::StorageAccountingIncomplete => "storage_accounting_incomplete",
             WsError::InvalidScratchId => "invalid_scratch_id",
