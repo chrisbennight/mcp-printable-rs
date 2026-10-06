@@ -15,7 +15,6 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE = 8 * 1024 * 1024
-MAX_DOWNLOAD = 1024 * 1024 * 1024
 CLIENT_INFO = {"name": "printable-direct", "version": "2"}
 
 
@@ -166,8 +165,6 @@ class Client:
             if not isinstance(cursor, str) or not cursor or cursor in seen:
                 raise ValueError("Invalid or repeated discovery cursor")
             seen.add(cursor)
-            if len(seen) >= 100:
-                raise ValueError("Tool discovery exceeds the client page limit")
 
     def download(self, path, destination):
         destination = Path(destination)
@@ -186,8 +183,8 @@ class Client:
         if published["digest"]["algorithm"] != "sha-256":
             raise ValueError("Unsupported artifact digest")
         size = published["size"]
-        if not isinstance(size, int) or not 0 <= size <= MAX_DOWNLOAD:
-            raise ValueError("Artifact exceeds the 1 GiB client limit")
+        if type(size) is not int or size < 0:
+            raise ValueError("Artifact size must be a nonnegative integer")
         url = validate_url(download["url"])
         authority = download["headers"]["Authorization"]
         digest = hashlib.sha256()

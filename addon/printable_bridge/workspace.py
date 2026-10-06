@@ -6,13 +6,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
-import resource
 import secrets
 import stat
 from typing import Iterator
 
 
-MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 RESERVED_WORKSPACE_ROOT = ".printable"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -22,19 +20,6 @@ class WorkspaceError(ValueError):
     """A workspace operation cannot preserve its confinement contract."""
 
 
-def enforce_process_file_size_limit() -> None:
-    try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
-        limited = (
-            MAX_ARTIFACT_BYTES
-            if soft == resource.RLIM_INFINITY
-            else min(soft, MAX_ARTIFACT_BYTES)
-        )
-        if limited <= 0:
-            raise WorkspaceError("process file size limit prevents artifact staging")
-        resource.setrlimit(resource.RLIMIT_FSIZE, (limited, hard))
-    except (OSError, ValueError) as error:
-        raise WorkspaceError("process file size limit could not be enforced") from error
 
 
 @dataclass(frozen=True)
@@ -127,7 +112,7 @@ class SecureWorkspace:
 
     @staticmethod
     def _validate(raw: object, suffix: str, *, reserved: bool) -> WorkspacePath:
-        if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > 1024:
+        if not isinstance(raw, str) or not raw:
             raise WorkspaceError("path must be a non-empty workspace-relative path")
         if "\x00" in raw or "\\" in raw:
             raise WorkspaceError("path contains an unsupported character")
@@ -166,7 +151,7 @@ class SecureWorkspace:
                     with os.fdopen(os.dup(source_fd), "rb") as source, stage_path.open(
                         "wb"
                     ) as destination:
-                        self._copy_limited(source, destination, check_budget=check_budget)
+                        self._copy_file(source, destination, check_budget=check_budget)
                         destination.flush()
                         os.fsync(destination.fileno())
                         check_budget()
@@ -309,8 +294,6 @@ class SecureWorkspace:
             source_stat = os.fstat(source_fd)
             if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size == 0:
                 raise WorkspaceError("Blender produced an empty or invalid artifact")
-            if source_stat.st_size > MAX_ARTIFACT_BYTES:
-                raise WorkspaceError("Blender artifact exceeds the staging limit")
             temporary = f".{leaf}.tmp-{secrets.token_hex(16)}"
             destination_fd: int | None = None
             committed_identity: tuple[int, int] | None = None
@@ -328,7 +311,7 @@ class SecureWorkspace:
                 with os.fdopen(os.dup(source_fd), "rb") as source, os.fdopen(
                     destination_fd, "wb", closefd=False
                 ) as destination:
-                    self._copy_limited(source, destination, check_budget=check_budget)
+                    self._copy_file(source, destination, check_budget=check_budget)
                     destination.flush()
                     os.fsync(destination.fileno())
                     check_budget()
@@ -417,16 +400,12 @@ class SecureWorkspace:
             ) from error
 
     @staticmethod
-    def _copy_limited(source: object, destination: object, *, check_budget=lambda: None) -> None:
-        copied = 0
+    def _copy_file(source: object, destination: object, *, check_budget=lambda: None) -> None:
         while True:
             check_budget()
             chunk = source.read(1024 * 1024)
             if not chunk:
                 return
-            copied += len(chunk)
-            if copied > MAX_ARTIFACT_BYTES:
-                raise WorkspaceError("artifact exceeds the staging limit")
             destination.write(chunk)
 
     @staticmethod

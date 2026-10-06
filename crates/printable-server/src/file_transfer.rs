@@ -15,7 +15,6 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rmcp::model::RequestMetaObject;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use printable_workspace::{Snapshot, Workspace};
@@ -26,8 +25,6 @@ pub const PUBLISH_TOOL: &str = "printable_workspace_publish";
 const FILE_URI_PREFIX: &str = "mcp-file://printable/";
 const DOWNLOAD_PATH_PREFIX: &str = "/file-transfers/download/";
 const CLIENT_CAPABILITIES_META_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
-const MAX_PUBLISHED_FILES: usize = 2;
-const MAX_PUBLISHED_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const PUBLISHED_FILE_TTL: Duration = Duration::from_secs(5 * 60);
 const DOWNLOAD_GRANT_TTL: Duration = Duration::from_secs(60);
 
@@ -106,16 +103,14 @@ struct PublishedEntry {
     snapshot: Snapshot,
     expires_at: Instant,
     grant: Option<DownloadGrant>,
-    _capacity: OwnedSemaphorePermit,
 }
 
 /// Process-wide immutable snapshots awaiting import by the authenticated MCP
-/// client. Entries are bounded by count and file size, expire automatically,
+/// client. Entries retain governed workspace storage, expire automatically,
 /// and are consumed by one authorized download.
 pub struct PublishedFiles {
     workspace: Arc<Workspace>,
     entries: Mutex<HashMap<String, PublishedEntry>>,
-    capacity: Arc<Semaphore>,
 }
 
 impl PublishedFiles {
@@ -123,19 +118,14 @@ impl PublishedFiles {
         Self {
             workspace,
             entries: Mutex::new(HashMap::new()),
-            capacity: Arc::new(Semaphore::new(MAX_PUBLISHED_FILES)),
         }
     }
 
     pub async fn publish(&self, params: PublishParams) -> Result<FileValue, ToolError> {
         self.prune_expired();
-        let permit = Arc::clone(&self.capacity)
-            .try_acquire_owned()
-            .map_err(|_| ToolError::TooManyPublishedFiles(MAX_PUBLISHED_FILES))?;
         let workspace = Arc::clone(&self.workspace);
         let snapshot = tokio::task::spawn_blocking(move || {
-            let snapshot =
-                workspace.snapshot_artifact_bounded(&params.path, MAX_PUBLISHED_FILE_BYTES)?;
+            let snapshot = workspace.snapshot_artifact(&params.path)?;
             let mut file = std::fs::File::open(snapshot.path())?;
             let mut digest = Sha256::new();
             let mut chunk = [0_u8; 64 * 1024];
@@ -146,11 +136,11 @@ impl PublishedFiles {
                 }
                 digest.update(&chunk[..read]);
             }
-            Ok::<_, ToolError>((snapshot, digest.finalize(), permit))
+            Ok::<_, ToolError>((snapshot, digest.finalize()))
         })
         .await
         .map_err(|error| ToolError::Io(std::io::Error::other(error.to_string())))??;
-        let (snapshot, digest, permit) = snapshot;
+        let (snapshot, digest) = snapshot;
 
         loop {
             let id = random_hex_id()?;
@@ -182,7 +172,6 @@ impl PublishedFiles {
                     snapshot,
                     expires_at: Instant::now() + PUBLISHED_FILE_TTL,
                     grant: None,
-                    _capacity: permit,
                 },
             );
             return Ok(file);
@@ -300,7 +289,7 @@ pub async fn download(
             return StatusCode::UNAUTHORIZED.into_response();
         }
         let entry = entries.remove(&id).expect("authorized entry exists");
-        let stream = match snapshot_stream(entry.snapshot, entry._capacity) {
+        let stream = match snapshot_stream(entry.snapshot, ()) {
             Ok(stream) => stream,
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         };
@@ -360,6 +349,7 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::Semaphore;
 
     #[test]
     fn cancelled_body_keeps_queued_file_read_owned() {
@@ -455,7 +445,6 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::OK);
             assert!(published.entries.lock().unwrap().is_empty());
-            assert_eq!(published.capacity.available_permits(), 1);
             let protected = workspace.cleanup_preview().unwrap();
             assert_eq!(protected.len(), 1);
             assert_eq!(
@@ -481,7 +470,6 @@ mod tests {
                 drop(response);
             }
             assert!(workspace.cleanup_preview().unwrap().is_empty());
-            assert_eq!(published.capacity.available_permits(), 2);
             workspace
                 .write_artifact("next.stl", &vec![0; 25_000], false)
                 .unwrap();

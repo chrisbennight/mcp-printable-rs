@@ -164,8 +164,6 @@ def _editor_png(bpy, path, maximum):
     area = bpy.context.area
     target = {"window": bpy.context.window, "area": area, "region": bpy.context.region}
     expected_size = [area.width, area.height]
-    if area.width * area.height > 8388608 or max(area.width, area.height) > 4096:
-        raise NativeViewError("editor capture exceeds the bounded source pixel budget")
     with bpy.context.temp_override(**target):
         _finished(bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1), "editor redraw")
     with bpy.context.temp_override(**target):
@@ -204,8 +202,8 @@ def capture(bpy, gpu, path, params):
     if not isinstance(method, str) or method not in {"viewport", "editor"}:
         raise NativeViewError("method must be viewport or editor")
     maximum = params.get("max_size", 1024)
-    if type(maximum) is not int or not 64 <= maximum <= 2048:
-        raise NativeViewError("max_size must be between 64 and 2048")
+    if type(maximum) is not int or maximum <= 0:
+        raise NativeViewError("max_size must be a positive integer")
     options = view_options(params.get("view"))
     selector = params.get("context") or {"area_type": "VIEW_3D"}
     if bpy.app.background:
@@ -220,8 +218,6 @@ def capture(bpy, gpu, path, params):
             area = bpy.context.area
             if area.width <= 0 or area.height <= 0:
                 raise NativeViewError("requested editor has no drawable area")
-            if area.width * area.height > 8388608 or max(area.width, area.height) > 4096:
-                raise NativeViewError("editor capture exceeds the bounded source pixel budget")
         apply_view(bpy, options)
         bpy.context.view_layer.update()
         if method == "viewport":

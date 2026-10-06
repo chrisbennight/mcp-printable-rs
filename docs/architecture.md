@@ -32,7 +32,7 @@ boundaries:
 | `printable-geom` | Pure mesh measurements and printability analysis |
 | `printable-scad` | Confined source validation and OpenSCAD subprocesses |
 | `printable-workspace` | Capability-rooted artifact I/O and atomic promotion |
-| `printable-imaging` | Bounded image decoding and composition |
+| `printable-imaging` | Image decoding and composition |
 | `bambuddy-api` | Typed printer service requests, bounded responses and honest mutation outcomes |
 
 The first-party code in `addon/` executes inside Blender. Its supervisor and
@@ -41,6 +41,13 @@ process. UI mode uses a private authenticated display for native viewport and
 editor observations. Neither Blender process exposes a public control port.
 
 ## State and failure boundaries
+
+Printable does not invent capacity ceilings for modeling, rendering, native
+builds, slicing, or streamed artifact processing. Valid requests reach their
+backend; actual resource and backend failures remain errors. Caller-selected
+work and output budgets, configured workspace capacity, and deployment resource
+controls remain explicit boundaries. Compact MCP responses and inline byte
+limits govern transport, not whether a model or generated artifact is accepted.
 
 Live scene changes are separate from durable render jobs. Callers save a
 checkpoint before job submission. The server snapshots and hashes it before

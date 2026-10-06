@@ -11,11 +11,9 @@ import tempfile
 
 @contextmanager
 def prepare_glb(source: Path, inventory: Path):
-    if inventory.stat().st_size > 32 * 1024 * 1024:
-        raise ValueError("CAD component inventory exceeds 32 MiB")
     names = json.loads(inventory.read_bytes()).get("nodes")
-    if not isinstance(names, dict) or len(names) > 100000:
-        raise ValueError("CAD component inventory requires a bounded node map")
+    if not isinstance(names, dict):
+        raise ValueError("CAD component inventory requires a node map")
     with source.open("rb") as original:
         digest = hashlib.file_digest(original, "sha256").hexdigest()
         original.seek(0)
@@ -24,14 +22,14 @@ def prepare_glb(source: Path, inventory: Path):
             raise ValueError("CAD GLB header is incomplete")
         magic, version, total, json_size, kind = struct.unpack("<5I", header)
         if (magic != 0x46546C67 or version != 2 or total != source.stat().st_size
-                or kind != 0x4E4F534A or json_size > 32 * 1024 * 1024 or json_size % 4):
-            raise ValueError("CAD input requires a bounded GLB 2.0 document")
+                or kind != 0x4E4F534A or json_size > total - 20 or json_size % 4):
+            raise ValueError("CAD input requires a complete GLB 2.0 document")
         document = json.loads(original.read(json_size))
         if any("uri" in item for key in ("buffers", "images") for item in document.get(key, [])):
             raise ValueError("CAD attachment requires self-contained GLB buffers and images")
         nodes = document.get("nodes", [])
-        if not isinstance(nodes, list) or len(nodes) > 100000:
-            raise ValueError("CAD GLB node count exceeds the attachment bound")
+        if not isinstance(nodes, list):
+            raise ValueError("CAD GLB nodes must be an array")
         roots = document["scenes"][document.get("scene", 0)]["nodes"]
         pending = [(index, "") for index in roots]
         seen = set()

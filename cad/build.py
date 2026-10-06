@@ -31,7 +31,7 @@ def bounds(shape):
 def vertical_holes(shape):
     """Measure complete vertical cylindrical inner walls, not fastener fit."""
     faces = shape.Faces()
-    if not shape.isValid() or not shape.Solids() or len(faces) > 4096:
+    if not shape.isValid() or not shape.Solids():
         return {"status": "unmeasured", "holes": []}
     holes = []
     for face in faces:

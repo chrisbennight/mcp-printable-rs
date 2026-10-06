@@ -12,8 +12,6 @@ def inspect_dependencies(bpy, workspace_root, project_id, params):
     # Blender resolves references relative to their owning library, not merely
     # the current main file. Do not reproduce that resolution in Python.
     paths = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
-    if len(paths) > 10_000:
-        raise InspectionError("scene dependency inventory exceeds 10000 references")
     project_root = Path(os.path.abspath(workspace_root)) / "projects" / project_id
     items = []
     for index, raw in enumerate(paths[offset:offset + limit], start=offset):

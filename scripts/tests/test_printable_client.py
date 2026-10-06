@@ -117,6 +117,22 @@ class DownloadTests(unittest.TestCase):
                 instance.download("part.stl", output)
             self.assertEqual(list(Path(directory).iterdir()), [output])
 
+    def test_large_declared_download_reaches_transport_and_preserves_its_failure(self):
+        instance = self.make_client(b"small fixture")
+        published = instance.call()["file"]
+        published["size"] = 1024 * 1024 * 1024 + 1
+        class Transport:
+            called = False
+            def open(self, request, timeout):
+                self.called = True
+                raise OSError("storage unavailable")
+        instance.http = Transport()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(OSError, "storage unavailable"):
+                instance.download("large.stl", Path(directory) / "large.stl")
+            self.assertTrue(instance.http.called)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_corrupt_download_leaves_no_destination_or_temporary_file(self):
         instance = self.make_client(b"artifact bytes", expected="wrong")
         with tempfile.TemporaryDirectory() as directory:

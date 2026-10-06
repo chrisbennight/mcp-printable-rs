@@ -30,26 +30,7 @@ from .workspace import SecureWorkspace, WorkspacePath
 
 
 DEFAULT_RENDER_TIMEOUT_SECONDS = 3600.0
-MAX_RENDER_VIEWS = 36
-MAX_RENDER_VIEW_PIXELS = 64 * 1024 * 1024
-MAX_REVIEW_SOURCE_PIXELS = 8 * 1024 * 1024
-MAX_DIAGNOSTIC_VERTICES = 1_000_000
-MAX_DIAGNOSTIC_EDGES = 3_000_000
-MAX_DIAGNOSTIC_FACES = 2_000_000
-MAX_DIAGNOSTIC_LOOPS = 6_000_000
-MAX_DIAGNOSTIC_ATTRIBUTE_VALUES = 16_000_000
-MAX_JOB_ANALYSIS_MESH_BYTES = 1024 * 1024 * 1024
 PRODUCT_PRESENTATION_MARGIN = 1.15
-MAX_PRODUCT_MATERIAL_OVERRIDES = 64
-MAX_PRODUCT_RENDER_PIXELS = 16 * 1024 * 1024
-MAX_PRODUCT_RENDER_BYTES = 64 * 1024 * 1024
-MAX_PRODUCT_INSTANCES = 4096
-MAX_PRODUCT_VERTICES = MAX_DIAGNOSTIC_VERTICES
-MAX_PRODUCT_EDGES = MAX_DIAGNOSTIC_EDGES
-MAX_PRODUCT_FACES = MAX_DIAGNOSTIC_FACES
-MAX_PRODUCT_LOOPS = MAX_DIAGNOSTIC_LOOPS
-MAX_PRODUCT_ATTRIBUTE_VALUES = MAX_DIAGNOSTIC_ATTRIBUTE_VALUES
-MAX_PRODUCT_MATERIAL_SLOTS = 4096
 
 PRODUCT_PRESENTATION_PROFILES = {
     "engineering": {
@@ -104,36 +85,8 @@ PRODUCT_PRESENTATION_PROFILES = {
 }
 
 
-def _enforce_diagnostic_topology_limits(
-    vertices: int, edges: int, faces: int, loops: int, stage: str
-) -> None:
-    for kind, count, limit in (
-        ("vertices", vertices, MAX_DIAGNOSTIC_VERTICES),
-        ("edges", edges, MAX_DIAGNOSTIC_EDGES),
-        ("faces", faces, MAX_DIAGNOSTIC_FACES),
-        ("loops", loops, MAX_DIAGNOSTIC_LOOPS),
-    ):
-        if count > limit:
-            raise HandlerError(
-                f"diagnostic {stage} geometry exceeds {limit} {kind}; hide unrelated objects or use objects to render a subset"
-            )
 
 
-def _enforce_product_geometry_limits(usage: dict[str, int]) -> None:
-    for kind, limit in (
-        ("instances", MAX_PRODUCT_INSTANCES),
-        ("vertices", MAX_PRODUCT_VERTICES),
-        ("edges", MAX_PRODUCT_EDGES),
-        ("faces", MAX_PRODUCT_FACES),
-        ("loops", MAX_PRODUCT_LOOPS),
-        ("attribute_values", MAX_PRODUCT_ATTRIBUTE_VALUES),
-        ("material_slots", MAX_PRODUCT_MATERIAL_SLOTS),
-    ):
-        if usage[kind] > limit:
-            readable = kind.replace("_", " ")
-            raise HandlerError(
-                f"product presentation exceeds {limit} evaluated {readable}; reduce instancing or select a smaller object subset"
-            )
 
 
 class HandlerError(ValueError):
@@ -146,7 +99,7 @@ class HandlerStartupError(RuntimeError):
 
 def _string(params: dict[str, Any], name: str) -> str:
     value = params.get(name)
-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 255:
+    if not isinstance(value, str) or not value:
         raise HandlerError(f"{name} must be a non-empty string")
     return value
 
@@ -155,17 +108,19 @@ def _positive_integer(
     params: dict[str, Any],
     name: str,
     default: int,
-    maximum: int,
+    maximum: int | None = None,
     minimum: int = 1,
 ) -> int:
     value = params.get(name, default)
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not minimum <= value <= maximum
+        or value < minimum
+        or (maximum is not None and value > maximum)
     ):
         raise HandlerError(
-            f"{name} must be an integer between {minimum} and {maximum}"
+            f"{name} must be an integer at least {minimum}"
+            if maximum is None else f"{name} must be an integer between {minimum} and {maximum}"
         )
     return value
 
@@ -216,19 +171,19 @@ def _finite_float(params: dict[str, Any], name: str) -> float:
 
 
 def _bounded_float(
-    params: dict[str, Any], name: str, default: float, minimum: float, maximum: float
+    params: dict[str, Any], name: str, default: float,
+    minimum: float | None = None, maximum: float | None = None,
 ) -> float:
     value = params.get(name, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise HandlerError(
-            f"{name} must be a finite number from {minimum:g} through {maximum:g}"
-        )
+        raise HandlerError(f"{name} must be a finite number")
     number = float(value)
-    if not math.isfinite(number) or not minimum <= number <= maximum:
-        raise HandlerError(
-            f"{name} must be a finite number from {minimum:g} through {maximum:g}"
-        )
+    if (not math.isfinite(number)
+            or (minimum is not None and number < minimum)
+            or (maximum is not None and number > maximum)):
+        raise HandlerError(f"{name} must be finite and within its value domain")
     return number
+
 
 
 def _finite_vector(
@@ -259,8 +214,8 @@ def _render_parameters(
     default_width: int = 512,
     default_height: int = 512,
 ) -> tuple[int, int, float, str, int | None]:
-    width = _positive_integer(params, "width", default_width, 8192)
-    height = _positive_integer(params, "height", default_height, 8192)
+    width = _positive_integer(params, "width", default_width)
+    height = _positive_integer(params, "height", default_height)
     timeout_seconds = _positive_float(
         params, "timeout_seconds", DEFAULT_RENDER_TIMEOUT_SECONDS
     )
@@ -270,7 +225,7 @@ def _render_parameters(
     if engine == "EEVEE" and "samples" in params:
         raise HandlerError("samples is only valid for CYCLES renders")
     samples = (
-        _positive_integer(params, "samples", 128, 4096)
+        _positive_integer(params, "samples", 128)
         if engine == "CYCLES"
         else None
     )
@@ -295,12 +250,12 @@ def _optional_object_names(params: dict[str, Any]) -> set[str] | None:
     value = params.get("objects")
     if value is None:
         return None
-    if not isinstance(value, list) or not 1 <= len(value) <= 1000:
-        raise HandlerError("objects must contain between 1 and 1000 unique names")
+    if not isinstance(value, list) or not value:
+        raise HandlerError("objects must contain non-empty unique names")
     names: set[str] = set()
     for item in value:
-        if not isinstance(item, str) or not item or len(item.encode("utf-8")) > 255:
-            raise HandlerError("objects must contain between 1 and 1000 unique names")
+        if not isinstance(item, str) or not item:
+            raise HandlerError("objects must contain non-empty unique names")
         if item in names:
             raise HandlerError("objects must contain unique names")
         names.add(item)
@@ -315,16 +270,16 @@ def _required_named_object_names(
     params: dict[str, Any], name: str
 ) -> list[str]:
     value = params.get(name)
-    if not isinstance(value, list) or not 1 <= len(value) <= 1000:
+    if not isinstance(value, list) or not value:
         raise HandlerError(
-            f"{name} must contain between 1 and 1000 unique names"
+            f"{name} must contain non-empty unique names"
         )
     names: list[str] = []
     seen: set[str] = set()
     for item in value:
-        if not isinstance(item, str) or not item or len(item.encode("utf-8")) > 255:
+        if not isinstance(item, str) or not item:
             raise HandlerError(
-                f"{name} must contain between 1 and 1000 unique names"
+                f"{name} must contain non-empty unique names"
             )
         if item in seen:
             raise HandlerError(f"{name} must contain unique names")
@@ -557,8 +512,6 @@ class BlenderHandlers:
         for key in ("name_contains", "object_type", "collection"):
             if key in params:
                 filters[key] = _string(params, key)
-                if len(filters[key]) > 255:
-                    raise HandlerError(f"{key} must be at most 255 characters")
         include_transforms = params.get("include_transforms", True)
         if type(include_transforms) is not bool:
             raise HandlerError("include_transforms must be boolean")
@@ -610,8 +563,8 @@ class BlenderHandlers:
         _only_keys(params, {"project_id", "files", "entrypoint", "output_path", "timeout_seconds"})
         timeout = params.get("timeout_seconds")
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-                or not math.isfinite(timeout) or not 1 <= timeout <= 120):
-            raise HandlerError("native export timeout must be between 1 and 120 seconds")
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise HandlerError("native export timeout must be a positive finite number")
         try:
             return export_blender_bundle(
                 self._workspace, self._config.workspace_root, self._bpy.app.binary_path,
@@ -979,12 +932,9 @@ class BlenderHandlers:
         if frame_start >= frame_end:
             raise HandlerError("frame_start must be less than frame_end")
         max_output_bytes = _optional_output_budget(params)
-        if (
-            max_output_bytes is None
-            or max_output_bytes > MAX_JOB_ANALYSIS_MESH_BYTES
-        ):
+        if max_output_bytes is None:
             raise HandlerError(
-                "max_output_bytes must be a positive integer no greater than 1073741824"
+                "max_output_bytes must be a positive integer"
             )
         timeout_seconds = _positive_float(
             params, "timeout_seconds", DEFAULT_RENDER_TIMEOUT_SECONDS
@@ -1175,7 +1125,7 @@ class BlenderHandlers:
             )
             operation = self._bpy.ops.mesh.primitive_cylinder_add
             arguments = {
-                "vertices": _positive_integer(params, "vertices", 64, 1024, 3),
+                "vertices": _positive_integer(params, "vertices", 64, minimum=3),
                 "radius": _positive_float(params, "radius", 1.0),
                 "depth": _positive_float(params, "depth", 2.0),
             }
@@ -1186,8 +1136,8 @@ class BlenderHandlers:
             )
             operation = self._bpy.ops.mesh.primitive_uv_sphere_add
             arguments = {
-                "segments": _positive_integer(params, "segments", 64, 1024, 3),
-                "ring_count": _positive_integer(params, "ring_count", 32, 512, 3),
+                "segments": _positive_integer(params, "segments", 64, minimum=3),
+                "ring_count": _positive_integer(params, "ring_count", 32, minimum=3),
                 "radius": _positive_float(params, "radius", 1.0),
             }
         else:
@@ -1303,7 +1253,7 @@ class BlenderHandlers:
 
     def _loaded_project(self) -> str | None:
         project = self._bpy.context.scene.get("printable_project_id")
-        if isinstance(project, str) and 1 <= len(project) <= 64 and all(
+        if isinstance(project, str) and project and all(
             character in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
         ):
             return project
@@ -1312,7 +1262,7 @@ class BlenderHandlers:
     def _open_project(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"project_id", "mode", "checkpoint", "save_current_to", "discard_current", "timeout_seconds"})
         project = params.get("project_id")
-        if not isinstance(project, str) or not 1 <= len(project) <= 64 or any(
+        if not isinstance(project, str) or not project or any(
             character not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in project
         ):
             raise HandlerError("invalid project_id")
@@ -1449,8 +1399,8 @@ class BlenderHandlers:
     def _capture_native_view(self, params: dict[str, Any]) -> dict[str, Any]:
         _only_keys(params, {"path", "expected_scene", "context", "method", "view", "max_size", "timeout_seconds"})
         timeout = params.get("timeout_seconds", DEFAULT_CAPTURE_TIMEOUT_SECONDS)
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0.1 <= timeout <= 120:
-            raise HandlerError("native capture timeout must be between 0.1 and 120 seconds")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise HandlerError("native capture timeout must be positive and finite")
         request = self._workspace.validate(params.get("path"), ".png")
         with self._workspace.stage_output(request) as output:
             try:
@@ -1464,8 +1414,8 @@ class BlenderHandlers:
                 except (NativeViewError, EditorContextError) as error:
                     raise HandlerError(str(error)) from error
                 size = output.path.stat().st_size
-                if not 0 < size <= 64 * 1024 * 1024:
-                    raise HandlerError("native capture exceeds its output byte budget")
+                if size <= 0:
+                    raise HandlerError("native capture produced an empty image")
                 with output.path.open("rb") as image_file:
                     digest = hashlib.file_digest(image_file, "sha256").hexdigest()
                 output.commit()
@@ -1791,17 +1741,7 @@ class BlenderHandlers:
             default_width=1024,
             default_height=768,
         )
-        if width * height > MAX_PRODUCT_RENDER_PIXELS:
-            raise HandlerError(
-                f"product render exceeds the {MAX_PRODUCT_RENDER_PIXELS}-pixel output limit; reduce width or height"
-            )
         max_output_bytes = _optional_output_budget(params)
-        if max_output_bytes is None:
-            max_output_bytes = MAX_PRODUCT_RENDER_BYTES
-        elif max_output_bytes > MAX_PRODUCT_RENDER_BYTES:
-            raise HandlerError(
-                f"max_output_bytes must be no greater than {MAX_PRODUCT_RENDER_BYTES} for product renders"
-            )
 
         deadline = time.monotonic() + timeout_seconds
         try:
@@ -1949,12 +1889,9 @@ class BlenderHandlers:
                 "surface_shading must be preserve or smooth_by_angle"
             )
         raw_materials = raw_presentation.get("materials", [])
-        if (
-            not isinstance(raw_materials, list)
-            or len(raw_materials) > MAX_PRODUCT_MATERIAL_OVERRIDES
-        ):
+        if not isinstance(raw_materials, list):
             raise HandlerError(
-                f"presentation materials must contain at most {MAX_PRODUCT_MATERIAL_OVERRIDES} entries"
+                "presentation materials must be a list"
             )
         selected = set(selected_objects)
         assigned: set[str] = set()
@@ -2000,10 +1937,10 @@ class BlenderHandlers:
         return {
             "profile": profile_name,
             "exposure_stops": _bounded_float(
-                raw_presentation, "exposure_stops", 0.0, -10.0, 10.0
+                raw_presentation, "exposure_stops", 0.0
             ),
             "light_intensity_scale": _bounded_float(
-                raw_presentation, "light_intensity_scale", 1.0, 0.0, 10.0
+                raw_presentation, "light_intensity_scale", 1.0, 0.0
             ),
             "view": {
                 "azimuth_degrees": azimuth,
@@ -2783,10 +2720,6 @@ class BlenderHandlers:
         )
         request = self._workspace.validate(params.get("path"), ".png")
         width, height, timeout_seconds, engine, samples = _render_parameters(params)
-        if width * height > MAX_REVIEW_SOURCE_PIXELS:
-            raise HandlerError(
-                f"diagnostic render must be at most {MAX_REVIEW_SOURCE_PIXELS} pixels"
-            )
         mode = params.get("mode")
         if mode not in {"cross_section", "overhang"}:
             raise HandlerError("mode must be cross_section or overhang")
@@ -3015,17 +2948,9 @@ class BlenderHandlers:
         width, height, timeout_seconds, engine, samples = _render_parameters(params)
         remaining_output_bytes = _optional_output_budget(params)
         raw_views = params.get("views")
-        if not isinstance(raw_views, list) or not 1 <= len(raw_views) <= MAX_RENDER_VIEWS:
+        if not isinstance(raw_views, list) or not raw_views:
             raise HandlerError(
-                f"views must contain between 1 and {MAX_RENDER_VIEWS} entries"
-            )
-        if len(raw_views) * width * height > MAX_RENDER_VIEW_PIXELS:
-            raise HandlerError(
-                f"view renders exceed the {MAX_RENDER_VIEW_PIXELS}-pixel aggregate surface limit"
-            )
-        if width * height > MAX_REVIEW_SOURCE_PIXELS:
-            raise HandlerError(
-                f"each review source must be at most {MAX_REVIEW_SOURCE_PIXELS} pixels"
+                "views must contain at least one entry"
             )
 
         validator = (
@@ -3511,7 +3436,6 @@ class BlenderHandlers:
                 continue
             missing.discard(source_name)
             usage["instances"] += 1
-            _enforce_product_geometry_limits(usage)
 
             object_key = self._evaluated_object_key(instance.object)
             counts = object_counts.get(object_key)
@@ -3523,10 +3447,6 @@ class BlenderHandlers:
                         )
                     attribute_values = 0
                     for attribute in getattr(mesh, "attributes", ()):
-                        if getattr(attribute, "data_type", None) == "STRING":
-                            raise HandlerError(
-                                "product presentation geometry contains an unbounded string attribute; remove it or select other objects"
-                            )
                         attribute_values += len(attribute.data)
                     attribute_values += sum(
                         len(getattr(vertex, "groups", ()))
@@ -3555,7 +3475,6 @@ class BlenderHandlers:
                 counts,
             ):
                 usage[kind] += count
-            _enforce_product_geometry_limits(usage)
 
         if missing:
             raise HandlerError(f"renderable object not found: {sorted(missing)[0]}")
@@ -3679,27 +3598,12 @@ class BlenderHandlers:
                 total_edges += len(source_mesh.edges)
                 total_faces += len(source_mesh.polygons)
                 total_loops += len(source_mesh.loops)
-                _enforce_diagnostic_topology_limits(
-                    total_vertices,
-                    total_edges,
-                    total_faces,
-                    total_loops,
-                    "evaluated",
-                )
                 for attribute in getattr(source_mesh, "attributes", ()):
-                    if getattr(attribute, "data_type", None) == "STRING":
-                        raise HandlerError(
-                            "diagnostic geometry contains an unbounded string attribute; remove it or select other mesh objects"
-                        )
                     total_attribute_values += len(attribute.data)
                 total_attribute_values += sum(
                     len(getattr(vertex, "groups", ()))
                     for vertex in source_mesh.vertices
                 )
-                if total_attribute_values > MAX_DIAGNOSTIC_ATTRIBUTE_VALUES:
-                    raise HandlerError(
-                        f"diagnostic geometry exceeds {MAX_DIAGNOSTIC_ATTRIBUTE_VALUES} copied attribute values; remove unused attributes or use objects to render a subset"
-                    )
             determinant = float(instance.matrix_world.determinant())
             if not math.isfinite(determinant) or determinant == 0.0:
                 raise HandlerError("diagnostic geometry has a non-invertible transform")
@@ -3976,13 +3880,6 @@ class BlenderHandlers:
                 rendered_edges += len(bm.edges)
                 rendered_faces += len(bm.faces)
                 rendered_loops += sum(len(face.loops) for face in bm.faces)
-                _enforce_diagnostic_topology_limits(
-                    rendered_vertices,
-                    rendered_edges,
-                    rendered_faces,
-                    rendered_loops,
-                    "rendered",
-                )
                 self._append_diagnostic_faces(
                     bm,
                     combined_vertices,

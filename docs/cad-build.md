@@ -40,11 +40,13 @@ with the same handle to request cancellation. For example:
 {"action":"status","params":{"project_id":"enclosure","output_dir":"builds/revision-1"}}
 ```
 
-Native execution uses the request's `timeout_seconds` (default 600, maximum
-1800). Admission has no queue: an occupied worker rejects the build without
+Native execution uses the request's positive `timeout_seconds` work budget
+(default 600; no configured maximum). Admission has no queue: an occupied worker
+rejects the build without
 creating its output directory. The retained `phase` distinguishes input
 snapshotting from native execution, with admission and native-start timestamps.
-Input snapshotting is bounded by the input count and combined byte limit; the
+Input snapshots stream observed source bytes under the configured workspace
+budget; the
 execution deadline starts when the native command runs. Numeric native progress
 is unavailable and remains null.
 
@@ -56,9 +58,11 @@ inputs are retained in either outcome. Cancellation of a terminal build returns
 its existing terminal state. It does not remove files or submit new work.
 
 The default `background: false` still waits for the original synchronous result,
-but disconnecting that waiter leaves admitted work running. The direct client's
-individual HTTP timeout is shorter than a legitimate long build, so prefer
-background admission and separate status calls. Use the original handle after
+but disconnecting that waiter leaves admitted work running. The caller's MCP
+client owns its end-to-end request deadline; worker forwarding imposes no
+independent fixed HTTP timeout. A client deadline can expire while a legitimate
+build continues, so prefer background admission and separate status calls.
+Use the original handle after
 any lost response; never automatically repeat a model/import request. If no
 active worker owns retained unfinished state after restart or interrupted
 completion recording, status reports `interrupted`, even if some output files
@@ -134,8 +138,9 @@ clients check completion and qualification separately, then inspect all
 remaining physical and manufacturing requirements before fabrication.
 
 Linear meshing tolerance defaults to 0.05 mm and angular tolerance to 0.1 radians.
-STL uses absolute linear tolerance. Builds accept a deadline up to 1800 seconds,
-defaulting to 600, and a combined input budget of 1 GiB. The worker accepts one
+STL uses absolute linear tolerance. Builds accept a positive caller-selected
+deadline, defaulting to 600 seconds. Input counts, source sizes, and generated
+artifacts have no product capacity ceiling. The worker accepts one
 active build; busy responses do not enqueue hidden work. A timeout kills the
 native process group. Render jobs retain their separate lifecycle.
 

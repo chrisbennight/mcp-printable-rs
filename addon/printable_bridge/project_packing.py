@@ -20,8 +20,6 @@ def pack_loaded_file(bpy, project_root: Path, output: Path, *, library: bool):
         raise ProjectPackingError("packed output must be a blend file inside the staged project")
 
     references = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
-    if len(references) > 10_000:
-        raise ProjectPackingError("project packing exceeds 10000 file references")
     for raw in references:
         path = Path(raw)
         if not path.is_absolute() or not path.resolve(strict=False).is_relative_to(root):

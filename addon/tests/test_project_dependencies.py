@@ -44,8 +44,9 @@ class DependencyTests(unittest.TestCase):
         for params in [{"limit": 0}, {"offset": -1}, {"limit": True}]:
             with self.assertRaises(InspectionError):
                 inspect_dependencies(self.blender([]), Path("/workspace"), "organic", params)
-        with self.assertRaises(InspectionError):
-            inspect_dependencies(self.blender(["/file"] * 10001), Path("/workspace"), "organic", {})
+        large = inspect_dependencies(self.blender(["/file"] * 10001), Path("/workspace"), "organic", {"limit": 10001})
+        self.assertEqual(large["total"], 10001)
+        self.assertEqual(large["returned"], 10001)
 
     def test_large_dependency_counts_preserve_the_inventory_budget(self):
         bpy = self.blender(["/workspace/projects/organic/file.png"] * 301)

@@ -76,16 +76,15 @@ pub(super) struct NativeViewParams {
     view: Option<ViewOptions>,
     /// Maximum returned image dimension, preserving aspect ratio.
     #[serde(default = "default_max_size")]
-    #[schemars(range(min = 64, max = 2048))]
-    max_size: u16,
+    #[schemars(range(min = 1))]
+    max_size: u32,
     #[serde(default = "default_capture_timeout")]
-    #[schemars(range(min = 0.1, max = 120))]
     timeout_seconds: f64,
     #[serde(default = "default_true")]
     include_inline: bool,
 }
 
-fn default_max_size() -> u16 {
+fn default_max_size() -> u32 {
     1024
 }
 fn default_capture_timeout() -> f64 {
@@ -97,12 +96,10 @@ pub(super) async fn capture(
     blender: &BlenderClient,
     mut params: NativeViewParams,
 ) -> Result<ToolOutput, ToolError> {
-    if !(64..=2048).contains(&params.max_size)
-        || !params.timeout_seconds.is_finite()
-        || !(0.1..=120.0).contains(&params.timeout_seconds)
+    if params.max_size == 0 || !params.timeout_seconds.is_finite() || params.timeout_seconds <= 0.0
     {
         return Err(ToolError::Validation(
-            "native capture size or timeout is outside its supported range".into(),
+            "native capture size and timeout must be positive and finite".into(),
         ));
     }
     if params.path.is_none() {

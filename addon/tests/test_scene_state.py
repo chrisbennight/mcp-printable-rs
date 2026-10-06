@@ -108,6 +108,23 @@ class SceneStateTests(unittest.TestCase):
         handlers._workspace = Mock()
         return handlers
 
+    def test_long_project_id_can_be_adopted_and_recognized(self) -> None:
+        class Scene(dict):
+            objects = ()
+
+        handlers = self.handlers()
+        scene = Scene()
+        handlers._bpy = SimpleNamespace(context=SimpleNamespace(scene=scene))
+        project = "p" * 65
+        result = handlers._open_project({"project_id": project, "mode": "adopt"})
+        self.assertEqual(result["project_id"], project)
+        self.assertEqual(handlers.scene_state["project_id"], project)
+        self.assertEqual(handlers._loaded_project(), project)
+        for invalid in ("", "../p", "UPPER", False):
+            with self.subTest(project=invalid), self.assertRaises(HandlerError):
+                handlers._open_project({"project_id": invalid, "mode": "adopt"})
+        self.assertEqual(handlers._loaded_project(), project)
+
 
 if __name__ == "__main__":
     unittest.main()

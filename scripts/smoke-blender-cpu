@@ -72,8 +72,11 @@ blender_pid="$(docker exec "$name" sh -c '
   exit 1
 ')"
 file_limit="$(docker exec "$name" cat "/proc/${blender_pid}/limits" |
-  awk '$1 == "Max" && $2 == "file" && $3 == "size" { print $4 }')"
-test "$file_limit" = 1073741824
+  awk '$1 == "Max" && $2 == "file" && $3 == "size" { print $4, $5 }')"
+inherited_file_limit="$(docker exec "$name" cat /proc/1/limits |
+  awk '$1 == "Max" && $2 == "file" && $3 == "size" { print $4, $5 }')"
+test -n "$inherited_file_limit"
+test "$file_limit" = "$inherited_file_limit"
 ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name")"
 if ! python3 addon/integration_smoke.py --host "$ip" --mode capabilities; then
   docker logs "$name" || true

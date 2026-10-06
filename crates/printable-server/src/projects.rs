@@ -92,14 +92,12 @@ pub struct Project {
 
 fn validate_id(id: &str) -> Result<(), ToolError> {
     if id.is_empty()
-        || id.len() > 64
         || !id
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
     {
         return Err(ToolError::Validation(
-            "project_id must contain 1–64 lowercase letters, digits, underscores, or hyphens"
-                .into(),
+            "project_id must contain lowercase letters, digits, underscores, or hyphens".into(),
         ));
     }
     Ok(())
@@ -114,7 +112,7 @@ fn project_root(id: &str) -> String {
 
 pub fn get(workspace: &Workspace, id: &str) -> Result<Project, ToolError> {
     validate_id(id)?;
-    let (_, bytes) = workspace.read_artifact(&manifest_path(id))?;
+    let (_, bytes) = workspace.read_generated_bytes(&manifest_path(id))?;
     let project: Project = serde_json::from_slice(&bytes)?;
     if project.format_version != 1 || project.project_id != id || project.root != project_root(id) {
         return Err(ToolError::Validation(
@@ -144,12 +142,10 @@ pub fn resolve(workspace: &Workspace, id: &str, path: &str) -> Result<String, To
 
 fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolError> {
     validate_id(&params.project_id)?;
-    if params.name.trim().is_empty()
-        || params.name.len() > 256
-        || params.name.chars().any(char::is_control)
-        || params.description.len() > 4096
-    {
-        return Err(ToolError::Validation("project requires a nonempty name up to 256 bytes without control characters and a description up to 4096 bytes".into()));
+    if params.name.trim().is_empty() || params.name.chars().any(char::is_control) {
+        return Err(ToolError::Validation(
+            "project requires a nonempty name without control characters".into(),
+        ));
     }
     let project = Project {
         format_version: 1,
@@ -321,6 +317,20 @@ mod tests {
                 "invalid_limit"
             );
         }
+    }
+
+    #[test]
+    fn long_project_names_and_descriptions_reach_filesystem_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let params = CreateParams {
+            project_id: "p".repeat(65),
+            name: "n".repeat(257),
+            description: "d".repeat(4097),
+            adopt_existing: false,
+        };
+        let created = create(&workspace, params.clone()).unwrap();
+        assert_eq!(get(&workspace, &params.project_id).unwrap(), created);
     }
 
     #[test]

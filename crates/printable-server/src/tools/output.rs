@@ -110,7 +110,7 @@ fn selected_bundle() -> Value {
             "project_id":{"type":"string"},
             "scope":{"const":"selected_files"},
             "dependencies_inspected":{"const":false},
-            "files":{"type":"array","items":file,"minItems":1,"maxItems":256}
+            "files":{"type":"array","items":file,"minItems":1}
         }),
         &[
             "format_version",
@@ -136,7 +136,7 @@ fn native_bundle() -> Value {
         json!({
             "engine":object(json!({"name":{"const":"blender"},"version":{"type":"string"}}), &["name","version"]),
             "entrypoint":{"type":"string"},
-            "prepared_libraries":{"type":"integer","minimum":0,"maximum":255},
+            "prepared_libraries":{"type":"integer","minimum":0},
             "registered_external_files":{"const":0},
             "units":object(json!({"system":{"type":"string"},"length_unit":{"type":"string"},"scale_length":{"type":"number","exclusiveMinimum":0}}), &["system","length_unit","scale_length"]),
             "limitations":{"type":"array","items":{"type":"string"},"minItems":1}
@@ -154,7 +154,7 @@ fn native_bundle() -> Value {
         json!({
             "format_version":{"const":1},"project_id":{"type":"string"},
             "scope":{"const":"native_blender"},"entrypoint":{"type":"string"},
-            "files":{"type":"array","items":file,"minItems":2,"maxItems":257},
+            "files":{"type":"array","items":file,"minItems":2},
             "preparation":preparation
         }),
         &[

@@ -1,7 +1,7 @@
 //! Behavioural coverage for the tool catalog, driving `tools::dispatch` directly
 //! (no MCP wire framing): workspace list/read/write round-trip, the single-shot
 //! write cap, the chunked-upload round-trip and its bounds (unknown upload,
-//! oversized chunk, total-transfer cap, concurrent-upload cap), and
+//! oversized chunk, large streamed artifact, concurrent-upload cap), and
 //! `printable_status` against a FakeAddon (up) and a closed port (down).
 //!
 //! Side-effect free: workspaces are tempdirs, Blender is faked or absent, and
@@ -659,7 +659,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     );
     assert_eq!(
         rotation_schema["properties"]["objects"]["maxItems"],
-        json!(1000)
+        Value::Null
     );
     assert_eq!(
         rotation_schema["properties"]["frame_start"]["default"],
@@ -705,7 +705,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     let render = lookup("printable_render_preview").expect("render preview tool");
     let render_schema = serde_json::to_value((render.schema)()).expect("render schema serializes");
     assert_eq!(render_schema["properties"]["width"]["default"], json!(512));
-    assert_eq!(render_schema["properties"]["width"]["maximum"], json!(8192));
+    assert_eq!(render_schema["properties"]["width"]["maximum"], Value::Null);
     assert_eq!(render_schema["properties"]["height"]["default"], json!(512));
     assert_eq!(
         render_schema["properties"]["engine"]["default"],
@@ -762,7 +762,10 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     let gallery_schema =
         serde_json::to_value((gallery.schema)()).expect("gallery schema serializes");
     assert_eq!(gallery_schema["properties"]["width"]["default"], json!(512));
-    assert_eq!(gallery_schema["properties"]["views"]["maxItems"], json!(7));
+    assert_eq!(
+        gallery_schema["properties"]["views"]["maxItems"],
+        Value::Null
+    );
     assert_eq!(gallery_schema["properties"]["columns"]["default"], json!(3));
     assert_eq!(
         gallery_schema["properties"]["include_inline"]["default"],
@@ -790,7 +793,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     );
     assert_eq!(
         cross_section_schema["properties"]["objects"]["maxItems"],
-        json!(1000)
+        Value::Null
     );
     assert_eq!(
         cross_section_schema["properties"]["timeout_seconds"]["default"],
@@ -866,7 +869,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
         serde_json::to_value((scad_compile.schema)()).expect("OpenSCAD compile schema serializes");
     assert_eq!(
         scad_compile_schema["properties"]["source"]["maxLength"],
-        json!(1_048_576)
+        Value::Null
     );
     assert_eq!(
         scad_compile_schema["properties"]["timeout_seconds"]["default"],
@@ -874,11 +877,11 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     );
     assert_eq!(
         scad_compile_schema["properties"]["variant"]["maxLength"],
-        json!(64)
+        Value::Null
     );
     assert_eq!(
         scad_compile_schema["$defs"]["ScadDefinitions"]["maxProperties"],
-        json!(64)
+        Value::Null
     );
     assert_eq!(
         scad_compile_schema["properties"]["design_profile"]["anyOf"][0]["$ref"],
@@ -912,7 +915,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     );
     assert_eq!(
         scad_render_schema["properties"]["size"]["maximum"],
-        json!(8192)
+        Value::Null
     );
     assert_eq!(
         scad_render_schema["properties"]["preview"]["default"],
@@ -941,7 +944,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     );
     assert_eq!(
         turntable_schema["properties"]["frames"]["maximum"],
-        json!(36)
+        Value::Null
     );
     assert_eq!(
         turntable_schema["properties"]["elevation_degrees"]["default"],
@@ -953,7 +956,7 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
         serde_json::to_value((compare.schema)()).expect("compare schema serializes");
     assert_eq!(
         compare_schema["properties"]["panel_width"]["maximum"],
-        json!(4096)
+        Value::Null
     );
     assert_eq!((compare.annotations)().destructive_hint, Some(true));
 }
@@ -1359,15 +1362,6 @@ async fn scad_rejects_invalid_requests_before_starting_the_process() {
             }),
         ),
         (
-            "printable_scad_render",
-            json!({
-                "source": "cube(1);",
-                "path": "oversized.png",
-                "size": 8193,
-                "timeout_seconds": 5.0,
-            }),
-        ),
-        (
             "printable_scad_cross_section",
             json!({
                 "source": "cube(1);",
@@ -1399,24 +1393,6 @@ async fn scad_rejects_invalid_requests_before_starting_the_process() {
                 "source": "cube(1);",
                 "path": "control.png",
                 "defines": {"label": "line\nbreak"},
-                "timeout_seconds": 5.0,
-            }),
-        ),
-        (
-            "printable_scad_cross_section",
-            json!({
-                "source": "cube(1);",
-                "path": "vector.svg",
-                "defines": {"samples": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]},
-                "timeout_seconds": 5.0,
-            }),
-        ),
-        (
-            "printable_scad_compile",
-            json!({
-                "source": "cube(1);",
-                "path": "variant.stl",
-                "variant": "v".repeat(65),
                 "timeout_seconds": 5.0,
             }),
         ),
@@ -1946,7 +1922,7 @@ async fn chunk_rejects_unknown_upload_and_oversized_chunk() {
 }
 
 #[tokio::test]
-async fn chunk_enforces_the_total_transfer_cap() {
+async fn chunked_upload_accepts_artifacts_larger_than_inline_transfer_capacity() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));
     let up = uploads();
@@ -1965,8 +1941,7 @@ async fn chunk_enforces_the_total_transfer_cap() {
     .expect("begin ok");
     let id = begun["upload_id"].as_str().expect("upload_id").to_string();
 
-    // Fill exactly to the transfer cap in chunk-sized pieces (reusing one
-    // encoded chunk), so the total sits at MAX_TRANSFER_BYTES.
+    // Reuse one encoded chunk to reach the inline transfer threshold.
     let full_chunks = MAX_TRANSFER_BYTES as usize / CHUNK_MAX_DECODED;
     let chunk_b64 = b64(&vec![0u8; CHUNK_MAX_DECODED]);
     for _ in 0..full_chunks {
@@ -1979,11 +1954,10 @@ async fn chunk_enforces_the_total_transfer_cap() {
             json!({"upload_id": id, "data_base64": chunk_b64}),
         )
         .await
-        .expect("chunk within cap ok");
+        .expect("chunk accepted");
     }
 
-    // One more byte pushes the cumulative size past the cap.
-    let err = dispatch(
+    let result = dispatch(
         &ws,
         &up,
         &blender,
@@ -1992,12 +1966,22 @@ async fn chunk_enforces_the_total_transfer_cap() {
         json!({"upload_id": id, "data_base64": b64(b"!")}),
     )
     .await
-    .expect_err("chunk over the total cap rejected");
-    assert!(
-        matches!(err, ToolError::Workspace(WsError::WriteTooLarge)),
-        "got {err:?}"
+    .expect("streamed artifacts can exceed inline transport capacity");
+    assert_eq!(result["bytes_written"], json!(MAX_TRANSFER_BYTES + 1));
+    dispatch(
+        &ws,
+        &up,
+        &blender,
+        &cfg,
+        "printable_workspace_write_commit",
+        json!({"upload_id": id}),
+    )
+    .await
+    .expect("large artifact committed");
+    assert_eq!(
+        ws.stat_artifact("capped.stl").unwrap().size_bytes,
+        MAX_TRANSFER_BYTES + 1
     );
-    assert_eq!(err.code(), "write_too_large");
 }
 
 #[tokio::test]
@@ -2207,7 +2191,7 @@ async fn project_scene_dispatch_confines_paths_and_preserves_observed_identity()
             "printable_scene_open_project",
             &open,
             "timeout_seconds",
-            json!(1801),
+            json!(0),
         ),
     ] {
         let mut invalid = base.clone();
@@ -3129,7 +3113,7 @@ async fn rigid_rotation_validates_boundary_contracts_before_blender_mutation() {
         (
             json!({
                 "objects": ["Leaf"],
-                "controller_name": "x".repeat(256),
+                "controller_name": "",
                 "pivot": [0.0, 0.0, 0.0],
                 "axis": [0.0, 0.0, 1.0],
                 "angle_degrees": 90.0
@@ -3493,7 +3477,7 @@ async fn product_render_returns_a_verified_profile_artifact_without_source_mutat
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["width"], json!(80));
         assert_eq!(requests[0]["height"], json!(60));
-        assert_eq!(requests[0]["max_output_bytes"], json!(64 * 1024 * 1024));
+        assert_eq!(requests[0]["max_output_bytes"], json!(u64::MAX));
         assert!(requests[0].get("include_inline").is_none());
     }
 
@@ -3556,8 +3540,6 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     let mut duplicate_objects = base();
     duplicate_objects["objects"] = json!(["Body", "Body"]);
     let mut invalid_azimuth = base();
-    let mut invalid_exposure = base();
-    invalid_exposure["presentation"]["exposure_stops"] = json!(10.1);
     let mut invalid_intensity = base();
     invalid_intensity["presentation"]["light_intensity_scale"] = json!(-0.1);
     invalid_azimuth["presentation"]["view"] = json!({"azimuth_degrees": 361.0});
@@ -3565,9 +3547,6 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     invalid_elevation["presentation"]["view"] = json!({"elevation_degrees": 90.0});
     let mut occluded_studio_view = base();
     occluded_studio_view["presentation"]["view"] = json!({"elevation_degrees": -1.0});
-    let mut oversized_pixels = base();
-    oversized_pixels["width"] = json!(8192);
-    oversized_pixels["height"] = json!(8192);
     let mut unknown_material_object = base();
     unknown_material_object["presentation"]["materials"] =
         Value::Array(vec![material(json!(["Missing"]))]);
@@ -3589,18 +3568,16 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     let cases = [
         (duplicate_objects, "unique names"),
         (invalid_azimuth, "azimuth_degrees"),
-        (invalid_exposure, "exposure_stops"),
         (invalid_intensity, "light_intensity_scale"),
         (invalid_elevation, "elevation_degrees"),
         (occluded_studio_view, "ground cannot occlude"),
-        (oversized_pixels, "pixel output limit"),
         (unknown_material_object, "not selected"),
         (duplicate_assignment, "assigned more than once"),
         (invalid_color, "base_color_srgb"),
         (invalid_metallic, "metallic"),
         (invalid_roughness, "roughness"),
         (invalid_samples, "samples"),
-        (too_many_materials, "at most 64"),
+        (too_many_materials, "assigned more than once"),
     ];
 
     for (arguments, message) in cases {
@@ -3619,7 +3596,7 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
     }
     assert_eq!(fake.connection_count(), 0);
 
-    let boundary_objects = (0..64)
+    let boundary_objects = (0..65)
         .map(|index| format!("Body{index}"))
         .collect::<Vec<_>>();
     let boundary_materials = boundary_objects
@@ -3650,6 +3627,8 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
             "objects": ["Body"],
             "presentation": {
                 "profile": "studio_neutral",
+                "exposure_stops": 20.0,
+                "light_intensity_scale": 100.0,
                 "view": {"elevation_degrees": 0.0}
             }
         }),
@@ -3657,8 +3636,8 @@ async fn product_render_rejects_invalid_presentation_before_blender() {
             "path": "renders/pixel-boundary.png",
             "objects": ["Body"],
             "presentation": {"profile": "engineering"},
-            "width": 8192,
-            "height": 2048
+            "width": 16384,
+            "height": 8192
         }),
     ] {
         dispatch(
@@ -4942,7 +4921,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ("printable_node_tree_get", json!({"name": ""}), "validation"),
         (
             "printable_node_tree_get",
-            json!({"name": "Material", "offset": 1000001}),
+            json!({"name": "Material", "limit": 0}),
             "validation",
         ),
         (
@@ -4957,7 +4936,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_scene_get",
-            json!({"offset": 1_000_001}),
+            json!({"offset": 1_000_001, "limit": 0}),
             "validation",
         ),
         (
@@ -4972,7 +4951,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_primitive_create",
-            json!({"primitive": "cylinder", "vertices": 1025}),
+            json!({"primitive": "cylinder", "vertices": 2}),
             "validation",
         ),
         (
@@ -5017,7 +4996,7 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_render_preview",
-            json!({"path": "preview.png", "engine": "CYCLES", "samples": 4097}),
+            json!({"path": "preview.png", "engine": "CYCLES", "samples": 0}),
             "validation",
         ),
         (
@@ -5050,12 +5029,12 @@ async fn modeling_tools_validate_before_blender_mutation() {
         ),
         (
             "printable_render_gallery",
-            json!({"path": "gallery.png", "width": 8192, "height": 8192}),
+            json!({"path": "gallery.png", "width": 0}),
             "validation",
         ),
         (
             "printable_render_turntable",
-            json!({"path": "turntable.png", "frames": 2}),
+            json!({"path": "turntable.png", "frames": 0}),
             "validation",
         ),
         (

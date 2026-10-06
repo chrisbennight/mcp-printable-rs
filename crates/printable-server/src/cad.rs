@@ -18,7 +18,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{error::ToolError, projects};
 
-const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -164,10 +163,12 @@ impl CadRequest {
             || (action == "import_step" && !matches!(extension.as_str(), "step" | "stp"))
             || !(0.001..=10.0).contains(&p.linear_tolerance_mm)
             || !(0.01..=1.0).contains(&p.angular_tolerance_rad)
-            || !(1..=1800).contains(&p.timeout_seconds)
-            || p.inputs.len() > 128
+            || p.timeout_seconds == 0
+            || std::time::Instant::now()
+                .checked_add(Duration::from_secs(p.timeout_seconds))
+                .is_none()
         {
-            return Err(ToolError::Validation("CAD requires a Python/STEP source, linear tolerance 0.001–10 mm, angular tolerance 0.01–1 rad, timeout 1–1800 seconds, and at most 128 input files".into()));
+            return Err(ToolError::Validation("CAD requires a Python/STEP source, linear tolerance 0.001–10 mm, angular tolerance 0.01–1 rad, a positive runtime-representable timeout".into()));
         }
         projects::resolve(workspace, &p.project_id, &p.source)?;
         for input in &p.inputs {
@@ -192,15 +193,7 @@ pub async fn forward(
 ) -> Result<Value, ToolError> {
     request.validate(workspace)?;
     let endpoint = endpoint.ok_or_else(|| ToolError::Cad("CAD worker is not configured".into()))?;
-    let timeout = match &request {
-        CadRequest::Status(_) | CadRequest::Cancel(_) => 0,
-        _ => {
-            let (_, p) = request.parts()?;
-            if p.background { 0 } else { p.timeout_seconds }
-        }
-    };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout + 30))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .build()
@@ -222,9 +215,6 @@ pub async fn forward(
             "CAD response interrupted; query cad_build.status with the same build handle".into(),
         )
     })? {
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(ToolError::Cad("CAD response exceeds metadata limit".into()));
-        }
         bytes.extend_from_slice(&chunk);
     }
     let value: Value = serde_json::from_slice(&bytes)?;
@@ -318,7 +308,7 @@ impl CadWorker {
         if !self.workspace.create_public_directory(&output)? {
             return Err(ToolError::Cad("build directory already exists; query cad_build.status, then use a new output_dir for a revision".into()));
         }
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/request.json"),
             &serde_json::to_vec(&json!({"request":request,"sources":null}))?,
             false,
@@ -384,7 +374,7 @@ impl CadWorker {
     }
 
     fn persist_state(&self, output: &str, state: &Value, overwrite: bool) -> Result<(), ToolError> {
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/state.json"),
             &serde_json::to_vec(state)?,
             overwrite,
@@ -407,7 +397,7 @@ impl CadWorker {
         }
         match self
             .workspace
-            .read_artifact(&format!("{output}/state.json"))
+            .read_generated_bytes(&format!("{output}/state.json"))
         {
             Ok((_, bytes)) => {
                 let mut state: Value = serde_json::from_slice(&bytes)?;
@@ -421,7 +411,7 @@ impl CadWorker {
             }
             Err(printable_workspace::WsError::NotFound(_)) => {
                 // Older completed builds remain retrievable without inventing progress.
-                match self.workspace.read_artifact(&format!("{output}/report.json")) {
+                match self.workspace.read_generated_bytes(&format!("{output}/report.json")) {
                     Ok((_, bytes)) => Ok(json!({"build":handle,"status":"completed","phase":"terminal","result":serde_json::from_slice::<Value>(&bytes)?,"history":"legacy_report"})),
                     Err(printable_workspace::WsError::NotFound(_)) => Err(ToolError::Cad("no retained CAD state or completed report was found; inspect the output directory before submitting again".into())),
                     Err(error) => Err(error.into()),
@@ -439,12 +429,6 @@ impl CadWorker {
     ) -> Result<Value, ToolError> {
         let workspace = Arc::clone(&self.workspace);
         let (action, params) = request.parts()?;
-        let staging = Arc::new(
-            self.workspace
-                .scratch(5 * MAX_FILE_BYTES + MAX_LOG_BYTES, "cad")?,
-        );
-        let input_root = staging.path().join("inputs");
-        std::fs::create_dir(&input_root)?;
         let mut names = params.inputs.clone();
         names.push(params.source.clone());
         names.sort();
@@ -455,18 +439,29 @@ impl CadWorker {
             .as_ref()
             .map(|identity| projects::revisions::get(&workspace, &id, identity))
             .transpose()?;
+        let input_bytes = names.iter().try_fold(0_u64, |total, name| {
+            let path = projects::resolve(&workspace, &id, name)?;
+            let retained = revision
+                .as_ref()
+                .map_or(path.as_str(), |r| r.files[name].snapshot.as_str());
+            total
+                .checked_add(workspace.stat_artifact(retained)?.size_bytes)
+                .ok_or_else(|| {
+                    ToolError::Cad("CAD input sizes exceed the runtime integer range".into())
+                })
+        })?;
+        let staging = Arc::new(self.workspace.scratch(input_bytes, "cad")?);
+        let input_root = staging.path().join("inputs");
+        std::fs::create_dir(&input_root)?;
         let staging_inputs = input_root.clone();
         let staging_owner = Arc::clone(&staging);
         let sources = tokio::task::spawn_blocking(move || {
             let _staging_owner = staging_owner;
             let mut sources = Vec::new();
-            let mut total = 0;
             for name in names {
                 let path = projects::resolve(&workspace, &id, &name)?;
                 let retained = revision.as_ref().map(|r| &r.files[&name]);
-                let snapshot = workspace.snapshot_artifact_bounded(retained.map_or(path.as_str(), |s| s.snapshot.as_str()), MAX_FILE_BYTES)?;
-                total += snapshot.meta().size_bytes;
-                if total > MAX_FILE_BYTES { return Err(ToolError::Cad("CAD input set exceeds 1 GiB".into())); }
+                let snapshot = workspace.snapshot_artifact(retained.map_or(path.as_str(), |s| s.snapshot.as_str()))?;
                 let destination = staging_inputs.join(&name);
                 std::fs::create_dir_all(destination.parent().expect("input parent"))?;
                 std::fs::copy(snapshot.path(), &destination)?;
@@ -484,7 +479,7 @@ impl CadWorker {
             serde_json::to_vec(&native)?,
         )?;
         let result = async {
-            self.workspace.write_artifact(
+            self.workspace.write_generated_bytes(
                 &format!("{output}/request.json"),
                 &serde_json::to_vec(&json!({"request":request,"sources":sources}))?,
                 true,
@@ -499,7 +494,7 @@ impl CadWorker {
                     &destination,
                     &input_root.join(name),
                     false,
-                    MAX_FILE_BYTES,
+                    u64::MAX,
                 )?;
             }
             if cancel.is_cancelled() {
@@ -538,7 +533,7 @@ impl CadWorker {
         }
         .await;
         if let Err(ref error) = result {
-            self.workspace.write_artifact(
+            self.workspace.write_generated_bytes(
                 &format!("{output}/failure.json"),
                 &serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 false,
@@ -602,15 +597,9 @@ impl CadWorker {
         identity: Option<&projects::revisions::Identity>,
         requirements: &qualification::Requirements,
     ) -> Result<Value, ToolError> {
-        let report_file = open_native_file(&staging.join("output/report.json"))?;
+        let mut report_file = open_native_file(&staging.join("output/report.json"))?;
         let mut report_bytes = Vec::new();
-        std::io::Read::read_to_end(
-            &mut std::io::Read::take(report_file, 1024 * 1024 + 1),
-            &mut report_bytes,
-        )?;
-        if report_bytes.len() > 1024 * 1024 {
-            return Err(ToolError::Cad("CAD report exceeds metadata limit".into()));
-        }
+        std::io::Read::read_to_end(&mut report_file, &mut report_bytes)?;
         let report: Value = serde_json::from_slice(&report_bytes)?;
         let mut artifacts = Vec::new();
         for name in ["model.step", "model.stl", "model.glb", "components.json"] {
@@ -619,7 +608,7 @@ impl CadWorker {
                 &format!("{output}/{name}"),
                 &path,
                 false,
-                MAX_FILE_BYTES,
+                u64::MAX,
             )?;
             artifacts.push(json!({"artifact":meta,"sha256":hash_file(&path)?}));
         }
@@ -640,7 +629,7 @@ impl CadWorker {
             result["measurement"] =
                 json!({"path":retained,"sha256":projects::revisions::digest(&bytes)});
         }
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
             false,
@@ -735,6 +724,69 @@ mod tests {
         serde_json::from_value(json!({"action":"model","params":{"project_id":"cad","source":"source.py","output_dir":"builds/one"}})).unwrap()
     }
 
+    #[test]
+    fn generated_reports_and_state_exceed_inline_transport_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let worker = CadWorker::new(
+            workspace.clone(),
+            root.path().join("unused"),
+            root.path().join("unused.py"),
+        );
+        let staging = root.path().join("native");
+        std::fs::create_dir_all(staging.join("output")).unwrap();
+        for name in ["model.step", "model.stl", "model.glb", "components.json"] {
+            std::fs::write(staging.join("output").join(name), b"native artifact").unwrap();
+        }
+        let metadata = "x".repeat(printable_workspace::MAX_TRANSFER_BYTES as usize + 1);
+        std::fs::write(
+            staging.join("output/report.json"),
+            serde_json::to_vec(&json!({"metadata": metadata})).unwrap(),
+        )
+        .unwrap();
+        let result = worker
+            .commit(
+                &staging,
+                "projects/cad/large",
+                "cad",
+                None,
+                &qualification::Requirements::default(),
+            )
+            .unwrap();
+        assert!(
+            workspace
+                .stat_artifact("projects/cad/large/report.json")
+                .unwrap()
+                .size_bytes
+                > printable_workspace::MAX_TRANSFER_BYTES
+        );
+        let state = json!({"status":"completed","result":result});
+        worker
+            .persist_state("projects/cad/large", &state, false)
+            .unwrap();
+        assert!(
+            workspace
+                .stat_artifact("projects/cad/large/state.json")
+                .unwrap()
+                .size_bytes
+                > printable_workspace::MAX_TRANSFER_BYTES
+        );
+    }
+
+    #[test]
+    fn large_input_selection_and_work_budget_reach_native_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let mut request = request();
+        if let CadRequest::Model(params) = &mut request {
+            params.inputs = (0..129).map(|i| format!("inputs/part-{i}.stl")).collect();
+            params.timeout_seconds = 7200;
+        }
+        request
+            .validate(&workspace)
+            .expect("native capacity is not preempted");
+    }
+
     fn lifecycle_worker(root: &Path) -> Arc<CadWorker> {
         let workspace = workspace(root);
         let python = root.join("fake-lifecycle-cad");
@@ -748,6 +800,32 @@ mod tests {
             project_id: "cad".into(),
             output_dir: "builds/one".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_retained_status_do_not_require_free_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        let output = "projects/cad/builds/one";
+        worker
+            .persist_state(output, &json!({"status":"completed"}), false)
+            .unwrap();
+        let cancel = CancellationToken::new();
+        *worker.active.lock().await = Some(Active {
+            output: output.into(),
+            state: json!({"status":"running"}),
+            cancel: cancel.clone(),
+            alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        worker.workspace.configure_storage_budget(Some(1)).unwrap();
+        let state = worker.build(CadRequest::Cancel(handle())).await.unwrap();
+        assert_eq!(state["cancel_requested"], true);
+        assert!(cancel.is_cancelled());
+        *worker.active.lock().await = None;
+        assert_eq!(
+            worker.build(CadRequest::Status(handle())).await.unwrap()["status"],
+            "completed"
+        );
     }
 
     async fn wait_started(worker: &CadWorker) {

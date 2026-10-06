@@ -22,13 +22,19 @@ pub struct ReviewParams {
     pub last_layer: u32,
     #[serde(default)]
     pub features: Vec<String>,
-    pub material: Option<u16>,
+    pub material: Option<usize>,
     #[serde(default)]
     pub include_travel: bool,
     #[serde(default = "default_size")]
-    pub size: u16,
+    pub size: u32,
+    /// Positive caller-selected processing budget; defaults to thirty seconds.
+    #[serde(default = "default_review_timeout")]
+    pub timeout_seconds: u64,
 }
-fn default_size() -> u16 {
+fn default_review_timeout() -> u64 {
+    30
+}
+fn default_size() -> u32 {
     768
 }
 
@@ -37,18 +43,19 @@ struct Segment {
     from: [f64; 3],
     to: [f64; 3],
     feature: String,
-    material: u16,
+    material: usize,
     travel: bool,
 }
 
 struct Parser {
+    deadline: Option<Instant>,
     position: [f64; 4],
     coordinate_offset: [f64; 3],
     relative: bool,
     relative_e: bool,
     layer: u32,
     feature: String,
-    material: u16,
+    material: usize,
     layer_count: u32,
     segments: Vec<Segment>,
     lengths: BTreeMap<String, f64>,
@@ -59,6 +66,7 @@ struct Parser {
 impl Parser {
     fn new() -> Self {
         Self {
+            deadline: None,
             position: [0.; 4],
             coordinate_offset: [0.; 3],
             relative: false,
@@ -111,11 +119,9 @@ impl Parser {
                 ));
             }
             _ if command.starts_with('T') => {
-                if let Ok(tool) = command[1..].parse::<u16>()
-                    && tool < 16
-                {
-                    self.material = tool;
-                }
+                self.material = command[1..]
+                    .parse::<usize>()
+                    .map_err(|_| slice_error("tool index exceeds the supported integer range"))?;
             }
             "G0" | "G00" | "G1" | "G01" | "G2" | "G02" | "G3" | "G03" | "G92" => {
                 let mut values = BTreeMap::new();
@@ -202,11 +208,11 @@ impl Parser {
                         };
                     }
                     let steps = (radius * sweep.abs() / 0.2).ceil().max(1.) as usize;
-                    if steps > 20000 {
-                        return Err(slice_error("arc exceeds bounded review complexity"));
-                    }
                     let mut previous = from;
                     for step in 1..=steps {
+                        if let Some(deadline) = self.deadline {
+                            check_deadline(deadline)?;
+                        }
                         let fraction = step as f64 / steps as f64;
                         let angle = start + sweep * fraction;
                         let next = if step == steps {
@@ -253,11 +259,6 @@ impl Parser {
         if from == to {
             return Ok(());
         }
-        if self.segments.len() >= 2_000_000 {
-            return Err(slice_error(
-                "review selection is too large; select fewer layers or features",
-            ));
-        }
         let length = (0..3)
             .map(|i| (to[i] - from[i]).powi(2))
             .sum::<f64>()
@@ -282,7 +283,11 @@ impl Parser {
 }
 
 pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value), ToolError> {
-    render_before(source, request, Instant::now() + Duration::from_secs(30))
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(request.timeout_seconds))
+        .filter(|_| request.timeout_seconds > 0)
+        .ok_or_else(|| invalid("review timeout must be positive and runtime-representable"))?;
+    render_before(source, request, deadline)
 }
 
 fn check_deadline(deadline: Instant) -> Result<(), ToolError> {
@@ -299,29 +304,21 @@ fn render_before(
     request: &ReviewParams,
     deadline: Instant,
 ) -> Result<(Vec<u8>, Value), ToolError> {
-    if request.first_layer == 0
-        || request.last_layer < request.first_layer
-        || request.last_layer - request.first_layer > 1000
-        || !(128..=2048).contains(&request.size)
-        || request.features.len() > 32
-    {
+    if request.first_layer == 0 || request.last_layer < request.first_layer || request.size == 0 {
         return Err(invalid(
-            "review requires a one-based range of at most 1001 layers, size 128–2048, and at most 32 feature filters",
+            "review requires a one-based ordered layer range and a positive image size",
         ));
     }
     let mut parser = Parser::new();
+    parser.deadline = Some(deadline);
     let mut reader = BufReader::new(std::fs::File::open(source)?);
     let mut line = String::new();
     loop {
         check_deadline(deadline)?;
         line.clear();
-        let n =
-            std::io::Read::take(std::io::Read::by_ref(&mut reader), 65537).read_line(&mut line)?;
+        let n = reader.read_line(&mut line)?;
         if n == 0 {
             break;
-        }
-        if n > 65536 {
-            return Err(slice_error("toolpath line exceeds review limit"));
         }
         parser.line(&line, request)?;
     }
@@ -341,12 +338,14 @@ fn render_before(
             }
         }
     }
-    let size = request.size as u32;
-    let scale = (size as f64 - 32.) / (max[0] - min[0]).max(max[1] - min[1]).max(0.01);
+    let size = request.size;
+    let edge = size.saturating_sub(1) as f64;
+    let margin = (edge / 8.).min(16.);
+    let scale = (edge - 2. * margin) / (max[0] - min[0]).max(max[1] - min[1]).max(0.01);
     let map = |point: [f64; 3]| {
         [
-            (16. + (point[0] - min[0]) * scale).round() as i32,
-            (size as f64 - 17. - (point[1] - min[1]) * scale).round() as i32,
+            (margin + (point[0] - min[0]) * scale).round() as i32,
+            (edge - margin - (point[1] - min[1]) * scale).round() as i32,
         ]
     };
     let mut image = RgbImage::from_pixel(size, size, Rgb([20, 24, 30]));
@@ -432,6 +431,7 @@ mod tests {
             material: None,
             include_travel: false,
             size: 128,
+            timeout_seconds: 30,
         }
     }
 
@@ -467,7 +467,7 @@ mod tests {
         let request = review_request();
         let mut parser = Parser::new();
         parser.line("M83", &request).unwrap();
-        // This valid semicircle would exceed the selected-arc sample cap.
+        // Unselected arcs update position without allocating interpolated segments.
         parser.line("G3 X20000 I10000 E1", &request).unwrap();
         assert!(parser.segments.is_empty());
         assert_eq!(parser.position[0], 20000.);
@@ -497,6 +497,54 @@ mod tests {
     }
 
     #[test]
+    fn small_images_include_the_selected_toolpath() {
+        use std::io::Write;
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        source
+            .write_all(b"; CHANGE_LAYER\nM83\nG1 X10 E1\n")
+            .unwrap();
+        let mut request = review_request();
+        for size in [1, 16, 32] {
+            request.size = size;
+            let (png, evidence) = render(source.path(), &request).unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgb8();
+            assert_eq!(image.dimensions(), (size, size));
+            assert_eq!(evidence["segments"], 1);
+            assert!(image.pixels().any(|pixel| pixel.0 != [20, 24, 30]));
+        }
+    }
+
+    #[test]
+    fn additional_material_slots_keep_their_selected_identity() {
+        let mut request = review_request();
+        request.material = Some(16);
+        let mut parser = Parser::new();
+        for line in ["; CHANGE_LAYER", "M83", "T16", "G1 X10 E1"] {
+            parser.line(line, &request).unwrap();
+        }
+        assert_eq!(parser.segments.len(), 1);
+        assert_eq!(parser.segments[0].material, 16);
+        request.material = Some(65536);
+        parser.line("T65536", &request).unwrap();
+        parser.line("G1 X20 E1", &request).unwrap();
+        assert_eq!(parser.segments[1].material, 65536);
+        assert!(parser.line("T-1", &request).is_err());
+    }
+
+    #[test]
+    fn selected_arcs_can_exceed_the_former_sample_limit() {
+        let request = review_request();
+        let mut parser = Parser::new();
+        parser.line("; CHANGE_LAYER", &request).unwrap();
+        parser.line("M83", &request).unwrap();
+        parser.line("G3 X3000 I1500 E1", &request).unwrap();
+        assert!(parser.segments.len() > 20000);
+        parser.deadline = Some(Instant::now());
+        let error = parser.line("G3 X0 I-1500 E1", &request).unwrap_err();
+        assert!(error.to_string().contains("processing deadline"));
+    }
+
+    #[test]
     fn review_processing_deadline_is_enforced_without_sleeping() {
         let source = tempfile::NamedTempFile::new().unwrap();
         let error = render_before(source.path(), &review_request(), Instant::now()).unwrap_err();
@@ -516,6 +564,7 @@ mod tests {
             material: None,
             include_travel: false,
             size: 128,
+            timeout_seconds: 30,
         };
         let mut parser = Parser::new();
         for line in [

@@ -29,13 +29,11 @@ leases. If a Rust worker exits while its native child survives, that child keeps
 the reservation and cleanup protection until it exits. Native programs must not
 close inherited lease descriptors while they still use managed storage.
 
-Reservations are conservative: snapshots use their observed source size;
-uploads use their declared size or transfer limit; native staging uses fixed
-estimates. CAD reserves five GiB plus its log allowance, and slicing reserves
-three GiB plus its log allowance. These estimates do not bound arbitrary native
-writes or every large multi-plate slice. Final retained copies need
-additional room while their temporary sources still exist. A small budget can
-therefore reject a small model before its exact output size is known. The
+Snapshots and native input staging reserve their observed source size. Native
+uploads reserve their declared size; chunked uploads check capacity under the
+shared budget lock for each append. Native output sizes are determined by the
+backend. Final retained copies need additional room while their temporary
+sources still exist. The
 `storage_budget_exceeded` error is an admission result, not a claim that the
 filesystem is already full. Native upload HTTP requests return 507 when their
 reservation cannot be admitted.

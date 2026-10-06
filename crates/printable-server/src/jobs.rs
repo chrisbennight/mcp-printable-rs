@@ -27,10 +27,9 @@ use printable_workspace::{ArtifactMeta, Snapshot, Workspace, WsError};
 
 use crate::error::ToolError;
 use crate::tools::{
-    MAX_PRODUCT_RENDER_BYTES, MAX_PRODUCT_RENDER_PIXELS, ProductPresentation, geometry_blocking,
-    geometry_worker_path_from_override, product_controls_match,
-    product_materials_and_shading_match, run_geometry_worker_files, validate_product_presentation,
-    verify_product_png_artifact,
+    ProductPresentation, geometry_blocking, geometry_worker_path_from_override,
+    product_controls_match, product_materials_and_shading_match, run_geometry_worker_files,
+    validate_product_presentation, verify_product_png_artifact,
 };
 use crate::upload::random_hex_id;
 
@@ -41,14 +40,13 @@ const JOB_SCHEMA_VERSION: u8 = 3;
 const MAX_JOB_HISTORY: usize = 1000;
 const MAX_ENCODER_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAX_ENCODER_PROGRESS_BYTES: usize = 64 * 1024;
-const MAX_BLENDER_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_SOURCE_BYTES: u64 = 1024 * 1024 * 1024;
 #[cfg(test)]
 const DEFAULT_GEOMETRY_WORKER_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_REVIEW_SOURCE_PIXELS: u64 = 8 * 1024 * 1024;
 const SESSION_RESTORE_RETRY_INITIAL_SECONDS: u64 = 1;
 const SESSION_RESTORE_RETRY_MAX_SECONDS: u64 = 30;
 
-fn default_render_dimension() -> u16 {
+fn default_render_dimension() -> u32 {
     512
 }
 
@@ -76,7 +74,7 @@ fn default_frame_step() -> u32 {
     1
 }
 
-fn default_frames_per_second() -> u16 {
+fn default_frames_per_second() -> u32 {
     30
 }
 
@@ -85,7 +83,7 @@ fn default_max_frame_sequence_bytes() -> u64 {
 }
 
 fn default_max_source_bytes() -> u64 {
-    MAX_BLENDER_ARTIFACT_BYTES
+    DEFAULT_SOURCE_BYTES
 }
 
 fn default_max_video_bytes() -> u64 {
@@ -109,10 +107,10 @@ pub(crate) enum RenderJobKind {
 #[serde(deny_unknown_fields)]
 struct MechanicalRotationSpec {
     /// Every fixed mesh object in the scene. The set must be non-empty.
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     fixed_objects: Vec<String>,
     /// Every moving mesh object in the scene. The set must be non-empty and disjoint from fixed_objects.
-    #[schemars(length(min = 1, max = 1000))]
+    #[schemars(length(min = 1))]
     moving_objects: Vec<String>,
     /// Rotation pivot in Blender world coordinates and exported STL millimetres.
     pivot_mm: [f64; 3],
@@ -122,9 +120,9 @@ struct MechanicalRotationSpec {
     angle_degrees: f64,
     /// Non-negative clearance that must be certified over the complete rotation.
     target_clearance_mm: f64,
-    /// Positive byte budget applied separately to each analysis STL (maximum 1 GiB).
+    /// Positive caller-selected byte budget applied separately to each analysis STL.
     #[serde(default = "default_max_source_bytes")]
-    #[schemars(range(min = 1, max = 1073741824))]
+    #[schemars(range(min = 1))]
     max_analysis_mesh_bytes: u64,
 }
 
@@ -151,28 +149,28 @@ impl RenderJobEngine {
 pub(crate) struct RenderJobSubmitParams {
     /// Immutable confined `.blend` checkpoint used throughout the job.
     source_blend: String,
-    /// Positive source-checkpoint snapshot budget (default and maximum 1 GiB, matching Blender staging).
+    /// Positive source-checkpoint snapshot budget (default 1 GiB; no configured maximum).
     #[serde(default = "default_max_source_bytes")]
-    #[schemars(range(min = 1, max = 1073741824))]
+    #[schemars(range(min = 1))]
     max_source_bytes: u64,
     /// Still image, orbiting turntable video, scene-timeline animation, or certified rigid rotation.
     kind: RenderJobKind,
     /// Exact scene partition and motion contract required only for mechanical_rotation jobs.
     mechanical_rotation: Option<MechanicalRotationSpec>,
-    /// Frame width in pixels (default 512, maximum 8192). Turntable width × height must not exceed 8,388,608 pixels.
+    /// Frame width in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    width: u16,
-    /// Frame height in pixels (default 512, maximum 8192). Turntable width × height must not exceed 8,388,608 pixels.
+    #[schemars(range(min = 1))]
+    width: u32,
+    /// Frame height in pixels (default 512).
     #[serde(default = "default_render_dimension")]
-    #[schemars(range(min = 1, max = 8192))]
-    height: u16,
+    #[schemars(range(min = 1))]
+    height: u32,
     /// EEVEE for responsive review output or CYCLES for final quality.
     #[serde(default)]
     engine: RenderJobEngine,
-    /// CYCLES samples per frame (default 128, maximum 4096); invalid for EEVEE.
-    #[schemars(range(min = 1, max = 4096))]
-    samples: Option<u16>,
+    /// CYCLES samples per frame (default 128); invalid for EEVEE.
+    #[schemars(range(min = 1))]
+    samples: Option<u32>,
     /// Positive caller-selected budget for each rendered frame. Defaults to one hour; no configured maximum.
     #[serde(default = "default_render_timeout_seconds")]
     frame_timeout_seconds: f64,
@@ -198,10 +196,10 @@ pub(crate) struct RenderJobSubmitParams {
     #[serde(default = "default_frame_step")]
     #[schemars(range(min = 1))]
     frame_step: u32,
-    /// Encoded video frame rate (default 30, maximum 240); ignored for still jobs.
+    /// Encoded video frame rate (default 30); ignored for still jobs.
     #[serde(default = "default_frames_per_second")]
-    #[schemars(range(min = 1, max = 240))]
-    frames_per_second: u16,
+    #[schemars(range(min = 1))]
+    frames_per_second: u32,
     /// Positive aggregate byte budget for committed PNG frames. Defaults to 10 GiB; no configured maximum.
     #[serde(default = "default_max_frame_sequence_bytes")]
     #[schemars(range(min = 1))]
@@ -238,7 +236,7 @@ pub(crate) struct RenderJobStatusParams {
 pub(crate) struct RenderJobListParams {
     /// Zero-based offset into newest-first retained job history.
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: usize,
     /// Positive count of retained jobs to return; defaults to 100.
     #[serde(default = "default_job_list_limit")]
@@ -255,7 +253,7 @@ pub(crate) struct RenderJobArtifactsParams {
     job_id: String,
     /// Zero-based frame offset.
     #[serde(default)]
-    #[schemars(range(min = 0, max = 1000000))]
+    #[schemars(range(min = 0))]
     offset: u32,
     /// Positive count of completed frame artifacts to return; defaults to 100.
     #[serde(default = "default_job_list_limit")]
@@ -290,10 +288,10 @@ impl JobState {
 struct JobSpec {
     source_blend: String,
     max_source_bytes: u64,
-    width: u16,
-    height: u16,
+    width: u32,
+    height: u32,
     engine: RenderJobEngine,
-    samples: Option<u16>,
+    samples: Option<u32>,
     frame_timeout_seconds: f64,
     turntable_frames: u32,
     turntable_elevation_degrees: f64,
@@ -301,7 +299,7 @@ struct JobSpec {
     frame_start: i32,
     frame_end: i32,
     frame_step: u32,
-    frames_per_second: u16,
+    frames_per_second: u32,
     max_frame_sequence_bytes: u64,
     max_video_bytes: u64,
     encode_timeout_seconds: f64,
@@ -600,7 +598,7 @@ fn establish_render_isolation(
     integrity: &mut RecoveryIntegrity,
 ) -> RenderIsolation {
     let marker = json!({"version": 1, "mode": "isolated_worker"});
-    let established = match workspace.read_artifact(ISOLATION_PATH) {
+    let established = match workspace.read_generated_bytes(ISOLATION_PATH) {
         Ok((_, bytes))
             if serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| value == marker) =>
         {
@@ -2779,11 +2777,7 @@ fn render_params(
     index: u32,
     remaining_bytes: u64,
 ) -> Result<Params, RunFailure> {
-    let output_budget = if record.spec.presentation.is_some() {
-        remaining_bytes.min(MAX_PRODUCT_RENDER_BYTES)
-    } else {
-        remaining_bytes
-    };
+    let output_budget = remaining_bytes;
     let mut value = json!({
         "width": record.spec.width,
         "height": record.spec.height,
@@ -3232,7 +3226,7 @@ async fn validate_decodable_video(
     path: &std::path::Path,
     storage: &printable_workspace::ManagedScratch,
     expected_frames: u32,
-    frames_per_second: u16,
+    frames_per_second: u32,
     deadline: tokio::time::Instant,
     cancel: &CancellationToken,
 ) -> Result<(), RunFailure> {
@@ -3381,7 +3375,7 @@ async fn terminate_video_validation(
 fn validate_video_progress(
     progress: &[u8],
     expected_frames: u32,
-    frames_per_second: u16,
+    frames_per_second: u32,
 ) -> Result<(), RunFailure> {
     let progress = String::from_utf8_lossy(progress);
     let mut decoded_frames = None;
@@ -3582,15 +3576,15 @@ fn validate_submit(
             "source_blend must end in .blend".to_string(),
         ));
     }
-    if params.width == 0 || params.width > 8192 || params.height == 0 || params.height > 8192 {
+    if params.width == 0 || params.height == 0 {
         return Err(ToolError::Validation(
-            "width and height must be integers between 1 and 8192".to_string(),
+            "width and height must be positive integers".to_string(),
         ));
     }
-    if !(1..=MAX_BLENDER_ARTIFACT_BYTES).contains(&params.max_source_bytes) {
-        return Err(ToolError::Validation(format!(
-            "max_source_bytes must be between 1 and {MAX_BLENDER_ARTIFACT_BYTES}"
-        )));
+    if params.max_source_bytes == 0 {
+        return Err(ToolError::Validation(
+            "max_source_bytes must be positive".to_string(),
+        ));
     }
     validate_duration(params.frame_timeout_seconds, "frame_timeout_seconds")?;
     validate_duration(params.encode_timeout_seconds, "encode_timeout_seconds")?;
@@ -3600,11 +3594,6 @@ fn validate_submit(
     )?;
     if let Some(presentation) = &params.presentation {
         validate_product_presentation(presentation, None)?;
-        if u64::from(params.width) * u64::from(params.height) > MAX_PRODUCT_RENDER_PIXELS {
-            return Err(ToolError::Validation(format!(
-                "product render exceeds the {MAX_PRODUCT_RENDER_PIXELS}-pixel output limit; reduce width or height"
-            )));
-        }
     }
     if params.auto_frame_sequence
         && (params.kind != RenderJobKind::Animation || params.presentation.is_none())
@@ -3631,9 +3620,9 @@ fn validate_submit(
                 "samples is only valid for CYCLES jobs".to_string(),
             ));
         }
-        (RenderJobEngine::Cycles, Some(samples)) if !(1..=4096).contains(&samples) => {
+        (RenderJobEngine::Cycles, Some(0)) => {
             return Err(ToolError::Validation(
-                "samples must be between 1 and 4096".to_string(),
+                "samples must be positive".to_string(),
             ));
         }
         _ => {}
@@ -3646,19 +3635,14 @@ fn validate_submit(
             "frame and video byte budgets must be positive and runtime-representable".to_string(),
         ));
     }
-    if !(1..=240).contains(&params.frames_per_second) {
+    if params.frames_per_second == 0 {
         return Err(ToolError::Validation(
-            "frames_per_second must be between 1 and 240".to_string(),
+            "frames_per_second must be positive".to_string(),
         ));
     }
     let total_frames = match params.kind {
         RenderJobKind::Still => 1,
         RenderJobKind::Turntable => {
-            if u64::from(params.width) * u64::from(params.height) > MAX_REVIEW_SOURCE_PIXELS {
-                return Err(ToolError::Validation(format!(
-                    "turntable frame dimensions must contain at most {MAX_REVIEW_SOURCE_PIXELS} pixels"
-                )));
-            }
             if params.turntable_frames == 0 {
                 return Err(ToolError::Validation(
                     "turntable_frames must be positive".to_string(),
@@ -3762,14 +3746,14 @@ fn validate_submit(
 
 fn validate_mechanical_rotation(spec: &MechanicalRotationSpec) -> Result<(), ToolError> {
     fn validate_names(names: &[String], field: &str) -> Result<HashSet<String>, ToolError> {
-        if names.is_empty() || names.len() > 1000 {
+        if names.is_empty() {
             return Err(ToolError::Validation(format!(
-                "mechanical_rotation.{field} must contain between 1 and 1000 object names"
+                "mechanical_rotation.{field} must contain at least one object name"
             )));
         }
-        if names.iter().any(|name| name.is_empty() || name.len() > 255) {
+        if names.iter().any(|name| name.is_empty()) {
             return Err(ToolError::Validation(format!(
-                "mechanical_rotation.{field} must contain non-empty object names of at most 255 UTF-8 bytes"
+                "mechanical_rotation.{field} must contain non-empty object names"
             )));
         }
         let unique = names.iter().cloned().collect::<HashSet<_>>();
@@ -3818,10 +3802,10 @@ fn validate_mechanical_rotation(spec: &MechanicalRotationSpec) -> Result<(), Too
             "mechanical_rotation target_clearance_mm must be finite and non-negative".to_string(),
         ));
     }
-    if !(1..=MAX_BLENDER_ARTIFACT_BYTES).contains(&spec.max_analysis_mesh_bytes) {
-        return Err(ToolError::Validation(format!(
-            "mechanical_rotation max_analysis_mesh_bytes must be between 1 and {MAX_BLENDER_ARTIFACT_BYTES}"
-        )));
+    if spec.max_analysis_mesh_bytes == 0 {
+        return Err(ToolError::Validation(
+            "mechanical_rotation max_analysis_mesh_bytes must be positive".to_string(),
+        ));
     }
     Ok(())
 }
@@ -4049,7 +4033,7 @@ fn recover_state(
         order: VecDeque::new(),
     };
     let mut integrity = RecoveryIntegrity::default();
-    let index = match workspace.read_artifact(INDEX_PATH) {
+    let index = match workspace.read_generated_bytes(INDEX_PATH) {
         Ok((_meta, bytes)) => serde_json::from_slice::<JobIndex>(&bytes),
         Err(WsError::NotFound(_)) => {
             match workspace.list_artifacts(JOB_ROOT, 1) {
@@ -4113,7 +4097,7 @@ fn recover_state(
             );
             continue;
         }
-        let bytes = match workspace.read_artifact(&job_metadata_path(&job_id)) {
+        let bytes = match workspace.read_generated_bytes(&job_metadata_path(&job_id)) {
             Ok((_meta, bytes)) => bytes,
             Err(error) => {
                 tracing::error!(job_id, %error, "durable render job metadata is unavailable");
@@ -5462,8 +5446,8 @@ mod tests {
                     assert_eq!(params["presentation"]["profile"], json!("studio_neutral"));
                     assert_eq!(
                         params["max_output_bytes"],
-                        json!(MAX_PRODUCT_RENDER_BYTES),
-                        "the aggregate durable-job budget is capped to the product renderer's per-frame contract"
+                        json!(default_max_frame_sequence_bytes()),
+                        "the caller's remaining frame budget reaches the product renderer"
                     );
                     let path = params["path"].as_str().expect("render path");
                     let (size_bytes, sha256) =
@@ -5479,10 +5463,8 @@ mod tests {
                         } else {
                             let bytes = b"not-a-png";
                             let destination = root.join(path);
-                            std::fs::create_dir_all(
-                                destination.parent().expect("frame parent"),
-                            )
-                            .expect("create frame directory");
+                            std::fs::create_dir_all(destination.parent().expect("frame parent"))
+                                .expect("create frame directory");
                             std::fs::write(&destination, bytes).expect("write corrupt frame");
                             (
                                 u64::try_from(bytes.len()).expect("corrupt frame size"),
@@ -7326,26 +7308,22 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
     }
 
     #[test]
-    fn turntable_dimensions_observe_the_backend_review_surface_limit() {
-        let mut too_large = submit_params("scene.blend", "turntable");
-        too_large.width = 4096;
-        too_large.height = 4096;
-        assert_eq!(
-            validate_submit(too_large).unwrap_err().to_string(),
-            format!(
-                "invalid arguments: turntable frame dimensions must contain at most {MAX_REVIEW_SOURCE_PIXELS} pixels"
-            )
-        );
-
-        let mut boundary = submit_params("scene.blend", "turntable");
-        boundary.width = 4096;
-        boundary.height = 2048;
-        validate_submit(boundary).expect("backend surface boundary is usable");
-
-        let mut still = submit_params("scene.blend", "still");
-        still.width = 4096;
-        still.height = 4096;
-        validate_submit(still).expect("single stills do not use the review-view backend");
+    fn large_render_requests_retain_caller_dimensions_and_budgets() {
+        for kind in ["turntable", "still"] {
+            let mut params = submit_params("scene.blend", kind);
+            params.width = 16384;
+            params.height = 8192;
+            params.engine = RenderJobEngine::Cycles;
+            params.samples = Some(8192);
+            params.frames_per_second = 1000;
+            params.max_source_bytes = 2 * DEFAULT_SOURCE_BYTES;
+            let (validated, _, _) =
+                validate_submit(params).expect("backend capacity is not preempted");
+            assert_eq!(validated.width, 16384);
+            assert_eq!(validated.height, 8192);
+            assert_eq!(validated.samples, Some(8192));
+            assert_eq!(validated.max_source_bytes, 2 * DEFAULT_SOURCE_BYTES);
+        }
     }
 
     #[test]
@@ -7922,7 +7900,7 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
             axis: [0.0, 0.0, 1.0],
             angle_degrees: 90.0,
             target_clearance_mm: 0.0,
-            max_analysis_mesh_bytes: MAX_BLENDER_ARTIFACT_BYTES,
+            max_analysis_mesh_bytes: DEFAULT_SOURCE_BYTES,
         };
         validate_mechanical_rotation(&valid()).expect("exact boundaries are valid");
         let mut maximum_set = valid();
@@ -7933,15 +7911,17 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
         let mut empty_set = valid();
         empty_set.fixed_objects.clear();
         invalid_cases.push(empty_set);
-        let mut too_many = valid();
-        too_many.fixed_objects = (0..=1000).map(|index| format!("Fixed{index}")).collect();
-        invalid_cases.push(too_many);
+        let mut large = valid();
+        large.fixed_objects = (0..=1000).map(|index| format!("Fixed{index}")).collect();
+        large.max_analysis_mesh_bytes = 2 * DEFAULT_SOURCE_BYTES;
+        validate_mechanical_rotation(&large)
+            .expect("large collection and caller budget are supported");
         let mut empty_name = valid();
         empty_name.fixed_objects = vec![String::new()];
         invalid_cases.push(empty_name);
         let mut long_name = valid();
         long_name.fixed_objects = vec!["F".repeat(256)];
-        invalid_cases.push(long_name);
+        validate_mechanical_rotation(&long_name).expect("Blender resolves source names");
         let mut duplicates = valid();
         duplicates.fixed_objects = vec!["Base".to_string(), "Base".to_string()];
         invalid_cases.push(duplicates);
@@ -8839,8 +8819,7 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
             json!({
                 "source_blend": "scene.blend",
                 "kind": "still",
-                "width": 8192,
-                "height": 8192,
+                "width": 0,
                 "presentation": {"profile": "studio_neutral"},
             }),
         ] {
@@ -8851,12 +8830,11 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
         let presented_boundary = serde_json::from_value(json!({
             "source_blend": "scene.blend",
             "kind": "still",
-            "width": 4096,
-            "height": 4096,
+            "width": 16384,
+            "height": 8192,
             "presentation": {"profile": "studio_neutral"},
         }))
         .expect("typed boundary params");
-        validate_submit(presented_boundary)
-            .expect("the exact product-render pixel boundary is admitted");
+        validate_submit(presented_boundary).expect("large product rendering is admitted");
     }
 }

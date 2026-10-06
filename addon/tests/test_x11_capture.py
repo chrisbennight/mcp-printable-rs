@@ -3,6 +3,15 @@ import unittest
 from printable_bridge.x11_capture import DisplayCaptureError, editor_rectangle, rgb_pixels
 
 class DisplayCaptureTests(unittest.TestCase):
+    def test_editor_crop_accepts_large_display_dimensions(self):
+        window = NS(x=0, y=0, width=16384, height=8192)
+        area = NS(x=0, y=0, width=16384, height=8192)
+        self.assertEqual(editor_rectangle(window, area, 16384, 8192),
+                         (0, 0, 16384, 8192))
+        area.width = 0
+        with self.assertRaisesRegex(DisplayCaptureError, "must be positive"):
+            editor_rectangle(window, area, 16384, 8192)
+
     def test_editor_crop_uses_bottom_left_blender_coordinates(self):
         window = NS(x=50, y=75, width=200, height=100)
         area = NS(x=10, y=20, width=150, height=70)

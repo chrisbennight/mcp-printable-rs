@@ -10,17 +10,17 @@ class EditorContextError(ValueError):
     pass
 
 
-def _index(params, name, maximum):
+def _index(params, name):
     value = params.get(name, 0)
-    if type(value) is not int or not 0 <= value <= maximum:
-        raise EditorContextError(f"{name} must be between 0 and {maximum}")
+    if type(value) is not int or value < 0:
+        raise EditorContextError(f"{name} must be a nonnegative integer")
     return value
 
 
 def _name(params, name, default=None):
     value = params.get(name, default)
-    if not isinstance(value, str) or not 1 <= len(value) <= 64:
-        raise EditorContextError(f"{name} must contain between 1 and 64 characters")
+    if not isinstance(value, str) or not value:
+        raise EditorContextError(f"{name} must be a nonempty string")
     return value
 
 
@@ -29,8 +29,8 @@ def resolve_editor(bpy, selector):
         "window", "area_type", "area_index", "region_type", "expected_mode"
     }:
         raise EditorContextError("context requires a typed editor selector")
-    window_index = _index(selector, "window", 63)
-    area_index = _index(selector, "area_index", 255)
+    window_index = _index(selector, "window")
+    area_index = _index(selector, "area_index")
     area_type = _name(selector, "area_type")
     region_type = _name(selector, "region_type", "WINDOW")
     if "expected_mode" in selector:

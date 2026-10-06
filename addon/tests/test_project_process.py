@@ -65,7 +65,7 @@ class ProcessTests(unittest.TestCase):
 
     def test_invalid_deadline_and_early_cancellation_never_launch(self):
         with patch("printable_bridge.project_process.subprocess.Popen") as launch:
-            for timeout in (True, 0, 121, float("inf"), float("nan")):
+            for timeout in (True, 0, -1, float("inf"), float("nan")):
                 with self.subTest(timeout=timeout), self.assertRaises(ProjectPackingError):
                     self.invoke(timeout=timeout)
             with self.assertRaises(ProjectPreparationCancelled):
@@ -92,5 +92,5 @@ class ProcessTests(unittest.TestCase):
             child = Child()
             child.returncode = code
             with self.subTest(code=code), patch(f"{module}.subprocess.Popen", return_value=child):
-                with self.assertRaisesRegex(ProjectPackingError, "failed|no bounded metadata"):
+                with self.assertRaisesRegex(ProjectPackingError, "failed|no metadata"):
                     self.invoke()

@@ -8,12 +8,6 @@ use std::collections::BTreeMap;
 
 use crate::{ProductProfile, ProductProfileError};
 
-pub const MAX_DEFINITIONS: usize = 64;
-pub const MAX_VECTOR_ELEMENTS: usize = 16;
-pub const MAX_STRING_BYTES: usize = 4 * 1024;
-pub const MAX_SERIALIZED_BYTES: usize = 64 * 1024;
-pub const MAX_VARIANT_CHARS: usize = 64;
-
 /// One value accepted by OpenSCAD's `-D name=value` option.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DefineValue {
@@ -49,24 +43,14 @@ impl SerializedDefinitions {
 pub enum DefineError {
     #[error(transparent)]
     InvalidProductProfile(#[from] ProductProfileError),
-    #[error("OpenSCAD definitions exceed the maximum of {MAX_DEFINITIONS}")]
-    TooManyDefinitions,
     #[error("OpenSCAD definition name is not a valid ASCII identifier: {0}")]
     InvalidName(String),
     #[error("OpenSCAD definition names beginning with pbl_ are reserved")]
     ReservedName,
     #[error("OpenSCAD definition {0} must be a finite number")]
     NonFiniteNumber(String),
-    #[error("OpenSCAD definition {0} string exceeds {MAX_STRING_BYTES} UTF-8 bytes")]
-    StringTooLong(String),
     #[error("OpenSCAD definition {0} string contains an ASCII control character")]
     StringControlCharacter(String),
-    #[error("OpenSCAD definition {0} vector exceeds {MAX_VECTOR_ELEMENTS} elements")]
-    VectorTooLong(String),
-    #[error("OpenSCAD variant exceeds {MAX_VARIANT_CHARS} characters")]
-    VariantTooLong,
-    #[error("OpenSCAD definitions exceed {MAX_SERIALIZED_BYTES} serialized argv bytes")]
-    SerializedTooLarge,
 }
 
 /// Serialize caller definitions and the optional server-reserved variant.
@@ -87,10 +71,6 @@ pub fn serialize_product_definitions(
     variant: Option<&str>,
     profile: Option<&ProductProfile>,
 ) -> Result<SerializedDefinitions, DefineError> {
-    if definitions.len() > MAX_DEFINITIONS {
-        return Err(DefineError::TooManyDefinitions);
-    }
-
     if let Some(profile) = profile {
         profile.validate()?;
     }
@@ -107,9 +87,6 @@ pub fn serialize_product_definitions(
     }
 
     if let Some(variant) = variant {
-        if variant.chars().count() > MAX_VARIANT_CHARS {
-            return Err(DefineError::VariantTooLong);
-        }
         assignments.push((
             "pbl_variant".to_string(),
             serialize_string("pbl_variant", variant)?,
@@ -146,16 +123,8 @@ pub fn serialize_product_definitions(
 
     let mut argv = Vec::with_capacity(assignments.len() * 2);
     let mut names = Vec::with_capacity(assignments.len());
-    let mut serialized_bytes = 0_usize;
     for (name, literal) in assignments {
         let assignment = format!("{name}={literal}");
-        serialized_bytes = serialized_bytes
-            .checked_add(2)
-            .and_then(|size| size.checked_add(assignment.len()))
-            .ok_or(DefineError::SerializedTooLarge)?;
-        if serialized_bytes > MAX_SERIALIZED_BYTES {
-            return Err(DefineError::SerializedTooLarge);
-        }
         argv.push("-D".to_string());
         argv.push(assignment);
         names.push(name);
@@ -184,9 +153,6 @@ fn serialize_value(name: &str, value: &DefineValue) -> Result<String, DefineErro
         DefineValue::Number(value) => serialize_number(name, *value),
         DefineValue::String(value) => serialize_string(name, value),
         DefineValue::NumberVector(values) => {
-            if values.len() > MAX_VECTOR_ELEMENTS {
-                return Err(DefineError::VectorTooLong(name.to_string()));
-            }
             let values = values
                 .iter()
                 .map(|value| serialize_number(name, *value))
@@ -207,9 +173,6 @@ fn serialize_number(name: &str, value: f64) -> Result<String, DefineError> {
 }
 
 fn serialize_string(name: &str, value: &str) -> Result<String, DefineError> {
-    if value.len() > MAX_STRING_BYTES {
-        return Err(DefineError::StringTooLong(name.to_string()));
-    }
     if value.chars().any(char::is_control) {
         return Err(DefineError::StringControlCharacter(name.to_string()));
     }
@@ -318,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_reserved_invalid_and_oversized_inputs() {
+    fn rejects_reserved_invalid_and_control_character_inputs() {
         assert_eq!(
             serialize_definitions(
                 &BTreeMap::from([("pbl_private".to_string(), DefineValue::Bool(true))]),
@@ -343,73 +306,27 @@ mod tests {
             ),
             Err(DefineError::StringControlCharacter(_))
         ));
-        assert_eq!(
-            serialize_definitions(&BTreeMap::new(), Some(&"v".repeat(65))),
-            Err(DefineError::VariantTooLong)
-        );
+        assert!(serialize_definitions(&BTreeMap::new(), Some(&"v".repeat(65))).is_ok());
         assert!(serialize_definitions(&BTreeMap::new(), Some(&"v".repeat(64))).is_ok());
     }
 
     #[test]
-    fn every_collection_and_string_limit_accepts_its_boundary() {
-        assert_eq!(MAX_STRING_BYTES, 4096);
-
-        let definitions = (0..MAX_DEFINITIONS)
+    fn large_definitions_vectors_strings_and_argv_are_serialized() {
+        let mut definitions: BTreeMap<String, DefineValue> = (0..65)
             .map(|index| (format!("v{index}"), DefineValue::Bool(true)))
             .collect();
-        assert!(serialize_definitions(&definitions, None).is_ok());
-        let definitions = (0..=MAX_DEFINITIONS)
-            .map(|index| (format!("v{index}"), DefineValue::Bool(true)))
-            .collect();
-        assert_eq!(
-            serialize_definitions(&definitions, None),
-            Err(DefineError::TooManyDefinitions)
+        definitions.insert("points".into(), DefineValue::NumberVector(vec![0.0; 100]));
+        definitions.insert("label".into(), DefineValue::String("a".repeat(65537)));
+        let serialized = serialize_definitions(&definitions, Some(&"variant".repeat(20))).unwrap();
+        assert_eq!(serialized.names().len(), 68);
+        assert!(
+            serialized
+                .argv()
+                .iter()
+                .any(|arg| arg.starts_with("points=["))
         );
-
-        let exact_vector = BTreeMap::from([(
-            "samples".to_string(),
-            DefineValue::NumberVector(vec![0.0; MAX_VECTOR_ELEMENTS]),
-        )]);
-        assert!(serialize_definitions(&exact_vector, None).is_ok());
-        let long_vector = BTreeMap::from([(
-            "samples".to_string(),
-            DefineValue::NumberVector(vec![0.0; MAX_VECTOR_ELEMENTS + 1]),
-        )]);
-        assert!(matches!(
-            serialize_definitions(&long_vector, None),
-            Err(DefineError::VectorTooLong(_))
-        ));
-
-        let exact_string = BTreeMap::from([(
-            "label".to_string(),
-            DefineValue::String("a".repeat(MAX_STRING_BYTES)),
-        )]);
-        assert!(serialize_definitions(&exact_string, None).is_ok());
-        let long_string = BTreeMap::from([(
-            "label".to_string(),
-            DefineValue::String("a".repeat(MAX_STRING_BYTES + 1)),
-        )]);
-        assert!(matches!(
-            serialize_definitions(&long_string, None),
-            Err(DefineError::StringTooLong(_))
-        ));
-    }
-
-    #[test]
-    fn serialized_limit_counts_names_values_and_option_entries() {
-        let exact = BTreeMap::from([(
-            "a".repeat(MAX_SERIALIZED_BYTES - 7),
-            DefineValue::Bool(true),
-        )]);
-        assert!(serialize_definitions(&exact, None).is_ok());
-        let oversized = BTreeMap::from([(
-            "a".repeat(MAX_SERIALIZED_BYTES - 6),
-            DefineValue::Bool(true),
-        )]);
-        assert_eq!(
-            serialize_definitions(&oversized, None),
-            Err(DefineError::SerializedTooLarge)
-        );
+        assert!(serialized.argv().iter().any(|arg| arg.len() > 65536));
+        assert!(serialized.variant_applied());
     }
 
     #[test]
@@ -480,7 +397,7 @@ mod tests {
                     |name: &String| !name.starts_with("pbl_"),
                 ),
                 any::<bool>(),
-                0..=MAX_DEFINITIONS,
+                0..=100,
             )
         ) {
             let definitions = entries

@@ -36,6 +36,12 @@ admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
 
+The caller's MCP client owns its end-to-end request deadline. Worker forwarding
+imposes no independent fixed HTTP timeout. A lost response or client deadline
+does not establish whether admitted work completed; inspect the same retained
+handle before deciding what to do next. Native work uses its caller-selected
+processing budget.
+
 Completed artifacts include G-code and a `.gcode.3mf` package. Download them using
 the shared `artifact` workflow and verify their recorded hashes. `review` reads
 an exact G-code artifact from a completed slice, verifies its hash and renders a
@@ -44,9 +50,10 @@ not a Blender beauty render. The preview supports the implemented XY motion and
 arc commands; unsupported modes fail rather than yielding a misleading image.
 XYZ origin resets retain physical placement, while extruder resets remain
 independent. Excluded arcs update position without generating preview samples.
-Parsing and drawing have a cooperative 30-second processing deadline; bounded
-native encoding is checked before and after it runs. Full-file layer counts and
-estimates remain available when processing completes within that budget.
+Parsing and drawing use the caller's positive `timeout_seconds` processing
+budget, defaulting to thirty seconds; native encoding is checked before and
+after it runs. Full-file layer counts and estimates remain available when
+processing completes within that budget.
 It does not establish adhesion, strength, clearance or a successful physical print.
 
 Completed slices and reviews return retained provenance references. Optional
@@ -54,7 +61,10 @@ Completed slices and reviews return retained provenance references. Optional
 review references to printer import to check their applicability before upload;
 see [design and print evidence](delivery-evidence.md).
 
-The worker accepts source artifacts up to 1 GiB, one to sixteen material profiles
-and a preparation timeout up to two hours. Container memory, CPU and temporary
-storage limits remain separate limits. Neither preparation nor review uploads a
+The worker accepts source artifacts and nonempty material-profile lists without
+fixed product capacity ceilings. Preparation uses a positive caller-selected
+timeout. Toolpath reviews accept ordered layer ranges, feature selections, and
+positive image dimensions without fixed count ceilings; their caller-selected
+`timeout_seconds` defaults to thirty seconds. Container memory, CPU and temporary
+storage controls remain separate runtime boundaries. Neither preparation nor review uploads a
 job to a printer or starts physical work.

@@ -53,7 +53,9 @@ establish that sampling or shader compilation has converged. Capture success
 does not establish convergence.
 
 `max_size` bounds the returned image's longest side while preserving aspect
-ratio. Editor responses retain source dimensions and a `resized` flag. Choose
+ratio. Any positive image size and runtime-representable positive
+`timeout_seconds` budget are accepted; graphics and display failures remain
+backend errors. Editor responses retain source dimensions and a `resized` flag. Choose
 enough resolution for the investigation; small images may hide topology or
 node labels. The server verifies PNG completeness, dimensions, size, and digest
 before returning it. Inline images remain optional and subject to the existing

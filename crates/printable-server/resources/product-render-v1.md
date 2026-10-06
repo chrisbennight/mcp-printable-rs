@@ -24,10 +24,10 @@ presentation scene.
 
 ## Exposure and illumination
 
-The optional `presentation.exposure_stops` adjusts display exposure from -10
-through 10, defaulting to 0. `presentation.light_intensity_scale` multiplies
-profile area lights and world illumination from 0 through 10, defaulting to 1.
-Both require finite numbers. Zero illumination leaves emissive source materials
+The optional `presentation.exposure_stops` adjusts display exposure, defaulting
+to 0. `presentation.light_intensity_scale` multiplies profile area lights and
+world illumination by a nonnegative value, defaulting to 1. Both require finite
+numbers; Blender owns its native exposure range. Zero illumination leaves emissive source materials
 active; exposure does not change light energy. These are presentation controls,
 not changes to the source scene, geometry, or camera.
 
@@ -96,13 +96,13 @@ cannot be returned as the requested render. Durable presented frames receive
 the same size, digest, complete-PNG, and requested-dimension verification before
 their completed progress advances.
 
-Width and height are individually bounded at 8192 pixels and their product is
-bounded at 16,777,216 pixels. RGB8 output has one consistent 64 MiB budget in
-Blender and in the server's confined verification snapshot. Before allocating
-the disposable presentation scene, Blender measures evaluated instance,
-topology, copied-attribute, and material-slot totals. The response reports
-those totals. Dense scenes fail with an actionable subset/reduction error
-instead of multiplying geometry until the container exhausts memory.
+Positive width, height, and CYCLES sample counts are passed to Blender without
+product capacity ceilings. Evaluated instance, topology, attribute, and
+material-slot totals remain response metadata and do not reject a scene.
+String attributes are supported. Backend resource failures remain visible;
+caller-selected work and output budgets and configured runtime resources govern
+execution. Confined snapshots and complete PNG verification remain required
+for every successful artifact.
 
 Small PNGs can also be returned inline when `include_inline` is true. The
 workspace artifact is produced at every size. Existing preview and diagnostic

@@ -19,9 +19,8 @@ class _XImage(c.Structure):
 
 
 def editor_rectangle(window, area, display_width, display_height):
-    if (area.width <= 0 or area.height <= 0 or area.width * area.height > 8388608
-            or max(area.width, area.height) > 4096):
-        raise DisplayCaptureError("editor capture exceeds its source pixel budget")
+    if area.width <= 0 or area.height <= 0:
+        raise DisplayCaptureError("editor capture dimensions must be positive")
     if (area.x < 0 or area.y < 0 or area.x + area.width > window.width
             or area.y + area.height > window.height):
         raise DisplayCaptureError("editor does not fit the selected window at native pixel scale")
@@ -81,7 +80,7 @@ def capture_rgb(window, area):
                     or pixels.bits_per_pixel != 32 or pixels.byte_order != 0
                     or (pixels.red_mask, pixels.green_mask, pixels.blue_mask)
                     != (0xff0000, 0x00ff00, 0x0000ff)
-                    or not width * 4 <= pixels.bytes_per_line <= width * 4 + 64):
+                    or pixels.bytes_per_line < width * 4):
                 raise DisplayCaptureError("private display pixel format is unsupported")
             raw = c.string_at(pixels.data, pixels.bytes_per_line * height)
             return rgb_pixels(raw, width, height, pixels.bytes_per_line), width, height

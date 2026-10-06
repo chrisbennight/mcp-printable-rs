@@ -54,6 +54,12 @@ impl ManagedScratch {
         &self.path
     }
 
+    /// Hold storage admission across an incremental scratch write. The caller
+    /// keeps the returned guard alive until the write finishes.
+    pub fn admit_growth(&self, bytes: u64) -> Result<Option<OwnedFd>, WsError> {
+        self.workspace.admit_storage_write(bytes)
+    }
+
     /// Duplicate ownership above the standard streams, still close-on-exec.
     pub fn clone_lease(&self) -> std::io::Result<OwnedFd> {
         rustix::io::fcntl_dupfd_cloexec(self.lease.as_ref().expect("live scratch lease"), 3)

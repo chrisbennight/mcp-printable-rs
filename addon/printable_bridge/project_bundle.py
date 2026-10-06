@@ -11,15 +11,15 @@ import zipfile
 from .project_packing import ProjectPackingError
 from .project_process import ProjectPreparationCancelled, prepare_in_child
 from .project_staging import stage_project_inputs, validate_project_file
-from .workspace import MAX_ARTIFACT_BYTES, WorkspaceError
+from .workspace import WorkspaceError
 
 
 def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
                           project_id: str, files: list[str], entrypoint: str,
                           output_path: str, timeout_seconds: float, cancelled=lambda: False):
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(timeout_seconds) or not 1 <= timeout_seconds <= 120):
-        raise ProjectPackingError("native export timeout must be between 1 and 120 seconds")
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ProjectPackingError("native export timeout must be a positive finite number")
     validate_project_file(output_path)
     validate_project_file(entrypoint)
     if not output_path.endswith(".zip") or not entrypoint.endswith(".blend"):
@@ -47,14 +47,9 @@ def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
             manifest = {"format_version": 1, "project_id": project_id,
                         "scope": "native_blender", "entrypoint": f"prepared/{entrypoint}",
                         "files": [], "preparation": None}
-            remaining_bytes = MAX_ARTIFACT_BYTES - 1024 * 1024
             with zipfile.ZipFile(output.path, "w", compression=zipfile.ZIP_STORED) as archive:
                 def add_file(source, archive_path):
-                    nonlocal remaining_bytes
                     size = source.stat().st_size
-                    if size > remaining_bytes:
-                        raise WorkspaceError("native bundle exceeds the 1 GiB artifact limit")
-                    remaining_bytes -= size
                     digest = hashlib.sha256()
                     written = 0
                     with source.open("rb") as incoming, archive.open(archive_path, "w", force_zip64=True) as outgoing:
@@ -76,7 +71,7 @@ def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
                     if manifest["files"][-1]["sha256"] != record["sha256"]:
                         raise WorkspaceError("native bundle input changed before preparation")
                 remaining = check_budget()
-                if remaining < 0.1:
+                if remaining <= 0.0:
                     raise ProjectPackingError("native export exceeded its deadline")
                 manifest["preparation"] = prepare_in_child(
                     binary, workspace_root / "projects" / project_id, staged.root,
@@ -85,8 +80,6 @@ def export_blender_bundle(workspace, workspace_root: Path, binary: str, *,
                 add_file(staged.root / entrypoint, manifest["entrypoint"])
                 archive.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
             size = output.path.stat().st_size
-            if size > MAX_ARTIFACT_BYTES:
-                raise WorkspaceError("native bundle exceeds the 1 GiB artifact limit")
             with output.path.open("rb") as prepared:
                 archive_digest = hashlib.sha256()
                 while chunk := prepared.read(65536):
