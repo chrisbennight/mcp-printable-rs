@@ -35,7 +35,6 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(120))
         .build()
         .map_err(|_| slice_error("cannot initialize slicer connection"))?;
     let mut response=client.post(format!("{}/slice",endpoint.trim_end_matches('/'))).json(&request).send().await
@@ -47,9 +46,6 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
         .await
         .map_err(|_| slice_error("slicer response interrupted; inspect the retained state"))?
     {
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(slice_error("slicer response exceeds metadata limit"));
-        }
         bytes.extend_from_slice(&chunk);
     }
     let value: Value = serde_json::from_slice(&bytes)?;
@@ -282,7 +278,11 @@ impl SliceWorker {
             )?;
             evidence["provenance"] = json!(reference);
             let metadata_path = format!("{output}/review-{review_id}.json");
-            workspace.write_artifact(&metadata_path, &serde_json::to_vec(&evidence)?, false)?;
+            workspace.write_generated_bytes(
+                &metadata_path,
+                &serde_json::to_vec(&evidence)?,
+                false,
+            )?;
             evidence["metadata_path"] = json!(metadata_path);
             Ok(evidence)
         })
@@ -301,9 +301,10 @@ impl SliceWorker {
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
             return Ok(state);
         }
-        let (_, bytes) = self
+        let snapshot = self
             .workspace
-            .read_artifact(&format!("{output}/state.json"))?;
+            .snapshot_artifact(&format!("{output}/state.json"))?;
+        let bytes = std::fs::read(snapshot.path())?;
         let mut state: Value = serde_json::from_slice(&bytes)?;
         if state["status"] == "running" {
             state["status"] = json!("interrupted");
@@ -417,17 +418,17 @@ impl SliceWorker {
             false,
             u64::MAX,
         )?;
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/request.json"),
             &serde_json::to_vec(&params)?,
             false,
         )?;
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/settings.json"),
             &serde_json::to_vec(&settings)?,
             false,
         )?;
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/state.json"),
             &serde_json::to_vec(&state)?,
             false,
@@ -488,7 +489,7 @@ impl SliceWorker {
                 .and_then(|bytes| {
                     worker
                         .workspace
-                        .write_artifact(&format!("{output}/state.json"), &bytes, true)
+                        .write_generated_bytes(&format!("{output}/state.json"), &bytes, true)
                         .map(|_| ())
                         .map_err(ToolError::from)
                 });
@@ -601,7 +602,7 @@ impl SliceWorker {
             .await
             .map_err(|_| slice_error("stderr collection failed"))??;
         let destination = slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{destination}/build-log.json"),
             &serde_json::to_vec(&json!({"stdout":stdout,"stderr":stderr}))?,
             false,

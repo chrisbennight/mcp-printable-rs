@@ -201,7 +201,7 @@ struct WriteChunkParams {
     /// Upload id from `write_begin`.
     upload_id: String,
     /// Next slice of artifact bytes, base64-encoded (decoded size capped at
-    /// 1 MiB per chunk; total capped at 25 MiB).
+    /// 1 MiB per chunk; cumulative storage uses the configured workspace budget).
     data_base64: String,
 }
 
@@ -1509,7 +1509,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_workspace_write_chunk",
-        description: "Append one base64 chunk (up to 1 MiB decoded) to an open upload; returns the running byte total (capped at 25 MiB).",
+        description: "Append one base64 chunk (up to 1 MiB decoded) to an open upload; returns the running byte total. Cumulative storage uses the configured workspace budget.",
         schema: schema_of::<WriteChunkParams>,
         annotations: write_annotations,
     },
@@ -1533,7 +1533,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_project_export_blender",
-        description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using a bounded isolated child without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
+        description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using an isolated child under the caller's work budget without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
         schema: schema_of::<crate::projects::NativeExportParams>,
         annotations: write_annotations,
     },

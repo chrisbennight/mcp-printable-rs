@@ -193,17 +193,7 @@ pub async fn forward(
 ) -> Result<Value, ToolError> {
     request.validate(workspace)?;
     let endpoint = endpoint.ok_or_else(|| ToolError::Cad("CAD worker is not configured".into()))?;
-    let timeout = match &request {
-        CadRequest::Status(_) | CadRequest::Cancel(_) => 0,
-        _ => {
-            let (_, p) = request.parts()?;
-            if p.background { 0 } else { p.timeout_seconds }
-        }
-    };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout.checked_add(30).ok_or_else(
-            || ToolError::Validation("CAD timeout exceeds the runtime integer range".into()),
-        )?))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .build()
@@ -225,9 +215,6 @@ pub async fn forward(
             "CAD response interrupted; query cad_build.status with the same build handle".into(),
         )
     })? {
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(ToolError::Cad("CAD response exceeds metadata limit".into()));
-        }
         bytes.extend_from_slice(&chunk);
     }
     let value: Value = serde_json::from_slice(&bytes)?;
@@ -321,7 +308,7 @@ impl CadWorker {
         if !self.workspace.create_public_directory(&output)? {
             return Err(ToolError::Cad("build directory already exists; query cad_build.status, then use a new output_dir for a revision".into()));
         }
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/request.json"),
             &serde_json::to_vec(&json!({"request":request,"sources":null}))?,
             false,
@@ -387,7 +374,7 @@ impl CadWorker {
     }
 
     fn persist_state(&self, output: &str, state: &Value, overwrite: bool) -> Result<(), ToolError> {
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/state.json"),
             &serde_json::to_vec(state)?,
             overwrite,
@@ -410,9 +397,10 @@ impl CadWorker {
         }
         match self
             .workspace
-            .read_artifact(&format!("{output}/state.json"))
+            .snapshot_artifact(&format!("{output}/state.json"))
         {
-            Ok((_, bytes)) => {
+            Ok(snapshot) => {
+                let bytes = std::fs::read(snapshot.path())?;
                 let mut state: Value = serde_json::from_slice(&bytes)?;
                 if matches!(state["status"].as_str(), Some("admitted" | "running")) {
                     state["status"] = json!("interrupted");
@@ -424,8 +412,8 @@ impl CadWorker {
             }
             Err(printable_workspace::WsError::NotFound(_)) => {
                 // Older completed builds remain retrievable without inventing progress.
-                match self.workspace.read_artifact(&format!("{output}/report.json")) {
-                    Ok((_, bytes)) => Ok(json!({"build":handle,"status":"completed","phase":"terminal","result":serde_json::from_slice::<Value>(&bytes)?,"history":"legacy_report"})),
+                match self.workspace.snapshot_artifact(&format!("{output}/report.json")) {
+                    Ok(snapshot) => Ok(json!({"build":handle,"status":"completed","phase":"terminal","result":serde_json::from_slice::<Value>(&std::fs::read(snapshot.path())?)?,"history":"legacy_report"})),
                     Err(printable_workspace::WsError::NotFound(_)) => Err(ToolError::Cad("no retained CAD state or completed report was found; inspect the output directory before submitting again".into())),
                     Err(error) => Err(error.into()),
                 }
@@ -492,7 +480,7 @@ impl CadWorker {
             serde_json::to_vec(&native)?,
         )?;
         let result = async {
-            self.workspace.write_artifact(
+            self.workspace.write_generated_bytes(
                 &format!("{output}/request.json"),
                 &serde_json::to_vec(&json!({"request":request,"sources":sources}))?,
                 true,
@@ -546,7 +534,7 @@ impl CadWorker {
         }
         .await;
         if let Err(ref error) = result {
-            self.workspace.write_artifact(
+            self.workspace.write_generated_bytes(
                 &format!("{output}/failure.json"),
                 &serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 false,
@@ -642,7 +630,7 @@ impl CadWorker {
             result["measurement"] =
                 json!({"path":retained,"sha256":projects::revisions::digest(&bytes)});
         }
-        self.workspace.write_artifact(
+        self.workspace.write_generated_bytes(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
             false,
@@ -735,6 +723,55 @@ mod tests {
 
     fn request() -> CadRequest {
         serde_json::from_value(json!({"action":"model","params":{"project_id":"cad","source":"source.py","output_dir":"builds/one"}})).unwrap()
+    }
+
+    #[test]
+    fn generated_reports_and_state_exceed_inline_transport_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let worker = CadWorker::new(
+            workspace.clone(),
+            root.path().join("unused"),
+            root.path().join("unused.py"),
+        );
+        let staging = root.path().join("native");
+        std::fs::create_dir_all(staging.join("output")).unwrap();
+        for name in ["model.step", "model.stl", "model.glb", "components.json"] {
+            std::fs::write(staging.join("output").join(name), b"native artifact").unwrap();
+        }
+        let metadata = "x".repeat(printable_workspace::MAX_TRANSFER_BYTES as usize + 1);
+        std::fs::write(
+            staging.join("output/report.json"),
+            serde_json::to_vec(&json!({"metadata": metadata})).unwrap(),
+        )
+        .unwrap();
+        let result = worker
+            .commit(
+                &staging,
+                "projects/cad/large",
+                "cad",
+                None,
+                &qualification::Requirements::default(),
+            )
+            .unwrap();
+        assert!(
+            workspace
+                .stat_artifact("projects/cad/large/report.json")
+                .unwrap()
+                .size_bytes
+                > printable_workspace::MAX_TRANSFER_BYTES
+        );
+        let state = json!({"status":"completed","result":result});
+        worker
+            .persist_state("projects/cad/large", &state, false)
+            .unwrap();
+        assert!(
+            workspace
+                .stat_artifact("projects/cad/large/state.json")
+                .unwrap()
+                .size_bytes
+                > printable_workspace::MAX_TRANSFER_BYTES
+        );
     }
 
     #[test]

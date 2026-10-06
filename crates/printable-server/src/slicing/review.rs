@@ -22,7 +22,7 @@ pub struct ReviewParams {
     pub last_layer: u32,
     #[serde(default)]
     pub features: Vec<String>,
-    pub material: Option<u16>,
+    pub material: Option<usize>,
     #[serde(default)]
     pub include_travel: bool,
     #[serde(default = "default_size")]
@@ -43,7 +43,7 @@ struct Segment {
     from: [f64; 3],
     to: [f64; 3],
     feature: String,
-    material: u16,
+    material: usize,
     travel: bool,
 }
 
@@ -55,7 +55,7 @@ struct Parser {
     relative_e: bool,
     layer: u32,
     feature: String,
-    material: u16,
+    material: usize,
     layer_count: u32,
     segments: Vec<Segment>,
     lengths: BTreeMap<String, f64>,
@@ -119,11 +119,9 @@ impl Parser {
                 ));
             }
             _ if command.starts_with('T') => {
-                if let Ok(tool) = command[1..].parse::<u16>()
-                    && tool < 16
-                {
-                    self.material = tool;
-                }
+                self.material = command[1..]
+                    .parse::<usize>()
+                    .map_err(|_| slice_error("tool index exceeds the supported integer range"))?;
             }
             "G0" | "G00" | "G1" | "G01" | "G2" | "G02" | "G3" | "G03" | "G92" => {
                 let mut values = BTreeMap::new();
@@ -494,6 +492,23 @@ mod tests {
             parser.line(arc, &filtered).unwrap();
             assert!(parser.segments.is_empty());
         }
+    }
+
+    #[test]
+    fn additional_material_slots_keep_their_selected_identity() {
+        let mut request = review_request();
+        request.material = Some(16);
+        let mut parser = Parser::new();
+        for line in ["; CHANGE_LAYER", "M83", "T16", "G1 X10 E1"] {
+            parser.line(line, &request).unwrap();
+        }
+        assert_eq!(parser.segments.len(), 1);
+        assert_eq!(parser.segments[0].material, 16);
+        request.material = Some(65536);
+        parser.line("T65536", &request).unwrap();
+        parser.line("G1 X20 E1", &request).unwrap();
+        assert_eq!(parser.segments[1].material, 65536);
+        assert!(parser.line("T-1", &request).is_err());
     }
 
     #[test]
