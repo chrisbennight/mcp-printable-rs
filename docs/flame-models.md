@@ -32,6 +32,7 @@ python3 scripts/flame_model_convert.py flame2023_Open.pkl \
 `--variant` is a lowercase label recorded in the output. The command prints the
 output's SHA-256 and metadata as JSON. It writes through a temporary file in the
 destination directory, so a failed conversion leaves any existing file in place.
+Sources larger than 256 MiB are refused; the published files are about 53 MB.
 
 Older releases do not record how many basis components describe expression.
 When the basis has the published 400 components, the converter uses FLAME's

@@ -24,6 +24,7 @@ import math
 import os
 from pathlib import Path
 import pickle
+import pickletools
 import re
 import struct
 import sys
@@ -31,7 +32,12 @@ import tempfile
 
 
 FORMAT = "printable-flame/1"
-MAX_SOURCE_BYTES = 1 << 30
+# Published models are about 53 MB. The cap bounds memory, which grows
+# linearly with the source.
+MAX_SOURCE_BYTES = 256 << 20
+# Published models use well under a hundred memo slots.
+MAX_MEMO_INDEX = 1 << 16
+MEMO_STORES = {"PUT", "BINPUT", "LONG_BINPUT"}
 VARIANT = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 SOURCE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Published FLAME bases order 300 identity components before 100 expression
@@ -165,6 +171,12 @@ class _RestrictedUnpickler(pickle.Unpickler):
 def load_source(data: bytes) -> dict:
     """Decode a FLAME model pickle into stand-in objects without running foreign code."""
     try:
+        # The C unpickler sizes its memo table from the largest explicit index,
+        # so a few bytes could demand an arbitrarily large allocation. Decoding
+        # the opcodes first builds no objects.
+        for opcode, argument, _ in pickletools.genops(data):
+            if opcode.name in MEMO_STORES and argument > MAX_MEMO_INDEX:
+                raise ModelError("source declares a memo index far beyond any FLAME model")
         model = _RestrictedUnpickler(io.BytesIO(data), encoding="latin1").load()
     except ModelError:
         raise

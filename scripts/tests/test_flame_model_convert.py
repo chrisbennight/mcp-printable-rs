@@ -214,6 +214,13 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelError, "refusing"):
             convert(P.dumps(os.system, protocol=2), "hostile")
 
+    def test_oversized_memo_index_is_refused_before_unpickling(self):
+        # Just past the limit, so a regression fails here without a large allocation.
+        index = struct.pack("<I", convert_module.MAX_MEMO_INDEX + 1)
+        hostile = P.PROTO + bytes([2]) + P.NONE + P.LONG_BINPUT + index + P.STOP
+        with self.assertRaisesRegex(ModelError, "memo index"):
+            convert(hostile, "memo")
+
     def test_truncated_source_is_refused(self):
         with self.assertRaisesRegex(ModelError, "not a readable model pickle"):
             convert(model(Legacy())[:-200], "truncated", expression_components=2)
