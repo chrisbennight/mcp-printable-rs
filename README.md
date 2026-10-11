@@ -146,6 +146,7 @@ processes still share physical GPU resources.
 - [Architecture](docs/architecture.md), [operations](docs/operations.md), and [render recovery](docs/render-worker.md)
 - [Contributing](CONTRIBUTING.md) and [continuous integration](docs/continuous-integration.md)
 - [Security and reporting](SECURITY.md)
+- [FLAME head model preparation](docs/flame-models.md)
 - [License and bundled components](THIRD_PARTY_NOTICES.md)
 - [Publication scope and retained history](docs/publication.md)
 
