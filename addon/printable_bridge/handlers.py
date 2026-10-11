@@ -1235,6 +1235,10 @@ class BlenderHandlers:
             raise HandlerError(
                 f"{name} was made from head model {created_from}, not {variant}"
             )
+        # Edit Mode keeps a separate mesh that would overwrite these positions
+        # when the user leaves it.
+        if obj.mode == "EDIT":
+            raise HandlerError(f"{name} is in Edit Mode; leave Edit Mode and retry")
         if len(obj.data.vertices) != len(vertices):
             raise HandlerError(
                 f"{name} no longer has the head's vertex count; its mesh was edited"

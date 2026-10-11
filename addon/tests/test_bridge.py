@@ -4505,6 +4505,7 @@ class FakeHeadObject:
     def __init__(self, name: str, mesh: Any, kind: str = "MESH") -> None:
         self.name = name
         self.type = kind
+        self.mode = "OBJECT"
         self.data = mesh
         self.location = (0.0, 0.0, 0.0)
         self.rotation_euler = (0.0, 0.0, 0.0)
@@ -4610,6 +4611,17 @@ class FlameHeadHandlerTests(unittest.TestCase):
             request.update(params)
             with self.subTest(message), self.assertRaisesRegex(HandlerError, message):
                 self.handlers.dispatch("update_flame_head", request)
+        self.assertEqual(list(self.objects["Head"].data.vertices), [tuple(p) for p in self.VERTICES])
+
+    def test_update_refuses_a_head_in_edit_mode(self) -> None:
+        self.create()
+        self.objects["Head"].mode = "EDIT"
+        moved = [[x + 1.0, y, z] for x, y, z in self.VERTICES]
+        with self.assertRaisesRegex(HandlerError, "in Edit Mode"):
+            self.handlers.dispatch(
+                "update_flame_head",
+                {"object": "Head", "variant": "flame2023_open", "vertices": moved},
+            )
         self.assertEqual(list(self.objects["Head"].data.vertices), [tuple(p) for p in self.VERTICES])
 
 
