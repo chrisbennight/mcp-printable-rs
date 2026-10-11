@@ -421,9 +421,10 @@ mod tests {
         let full = jsonschema::validator_for(&full).unwrap();
         for (action, value) in [("revise", revised), ("revision", reopened)] {
             full.validate(&value).unwrap();
-            let contract = crate::resources::contracts::read(&format!(
-                "printable://contracts/project/{action}"
-            ))
+            let contract = crate::resources::contracts::read(
+                &format!("printable://contracts/project/{action}"),
+                false,
+            )
             .unwrap();
             let selected = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
             selected.validate(&value).unwrap();

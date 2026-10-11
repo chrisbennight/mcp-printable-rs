@@ -127,6 +127,12 @@ workflow!(InspectRequest {
     EditingState(EditingStateParams) => "printable_editing_state_get",
 });
 
+workflow!(HeadRequest {
+    Models(HeadModelsParams) => "printable_flame_models",
+    Create(HeadCreateParams) => "printable_flame_create",
+    Update(HeadUpdateParams) => "printable_flame_update",
+});
+
 workflow!(EditRequest {
     Primitive(PrimitiveCreateParams) => "printable_primitive_create",
     Boolean(BooleanApplyParams) => "printable_boolean_apply",
@@ -236,6 +242,7 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
     match name {
         "inspect" => de::<InspectRequest>(arguments)?.resolve(),
         "edit" => de::<EditRequest>(arguments)?.resolve(),
+        HEAD => de::<HeadRequest>(arguments)?.resolve(),
         "scene" => de::<SceneRequest>(arguments)?.resolve(),
         "scad_build" => de::<ScadRequest>(arguments)?.resolve(),
         "cad_build" => ResolvedCall::new(
@@ -302,6 +309,17 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
 
 pub fn lookup(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|tool| tool.name == name)
+}
+
+/// The workflow tool that exists only while FLAME head models are mounted.
+pub const HEAD: &str = "head";
+
+/// Tools this server advertises and accepts. `head` is included only when a
+/// FLAME model is mounted, so clients never see a capability that cannot be served.
+pub fn advertised(head_available: bool) -> impl Iterator<Item = &'static ToolDef> {
+    TOOLS
+        .iter()
+        .filter(move |tool| tool.name != HEAD || head_available)
 }
 
 pub const TOOLS: &[ToolDef] = &[
@@ -411,6 +429,12 @@ pub const TOOLS: &[ToolDef] = &[
         name: "project",
         description: "Create/discover projects, resolve shared paths, retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: HEAD,
+        description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
+        schema: workflow_schema_of::<HeadRequest>,
         annotations: write_annotations,
     },
     ToolDef {
@@ -524,6 +548,37 @@ mod tests {
     }
 
     #[test]
+    fn head_is_advertised_only_with_mounted_models() {
+        let names = |available| {
+            advertised(available)
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>()
+        };
+        assert!(!names(false).contains(&HEAD));
+        assert!(names(true).contains(&HEAD));
+        assert_eq!(names(true).len(), TOOLS.len());
+        assert_eq!(names(false).len(), TOOLS.len() - 1);
+    }
+
+    #[test]
+    fn head_actions_resolve_to_flame_operations() {
+        for (action, operation) in [
+            ("models", "printable_flame_models"),
+            ("create", "printable_flame_create"),
+            ("update", "printable_flame_update"),
+        ] {
+            let params = if action == "update" {
+                json!({"object": "Head"})
+            } else {
+                json!({})
+            };
+            let call = resolve(HEAD, json!({"action": action, "params": params})).unwrap();
+            assert_eq!(call.name, operation);
+        }
+        assert!(resolve(HEAD, json!({"action": "create", "params": {"scale": 2}})).is_err());
+    }
+
+    #[test]
     fn public_workflow_catalog_preserves_the_agreed_product_boundaries() {
         assert_eq!(
             TOOLS.iter().map(|tool| tool.name).collect::<Vec<_>>(),
@@ -546,6 +601,7 @@ mod tests {
                 "analyze_assembly",
                 "job",
                 "project",
+                "head",
                 "artifact",
             ],
         );
@@ -588,6 +644,10 @@ mod tests {
                 json!({"action": "mesh", "params": {"source": "cube(1);", "path": "part.stl"}}),
             ),
             ("job", json!({"action": "list", "params": {"limit": 10}})),
+            (
+                "head",
+                json!({"action": "create", "params": {"identity": [0.5], "pose": {"jaw": [0.2, 0.0, 0.0]}}}),
+            ),
             (
                 "artifact",
                 json!({"action": "upload_chunk", "params": {"upload_id": "test", "data_base64": "YQ=="}}),

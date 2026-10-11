@@ -2239,6 +2239,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "printable-blender",
+ "printable-flame",
  "printable-geom",
  "printable-imaging",
  "printable-scad",

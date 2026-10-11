@@ -11,13 +11,13 @@ use safetensors::{Dtype, serialize};
 
 use crate::model::{FlameModel, JOINT_COUNT, POSE_COMPONENTS};
 
-pub(crate) const ROOT: usize = 0;
+pub const ROOT: usize = 0;
 const VERTICES: usize = 4;
 const IDENTITY_COMPONENTS: usize = 2;
 const EXPRESSION_COMPONENTS: usize = 1;
 const COMPONENTS: usize = IDENTITY_COMPONENTS + EXPRESSION_COMPONENTS;
 
-pub(crate) struct Fixture {
+pub struct Fixture {
     pub template: Vec<f32>,
     pub faces: Vec<u32>,
     pub shapedirs: Vec<f32>,

@@ -10,3 +10,7 @@ repository.workspace = true
 # Reference reader for the format written by scripts/flame_model_convert.py.
 safetensors = "0.8.0"
 thiserror = "2"
+
+[features]
+# A small serialized model for tests in dependent crates.
+fixture = []

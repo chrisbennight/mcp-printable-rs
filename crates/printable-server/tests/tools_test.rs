@@ -464,6 +464,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         cad_endpoint: None,
         slicer_endpoint: None,
         printers: None,
+        flame: None,
         scad_concurrency: 2,
         ffmpeg_bin: PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,
@@ -1464,9 +1465,10 @@ async fn storage_actions_report_usage_and_preserve_live_and_retained_inputs() {
         let result = dispatch(&ws, &up, &blender, &cfg, call.name, call.arguments)
             .await
             .unwrap();
-        let contract = printable_server::resources::contracts::read(&format!(
-            "printable://contracts/artifact/{action}"
-        ))
+        let contract = printable_server::resources::contracts::read(
+            &format!("printable://contracts/artifact/{action}"),
+            false,
+        )
         .unwrap();
         jsonschema::validator_for(&contract["outputSchema"])
             .unwrap()
@@ -2397,7 +2399,7 @@ async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     let compact = selected.response.apply(report.clone());
     assert_eq!(compact["report"]["assessment"], *assessment);
     let contract =
-        printable_server::resources::contracts::read("printable://contracts/validate_mesh")
+        printable_server::resources::contracts::read("printable://contracts/validate_mesh", false)
             .unwrap();
     let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
     validator.validate(&compact).unwrap();
@@ -5212,4 +5214,209 @@ async fn durable_still_job_is_submitted_polled_and_discovered_through_mcp_tools(
         serde_json::from_str(&response.content[0].as_text().expect("artifact text").text)
             .expect("artifact JSON");
     assert_eq!(artifacts["frames"][0]["media_type"], json!("image/png"));
+}
+
+fn head_library(variants: &[&str]) -> Arc<printable_server::flame::FlameLibrary> {
+    let directory = tempfile::tempdir().unwrap();
+    for variant in variants {
+        let mut fixture = printable_flame::fixture::Fixture::default();
+        fixture.metadata.insert("variant".into(), (*variant).into());
+        std::fs::write(
+            directory.path().join(format!("{variant}.safetensors")),
+            fixture.bytes(),
+        )
+        .unwrap();
+    }
+    Arc::new(printable_server::flame::FlameLibrary::load(
+        directory.path(),
+    ))
+}
+
+fn head_server(
+    fake: &FakeAddon,
+    library: Option<Arc<printable_server::flame::FlameLibrary>>,
+) -> PrintableServer {
+    let mut cfg = settings(&fake.host(), fake.port());
+    cfg.flame = library;
+    PrintableServer::new(
+        workspace(None),
+        Arc::new(client(&fake.host(), fake.port())),
+        Arc::new(cfg),
+    )
+}
+
+fn head_call(arguments: Value) -> CallToolRequestParams {
+    CallToolRequestParams::new("head").with_arguments(arguments.as_object().unwrap().clone())
+}
+
+const HEAD_SCENE_STATE: &str =
+    r#"{"generation": "11111111-1111-4111-8111-111111111111", "revision": 3}"#;
+
+#[tokio::test]
+async fn head_tool_is_advertised_only_with_a_mounted_model() {
+    let fake = FakeAddon::spawn(|_, _| panic!("listing must not invoke Blender")).await;
+    let advertises = |server: &PrintableServer| {
+        server
+            .workflow_tools_payload()
+            .tools
+            .iter()
+            .any(|tool| tool.name == "head")
+    };
+    for library in [None, Some(head_library(&[]))] {
+        let server = head_server(&fake, library);
+        assert!(!advertises(&server));
+        let call = server
+            .invoke_tool(head_call(json!({"action": "models", "params": {}})))
+            .await;
+        assert!(call.is_err(), "an unadvertised tool must not be callable");
+    }
+    assert!(advertises(&head_server(
+        &fake,
+        Some(head_library(&["test"]))
+    )));
+}
+
+#[tokio::test]
+async fn head_create_sends_a_millimetre_mesh_matching_the_output_contract() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&captured);
+    let fake = FakeAddon::spawn(move |command, params| {
+        observed.lock().unwrap().push((command, params.clone()));
+        let mut result =
+            json!({"name": params["name"], "type": "MESH", "vertices": 4, "polygons": 4});
+        result["scene_state"] = serde_json::from_str(HEAD_SCENE_STATE).unwrap();
+        ResponseSpec::Success {
+            result,
+            addon_version: Some("0.4.0".into()),
+        }
+    })
+    .await;
+    let server = head_server(&fake, Some(head_library(&["test"])));
+    let result = server
+        .invoke_tool(head_call(json!({
+            "action": "create",
+            "params": {"name": "Bust", "identity": [0.5]}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    let schema = server
+        .workflow_tools_payload()
+        .tools
+        .into_iter()
+        .find(|tool| tool.name == "head")
+        .unwrap()
+        .output_schema
+        .unwrap();
+    let validator = jsonschema::validator_for(&Value::Object(schema.as_ref().clone())).unwrap();
+    assert!(validator.is_valid(&value), "{value}");
+    assert_eq!(value["head"]["units"], "millimetres");
+    assert_eq!(value["head"]["variant"], "test");
+
+    let calls = captured.lock().unwrap();
+    let (command, params) = &calls[0];
+    assert_eq!(command, "create_flame_head");
+    assert_eq!(params["name"], "Bust");
+    assert_eq!(params["variant"], "test");
+    // Vertex 0 is (0.25, 0.5, 0) m plus 0.5 of its first identity component
+    // (0, 0.375, 0.75), delivered in millimetres.
+    assert_eq!(params["vertices"][0], json!([250.0, 687.5, 375.0]));
+    assert_eq!(
+        params["faces"],
+        json!([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+    );
+}
+
+#[tokio::test]
+async fn head_requests_are_validated_before_blender_is_contacted() {
+    let fake = FakeAddon::spawn(|_, _| ResponseSpec::Success {
+        result: json!({}),
+        addon_version: Some("0.4.0".into()),
+    })
+    .await;
+    let server = head_server(&fake, Some(head_library(&["alpha", "beta"])));
+    for (params, message) in [
+        (json!({"variant": "alpha", "identity": [6.0]}), "within"),
+        (
+            json!({"variant": "alpha", "expression": [0.0, 0.0]}),
+            "coefficients",
+        ),
+        (
+            json!({"variant": "alpha", "pose": {"jaw": [4.0, 0.0, 0.0]}}),
+            "pose.jaw",
+        ),
+        (json!({"variant": "gamma"}), "unknown head model"),
+        (json!({}), "choose a head model"),
+    ] {
+        let result = server
+            .invoke_tool(head_call(json!({"action": "create", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+    assert!(
+        fake.commands().is_empty(),
+        "invalid requests reached Blender"
+    );
+}
+
+#[tokio::test]
+async fn head_update_resends_positions_for_the_named_object() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&captured);
+    let fake = FakeAddon::spawn(move |command, params| {
+        observed.lock().unwrap().push((command, params.clone()));
+        let mut result = json!({"name": params["object"], "type": "MESH"});
+        result["scene_state"] = serde_json::from_str(HEAD_SCENE_STATE).unwrap();
+        ResponseSpec::Success {
+            result,
+            addon_version: Some("0.4.0".into()),
+        }
+    })
+    .await;
+    let server = head_server(&fake, Some(head_library(&["test"])));
+    let result = server
+        .invoke_tool(head_call(json!({
+            "action": "update",
+            "params": {"object": "Bust", "pose": {"global": [0.0, 0.0, 0.1]}}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let calls = captured.lock().unwrap();
+    let (command, params) = &calls[0];
+    assert_eq!(command, "update_flame_head");
+    assert_eq!(
+        (params["object"].as_str(), params["variant"].as_str()),
+        (Some("Bust"), Some("test"))
+    );
+    assert_eq!(params["vertices"].as_array().unwrap().len(), 4);
+    assert!(
+        params.get("faces").is_none(),
+        "updates keep the existing triangles"
+    );
+}
+
+#[tokio::test]
+async fn head_models_reports_mounted_variants_without_blender() {
+    let fake = FakeAddon::spawn(|_, _| panic!("listing models must not invoke Blender")).await;
+    let server = head_server(&fake, Some(head_library(&["alpha", "beta"])));
+    let result = server
+        .invoke_tool(head_call(json!({"action": "models", "params": {}})))
+        .await
+        .unwrap();
+    let value = result.structured_content.unwrap();
+    let variants: Vec<_> = value["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["variant"].as_str().unwrap())
+        .collect();
+    assert_eq!(variants, ["alpha", "beta"]);
+    assert_eq!(value["models"][0]["identity_components"], 2);
 }
