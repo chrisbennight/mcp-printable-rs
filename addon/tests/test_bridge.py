@@ -4481,5 +4481,149 @@ class ServerTests(unittest.TestCase):
             connection.close()
 
 
+class FakeVertices(list):
+    def foreach_set(self, attribute: str, values: list[float]) -> None:
+        assert attribute == "co"
+        self[:] = [tuple(values[index:index + 3]) for index in range(0, len(values), 3)]
+
+
+class FakeHeadMesh:
+    def __init__(self) -> None:
+        self.vertices = FakeVertices()
+        self.polygons: list[tuple[int, int, int]] = []
+        self.updates = 0
+
+    def from_pydata(self, vertices, edges, faces) -> None:
+        self.vertices = FakeVertices(vertices)
+        self.polygons = list(faces)
+
+    def update(self) -> None:
+        self.updates += 1
+
+
+class FakeHeadObject:
+    def __init__(self, name: str, mesh: Any, kind: str = "MESH") -> None:
+        self.name = name
+        self.type = kind
+        self.mode = "OBJECT"
+        self.data = mesh
+        self.location = (0.0, 0.0, 0.0)
+        self.rotation_euler = (0.0, 0.0, 0.0)
+        self.scale = (1.0, 1.0, 1.0)
+        self.dimensions = (0.0, 0.0, 0.0)
+        self.properties: dict[str, Any] = {}
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.properties[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.properties.get(key, default)
+
+
+class FlameHeadHandlerTests(unittest.TestCase):
+    VERTICES = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+    FACES = [[0, 1, 2], [0, 2, 3]]
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.objects: dict[str, FakeHeadObject] = {}
+        self.meshes: list[FakeHeadMesh] = []
+        self.linked: list[FakeHeadObject] = []
+
+        def new_mesh(name: str) -> FakeHeadMesh:
+            mesh = FakeHeadMesh()
+            self.meshes.append(mesh)
+            return mesh
+
+        def new_object(name: str, mesh: FakeHeadMesh) -> FakeHeadObject:
+            self.objects[name] = FakeHeadObject(name, mesh)
+            return self.objects[name]
+
+        bpy = SimpleNamespace(
+            data=SimpleNamespace(
+                scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))],
+                objects=SimpleNamespace(get=self.objects.get, new=new_object),
+                meshes=SimpleNamespace(new=new_mesh),
+            ),
+            context=SimpleNamespace(
+                scene=SimpleNamespace(
+                    collection=SimpleNamespace(objects=SimpleNamespace(link=self.linked.append))
+                )
+            ),
+        )
+        self.handlers = BlenderHandlers(config(Path(self.directory.name), 9876), lambda: False, bpy)
+
+    def tearDown(self) -> None:
+        self.handlers.close()
+        self.directory.cleanup()
+
+    def create(self, **overrides: Any) -> dict[str, Any]:
+        params = {"name": "Head", "variant": "flame2023_open",
+                  "vertices": self.VERTICES, "faces": self.FACES}
+        params.update(overrides)
+        return self.handlers.dispatch("create_flame_head", params)
+
+    def test_head_is_created_and_records_its_variant(self) -> None:
+        summary = self.create()
+        head = self.objects["Head"]
+        self.assertEqual(self.linked, [head])
+        self.assertEqual(head.get("printable_flame_variant"), "flame2023_open")
+        self.assertEqual(list(head.data.vertices), [tuple(point) for point in self.VERTICES])
+        self.assertEqual(head.data.polygons, [(0, 1, 2), (0, 2, 3)])
+        self.assertEqual((summary["vertices"], summary["polygons"]), (4, 2))
+
+    def test_creation_validates_everything_before_creating(self) -> None:
+        self.objects["Taken"] = FakeHeadObject("Taken", FakeHeadMesh())
+        for overrides, message in [
+            ({"faces": [[0, 1, 4]]}, "distinct vertex indices"),
+            ({"faces": [[0, 1, 1]]}, "distinct vertex indices"),
+            ({"vertices": [[0.0, 0.0]]}, "three-component points"),
+            ({"vertices": [[0.0, float("nan"), 0.0]]}, "three-component points"),
+            ({"name": "Taken"}, "object already exists"),
+            ({"scale": 2}, "unknown parameter"),
+        ]:
+            with self.subTest(message), self.assertRaisesRegex(HandlerError, message):
+                self.create(**overrides)
+        self.assertEqual(self.meshes, [])
+        self.assertEqual(self.linked, [])
+
+    def test_update_replaces_vertex_positions_in_place(self) -> None:
+        self.create()
+        moved = [[x + 1.0, y, z] for x, y, z in self.VERTICES]
+        summary = self.handlers.dispatch(
+            "update_flame_head", {"object": "Head", "variant": "flame2023_open", "vertices": moved}
+        )
+        mesh = self.objects["Head"].data
+        self.assertEqual(list(mesh.vertices), [tuple(point) for point in moved])
+        self.assertEqual(mesh.polygons, [(0, 1, 2), (0, 2, 3)])
+        self.assertEqual(summary["name"], "Head")
+
+    def test_update_refuses_objects_it_did_not_make(self) -> None:
+        self.create()
+        self.objects["Cube"] = FakeHeadObject("Cube", FakeHeadMesh())
+        for params, message in [
+            ({"object": "Missing"}, "object not found"),
+            ({"object": "Cube"}, "not a head made by the head tool"),
+            ({"variant": "flame2020_generic"}, "made from head model flame2023_open"),
+            ({"vertices": self.VERTICES[:3]}, "mesh was edited"),
+        ]:
+            request = {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES}
+            request.update(params)
+            with self.subTest(message), self.assertRaisesRegex(HandlerError, message):
+                self.handlers.dispatch("update_flame_head", request)
+        self.assertEqual(list(self.objects["Head"].data.vertices), [tuple(p) for p in self.VERTICES])
+
+    def test_update_refuses_a_head_in_edit_mode(self) -> None:
+        self.create()
+        self.objects["Head"].mode = "EDIT"
+        moved = [[x + 1.0, y, z] for x, y, z in self.VERTICES]
+        with self.assertRaisesRegex(HandlerError, "in Edit Mode"):
+            self.handlers.dispatch(
+                "update_flame_head",
+                {"object": "Head", "variant": "flame2023_open", "vertices": moved},
+            )
+        self.assertEqual(list(self.objects["Head"].data.vertices), [tuple(p) for p in self.VERTICES])
+
+
 if __name__ == "__main__":
     unittest.main()

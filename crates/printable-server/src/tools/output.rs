@@ -223,6 +223,19 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             }),
             &["scene_state"],
         ),
+        "head" => json!({"type": "object", "anyOf": [
+            {"required": ["models", "skipped"], "properties": {
+                "models": {"type": "array"}, "skipped": {"type": "array"}
+            }},
+            {"required": ["scene_state", "name", "head"], "properties": {
+                "scene_state": scene_state(), "name": {"type": "string"},
+                "vertices": {"type": "integer"}, "polygons": {"type": "integer"},
+                "head": {"type": "object", "required": ["variant", "units", "joints"], "properties": {
+                    "variant": {"type": "string"}, "units": {"const": "millimetres"},
+                    "joints": {"type": "object"}
+                }}
+            }}
+        ]}),
         "edit" | "scene" => object(
             json!({
                 "scene_state": scene_state(), "name": {"type": "string"},

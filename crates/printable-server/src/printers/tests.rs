@@ -755,7 +755,8 @@ async fn review_distinguishes_exact_variants_and_explicit_transparency_without_m
     let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
     let review=service.control(serde_json::from_value(json!({"action":"review","params":{"source":{"kind":"library","id":9},"printer_id":1,"plate":1,"ams_mapping":[0,128],"flow_calibration":false,"options":{"preheat_override":"off"},"requirements":[{"slot_id":1,"product_name":"PLA Matte"},{"slot_id":1,"product_name":"Bambu PLA Basic"},{"slot_id":2,"subtype":"transparent","brand":"Example"}]}})).unwrap(),&ws).await.unwrap();
     validate("print", &review);
-    let contract = crate::resources::contracts::read("printable://contracts/print/review").unwrap();
+    let contract =
+        crate::resources::contracts::read("printable://contracts/print/review", false).unwrap();
     assert_eq!(contract["output_schema_scope"], "action");
     let selected = &contract["outputSchema"];
     assert!(

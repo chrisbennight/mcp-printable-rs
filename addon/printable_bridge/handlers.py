@@ -294,6 +294,56 @@ def _only_keys(params: dict[str, Any], allowed: set[str]) -> None:
         raise HandlerError(f"unknown parameter: {unknown[0]}")
 
 
+FLAME_VARIANT = "printable_flame_variant"
+
+
+def _points(params: dict[str, Any], name: str) -> list[tuple[float, float, float]]:
+    value = params.get(name)
+    if not isinstance(value, list) or not value:
+        raise HandlerError(f"{name} must be a non-empty list of points")
+    points = []
+    for point in value:
+        if not (
+            isinstance(point, list)
+            and len(point) == 3
+            and all(
+                isinstance(coordinate, (int, float))
+                and not isinstance(coordinate, bool)
+                and math.isfinite(coordinate)
+                for coordinate in point
+            )
+        ):
+            raise HandlerError(f"{name} must contain finite three-component points")
+        points.append((float(point[0]), float(point[1]), float(point[2])))
+    return points
+
+
+def _triangles(
+    params: dict[str, Any], name: str, vertex_count: int
+) -> list[tuple[int, int, int]]:
+    value = params.get(name)
+    if not isinstance(value, list) or not value:
+        raise HandlerError(f"{name} must be a non-empty list of triangles")
+    triangles = []
+    for triangle in value:
+        if not (
+            isinstance(triangle, list)
+            and len(triangle) == 3
+            and all(
+                isinstance(index, int)
+                and not isinstance(index, bool)
+                and 0 <= index < vertex_count
+                for index in triangle
+            )
+            and len(set(triangle)) == 3
+        ):
+            raise HandlerError(
+                f"{name} must contain three distinct vertex indices per triangle"
+            )
+        triangles.append((triangle[0], triangle[1], triangle[2]))
+    return triangles
+
+
 def _optional_name(params: dict[str, Any]) -> str | None:
     if "name" not in params:
         return None
@@ -335,6 +385,8 @@ class BlenderHandlers:
             "bridge_status": self._bridge_status,
             "clear_scene": self._clear_scene,
             "create_primitive": self._create_primitive,
+            "create_flame_head": self._create_flame_head,
+            "update_flame_head": self._update_flame_head,
             "animate_rotation": self._animate_rotation,
             "execute_code": self._execute_code,
             "export_stl": self._export_stl,
@@ -1149,6 +1201,52 @@ class BlenderHandlers:
         obj = self._bpy.context.active_object
         if name is not None:
             obj.name = name
+        return self._object_summary(obj)
+
+    def _create_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"name", "variant", "vertices", "faces"})
+        name = _string(params, "name")
+        variant = _string(params, "variant")
+        vertices = _points(params, "vertices")
+        faces = _triangles(params, "faces", len(vertices))
+        if self._bpy.data.objects.get(name) is not None:
+            raise HandlerError(f"object already exists: {name}")
+        mesh = self._bpy.data.meshes.new(name)
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update()
+        obj = self._bpy.data.objects.new(name, mesh)
+        self._bpy.context.scene.collection.objects.link(obj)
+        # Updates are accepted only for the variant that produced the mesh.
+        obj[FLAME_VARIANT] = variant
+        return self._object_summary(obj)
+
+    def _update_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"object", "variant", "vertices"})
+        name = _string(params, "object")
+        variant = _string(params, "variant")
+        vertices = _points(params, "vertices")
+        obj = self._bpy.data.objects.get(name)
+        if obj is None:
+            raise HandlerError(f"object not found: {name}")
+        created_from = obj.get(FLAME_VARIANT) if obj.type == "MESH" else None
+        if created_from is None:
+            raise HandlerError(f"{name} is not a head made by the head tool")
+        if created_from != variant:
+            raise HandlerError(
+                f"{name} was made from head model {created_from}, not {variant}"
+            )
+        # Edit Mode keeps a separate mesh that would overwrite these positions
+        # when the user leaves it.
+        if obj.mode == "EDIT":
+            raise HandlerError(f"{name} is in Edit Mode; leave Edit Mode and retry")
+        if len(obj.data.vertices) != len(vertices):
+            raise HandlerError(
+                f"{name} no longer has the head's vertex count; its mesh was edited"
+            )
+        obj.data.vertices.foreach_set(
+            "co", [coordinate for point in vertices for coordinate in point]
+        )
+        obj.data.update()
         return self._object_summary(obj)
 
     def _boolean(self, params: dict[str, Any]) -> dict[str, Any]:

@@ -74,10 +74,10 @@ fn selected_schema(schema: &Value, action: &str) -> Option<Value> {
 }
 
 /// Return only server-owned schemas; URI segments never access the filesystem.
-pub fn read(uri: &str) -> Option<Value> {
+/// Contracts cover the same tools the server advertises.
+pub fn read(uri: &str, head_available: bool) -> Option<Value> {
     if uri == ROOT {
-        let tools: Vec<_> = workflows::TOOLS
-            .iter()
+        let tools: Vec<_> = workflows::advertised(head_available)
             .map(|tool| {
                 let schema = Value::Object((tool.schema)().as_ref().clone());
                 let actions: Vec<_> = variants(&schema).iter().filter_map(action_name).collect();
@@ -95,7 +95,7 @@ pub fn read(uri: &str) -> Option<Value> {
     if segments.next().is_some() || action == Some("") {
         return None;
     }
-    let tool = workflows::lookup(name)?;
+    let tool = workflows::advertised(head_available).find(|tool| tool.name == name)?;
     let full_schema = Value::Object((tool.schema)().as_ref().clone());
     let input = match action {
         Some(action) => selected_schema(&full_schema, action)?,
@@ -150,7 +150,7 @@ mod tests {
                 Some(action) => format!("{ROOT}/{tool}/{action}"),
                 None => format!("{ROOT}/{tool}"),
             };
-            let contract = read(&uri).unwrap();
+            let contract = read(&uri, false).unwrap();
             let description = contract["description"].as_str().unwrap();
             assert_eq!(description, workflows::lookup(tool).unwrap().description);
             for term in terms {
@@ -161,20 +161,23 @@ mod tests {
 
     #[test]
     fn every_advertised_action_has_a_self_contained_contract() {
-        let index = read(ROOT).unwrap();
-        for entry in index["tools"].as_array().unwrap() {
-            let uri = entry["uri"].as_str().unwrap();
-            assert!(read(uri).is_some());
-            for action in entry["actions"].as_array().unwrap() {
-                let contract = read(&format!("{uri}/{}", action.as_str().unwrap())).unwrap();
-                jsonschema::validator_for(&contract["inputSchema"]).unwrap();
-                jsonschema::validator_for(&contract["outputSchema"]).unwrap();
-                if matches!(entry["tool"].as_str(), Some("printer" | "print")) {
-                    assert_eq!(contract["output_schema_scope"], "action");
+        for head_available in [false, true] {
+            let index = read(ROOT, head_available).unwrap();
+            for entry in index["tools"].as_array().unwrap() {
+                let uri = entry["uri"].as_str().unwrap();
+                assert!(read(uri, head_available).is_some());
+                for action in entry["actions"].as_array().unwrap() {
+                    let action_uri = format!("{uri}/{}", action.as_str().unwrap());
+                    let contract = read(&action_uri, head_available).unwrap();
+                    jsonschema::validator_for(&contract["inputSchema"]).unwrap();
+                    jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+                    if matches!(entry["tool"].as_str(), Some("printer" | "print")) {
+                        assert_eq!(contract["output_schema_scope"], "action");
+                    }
                 }
             }
         }
-        let render = read("printable://contracts/render/product").unwrap();
+        let render = read("printable://contracts/render/product", false).unwrap();
         let validator = jsonschema::validator_for(&render["inputSchema"]).unwrap();
         assert!(validator.is_valid(&json!({"action":"product","params":{
             "path":"render.png","objects":["OrganicForm"],
@@ -190,6 +193,21 @@ mod tests {
     }
 
     #[test]
+    fn head_contracts_follow_model_availability() {
+        let listed = |available| {
+            read(ROOT, available).unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["tool"] == "head")
+        };
+        assert!(!listed(false));
+        assert!(listed(true));
+        assert!(read("printable://contracts/head/create", false).is_none());
+        assert!(read("printable://contracts/head/create", true).is_some());
+    }
+
+    #[test]
     fn contract_lookup_rejects_unknown_or_ambiguous_paths() {
         for uri in [
             "printable://contracts/",
@@ -200,7 +218,7 @@ mod tests {
             "printable://contracts/../render",
             "printable://contracts/status/product",
         ] {
-            assert!(read(uri).is_none(), "accepted {uri}");
+            assert!(read(uri, true).is_none(), "accepted {uri}");
         }
     }
 }

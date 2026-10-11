@@ -72,6 +72,9 @@ pub struct Settings {
     pub slicer_endpoint: Option<String>,
     /// Optional typed printer integration; credentials remain inside its clients.
     pub printers: Option<std::sync::Arc<crate::printers::PrinterService>>,
+    /// FLAME head models from `PRINTABLE_FLAME_MODEL_DIR`; absent leaves `head`
+    /// unadvertised.
+    pub flame: Option<std::sync::Arc<crate::flame::FlameLibrary>>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
     /// FFmpeg binary used to encode durable animation frame sequences.
@@ -193,6 +196,7 @@ impl Settings {
             cad_endpoint: nonempty(&get, "PRINTABLE_CAD_ENDPOINT"),
             slicer_endpoint: nonempty(&get, "PRINTABLE_SLICER_ENDPOINT"),
             printers: crate::printers::configure(&get)?,
+            flame: crate::flame::configure(&get),
             scad_concurrency: scad_concurrency(&get)?,
             ffmpeg_bin: nonempty(&get, "FFMPEG_BIN")
                 .map(PathBuf::from)

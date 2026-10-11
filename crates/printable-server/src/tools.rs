@@ -5,9 +5,11 @@
 //! schema string). Public discovery uses [`workflows`]; [`TOOLS`] names internal
 //! operations. Responses use compact JSON and structured MCP content.
 
+mod head;
 mod native;
 pub mod output;
 pub mod workflows;
+use head::{HeadCreateParams, HeadModelsParams, HeadUpdateParams};
 use native::NativeViewParams;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2075,6 +2077,12 @@ async fn dispatch_value(
             validate_rigid_rotation(&p)?;
             blender_command(blender, "animate_rotation", &p).await
         }
+        "printable_flame_models" => {
+            let _: HeadModelsParams = de(args)?;
+            head::models(settings)
+        }
+        "printable_flame_create" => head::create(blender, settings, de(args)?).await,
+        "printable_flame_update" => head::update(blender, settings, de(args)?).await,
         "printable_primitive_create" => {
             let p: PrimitiveCreateParams = de(args)?;
             validate_primitive(&p)?;
@@ -5584,6 +5592,14 @@ async fn status(
         "cad": cad,
         "slicer": slicer,
         "printers": {"configured": settings.printers.is_some()},
+        "flame": settings.flame.as_ref().map_or_else(
+            || json!({"configured": false}),
+            |library| {
+                let mut report = library.report();
+                report["configured"] = json!(true);
+                report
+            },
+        ),
         "workspace": {
             "confined": ws.confined,
             "workspace_root": ws.root,

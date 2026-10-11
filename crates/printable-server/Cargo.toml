@@ -46,6 +46,7 @@ printable-blender = { path = "../printable-blender" }
 printable-scad = { path = "../printable-scad" }
 printable-imaging = { path = "../printable-imaging" }
 printable-geom = { path = "../printable-geom" }
+printable-flame = { path = "../printable-flame" }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 quick-xml = "=0.41.0"
 libc = "=0.2.189"
@@ -66,3 +67,5 @@ crc32fast = "=1.5.0"
 # The in-process fake addon backs the printable_status tests without a real
 # Blender, mirroring printable-blender's own self dev-dependency.
 printable-blender = { path = "../printable-blender", features = ["fake-addon"] }
+# A small serialized FLAME model for head tool tests.
+printable-flame = { path = "../printable-flame", features = ["fixture"] }

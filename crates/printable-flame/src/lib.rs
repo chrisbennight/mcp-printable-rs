@@ -16,5 +16,5 @@ mod pose;
 pub use model::{FlameModel, JOINT_COUNT, MODEL_FORMAT, ModelError, ModelInfo};
 pub use pose::{FlameParams, ParamError, Pose, PosedHead};
 
-#[cfg(test)]
-pub(crate) mod fixture;
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;

@@ -2176,8 +2176,8 @@ mod tests {
     fn release_catalog_matches_server_catalog() {
         let expected = parse_expected_tools(include_str!("../../../../smoke/expected-tools.txt"))
             .expect("release catalog parses");
-        let actual: BTreeSet<String> = printable_server::tools::workflows::TOOLS
-            .iter()
+        // The release smoke runs a default installation without FLAME models.
+        let actual: BTreeSet<String> = printable_server::tools::workflows::advertised(false)
             .map(|tool| tool.name.to_string())
             .collect();
         assert_eq!(expected, actual);
