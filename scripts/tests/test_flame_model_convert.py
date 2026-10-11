@@ -61,10 +61,13 @@ class Legacy:
 
     def array_from(self, code, shape, data, fortran=False):
         """An array whose raw data is the given pre-encoded opcodes."""
+        return self.array_from_opcodes(code, _tuple(*map(_int, shape)), data, fortran)
+
+    def array_from_opcodes(self, code, shape, data, fortran=False):
+        """An array whose shape and raw data are the given pre-encoded opcodes."""
         reconstruct = (self.glob("numpy.core.multiarray", "_reconstruct")
                        + _tuple(self.glob("numpy", "ndarray"), _tuple(_int(0)), self.text("b")) + P.REDUCE)
-        state = _tuple(_int(1), _tuple(*map(_int, shape)), self.dtype(code),
-                       P.NEWTRUE if fortran else P.NEWFALSE, data)
+        state = _tuple(_int(1), shape, self.dtype(code), P.NEWTRUE if fortran else P.NEWFALSE, data)
         return reconstruct + state + P.BUILD
 
     def basis(self, encoded):
@@ -256,6 +259,44 @@ class SafetyTests(unittest.TestCase):
         for message, value in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ModelError, message):
                 convert(model(encoder, overrides={"unused": value}), "bounded", expression_components=2)
+
+    def test_shape_dimensions_must_be_small_integers(self):
+        encoder = Legacy()
+        depth = 16
+        # A shared tuple graph: each level holds the previous level twice.
+        nested = _int(0) + _int(0) + P.TUPLE2 + P.BINPUT + bytes([1]) + P.POP
+        for level in range(1, depth + 1):
+            nested += (P.BINGET + bytes([level]) + P.BINGET + bytes([level]) + P.TUPLE2
+                       + P.BINPUT + bytes([level + 1]) + P.POP)
+        nested += P.BINGET + bytes([depth + 1]) + P.TUPLE1
+        huge = (1 << 40).to_bytes(6, "little")
+        cases = {
+            "nested": nested,
+            "oversized": P.MARK + P.LONG1 + bytes([len(huge)]) + huge + P.TUPLE,
+            "boolean": P.MARK + P.NEWTRUE + P.TUPLE,
+        }
+        for name, shape in cases.items():
+            value = encoder.array_from_opcodes("f8", shape, encoder.text(b""))
+            with self.subTest(name), self.assertRaisesRegex(ModelError, "array shape"):
+                convert(model(encoder, overrides={"unused": value}), "shape", expression_components=2)
+
+    def test_huge_embedded_expression_count_is_refused(self):
+        encoder = Modern()
+        big = 10 ** 5000
+        raw = big.to_bytes((big.bit_length() + 8) // 8, "little", signed=True)
+        metadata = encoder.mapping([
+            ("expr_source", encoder.text("SUPR_head")),
+            ("expr_components", encoder.text("last_100")),
+            ("n_expr", P.LONG4 + struct.pack("<i", len(raw)) + raw)])
+        with self.assertRaisesRegex(ModelError, "outside the basis size"):
+            convert(model(encoder, overrides={"supr_expression_metadata": metadata}), "huge")
+
+    def test_refused_symbol_names_are_shortened_in_messages(self):
+        hostile = P.PROTO + bytes([2]) + P.GLOBAL + b"m" * 100000 + b"\nname\n" + P.STOP
+        with self.assertRaises(ModelError) as raised:
+            convert(hostile, "long")
+        self.assertIn("refusing", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 300)
 
     def test_array_data_that_is_not_raw_bytes_is_refused(self):
         encoder = Legacy()

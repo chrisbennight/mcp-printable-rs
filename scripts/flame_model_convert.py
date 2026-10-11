@@ -41,6 +41,8 @@ MEMO_STORES = {"PUT", "BINPUT", "LONG_BINPUT"}
 # Stand-ins copy only values bounded by these sizes, so a value that a source
 # memoizes and references many times costs a constant amount per reference.
 MAX_ARRAY_RANK = 3
+MAX_DIMENSION = 1 << 31
+MAX_NAME_IN_MESSAGE = 80
 MAX_TYPE_CODE = 3
 VARIANT = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 SOURCE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -101,8 +103,6 @@ class _Array:
         """Return the elements in C order, in native byte order."""
         if not isinstance(self.dtype, _DType):
             raise ModelError("array was declared without its element type and data")
-        if not all(isinstance(size, int) and size >= 0 for size in self.shape):
-            raise ModelError("array shape is not a tuple of sizes")
         if self.fortran and sum(size > 1 for size in self.shape) > 1:
             raise ModelError("Fortran-ordered arrays are not supported")
         typecode = TYPECODES.get(self.dtype.code)
@@ -140,7 +140,11 @@ class _SparseCSC:
 
 
 def _shape(shape):
-    if not isinstance(shape, (tuple, list)) or len(shape) > MAX_ARRAY_RANK:
+    # Each dimension must be a small integer, so a shape can always be copied,
+    # multiplied and printed cheaply.
+    if (not isinstance(shape, (tuple, list)) or len(shape) > MAX_ARRAY_RANK
+            or not all(isinstance(size, int) and not isinstance(size, bool)
+                       and 0 <= size <= MAX_DIMENSION for size in shape)):
         raise ModelError("array shape is not a FLAME array shape")
     return tuple(shape)
 
@@ -188,7 +192,8 @@ class _RestrictedUnpickler(pickle.Unpickler):
         try:
             return ALLOWED[(module, name)]
         except KeyError:
-            raise ModelError(f"refusing {module}.{name}: it is not part of a FLAME model") from None
+            shown = f"{module[:MAX_NAME_IN_MESSAGE]}.{name[:MAX_NAME_IN_MESSAGE]}"
+            raise ModelError(f"refusing {shown}: it is not part of a FLAME model") from None
 
 
 def load_source(data: bytes) -> dict:
@@ -268,6 +273,9 @@ def _expression_split(model, components, requested):
         if not isinstance(recorded, dict) or not isinstance(recorded.get("n_expr"), int):
             raise ModelError("embedded expression metadata is malformed")
         count = recorded["n_expr"]
+        # Range-check before formatting; Python refuses to print huge integers.
+        if isinstance(count, bool) or not 0 <= count <= components:
+            raise ModelError("embedded expression count is outside the basis size")
         if recorded.get("expr_components") != f"last_{count}":
             raise ModelError("embedded expression metadata does not describe trailing components")
         label = recorded.get("expr_source")
