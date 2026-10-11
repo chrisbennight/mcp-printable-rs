@@ -1110,6 +1110,8 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2182,6 +2184,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "printable-flame"
+version = "0.1.0"
+dependencies = [
+ "safetensors",
+ "thiserror",
+]
+
+[[package]]
 name = "printable-geom"
 version = "0.1.0"
 dependencies = [
@@ -2957,6 +2967,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "safetensors"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79b079b829cb27a1c3c374341345ed2e8b2c0c839034522cee576c140bd7f846"
+dependencies = [
+ "hashbrown 0.16.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
