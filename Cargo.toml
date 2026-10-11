@@ -4,6 +4,7 @@ members = [
     "crates/printable-server",
     "crates/printable-blender",
     "crates/printable-geom",
+    "crates/printable-flame",
     "crates/printable-scad",
     "crates/printable-workspace",
     "crates/printable-imaging",

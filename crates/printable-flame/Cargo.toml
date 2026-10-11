@@ -1,0 +1,12 @@
+[package]
+name = "printable-flame"
+description = "FLAME statistical head model evaluation from converted safetensors models; no I/O, no async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Reference reader for the format written by scripts/flame_model_convert.py.
+safetensors = "0.8.0"
+thiserror = "2"

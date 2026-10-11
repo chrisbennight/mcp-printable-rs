@@ -30,6 +30,7 @@ boundaries:
 | `printable-server` | HTTP, MCP dispatch, job persistence, and file transfer |
 | `printable-blender` | Length-prefixed JSON bridge, deadlines, and process identity |
 | `printable-geom` | Pure mesh measurements and printability analysis |
+| `printable-flame` | FLAME head model validation and evaluation from converted model files |
 | `printable-scad` | Confined source validation and OpenSCAD subprocesses |
 | `printable-workspace` | Capability-rooted artifact I/O and atomic promotion |
 | `printable-imaging` | Image decoding and composition |
