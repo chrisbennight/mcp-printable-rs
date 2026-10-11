@@ -66,6 +66,8 @@ pub enum ParamError {
     },
     #[error("{0} contains a value that is not finite")]
     NonFinite(&'static str),
+    #[error("the evaluated head has coordinates outside the float32 range")]
+    OutOfRange,
 }
 
 impl FlameModel {
@@ -99,7 +101,7 @@ impl FlameModel {
         });
         let translation = params.translation.map(f64::from);
 
-        let vertices = posed
+        let vertices: Vec<[f32; 3]> = posed
             .chunks_exact(3)
             .zip(self.weights.chunks_exact(JOINT_COUNT))
             .map(|(point, weights)| {
@@ -126,6 +128,14 @@ impl FlameModel {
             })
             .collect();
         let joints = world.map(|(_, origin)| single(add(origin, translation)));
+        if !vertices
+            .iter()
+            .chain(&joints)
+            .flatten()
+            .all(|coordinate| coordinate.is_finite())
+        {
+            return Err(ParamError::OutOfRange);
+        }
         Ok(PosedHead { vertices, joints })
     }
 
@@ -489,6 +499,18 @@ mod tests {
             ..FlameParams::default()
         };
         assert_eq!(model.evaluate(&pose), Err(ParamError::NonFinite("pose")));
+    }
+
+    #[test]
+    fn results_outside_the_float32_range_are_refused() {
+        let params = FlameParams {
+            expression: vec![f32::MAX],
+            ..FlameParams::default()
+        };
+        assert_eq!(
+            Fixture::default().model().evaluate(&params),
+            Err(ParamError::OutOfRange)
+        );
     }
 
     #[test]

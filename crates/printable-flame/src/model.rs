@@ -19,7 +19,7 @@ pub(crate) const PARENTS: [Option<usize>; JOINT_COUNT] = [None, Some(0), Some(1)
 /// One 3x3 rotation basis per non-root joint.
 pub(crate) const POSE_COMPONENTS: usize = 9 * (JOINT_COUNT - 1);
 
-const WEIGHT_TOLERANCE: f32 = 1e-3;
+const WEIGHT_TOLERANCE: f64 = 1e-3;
 const MAX_LABEL_BYTES: usize = 64;
 
 /// Reasons a converted model cannot be used.
@@ -42,7 +42,7 @@ pub enum ModelError {
     NonFinite(&'static str),
     #[error("model faces reference a vertex outside the template")]
     FaceIndex,
-    #[error("model skinning weights do not sum to one for every vertex")]
+    #[error("model skinning weights are not a convex combination for every vertex")]
     Weights,
     #[error("model kinematic tree is not FLAME's root, neck, jaw and two eyes")]
     KinematicTree,
@@ -124,10 +124,12 @@ impl FlameModel {
         let posedirs = shaped_floats(&tensors, "posedirs", &[vertex_count, 3, POSE_COMPONENTS])?;
         let weights = shaped_floats(&tensors, "lbs_weights", &[vertex_count, JOINT_COUNT])?;
         let regressor = shaped_floats(&tensors, "joint_regressor", &[JOINT_COUNT, vertex_count])?;
-        if weights
-            .chunks_exact(JOINT_COUNT)
-            .any(|row| (row.iter().sum::<f32>() - 1.0).abs() > WEIGHT_TOLERANCE)
-        {
+        // Skinning takes a convex combination of joint transforms, summed in f64.
+        if weights.chunks_exact(JOINT_COUNT).any(|row| {
+            row.iter().any(|weight| !(0.0..=1.0).contains(weight))
+                || (row.iter().map(|&weight| f64::from(weight)).sum::<f64>() - 1.0).abs()
+                    > WEIGHT_TOLERANCE
+        }) {
             return Err(ModelError::Weights);
         }
 
@@ -393,6 +395,14 @@ mod tests {
     #[test]
     fn weights_that_do_not_sum_to_one_are_refused() {
         let result = rebuilt(|fixture| fixture.weights[0] = 0.5);
+        assert!(matches!(result, Err(ModelError::Weights)));
+    }
+
+    #[test]
+    fn weights_outside_a_convex_combination_are_refused() {
+        // This row sums to one in f32 through cancellation but to two in f64.
+        let cancelling = [16_777_216.0, 1.0, -16_777_216.0, 0.0, 1.0];
+        let result = rebuilt(|fixture| fixture.weights[..JOINT_COUNT].copy_from_slice(&cancelling));
         assert!(matches!(result, Err(ModelError::Weights)));
     }
 
