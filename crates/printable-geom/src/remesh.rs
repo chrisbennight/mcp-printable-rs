@@ -6,7 +6,8 @@
 //! inward-facing. The winding count is exact, so overlapping parts and
 //! surfaces that pass through themselves give the union. A signed distance
 //! built from that sign and the distance to the nearest triangle is meshed by
-//! the kernel's level-set extraction, which always produces a manifold.
+//! marching tetrahedra, which yields a closed surface that never touches or
+//! crosses itself.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -16,7 +17,7 @@ use parry3d_f64::query::PointQuery;
 use parry3d_f64::shape::TriMesh;
 use robust::{Coord, Coord3D, orient2d, orient3d};
 
-use crate::GeometryError;
+use crate::{GeometryError, isosurface};
 
 type Point = [f64; 3];
 
@@ -24,8 +25,8 @@ type Point = [f64; 3];
 /// surface; farther away only the sign matters.
 const BAND_EDGES: f64 = 2.0;
 
-/// The smallest distance magnitude returned, as a fraction of the edge
-/// length. The extracted surface moves by at most this much.
+/// The smallest distance magnitude returned, as a fraction of the bucket
+/// size. The extracted surface moves by at most this much.
 const FLOOR_FRACTION: f64 = 1e-4;
 
 const UNKNOWN: u8 = 0;
@@ -33,8 +34,10 @@ const NEAR: u8 = 1;
 const INSIDE: u8 = 2;
 const OUTSIDE: u8 = 3;
 
-/// Level-set extraction yields edges about this fraction of its grid spacing.
-const EDGE_PER_SPACING: f64 = 0.6;
+/// Marching tetrahedra yields edges about this fraction of the grid spacing.
+pub(crate) const EDGE_PER_SPACING: f64 = 0.6;
+/// Sampling threads; the geometry worker already runs one job per process.
+const MAX_THREADS: usize = 4;
 
 /// Mesh the union of the closed surfaces in `triangles` with edges of about
 /// `edge` millimetres.
@@ -44,27 +47,56 @@ pub(crate) fn remesh_union(
     edge: f64,
 ) -> Result<Manifold, GeometryError> {
     let edge = edge / EDGE_PER_SPACING;
-    let field = Field::new(vertices, triangles, edge)?;
+    let field = Field::new(vertices, triangles, edge, BAND_EDGES * edge)?;
     let margin = 2.0 * edge;
     let low = field.low.map(|value| value - margin);
     let high = field.high.map(|value| value + margin);
-    let solid = Manifold::from_sdf(
-        |x, y, z| field.signed_distance([x, y, z]),
-        (low, high),
-        edge,
-        0.0,
-        // Interpolate crossings between grid samples; the distance field is
-        // close to linear near the surface.
-        -1.0,
-    );
-    solid
-        .status()
-        .map_err(|error| GeometryError::Kernel(format!("level-set remeshing failed: {error}")))?;
+    let solid = mesh_solid(|point| field.signed_distance(point), low, high, edge)?;
+    drop(field);
     if solid.is_empty() {
-        return Err(GeometryError::Kernel(
-            "level-set remeshing produced no solid".into(),
-        ));
+        return Err(GeometryError::Kernel("remeshing produced no solid".into()));
     }
+    Ok(solid)
+}
+
+/// The region of the closed surface lying deeper than `wall` below it, meshed
+/// with grid spacing `spacing`. Empty when no part of the solid is that thick.
+pub(crate) fn inner_offset(
+    vertices: Vec<Point>,
+    triangles: Vec<[u32; 3]>,
+    wall: f64,
+    spacing: f64,
+) -> Result<Manifold, GeometryError> {
+    let field = Field::new(vertices, triangles, spacing, wall + 2.0 * spacing)?;
+    mesh_solid(
+        |point| field.signed_distance(point) - wall,
+        field.low,
+        field.high,
+        spacing,
+    )
+}
+
+/// The region where `field` is positive, as a solid.
+fn mesh_solid(
+    field: impl Fn(Point) -> f64 + Sync,
+    low: Point,
+    high: Point,
+    spacing: f64,
+) -> Result<Manifold, GeometryError> {
+    let threads =
+        std::thread::available_parallelism().map_or(1, |count| count.get().min(MAX_THREADS));
+    let (vertices, triangles) = isosurface::extract(&field, low, high, spacing, threads);
+    if triangles.is_empty() {
+        return Ok(Manifold::empty());
+    }
+    let flat: Vec<f64> = vertices.into_iter().flatten().collect();
+    let indices: Vec<u64> = triangles.into_iter().flatten().map(u64::from).collect();
+    let solid = Manifold::from_mesh_f64(&flat, 3, &indices).map_err(|error| {
+        GeometryError::Kernel(format!("the extracted surface is invalid: {error}"))
+    })?;
+    solid.status().map_err(|error| {
+        GeometryError::Kernel(format!("the extracted surface is invalid: {error}"))
+    })?;
     Ok(solid)
 }
 
@@ -79,10 +111,13 @@ struct Field {
 }
 
 impl Field {
+    /// `cell` sizes the ray-casting buckets; exact distances are computed up
+    /// to `band` from the surface.
     fn new(
         vertices: Vec<Point>,
         triangles: Vec<[u32; 3]>,
-        edge: f64,
+        cell: f64,
+        band: f64,
     ) -> Result<Self, GeometryError> {
         // The conversion reuses the vertex allocation; the triangle mesh is
         // the only copy of the surface kept.
@@ -101,15 +136,14 @@ impl Field {
                 high[axis] = high[axis].max(vertex[axis]);
             }
         }
-        let band = BAND_EDGES * edge;
-        let columns = Columns::new(vertices, triangles, low, high, edge);
+        let columns = Columns::new(vertices, triangles, low, high, cell);
         let voxels = Voxels::new(vertices, triangles, low, high, band)?;
         Ok(Self {
             surface,
             low,
             high,
             band,
-            floor: edge * FLOOR_FRACTION,
+            floor: cell * FLOOR_FRACTION,
             columns,
             voxels,
         })
@@ -416,7 +450,7 @@ mod tests {
                 .iter()
                 .map(|triangle| triangle.map(|index| index + offset)),
         );
-        let field = Field::new(vertices, triangles, 1.0).unwrap();
+        let field = Field::new(vertices, triangles, 1.0, 2.0).unwrap();
         assert_eq!(field.winding([2.0, 2.0, 2.0]), 1);
         assert_eq!(field.winding([7.0, 7.0, 7.0]), 2);
         assert_eq!(field.winding([12.0, 12.0, 12.0]), 1);
@@ -441,5 +475,22 @@ mod tests {
         // Two 1000 mm^3 cubes overlapping in a 125 mm^3 cube.
         assert!((solid.volume() - 1875.0).abs() < 60.0, "{}", solid.volume());
         assert_eq!(solid.decompose().len(), 1);
+    }
+
+    #[test]
+    fn inner_offset_keeps_the_region_deeper_than_the_wall() {
+        let (vertices, triangles) = cube([0.0; 3], 10.0);
+        let cavity = inner_offset(vertices.clone(), triangles.clone(), 2.0, 0.5).unwrap();
+        // The cube shrunk by 2 mm on every side is 6 mm across.
+        assert!(
+            (cavity.volume() - 216.0).abs() < 10.0,
+            "{}",
+            cavity.volume()
+        );
+        assert!(
+            inner_offset(vertices, triangles, 6.0, 0.5)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

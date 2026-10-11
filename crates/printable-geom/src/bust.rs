@@ -2,10 +2,11 @@
 //! attached parts such as eyeballs.
 //!
 //! Each boundary loop is closed with a fan of triangles, so every part becomes
-//! a closed solid. The parts are rotated to stand upright, scaled to the
-//! requested height, smoothed and refined to the requested edge length, united,
-//! and finally trimmed by a horizontal plane just above the lowest opening to
-//! give a flat base.
+//! a closed surface. The parts are rotated to stand upright, scaled to the
+//! requested height, smoothed and refined to the requested edge length, and
+//! rebuilt as one valid solid, which is trimmed by a horizontal plane just
+//! above the lowest opening to give a flat base. An optional plinth is added
+//! below, and the result can be hollowed with drain holes through the base.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,8 +23,10 @@ const SMOOTH_EVERY_EDGE_DEGREES: f64 = 180.0;
 /// creases are intended features such as the base rim.
 const SMOOTH_REGION_RADIANS: f64 = std::f64::consts::PI / 6.0;
 /// Fraction of the way toward the centre of its neighbours that each vertex
-/// at a touching point moves, which is a few hundredths of a millimetre.
+/// at a touching point moves, up to a limit so that coarse triangles, such as
+/// those inside a hollow bust, are not distorted.
 const PINCH_SEPARATION: f64 = 0.25;
+const PINCH_SEPARATION_LIMIT_MM: f64 = 0.05;
 /// The trim plane sits this fraction of the head's height above the top of the
 /// lowest opening, so the cut is a full section through the neck.
 const NECK_MARGIN: f64 = 0.01;
@@ -33,6 +36,22 @@ const FRAGMENT_VOLUME_FRACTION: f64 = 1e-5;
 /// Refinement to an edge length L yields about this many triangles per unit of
 /// surface area divided by L squared.
 const TRIANGLES_PER_AREA: f64 = 2.6;
+/// Round parts are faceted so that no chord is farther than this from the
+/// circle.
+const CIRCLE_TOLERANCE_MM: f64 = 0.01;
+/// A default plinth is this fraction of the bust's widest extent across.
+const PLINTH_WIDTH_FRACTION: f64 = 0.7;
+/// Marching tetrahedra with mean edge L yields about 3.1 triangles per unit
+/// of area divided by L squared; this allows a margin for the drain holes.
+const CAVITY_TRIANGLES_PER_AREA: f64 = 3.5;
+/// Share of the triangle limit kept for the cavity of a hollow bust.
+const CAVITY_SHARE: f64 = 0.25;
+/// Drain holes reach this far into the cavity.
+const DRAIN_OVERLAP_MM: f64 = 1.0;
+/// The base outline is sampled this far above the base plane.
+const SECTION_OFFSET_MM: f64 = 0.01;
+const MIN_CIRCLE_SEGMENTS: i32 = 16;
+const MAX_CIRCLE_SEGMENTS: i32 = 2048;
 
 /// Inputs to [`prepare_bust`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +66,49 @@ pub struct BustRequest {
     /// Upper bound on the finished triangle count; the edge length grows to
     /// respect it.
     pub max_triangles: usize,
+    /// A cylindrical plinth under the bust, included in `height_mm`.
+    #[serde(default)]
+    pub plinth: Option<Plinth>,
+    /// Hollow the finished bust, leaving walls of this thickness, with drain
+    /// holes through the base.
+    #[serde(default)]
+    pub hollow: Option<Hollow>,
+}
+
+/// A cylindrical plinth.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Plinth {
+    pub height_mm: f64,
+    /// Defaults to 70% of the bust's widest extent, and never less than the
+    /// neck section it supports.
+    #[serde(default)]
+    pub diameter_mm: Option<f64>,
+}
+
+/// Hollowing for resin printing.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hollow {
+    pub wall_mm: f64,
+    pub drain_diameter_mm: f64,
+}
+
+/// The plinth that was added.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlinthReport {
+    pub height_mm: f64,
+    pub diameter_mm: f64,
+}
+
+/// The cavity that was removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HollowReport {
+    pub wall_mm: f64,
+    pub cavity_volume_mm3: f64,
+    pub drain_diameter_mm: f64,
+    /// Centres of the drain holes on the base, in millimetres.
+    pub drain_holes_mm: Vec<[f64; 2]>,
 }
 
 /// Measurements of a prepared bust.
@@ -66,17 +128,23 @@ pub struct BustReport {
     /// the gap between a chord of length L and a circular arc turning
     /// through θ, the angle between the edge's two faces. Edges where faces
     /// meet at 30 degrees or more are creases rather than faceting and are
-    /// left out. Absent when there is no such edge.
+    /// left out. Measured before any plinth or hollowing. Absent when there
+    /// is no such edge.
     pub estimated_deviation_p999_mm: Option<f64>,
     /// Whether a lowest opening was found and the head trimmed above it.
     pub trimmed_at_neck: bool,
     /// Separate shells of negligible volume that were discarded.
     pub discarded_fragments: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plinth: Option<PlinthReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<HollowReport>,
 }
 
 /// Build a closed, printable bust from an open head surface and its parts.
 pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport), GeometryError> {
     validate(request)?;
+    let bust_height = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
     let parts = closed_parts(&request.vertices, &request.triangles)?;
     let heights = request.vertices.iter().map(|vertex| vertex[1]);
     let span = heights.clone().fold(f64::MIN, f64::max) - heights.fold(f64::MAX, f64::min);
@@ -108,7 +176,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         return Err(GeometryError::Kernel("the trimmed bust is empty".into()));
     }
     // Place and scale before smoothing, so refinement works in final units.
-    let scale = request.height_mm / (high[2] - low[2]);
+    let scale = bust_height / (high[2] - low[2]);
     let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
     let smooth = parts
         .iter()
@@ -138,7 +206,13 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         .collect::<Result<Vec<_>, _>>()?;
     let base = cut.map(|_| 0.0);
 
-    let limit = request.max_triangles as f64;
+    // A cavity needs triangles too; it gets a share of the limit.
+    let surface_limit = if request.hollow.is_some() {
+        (request.max_triangles as f64 * (1.0 - CAVITY_SHARE)) as usize
+    } else {
+        request.max_triangles
+    };
+    let limit = surface_limit as f64;
     let area: f64 = smooth.iter().map(Manifold::surface_area).sum();
     let mut edge = request
         .edge_length_mm
@@ -169,13 +243,13 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     // Large meshes are dropped as soon as they are replaced, so that no more
     // than two copies are alive within the worker's memory limit.
     let mut refined = build(edge)?;
-    if refined.num_tri() > request.max_triangles {
+    if refined.num_tri() > surface_limit {
         // The area estimate was low; size the edge from the observed count.
         edge *= (refined.num_tri() as f64 / limit).sqrt() * 1.02;
         drop(refined);
         refined = build(edge)?;
     }
-    if refined.num_tri() > request.max_triangles {
+    if refined.num_tri() > surface_limit {
         return Err(GeometryError::Kernel(
             "the refined bust exceeds its triangle limit".into(),
         ));
@@ -207,7 +281,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         .bounding_box()
         .ok_or_else(|| GeometryError::Kernel("the refined bust has no extent".into()))?;
     let (low, high) = (bounds.min(), bounds.max());
-    let correction = request.height_mm / (high[2] - low[2]);
+    let correction = bust_height / (high[2] - low[2]);
     let solid = piece
         .translate(
             -(low[0] + high[0]) / 2.0,
@@ -217,6 +291,29 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         .scale(correction, correction, correction);
     drop(piece);
     edge *= correction;
+    // Measured on the bust alone: the plinth is exact to the circle tolerance
+    // and a cavity's coarser facets are hidden inside.
+    let estimated_deviation_p999_mm = estimated_deviation_p999(&mesh_from(&solid));
+    let (solid, plinth) = match request.plinth {
+        Some(plinth) if cut.is_some() => {
+            let (solid, report) = add_plinth(solid, plinth)?;
+            (solid, Some(report))
+        }
+        Some(_) => {
+            return Err(GeometryError::InvalidOptions(
+                "a plinth needs a neck opening to stand on".into(),
+            ));
+        }
+        None => (solid, None),
+    };
+    let (solid, hollow) = match request.hollow {
+        Some(hollow) => {
+            let budget = request.max_triangles.saturating_sub(solid.num_tri());
+            let (solid, report) = hollow_out(solid, hollow, budget)?;
+            (solid, Some(report))
+        }
+        None => (solid, None),
+    };
     let size = solid
         .bounding_box()
         .map(|bounds| bounds.dimensions())
@@ -224,17 +321,197 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     let volume_mm3 = solid.volume();
     let mesh = single_precision(&solid)?;
     drop(solid);
+    if mesh.triangles.len() > request.max_triangles {
+        return Err(GeometryError::Kernel(
+            "the finished bust exceeds its triangle limit".into(),
+        ));
+    }
     let report = BustReport {
         triangles: mesh.triangles.len(),
         size_mm: size,
         volume_mm3,
         requested_edge_length_mm: request.edge_length_mm,
         edge_length_mm: edge,
-        estimated_deviation_p999_mm: estimated_deviation_p999(&mesh),
+        estimated_deviation_p999_mm,
         trimmed_at_neck: cut.is_some(),
         discarded_fragments: fragments,
+        plinth,
+        hollow,
     };
     Ok((mesh, report))
+}
+
+/// Raise the bust onto a cylinder centred under its flat base.
+fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport), GeometryError> {
+    let (centre, reach) = section_centre(&bust.slice_at_z(SECTION_OFFSET_MM))
+        .ok_or_else(|| GeometryError::Kernel("the bust has no flat base for a plinth".into()))?;
+    let size = bust
+        .bounding_box()
+        .map(|bounds| bounds.dimensions())
+        .ok_or_else(|| GeometryError::Kernel("the bust has no extent".into()))?;
+    let diameter = plinth
+        .diameter_mm
+        .unwrap_or_else(|| (PLINTH_WIDTH_FRACTION * size[0].max(size[1])).max(2.0 * reach));
+    if diameter < 2.0 * reach {
+        return Err(GeometryError::InvalidOptions(format!(
+            "a plinth {diameter} mm across does not cover the {:.1} mm neck section",
+            2.0 * reach
+        )));
+    }
+    let radius = diameter / 2.0;
+    let base = Manifold::cylinder(
+        plinth.height_mm,
+        radius,
+        radius,
+        circle_segments(radius),
+        false,
+    )
+    .translate(centre[0], centre[1], 0.0);
+    let raised = bust.translate(0.0, 0.0, plinth.height_mm);
+    drop(bust);
+    let solid = raised.union(&base);
+    solid
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("adding the plinth failed: {error}")))?;
+    Ok((
+        solid,
+        PlinthReport {
+            height_mm: plinth.height_mm,
+            diameter_mm: diameter,
+        },
+    ))
+}
+
+/// Remove the region deeper than the wall, with drain holes from the base
+/// into the lowest part of it. Pockets that no drain hole reaches stay solid,
+/// so no liquid resin is sealed inside.
+fn hollow_out(
+    solid: Manifold,
+    hollow: Hollow,
+    budget: usize,
+) -> Result<(Manifold, HollowReport), GeometryError> {
+    // The cavity is hidden, so its grid is as coarse as the wall allows, and
+    // coarser still if its triangles would exceed the budget. Its area is
+    // less than the outer surface's.
+    let area = solid.surface_area();
+    let spacing = (hollow.wall_mm / 2.0).clamp(0.5, 2.0).max(
+        (CAVITY_TRIANGLES_PER_AREA * area / budget.max(1) as f64).sqrt() / remesh::EDGE_PER_SPACING,
+    );
+    let mesh = mesh_from(&solid);
+    let cavity = remesh::inner_offset(mesh.vertices, mesh.triangles, hollow.wall_mm, spacing)?;
+    if cavity.is_empty() {
+        return Err(GeometryError::InvalidOptions(format!(
+            "no part of the bust is thicker than two {} mm walls",
+            hollow.wall_mm
+        )));
+    }
+    let lowest = cavity
+        .bounding_box()
+        .ok_or_else(|| GeometryError::Kernel("the cavity has no extent".into()))?
+        .min()[2];
+    let section = cavity.slice_at_z(lowest + spacing);
+    let (centre, _) = section_centre(&section)
+        .ok_or_else(|| GeometryError::Kernel("the cavity has no floor for a drain hole".into()))?;
+    let (west, east) = section
+        .iter()
+        .flatten()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(west, east), point| {
+            (west.min(point[0]), east.max(point[0]))
+        });
+    let radius = hollow.drain_diameter_mm / 2.0;
+    // Two holes let air in while resin drains, when the floor is wide enough.
+    let offset = (east - west) / 4.0;
+    let positions = if offset > 2.0 * hollow.drain_diameter_mm {
+        vec![
+            [centre[0] - offset, centre[1]],
+            [centre[0] + offset, centre[1]],
+        ]
+    } else {
+        vec![centre]
+    };
+    let depth = lowest + spacing + DRAIN_OVERLAP_MM + 1.0;
+    let mut holes = Vec::new();
+    let mut drain_holes_mm = Vec::new();
+    for [x, y] in positions {
+        let hole = Manifold::cylinder(depth, radius, radius, circle_segments(radius), false)
+            .translate(x, y, -1.0);
+        if !hole.intersection(&cavity).is_empty() {
+            holes.push(hole);
+            drain_holes_mm.push([x, y]);
+        }
+    }
+    if holes.is_empty() {
+        return Err(GeometryError::Kernel(
+            "no drain hole reaches the cavity".into(),
+        ));
+    }
+    let drained: Vec<Manifold> = cavity
+        .decompose()
+        .into_iter()
+        .filter(|pocket| {
+            holes
+                .iter()
+                .any(|hole| !hole.intersection(pocket).is_empty())
+        })
+        .collect();
+    drop(cavity);
+    let cavity_volume_mm3 = drained.iter().map(Manifold::volume).sum();
+    let mut parts = vec![solid];
+    parts.extend(drained);
+    parts.extend(holes);
+    let hollowed = Manifold::batch_difference(&parts);
+    drop(parts);
+    hollowed
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("hollowing failed: {error}")))?;
+    if hollowed.decompose().len() != 1 {
+        return Err(GeometryError::Kernel(
+            "hollowing left a sealed pocket or a separate piece".into(),
+        ));
+    }
+    Ok((
+        hollowed,
+        HollowReport {
+            wall_mm: hollow.wall_mm,
+            cavity_volume_mm3,
+            drain_diameter_mm: hollow.drain_diameter_mm,
+            drain_holes_mm,
+        },
+    ))
+}
+
+/// The area-weighted centre of a cross-section and the farthest distance from
+/// it to the outline.
+fn section_centre(section: &[Vec<[f64; 2]>]) -> Option<([f64; 2], f64)> {
+    let (mut area, mut x, mut y) = (0.0, 0.0, 0.0);
+    for ring in section {
+        for (index, a) in ring.iter().enumerate() {
+            let b = ring[(index + 1) % ring.len()];
+            let cross = a[0] * b[1] - b[0] * a[1];
+            area += cross;
+            x += (a[0] + b[0]) * cross;
+            y += (a[1] + b[1]) * cross;
+        }
+    }
+    if area.abs() < f64::EPSILON {
+        return None;
+    }
+    let centre = [x / (3.0 * area), y / (3.0 * area)];
+    let reach = section
+        .iter()
+        .flatten()
+        .map(|point| (point[0] - centre[0]).hypot(point[1] - centre[1]))
+        .fold(0.0, f64::max);
+    Some((centre, reach))
+}
+
+/// Facets for a circle of `radius` within the circle tolerance.
+fn circle_segments(radius: f64) -> i32 {
+    if radius <= CIRCLE_TOLERANCE_MM {
+        return MIN_CIRCLE_SEGMENTS;
+    }
+    let step = (1.0 - CIRCLE_TOLERANCE_MM / radius).acos();
+    ((std::f64::consts::PI / step).ceil() as i32).clamp(MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
 }
 
 /// Encode a mesh as binary STL with facet normals.
@@ -267,6 +544,28 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
     }
     if request.max_triangles == 0 {
         return invalid("the triangle limit must be positive");
+    }
+    if let Some(plinth) = request.plinth {
+        if !(plinth.height_mm.is_finite() && plinth.height_mm > 0.0) {
+            return invalid("plinth height must be a positive number of millimetres");
+        }
+        if plinth.height_mm >= request.height_mm {
+            return invalid("the plinth must be lower than the whole bust");
+        }
+        if plinth
+            .diameter_mm
+            .is_some_and(|diameter| !(diameter.is_finite() && diameter > 0.0))
+        {
+            return invalid("plinth diameter must be a positive number of millimetres");
+        }
+    }
+    if let Some(hollow) = request.hollow
+        && !(hollow.wall_mm.is_finite()
+            && hollow.wall_mm > 0.0
+            && hollow.drain_diameter_mm.is_finite()
+            && hollow.drain_diameter_mm > 0.0)
+    {
+        return invalid("hollow wall and drain diameter must be positive numbers of millimetres");
     }
     if request.vertices.is_empty() || request.triangles.is_empty() {
         return Err(GeometryError::EmptyMesh);
@@ -513,10 +812,10 @@ fn separate_pinches(mesh: &mut TriangleMesh) {
     }
     for (index, (sum, count)) in sums {
         let vertex = mesh.vertices[index];
-        let centre = sum.map(|value| value / count as f64);
-        mesh.vertices[index] = std::array::from_fn(|axis| {
-            vertex[axis] + PINCH_SEPARATION * (centre[axis] - vertex[axis])
-        });
+        let toward = sub(sum.map(|value| value / count as f64), vertex);
+        let step = (PINCH_SEPARATION * norm(toward)).min(PINCH_SEPARATION_LIMIT_MM);
+        let direction = normalize(toward);
+        mesh.vertices[index] = std::array::from_fn(|axis| vertex[axis] + step * direction[axis]);
     }
 }
 
@@ -662,7 +961,73 @@ mod tests {
             height_mm: 50.0,
             edge_length_mm: edge,
             max_triangles,
+            plinth: None,
+            hollow: None,
         }
+    }
+
+    fn validated(mesh: &TriangleMesh) -> crate::ValidationReport {
+        crate::analyze_stl(&bust_stl(mesh), crate::ValidationOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn a_plinth_raises_the_bust_within_the_requested_height() {
+        let mut with_plinth = request(2.0, 1_000_000);
+        with_plinth.plinth = Some(Plinth {
+            height_mm: 8.0,
+            diameter_mm: None,
+        });
+        let (mesh, report) = prepare_bust(&with_plinth).unwrap();
+        let plinth = report.plinth.expect("plinth report");
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        // The default plinth covers the neck section of the 40 mm box.
+        assert!(plinth.diameter_mm >= 40.0 * 2f64.sqrt() - 1.0, "{plinth:?}");
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+
+        with_plinth.plinth = Some(Plinth {
+            height_mm: 8.0,
+            diameter_mm: Some(10.0),
+        });
+        assert!(matches!(
+            prepare_bust(&with_plinth),
+            Err(GeometryError::InvalidOptions(_))
+        ));
+    }
+
+    #[test]
+    fn hollowing_leaves_walls_and_drains_through_the_base() {
+        let solid = prepare_bust(&request(2.0, 1_000_000)).unwrap().1;
+        let mut hollow = request(2.0, 1_000_000);
+        hollow.hollow = Some(Hollow {
+            wall_mm: 3.0,
+            drain_diameter_mm: 3.0,
+        });
+        let (mesh, report) = prepare_bust(&hollow).unwrap();
+        let cavity = report.hollow.clone().expect("hollow report");
+        assert!(!cavity.drain_holes_mm.is_empty());
+        assert!(
+            cavity.cavity_volume_mm3 > 0.5 * solid.volume_mm3,
+            "{report:?}"
+        );
+        assert!(
+            (report.volume_mm3 + cavity.cavity_volume_mm3 - solid.volume_mm3).abs()
+                < 0.05 * solid.volume_mm3
+        );
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        // One shell: the cavity opens to the outside through the drain holes.
+        assert_eq!(validation.topology.connected_components, 1);
+
+        hollow.hollow = Some(Hollow {
+            wall_mm: 40.0,
+            drain_diameter_mm: 3.0,
+        });
+        assert!(matches!(
+            prepare_bust(&hollow),
+            Err(GeometryError::InvalidOptions(_))
+        ));
     }
 
     #[test]

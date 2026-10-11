@@ -5,6 +5,8 @@
 //! floating-point rounding. Triangles that share a vertex are mesh neighbours
 //! and are not compared.
 
+use std::collections::BTreeSet;
+
 use parry3d_f64::bounding_volume::Aabb;
 use parry3d_f64::math::Vector;
 use parry3d_f64::partitioning::{Bvh, BvhBuildStrategy};
@@ -14,10 +16,12 @@ type Point = [f64; 3];
 
 /// Intersecting triangle pairs, split by whether both triangles belong to the
 /// same connected shell.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Intersections {
     pub within_shells: usize,
     pub between_shells: usize,
+    /// Shells that touch or cross another shell.
+    pub overlapping_shells: BTreeSet<usize>,
 }
 
 /// Compare every pair of non-degenerate triangles whose bounds overlap and
@@ -61,6 +65,8 @@ pub(crate) fn find_intersections(
                     found.within_shells += 1;
                 } else {
                     found.between_shells += 1;
+                    found.overlapping_shells.insert(shell_of[first]);
+                    found.overlapping_shells.insert(shell_of[second]);
                 }
             }
         }

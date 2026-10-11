@@ -5,7 +5,7 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead};
-use printable_geom::BustRequest;
+use printable_geom::{BustRequest, Hollow, Plinth};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -23,6 +23,13 @@ const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
 const DEFAULT_MAX_TRIANGLES: usize = 750_000;
+const PLINTH_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=100.0;
+const PLINTH_DIAMETER_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
+/// The bust above a plinth is at least this tall.
+const MIN_BUST_ABOVE_PLINTH_MM: f64 = 10.0;
+const HOLLOW_WALL_MM: std::ops::RangeInclusive<f64> = 1.0..=20.0;
+const DRAIN_DIAMETER_MM: std::ops::RangeInclusive<f64> = 1.0..=10.0;
+const DEFAULT_DRAIN_DIAMETER_MM: f64 = 3.5;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -128,6 +135,24 @@ pub(super) struct HeadPreparePrintParams {
     /// the default need a larger geometry worker memory limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_triangles: Option<usize>,
+    /// Height of a cylindrical plinth under the bust, 2 to 100 mm, counted
+    /// within `height_mm`. No plinth when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plinth_height_mm: Option<f64>,
+    /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
+    /// extent and never less than the neck section. Requires
+    /// `plinth_height_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plinth_diameter_mm: Option<f64>,
+    /// Hollow the bust for resin printing, leaving walls this thick, 1 to
+    /// 20 mm. Drain holes open through the base. Solid when omitted, which
+    /// suits FDM printing with infill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hollow_wall_mm: Option<f64>,
+    /// Drain hole diameter, 1 to 10 mm (default 3.5). Requires
+    /// `hollow_wall_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drain_hole_diameter_mm: Option<f64>,
 }
 
 #[derive(serde::Serialize)]
@@ -225,6 +250,43 @@ pub(super) async fn prepare_print(
         params.max_triangles.unwrap_or(DEFAULT_MAX_TRIANGLES),
         &MAX_TRIANGLES,
     )?;
+    let plinth = match (params.plinth_height_mm, params.plinth_diameter_mm) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(ToolError::Validation(
+                "plinth_diameter_mm requires plinth_height_mm".into(),
+            ));
+        }
+        (Some(height), diameter) => Some(Plinth {
+            height_mm: in_range("plinth_height_mm", height, &PLINTH_HEIGHT_MM)?,
+            diameter_mm: diameter
+                .map(|diameter| in_range("plinth_diameter_mm", diameter, &PLINTH_DIAMETER_MM))
+                .transpose()?,
+        }),
+    };
+    if let Some(plinth) = plinth
+        && height_mm - plinth.height_mm < MIN_BUST_ABOVE_PLINTH_MM
+    {
+        return Err(ToolError::Validation(format!(
+            "height_mm must exceed plinth_height_mm by at least {MIN_BUST_ABOVE_PLINTH_MM} mm"
+        )));
+    }
+    let hollow = match (params.hollow_wall_mm, params.drain_hole_diameter_mm) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(ToolError::Validation(
+                "drain_hole_diameter_mm requires hollow_wall_mm".into(),
+            ));
+        }
+        (Some(wall), diameter) => Some(Hollow {
+            wall_mm: in_range("hollow_wall_mm", wall, &HOLLOW_WALL_MM)?,
+            drain_diameter_mm: in_range(
+                "drain_hole_diameter_mm",
+                diameter.unwrap_or(DEFAULT_DRAIN_DIAMETER_MM),
+                &DRAIN_DIAMETER_MM,
+            )?,
+        }),
+    };
     if params.pose.global != [0.0; 3] {
         return Err(ToolError::Validation(
             "pose.global must be zero for prepare_print: the bust stands on its neck; use pose.neck to turn or tilt the head".into(),
@@ -249,6 +311,8 @@ pub(super) async fn prepare_print(
         height_mm,
         edge_length_mm,
         max_triangles,
+        plinth,
+        hollow,
     };
     let variant = model.info().variant.clone();
     let (path, overwrite) = (params.path, params.overwrite);

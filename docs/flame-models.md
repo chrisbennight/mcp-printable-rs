@@ -136,11 +136,16 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
 3. The surface is smoothed and refined to `edge_length_mm`.
 4. The union of the head and eyeballs is rebuilt as one valid solid. A point
    is inside when an upward ray from it crosses more outward-facing surface
-   than inward-facing surface, counted with exact arithmetic. The geometry
-   kernel then extracts a new surface at that boundary, which removes the
-   places where the surface passed through itself.
+   than inward-facing surface, counted with exact arithmetic. A new surface
+   is extracted at that boundary by marching tetrahedra, which produces a
+   closed surface that never touches or crosses itself.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
+6. Optionally, a cylindrical plinth is added under the base.
+7. Optionally, the bust is hollowed for resin printing. Everything deeper than
+   the wall thickness is removed, and one or two drain holes open from the
+   base into the lowest part of the cavity. A pocket that no drain hole
+   reaches is left solid, so no liquid resin is sealed inside.
 
 `pose.global` must be zero, because the bust stands on its neck. Turn or tilt
 the head with `pose.neck`.
@@ -164,10 +169,18 @@ reported as an error and not written.
 | `height_mm` | 100 | 20 to 500 |
 | `edge_length_mm` | 0.4 | 0.1 to 5 |
 | `max_triangles` | 750,000 | 10,000 to 3,000,000 |
+| `plinth_height_mm` | none | 2 to 100, counted within `height_mm` |
+| `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
+| `hollow_wall_mm` | none (solid) | 1 to 20 |
+| `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
 | `overwrite` | false | |
 
+A solid bust suits FDM printing, where the slicer's infill already saves
+material. Hollowing is for resin printers.
+
 The default triangle limit is about the most the geometry worker can prepare
-within its default 1 GiB memory limit. Raise
+within its default 1 GiB memory limit. A hollow bust keeps a quarter of the
+limit for its cavity. Raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` with a higher limit; a request that
 exceeds the worker's memory fails with `geometry_resource_limit` and writes
 nothing.
@@ -175,7 +188,9 @@ nothing.
 The response contains the written artifact, a `bust` report and the mesh
 validation report. `bust` gives the triangle count, size, volume and the edge
 length used. The edge length grows above the request only when needed to
-stay within `max_triangles`.
+stay within `max_triangles`. When requested, `plinth` reports the plinth's
+height and diameter, and `hollow` reports the wall thickness, the volume
+removed and the drain hole positions on the base.
 
 `estimated_deviation_p999_mm` estimates how far the flat facets sit from the
 smooth surface they approximate, at the 99.9th percentile. It is an estimate,
@@ -187,10 +202,13 @@ that were removed.
 
 With the defaults, the FLAME 2020 generic, FLAME 2023 and FLAME 2023 Open
 models each produced one watertight, manifold solid with no self-intersections
-and 250,000 to 290,000 triangles. The estimated 99.9th-percentile deviation
-was 0.032 mm, well below the detail a 0.2 mm nozzle reproduces. Each took 15
-to 25 seconds on a busy four-core machine. A 300 mm bust at the default
-triangle limit stayed within the default 1 GiB worker memory limit.
+and 430,000 to 490,000 triangles. The estimated 99.9th-percentile deviation
+was 0.037 to 0.038 mm, well below the detail a 0.2 mm nozzle reproduces. With
+a 12 mm plinth and 2.5 mm walls, each was still one valid solid with its
+cavity open through two drain holes. Each request took about 17 seconds on a
+busy four-core machine, including validation. A 300 mm hollow bust on a
+plinth at the default triangle limit stayed within the default 1 GiB worker
+memory limit.
 
 ## Output format
 

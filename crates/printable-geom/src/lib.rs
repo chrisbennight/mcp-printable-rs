@@ -25,10 +25,13 @@ mod assembly;
 mod assessment;
 mod bust;
 mod intersect;
+mod isosurface;
 mod remesh;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
-pub use bust::{BustReport, BustRequest, bust_stl, prepare_bust};
+pub use bust::{
+    BustReport, BustRequest, Hollow, HollowReport, Plinth, PlinthReport, bust_stl, prepare_bust,
+};
 
 pub use assembly::{
     AssemblyOptions, AssemblyPartSummary, AssemblyRelation, AssemblyReport, AssemblyStaticReport,
@@ -337,36 +340,33 @@ fn prepare_mesh(
         ));
     }
     let watertight = topology_result.is_ok() && boundary_edges == Some(0);
+    let intersections = trimesh.connected_components().map(|components| {
+        let mut shell_of = vec![0; mesh.triangles.len()];
+        for (shell, range) in components.ranges.windows(2).enumerate() {
+            for face in &components.grouped_faces[range[0]..range[1]] {
+                shell_of[*face as usize] = shell;
+            }
+        }
+        intersect::find_intersections(&mesh.vertices, &mesh.triangles, &shell_of)
+    });
     let shell_analysis = if watertight && degenerate_triangles == 0 && duplicate_triangles == 0 {
         let connected_components = trimesh.connected_components().ok_or_else(|| {
             GeometryError::Kernel("connected-component data is unavailable".to_string())
         })?;
+        let overlapping = intersections
+            .as_ref()
+            .map(|found| found.overlapping_shells.clone())
+            .unwrap_or_default();
         Some(analyze_shells(
             connected_components,
             &trimesh,
             &component_signed_volumes,
+            &overlapping,
         )?)
     } else {
         None
     };
-    let intersections = if shell_analysis.is_some() {
-        let mut shell_of = vec![0; mesh.triangles.len()];
-        if let Some(components) = trimesh.connected_components() {
-            for (shell, range) in components.ranges.windows(2).enumerate() {
-                for face in &components.grouped_faces[range[0]..range[1]] {
-                    shell_of[*face as usize] = shell;
-                }
-            }
-        }
-        Some(intersect::find_intersections(
-            &mesh.vertices,
-            &mesh.triangles,
-            &shell_of,
-        ))
-    } else {
-        None
-    };
-    if let Some(found) = intersections {
+    if let Some(found) = &intersections {
         if found.within_shells > 0 {
             issues.push(error_issue(
                 "self_intersection",
@@ -421,7 +421,9 @@ fn prepare_mesh(
         && consistently_oriented
         && degenerate_triangles == 0
         && duplicate_triangles == 0
-        && intersections.is_none_or(|found| found.within_shells == 0);
+        && intersections
+            .as_ref()
+            .is_none_or(|found| found.within_shells == 0);
     let manifold = if eligible_for_manifold {
         let flat_vertices: Vec<_> = mesh.vertices.iter().flatten().copied().collect();
         let flat_indices: Vec<_> = mesh
@@ -505,8 +507,8 @@ fn prepare_mesh(
                 boundary_edges,
                 degenerate_triangles,
                 duplicate_triangles,
-                self_intersections: intersections.map(|found| found.within_shells),
-                shell_intersections: intersections.map(|found| found.between_shells),
+                self_intersections: intersections.as_ref().map(|found| found.within_shells),
+                shell_intersections: intersections.as_ref().map(|found| found.between_shells),
             },
             surface_area_mm2: raw_surface_area,
             signed_volume_mm3: signed_volume,
@@ -659,10 +661,14 @@ struct ShellAnalysis {
     solid_regions: usize,
 }
 
+/// `overlapping` shells cross another shell, so containment cannot be judged
+/// from one of their vertices; they are treated as solids that the slicer
+/// unites.
 fn analyze_shells(
     components: &TriMeshConnectedComponents,
     mesh: &TriMesh,
     signed_volumes: &[f64],
+    overlapping: &std::collections::BTreeSet<usize>,
 ) -> Result<ShellAnalysis, GeometryError> {
     let buffers = components.to_mesh_buffers(mesh);
     if buffers.len() != signed_volumes.len() {
@@ -704,7 +710,7 @@ fn analyze_shells(
                         .contains_local_point(*sample)
             })
             .count();
-        let expected_positive = containment_depth % 2 == 0;
+        let expected_positive = overlapping.contains(&index) || containment_depth % 2 == 0;
         if expected_positive {
             solid_regions += 1;
         }
@@ -1517,6 +1523,19 @@ mod tests {
     }
 
     #[test]
+    fn open_surfaces_are_checked_for_self_intersections_too() {
+        let mut mesh = cube(1.0, [0.0, 0.0, 0.0]);
+        mesh.vertices[6] = [0.6, 0.6, -0.5];
+        mesh.triangles.remove(0);
+        let report = analyze_mesh(&mesh, ValidationOptions::default()).expect("report");
+        assert!(!report.topology.watertight);
+        assert!(
+            report.topology.self_intersections.unwrap() > 0,
+            "{report:?}"
+        );
+    }
+
+    #[test]
     fn overlapping_shells_are_reported_without_failing_the_solid() {
         let mut mesh = cube(1.0, [0.0, 0.0, 0.0]);
         append_mesh(&mut mesh, cube(1.0, [0.5, 0.5, 0.5]));
@@ -1525,6 +1544,14 @@ mod tests {
         assert_eq!(report.topology.self_intersections, Some(0));
         assert!(
             report.topology.shell_intersections.unwrap() > 0,
+            "{report:?}"
+        );
+        assert!(report.solid_geometry, "{report:?}");
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.severity != IssueSeverity::Error),
             "{report:?}"
         );
         assert!(
