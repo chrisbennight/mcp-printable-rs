@@ -87,9 +87,9 @@ class _Array:
         if not isinstance(state, tuple) or len(state) != 5:
             raise ModelError("array state is not in the NumPy raw-data layout")
         _, shape, dtype, fortran, data = state
-        if isinstance(data, str):
-            data = data.encode("latin1")
-        if not isinstance(dtype, _DType) or not isinstance(data, (bytes, bytearray)):
+        # Python 2 raw data arrives as a Latin-1 string. It is converted only
+        # when read, so one string shared by many arrays is not copied for each.
+        if not isinstance(dtype, _DType) or not isinstance(data, (str, bytes, bytearray)):
             raise ModelError("array state does not hold raw numeric data")
         self.dtype, self.shape, self.data, self.fortran = dtype, tuple(shape), data, bool(fortran)
 
@@ -109,7 +109,13 @@ class _Array:
             raise ModelError(f"element type {self.dtype.code} has no exact native equivalent")
         if len(self.data) != math.prod(self.shape) * values.itemsize:
             raise ModelError("array data length does not match its shape")
-        values.frombytes(self.data)
+        data = self.data
+        if isinstance(data, str):
+            try:
+                data = data.encode("latin1")
+            except UnicodeEncodeError:
+                raise ModelError("array data is not raw bytes") from None
+        values.frombytes(data)
         if values.itemsize > 1 and (self.dtype.byteorder == ">") != (sys.byteorder == "big"):
             values.byteswap()
         return values

@@ -7,6 +7,7 @@ from pathlib import Path
 import pickle as P
 import struct
 import tempfile
+import tracemalloc
 import unittest
 
 import flame_model_convert as convert_module
@@ -56,10 +57,14 @@ class Legacy:
                 + P.BUILD)
 
     def array(self, code, shape, values, fortran=False):
+        return self.array_from(code, shape, self.text(_raw(code, values)), fortran)
+
+    def array_from(self, code, shape, data, fortran=False):
+        """An array whose raw data is the given pre-encoded opcodes."""
         reconstruct = (self.glob("numpy.core.multiarray", "_reconstruct")
                        + _tuple(self.glob("numpy", "ndarray"), _tuple(_int(0)), self.text("b")) + P.REDUCE)
         state = _tuple(_int(1), _tuple(*map(_int, shape)), self.dtype(code),
-                       P.NEWTRUE if fortran else P.NEWFALSE, self.text(_raw(code, values)))
+                       P.NEWTRUE if fortran else P.NEWFALSE, data)
         return reconstruct + state + P.BUILD
 
     def basis(self, encoded):
@@ -220,6 +225,29 @@ class SafetyTests(unittest.TestCase):
         hostile = P.PROTO + bytes([2]) + P.NONE + P.LONG_BINPUT + index + P.STOP
         with self.assertRaisesRegex(ModelError, "memo index"):
             convert(hostile, "memo")
+
+    def test_data_shared_by_many_arrays_is_not_copied_per_array(self):
+        encoder = Legacy()
+        raw = bytes(256 * 1024)
+        shape = (len(raw) // 8,)
+        first = encoder.array_from("f8", shape, encoder.text(raw) + P.BINPUT + bytes([1]))
+        rest = encoder.array_from("f8", shape, P.BINGET + bytes([1])) * 255
+        hostile = P.PROTO + bytes([2]) + P.EMPTY_LIST + P.MARK + first + rest + P.APPENDS + P.STOP
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(ModelError, "dictionary"):
+                convert_module.load_source(hostile)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 16 * len(raw))
+
+    def test_array_data_that_is_not_raw_bytes_is_refused(self):
+        encoder = Legacy()
+        text = "Āab".encode()
+        template = encoder.array_from("u1", (1, 3), P.BINUNICODE + struct.pack("<I", len(text)) + text)
+        with self.assertRaisesRegex(ModelError, "not raw bytes"):
+            convert(model(encoder, overrides={"v_template": template}), "text", expression_components=2)
 
     def test_truncated_source_is_refused(self):
         with self.assertRaisesRegex(ModelError, "not a readable model pickle"):
