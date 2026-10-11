@@ -9,7 +9,7 @@ mod head;
 mod native;
 pub mod output;
 pub mod workflows;
-use head::{HeadCreateParams, HeadModelsParams, HeadUpdateParams};
+use head::{HeadCreateParams, HeadModelsParams, HeadPreparePrintParams, HeadUpdateParams};
 use native::NativeViewParams;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2083,6 +2083,9 @@ async fn dispatch_value(
         }
         "printable_flame_create" => head::create(blender, settings, de(args)?).await,
         "printable_flame_update" => head::update(blender, settings, de(args)?).await,
+        "printable_flame_prepare_print" => {
+            head::prepare_print(Arc::clone(workspace), settings, de(args)?).await
+        }
         "printable_primitive_create" => {
             let p: PrimitiveCreateParams = de(args)?;
             validate_primitive(&p)?;
@@ -4755,13 +4758,31 @@ pub(crate) fn run_geometry_worker_files(
     let options_path = staging.path().join("options.json");
     std::fs::write(&options_path, serde_json::to_vec(&options)?)?;
 
+    run_geometry_worker_process(
+        worker_bin,
+        memory_bytes,
+        &[
+            fixed_path.as_os_str(),
+            moving_path.as_os_str(),
+            options_path.as_os_str(),
+        ],
+    )
+}
+
+/// Run the geometry worker with `args` under the address-space limit and
+/// return its report.
+fn run_geometry_worker_process(
+    worker_bin: &std::path::Path,
+    memory_bytes: u64,
+    args: &[&std::ffi::OsStr],
+) -> Result<Value, ToolError> {
     let mut command = Command::new(worker_bin);
-    command.args([fixed_path, moving_path, &options_path]);
+    command.args(args);
     set_worker_memory_limit(&mut command, memory_bytes)?;
     let output = command.output().map_err(|_| {
         geometry_worker_error(
             "geometry_worker_unavailable",
-            "could not start the isolated assembly geometry worker",
+            "could not start the isolated geometry worker",
         )
     })?;
     parse_geometry_worker_output(output.status.success(), &output.stdout)
@@ -4772,12 +4793,12 @@ fn parse_geometry_worker_output(status_success: bool, stdout: &[u8]) -> Result<V
         if status_success {
             geometry_worker_error(
                 "geometry_worker_protocol",
-                "assembly geometry worker returned an invalid response",
+                "geometry worker returned an invalid response",
             )
         } else {
             geometry_worker_error(
                 "geometry_resource_limit",
-                "assembly geometry worker exceeded its memory budget or terminated unexpectedly",
+                "geometry worker exceeded its memory budget or terminated unexpectedly",
             )
         }
     })?;
@@ -4790,20 +4811,20 @@ fn parse_geometry_worker_output(status_success: bool, stdout: &[u8]) -> Result<V
         let message = error
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("assembly geometry worker failed")
+            .unwrap_or("geometry worker failed")
             .to_string();
         return Err(geometry_worker_error(code, message));
     }
     if !status_success {
         return Err(geometry_worker_error(
             "geometry_resource_limit",
-            "assembly geometry worker exceeded its memory budget or terminated unexpectedly",
+            "geometry worker exceeded its memory budget or terminated unexpectedly",
         ));
     }
     envelope.get("report").cloned().ok_or_else(|| {
         geometry_worker_error(
             "geometry_worker_protocol",
-            "assembly geometry worker response omitted its report",
+            "geometry worker response omitted its report",
         )
     })
 }

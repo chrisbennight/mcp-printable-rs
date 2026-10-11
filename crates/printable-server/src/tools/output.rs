@@ -234,6 +234,11 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "variant": {"type": "string"}, "units": {"const": "millimetres"},
                     "joints": {"type": "object"}
                 }}
+            }},
+            {"required": ["artifact", "units", "variant", "bust", "validation"], "properties": {
+                "artifact": artifact(), "units": {"const": "millimetres"},
+                "variant": {"type": "string"}, "bust": {"type": "object"},
+                "validation": mesh_report()
             }}
         ]}),
         "edit" | "scene" => object(

@@ -23,8 +23,10 @@ use serde::{Deserialize, Serialize};
 
 mod assembly;
 mod assessment;
+mod bust;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
+pub use bust::{BustReport, BustRequest, bust_stl, prepare_bust};
 
 pub use assembly::{
     AssemblyOptions, AssemblyPartSummary, AssemblyRelation, AssemblyReport, AssemblyStaticReport,

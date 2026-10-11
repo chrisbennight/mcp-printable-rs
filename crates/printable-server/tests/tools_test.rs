@@ -5420,3 +5420,139 @@ async fn head_models_reports_mounted_variants_without_blender() {
     assert_eq!(variants, ["alpha", "beta"]);
     assert_eq!(value["models"][0]["identity_components"], 2);
 }
+
+fn head_print_server(
+    root: &std::path::Path,
+    library: Arc<printable_server::flame::FlameLibrary>,
+) -> PrintableServer {
+    let mut cfg = settings("127.0.0.1", 9);
+    cfg.flame = Some(library);
+    PrintableServer::new(
+        workspace(Some(root)),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(cfg),
+    )
+}
+
+fn head_output_validator(server: &PrintableServer) -> jsonschema::Validator {
+    let schema = server
+        .workflow_tools_payload()
+        .tools
+        .into_iter()
+        .find(|tool| tool.name == "head")
+        .unwrap()
+        .output_schema
+        .unwrap();
+    jsonschema::validator_for(&Value::Object(schema.as_ref().clone())).unwrap()
+}
+
+#[tokio::test]
+async fn head_prepare_print_writes_a_validated_bust_without_blender() {
+    // A consistently oriented closed tetrahedron stands in for a head.
+    let models = tempfile::tempdir().unwrap();
+    let fixture = printable_flame::fixture::Fixture {
+        faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let call = json!({
+        "action": "prepare_print",
+        "params": {"path": "busts/head.stl", "height_mm": 50.0, "edge_length_mm": 2.0}
+    });
+    let result = server.invoke_tool(head_call(call.clone())).await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["variant"], "test");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    let height = value["bust"]["size_mm"][2].as_f64().unwrap();
+    assert!((height - 50.0).abs() < 1e-6, "{value}");
+    let written = std::fs::metadata(root.path().join("busts/head.stl")).unwrap();
+    assert_eq!(
+        written.len(),
+        value["artifact"]["size_bytes"].as_u64().unwrap()
+    );
+
+    let repeat = server.invoke_tool(head_call(call)).await.unwrap();
+    assert_eq!(repeat.is_error, Some(true), "existing files need overwrite");
+}
+
+#[tokio::test]
+async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), head_library(&["test"]));
+    for (params, message) in [
+        (json!({"path": "head.stl", "height_mm": 5.0}), "height_mm"),
+        (
+            json!({"path": "head.stl", "edge_length_mm": 0.01}),
+            "edge_length_mm",
+        ),
+        (
+            json!({"path": "head.stl", "max_triangles": 10}),
+            "max_triangles",
+        ),
+        (json!({"path": "head.stl", "identity": [9.0]}), "within"),
+        (json!({"path": "head.txt"}), ""),
+    ] {
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+/// Prepares a print-resolution bust from a converted model named by
+/// `PRINTABLE_TEST_FLAME_MODEL`, under the default worker memory limit.
+#[tokio::test]
+#[ignore = "requires a converted FLAME model"]
+async fn head_prepare_print_makes_a_printable_bust_from_a_real_model() {
+    let model = std::env::var_os("PRINTABLE_TEST_FLAME_MODEL")
+        .expect("set PRINTABLE_TEST_FLAME_MODEL to a converted .safetensors model");
+    let models = tempfile::tempdir().unwrap();
+    std::fs::copy(&model, models.path().join("model.safetensors")).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    assert!(library.is_available(), "{}", library.report());
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let started = std::time::Instant::now();
+    let result = server
+        .invoke_tool(head_call(json!({
+            "action": "prepare_print",
+            "params": {
+                "path": "bust.stl",
+                "identity": [1.0, -0.5, 0.5],
+                "expression": [1.5, 0.5],
+                "pose": {"jaw": [0.15, 0.0, 0.0], "neck": [0.1, 0.2, 0.0]}
+            }
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    eprintln!(
+        "bust in {:?}: {}\nvalidation topology: {}",
+        started.elapsed(),
+        value["bust"],
+        value["validation"]["topology"]
+    );
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    assert_eq!(
+        value["validation"]["topology"]["connected_components"], 1,
+        "{value}"
+    );
+    assert!((value["bust"]["size_mm"][2].as_f64().unwrap() - 100.0).abs() < 1e-6);
+    assert!(value["bust"]["chordal_deviation_p999_mm"].as_f64().unwrap() < 0.05);
+    assert!(value["bust"]["triangles"].as_u64().unwrap() <= 1_500_000);
+}

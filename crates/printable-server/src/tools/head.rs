@@ -1,9 +1,11 @@
 //! The `head` workflow: FLAME heads evaluated in the server and delivered to
-//! Blender as millimetre meshes.
+//! Blender as millimetre meshes, or prepared as printable busts by the
+//! isolated geometry worker.
 
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead};
+use printable_geom::BustRequest;
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -11,6 +13,14 @@ const COEFFICIENT_LIMIT: f32 = 5.0;
 /// FLAME evaluates in metres; Printable's scene coordinates are millimetres.
 const MILLIMETRES_PER_METRE: f32 = 1000.0;
 const DEFAULT_NAME: &str = "Head";
+const PRINT_HEIGHT_MM: std::ops::RangeInclusive<f64> = 20.0..=500.0;
+const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
+/// An edge of 0.4 mm keeps facets within about 0.02 mm of the smooth surface
+/// on a 100 mm bust, below what a 0.2 mm nozzle reproduces.
+const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
+const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
+const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
+const DEFAULT_MAX_TRIANGLES: usize = 1_500_000;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -82,6 +92,39 @@ pub(super) struct HeadUpdateParams {
     pose: HeadPose,
 }
 
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HeadPreparePrintParams {
+    /// Model variant from the `models` action. Optional when one model is mounted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variant: Option<String>,
+    /// Identity coefficients, as for `create`.
+    #[serde(default)]
+    identity: Vec<f32>,
+    /// Expression coefficients, as for `create`.
+    #[serde(default)]
+    expression: Vec<f32>,
+    #[serde(default)]
+    pose: HeadPose,
+    /// Workspace path for the binary STL.
+    path: String,
+    /// Replace an existing file at `path`.
+    #[serde(default)]
+    overwrite: bool,
+    /// Height of the bust from its flat base to the crown, 20 to 500 mm
+    /// (default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    height_mm: Option<f64>,
+    /// Target facet edge length, 0.1 to 5 mm (default 0.4). Shorter edges
+    /// follow the smooth surface more closely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edge_length_mm: Option<f64>,
+    /// Upper bound on the triangle count, 10,000 to 3,000,000 (default
+    /// 1,500,000). The edge length grows when needed to respect it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_triangles: Option<usize>,
+}
+
 #[derive(serde::Serialize)]
 struct CreateCommand<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,6 +194,98 @@ pub(super) async fn update(
     };
     let result = blender_command(blender, "update_flame_head", &command).await?;
     Ok(annotate(result, &model, &head))
+}
+
+/// Write a closed, upright bust STL: the head is trimmed flat just above the
+/// neck opening, the mouth is closed, the eyes are united with the head, and
+/// the surface is smoothed and refined to the requested edge length.
+pub(super) async fn prepare_print(
+    workspace: Arc<Workspace>,
+    settings: &Settings,
+    params: HeadPreparePrintParams,
+) -> Result<Value, ToolError> {
+    validate_scad_destination(&workspace, &params.path, ".stl", params.overwrite)?;
+    let height_mm = in_range(
+        "height_mm",
+        params.height_mm.unwrap_or(DEFAULT_PRINT_HEIGHT_MM),
+        &PRINT_HEIGHT_MM,
+    )?;
+    let edge_length_mm = in_range(
+        "edge_length_mm",
+        params.edge_length_mm.unwrap_or(DEFAULT_EDGE_LENGTH_MM),
+        &EDGE_LENGTH_MM,
+    )?;
+    let max_triangles = in_range(
+        "max_triangles",
+        params.max_triangles.unwrap_or(DEFAULT_MAX_TRIANGLES),
+        &MAX_TRIANGLES,
+    )?;
+    let worker_bin = geometry_worker_path(settings)?;
+    let worker_memory_bytes = settings.geometry_worker_memory_bytes;
+    let (model, head) = evaluate(
+        settings,
+        params.variant.as_deref(),
+        params.identity,
+        params.expression,
+        params.pose,
+    )
+    .await?;
+    let request = BustRequest {
+        vertices: millimetres(&head.vertices)
+            .into_iter()
+            .map(|point| point.map(f64::from))
+            .collect(),
+        triangles: model.faces().to_vec(),
+        height_mm,
+        edge_length_mm,
+        max_triangles,
+    };
+    let variant = model.info().variant.clone();
+    let (path, overwrite) = (params.path, params.overwrite);
+    geometry_blocking(move || {
+        let staging = tempfile::Builder::new()
+            .prefix("printable-bust-")
+            .tempdir()?;
+        let request_path = staging.path().join("request.json");
+        let output_path = staging.path().join("bust.stl");
+        std::fs::write(&request_path, serde_json::to_vec(&request)?)?;
+        let report = run_geometry_worker_process(
+            &worker_bin,
+            worker_memory_bytes,
+            &[
+                std::ffi::OsStr::new("--bust"),
+                request_path.as_os_str(),
+                output_path.as_os_str(),
+            ],
+        )?;
+        let bytes = std::fs::read(&output_path)?;
+        let validation = analyze_stl(&bytes, ValidationOptions::default())?;
+        let artifact = workspace.write_generated_bytes(&path, &bytes, overwrite)?;
+        Ok::<_, ToolError>(json!({
+            "artifact": artifact,
+            "units": "millimetres",
+            "variant": variant,
+            "bust": report,
+            "validation": validation,
+        }))
+    })
+    .await
+}
+
+fn in_range<T: PartialOrd + std::fmt::Display>(
+    name: &str,
+    value: T,
+    range: &std::ops::RangeInclusive<T>,
+) -> Result<T, ToolError> {
+    if range.contains(&value) {
+        Ok(value)
+    } else {
+        Err(ToolError::Validation(format!(
+            "{name} must be between {} and {}",
+            range.start(),
+            range.end()
+        )))
+    }
 }
 
 fn library(settings: &Settings) -> Result<&crate::flame::FlameLibrary, ToolError> {

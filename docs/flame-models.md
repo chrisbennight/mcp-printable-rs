@@ -90,11 +90,12 @@ Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
 any file that was skipped, with the reason.
 
-The `head` workflow has three actions:
+The `head` workflow has four actions:
 
 - `models` lists the mounted variants and their basis sizes.
 - `create` adds a head mesh to the Blender scene.
 - `update` re-evaluates an existing head in place, keeping its triangles.
+- `prepare_print` writes a bust STL to the workspace without using Blender.
 
 ```json
 {"action": "create", "params": {
@@ -118,6 +119,54 @@ is life size. The response reports the variant and the posed joint locations in
 millimetres. Updates are refused for objects the head tool did not create,
 objects created from another variant, and heads whose vertex count has changed.
 An update replaces every vertex position, so other edits to the mesh are lost.
+Heads in Edit Mode are refused, because Blender would overwrite the update when
+the head leaves Edit Mode.
+
+## Prepare a bust for printing
+
+A FLAME head is an open surface with separate eyeballs, so it cannot be printed
+as it is. `prepare_print` takes the same `variant`, `identity`, `expression`
+and `pose` as `create` and writes a single closed solid:
+
+1. The mouth and neck openings are closed.
+2. The head is turned upright, with the face toward -y, and scaled so that it
+   stands `height_mm` tall.
+3. The surface is smoothed and refined to `edge_length_mm`, and the eyeballs
+   are united with the head.
+4. The neck is cut flat just above its opening, so the bust rests on z = 0.
+
+The geometry work runs in the isolated geometry worker under
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`.
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2023_open",
+  "identity": [1.2, -0.4],
+  "expression": [0.5],
+  "path": "busts/head.stl"
+}}
+```
+
+| Parameter | Default | Range |
+| --- | --- | --- |
+| `height_mm` | 100 | 20 to 500 |
+| `edge_length_mm` | 0.4 | 0.1 to 5 |
+| `max_triangles` | 1,500,000 | 10,000 to 3,000,000 |
+| `overwrite` | false | |
+
+The response contains the written artifact, a `bust` report and the mesh
+validation report. `bust` gives the triangle count, size, volume, the edge
+length used, and `chordal_deviation_p999_mm`: the distance between the facets
+and the smooth surface they approximate, at the 99.9th percentile. The edge
+length grows above the request only when needed to stay within
+`max_triangles`. `discarded_fragments` counts separate slivers of negligible
+volume that the union left where an eyeball meets an eyelid; they are removed.
+
+With the defaults, each of the FLAME 2020 generic, FLAME 2023 and FLAME 2023
+Open models produced one watertight, manifold solid of 340,000 to 390,000
+triangles in under 10 seconds, with a 99.9th-percentile deviation of 0.022 mm.
+That is well below the detail a 0.2 mm nozzle reproduces. A 300 mm bust at
+the triangle limit stayed within the default 1 GiB worker memory limit.
 
 ## Output format
 

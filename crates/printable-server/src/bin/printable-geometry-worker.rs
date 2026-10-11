@@ -1,9 +1,17 @@
-//! Memory-isolated worker for exact assembly CSG and motion analysis.
+//! Memory-isolated worker for exact assembly CSG, motion analysis, and
+//! print-ready bust preparation.
+//!
+//! `printable-geometry-worker <fixed.stl> <moving.stl> <options.json>` analyses
+//! an assembly; `printable-geometry-worker --bust <request.json> <output.stl>`
+//! writes a closed, upright bust. Both print `{"report": ...}` or
+//! `{"error": {"code", "message"}}` on stdout.
 
 use std::{ffi::OsString, fs, io, process::ExitCode};
 
-use printable_geom::{AssemblyOptions, analyze_assembly_stl};
-use serde_json::json;
+use printable_geom::{AssemblyOptions, BustRequest, analyze_assembly_stl, bust_stl, prepare_bust};
+use serde_json::{Value, json};
+
+const BUST_FLAG: &str = "--bust";
 
 struct WorkerFailure {
     code: &'static str,
@@ -38,19 +46,55 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<printable_geom::AssemblyReport, WorkerFailure> {
-    let [fixed_path, moving_path, options_path] = exact_args()?;
-    let fixed = read_input(&fixed_path, "fixed STL")?;
-    let moving = read_input(&moving_path, "moving STL")?;
-    let options_bytes = read_input(&options_path, "assembly options")?;
+fn run() -> Result<Value, WorkerFailure> {
+    let [first, second, third] = exact_args()?;
+    if first == BUST_FLAG {
+        return run_bust(&second, &third);
+    }
+    run_assembly(&first, &second, &third)
+}
+
+fn run_bust(request_path: &OsString, output_path: &OsString) -> Result<Value, WorkerFailure> {
+    let request_bytes = read_input(request_path, "bust request")?;
+    let request =
+        serde_json::from_slice::<BustRequest>(&request_bytes).map_err(|_| WorkerFailure {
+            code: "validation",
+            message: "geometry worker received an invalid bust request".to_string(),
+        })?;
+    let (mesh, report) = prepare_bust(&request).map_err(|error| WorkerFailure {
+        code: error.code(),
+        message: error.to_string(),
+    })?;
+    fs::write(output_path, bust_stl(&mesh)).map_err(|_| WorkerFailure {
+        code: "geometry_worker_io",
+        message: "geometry worker could not write the bust STL".to_string(),
+    })?;
+    serde_json::to_value(report).map_err(|_| WorkerFailure {
+        code: "geometry",
+        message: "geometry worker could not encode the bust report".to_string(),
+    })
+}
+
+fn run_assembly(
+    fixed_path: &OsString,
+    moving_path: &OsString,
+    options_path: &OsString,
+) -> Result<Value, WorkerFailure> {
+    let fixed = read_input(fixed_path, "fixed STL")?;
+    let moving = read_input(moving_path, "moving STL")?;
+    let options_bytes = read_input(options_path, "assembly options")?;
     let options =
         serde_json::from_slice::<AssemblyOptions>(&options_bytes).map_err(|_| WorkerFailure {
             code: "validation",
             message: "assembly worker received invalid options".to_string(),
         })?;
-    analyze_assembly_stl(&fixed, &moving, options).map_err(|error| WorkerFailure {
+    let report = analyze_assembly_stl(&fixed, &moving, options).map_err(|error| WorkerFailure {
         code: error.code(),
         message: error.to_string(),
+    })?;
+    serde_json::to_value(report).map_err(|_| WorkerFailure {
+        code: "geometry",
+        message: "assembly worker could not encode its report".to_string(),
     })
 }
 
@@ -70,13 +114,13 @@ fn exact_args() -> Result<[OsString; 3], WorkerFailure> {
 fn invalid_args() -> WorkerFailure {
     WorkerFailure {
         code: "validation",
-        message: "assembly worker requires fixed, moving, and options paths".to_string(),
+        message: "geometry worker requires fixed, moving, and options paths, or --bust with request and output paths".to_string(),
     }
 }
 
 fn read_input(path: &OsString, label: &'static str) -> Result<Vec<u8>, WorkerFailure> {
     fs::read(path).map_err(|_| WorkerFailure {
         code: "geometry_worker_io",
-        message: format!("assembly worker could not read {label}"),
+        message: format!("geometry worker could not read {label}"),
     })
 }
