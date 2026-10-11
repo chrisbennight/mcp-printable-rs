@@ -239,6 +239,18 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "artifact": artifact(), "units": {"const": "millimetres"},
                 "variant": {"type": "string"}, "bust": {"type": "object"},
                 "validation": mesh_report()
+            }},
+            {"required": ["variant", "identity", "expression", "pose", "displacement"], "properties": {
+                "variant": {"type": "string"},
+                "identity": {"type": "array", "items": {"type": "number"}},
+                "expression": {"type": "array", "items": {"type": "number"}},
+                "pose": {"type": "object", "required": ["jaw"]},
+                "displacement": {"type": "object", "required": ["artifact", "offset_mm", "scale_mm"], "properties": {
+                    "artifact": artifact(), "offset_mm": {"type": "number"},
+                    "scale_mm": {"type": "number"}
+                }},
+                "identity_agreement": {"type": "array", "items": {"type": "number"}},
+                "clamped_coefficients": {"type": "integer", "minimum": 0}
             }}
         ]}),
         "edit" | "scene" => object(

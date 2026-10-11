@@ -38,7 +38,7 @@ RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
-RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker
+RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
 
 # CI exports the MCP smoke driver from the same Trixie build environment as
@@ -96,6 +96,38 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/printable-cad-worker", "--healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
+
+# Photo reconstruction: PyTorch, the network definitions and MediaPipe's face
+# landmarker. Network checkpoints are operator-supplied on a mounted volume.
+# The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts; CI uses
+# the CPU index to test without a GPU.
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/recon
+COPY recon/requirements.txt /opt/printable/recon/requirements.txt
+RUN /opt/recon/bin/pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch==2.14.1 torchvision==0.29.1 \
+ && /opt/recon/bin/pip install --no-cache-dir --no-deps -r /opt/printable/recon/requirements.txt
+RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
+      https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
+ && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check
+COPY recon/reconstruct.py /opt/printable/recon/reconstruct.py
+COPY recon/printable_recon /opt/printable/recon/printable_recon
+COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
+COPY LICENSE /usr/share/doc/printable/LICENSE
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.printable.role="recon-worker"
+USER 10001
+EXPOSE 8004
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/printable-recon-worker", "--healthcheck"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-recon-worker"]
 
 # Runtime: debian-slim (not distroless — OpenSCAD, Xvfb, and FFmpeg need apt).
 # OpenSCAD renders under a virtual framebuffer via the openscad-headless

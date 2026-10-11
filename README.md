@@ -42,7 +42,7 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 - Measure mesh bounds, topology, overhangs, and clearance between rigid parts.
 - Render previews, product views, galleries, and restart-recoverable video jobs.
 - Transfer workspace artifacts directly without putting file bytes into chat.
-- Generate parametric human heads in millimetres from [FLAME models](docs/flame-models.md) you mount, and turn them into watertight bust STLs for printing.
+- Generate parametric human heads in millimetres from [FLAME models](docs/flame-models.md) you mount, reconstruct them from photographs with an optional worker, and turn them into watertight bust STLs for printing.
 - Load the [image to mold skill](docs/image-to-mold.md) for calibrated relief maps,
   positive masters, silicone casting trays, and negative cavities.
 

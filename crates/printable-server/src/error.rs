@@ -63,6 +63,9 @@ pub enum ToolError {
     /// Durable render-job admission, lookup, persistence, or worker failure.
     #[error("{0}")]
     Job(String),
+    /// Photo reconstruction was refused or failed in the reconstruction worker.
+    #[error("reconstruction failed: {message}")]
+    Reconstruction { code: &'static str, message: String },
 }
 
 impl ToolError {
@@ -94,6 +97,7 @@ impl ToolError {
                 "job_queue_full"
             }
             ToolError::Job(_) => "job",
+            ToolError::Reconstruction { code, .. } => code,
         }
     }
 }

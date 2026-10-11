@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Start the reconstruction worker without checkpoints and check that it is
+# healthy, reports itself not ready, and names every missing checkpoint file.
+set -euo pipefail
+image="${1:?usage: smoke-recon-worker <image>}"
+name="printable-recon-smoke-$$"
+cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+docker run --detach --name "$name" --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --pids-limit 256 --memory 2g --cpus 2 \
+  --tmpfs /tmp:rw,size=256m,uid=10001,gid=10001,mode=1770 \
+  --tmpfs /workspace:rw,size=64m,uid=10001,gid=10001,mode=0770 \
+  --env PRINTABLE_WORKSPACE_ROOT=/workspace \
+  "$image" >/dev/null
+for _ in $(seq 1 30); do
+  if docker exec "$name" /usr/local/bin/printable-recon-worker --healthcheck >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$name" /usr/local/bin/printable-recon-worker --healthcheck
+readiness="$(docker exec "$name" curl --silent --show-error --write-out '\n%{http_code}' http://127.0.0.1:8004/readyz)"
+status="$(tail -n 1 <<<"$readiness")"
+body="$(head -n 1 <<<"$readiness")"
+[[ "$status" == 503 ]] || { echo "expected 503 without checkpoints, got $status: $body" >&2; exit 1; }
+for file in mica.tar SMIRK_em1.pt deca_model.tar uv_face_eye_mask.png; do
+  grep -q "$file" <<<"$body" || { echo "readiness does not name $file: $body" >&2; exit 1; }
+done
+echo "reconstruction worker reports missing checkpoints as expected"

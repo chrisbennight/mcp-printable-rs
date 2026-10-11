@@ -885,9 +885,11 @@ mod tests {
             worker.script.clone(),
         );
         assert_eq!(reopened.status(handle(), false).await.unwrap(), done);
-        let schema =
-            crate::resources::contracts::read("printable://contracts/cad_build/status", false)
-                .unwrap();
+        let schema = crate::resources::contracts::read(
+            "printable://contracts/cad_build/status",
+            Default::default(),
+        )
+        .unwrap();
         jsonschema::validator_for(&schema["outputSchema"])
             .unwrap()
             .validate(&done)
@@ -1117,9 +1119,11 @@ mod tests {
         let state = worker.status(handle(), false).await.unwrap();
         assert_eq!(state["history"], "legacy_report");
         assert_eq!(state["result"], report);
-        let contract =
-            crate::resources::contracts::read("printable://contracts/cad_build/status", false)
-                .unwrap();
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/cad_build/status",
+            Default::default(),
+        )
+        .unwrap();
         let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
         validator.validate(&state).unwrap();
         let mut malformed = state;
@@ -1142,9 +1146,11 @@ mod tests {
         let output = worker.build(request()).await.unwrap();
         assert_eq!(output["completion"], "completed");
         assert_eq!(output["qualification"]["status"], "passed");
-        let contract =
-            crate::resources::contracts::read("printable://contracts/cad_build/model", false)
-                .unwrap();
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/cad_build/model",
+            Default::default(),
+        )
+        .unwrap();
         jsonschema::validator_for(&contract["outputSchema"])
             .unwrap()
             .validate(&output)
@@ -1215,16 +1221,20 @@ mod tests {
             .unwrap();
         assert_eq!(state["status"], "completed");
         assert_eq!(state["result"], revised);
-        let status_contract =
-            crate::resources::contracts::read("printable://contracts/cad_build/status", false)
-                .unwrap();
+        let status_contract = crate::resources::contracts::read(
+            "printable://contracts/cad_build/status",
+            Default::default(),
+        )
+        .unwrap();
         jsonschema::validator_for(&status_contract["outputSchema"])
             .unwrap()
             .validate(&state)
             .unwrap();
-        let schema =
-            crate::resources::contracts::read("printable://contracts/cad_build/model", false)
-                .unwrap();
+        let schema = crate::resources::contracts::read(
+            "printable://contracts/cad_build/model",
+            Default::default(),
+        )
+        .unwrap();
         jsonschema::validator_for(&schema["outputSchema"])
             .unwrap()
             .validate(&revised)

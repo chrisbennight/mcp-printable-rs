@@ -132,7 +132,23 @@ workflow!(HeadRequest {
     Create(HeadCreateParams) => "printable_flame_create",
     Update(HeadUpdateParams) => "printable_flame_update",
     PreparePrint(HeadPreparePrintParams) => "printable_flame_prepare_print",
+    Reconstruct(crate::recon::ReconRequest) => "printable_flame_reconstruct",
 });
+
+/// The `head` input schema without the `reconstruct` action, for servers
+/// whose reconstruction worker is absent or not ready.
+fn head_schema() -> Arc<JsonObject> {
+    let mut schema = (*workflow_schema_of::<HeadRequest>()).clone();
+    for key in ["oneOf", "anyOf"] {
+        if let Some(Value::Array(variants)) = schema.get_mut(key) {
+            variants.retain(|variant| {
+                let action = &variant["properties"]["action"];
+                action["const"] != "reconstruct" && action["enum"] != json!(["reconstruct"])
+            });
+        }
+    }
+    Arc::new(schema)
+}
 
 workflow!(EditRequest {
     Primitive(PrimitiveCreateParams) => "printable_primitive_create",
@@ -315,13 +331,39 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 /// The workflow tool that exists only while FLAME head models are mounted.
 pub const HEAD: &str = "head";
 
+/// Optional capabilities that change what this server advertises.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Availability {
+    /// A FLAME model is mounted.
+    pub head: bool,
+    /// The reconstruction worker is ready and a FLAME 2020 model is mounted.
+    pub reconstruct: bool,
+}
+
 /// Tools this server advertises and accepts. `head` is included only when a
-/// FLAME model is mounted, so clients never see a capability that cannot be served.
-pub fn advertised(head_available: bool) -> impl Iterator<Item = &'static ToolDef> {
+/// FLAME model is mounted, and offers `reconstruct` only when that can be
+/// served, so clients never see a capability that cannot be served.
+pub fn advertised(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
     TOOLS
         .iter()
-        .filter(move |tool| tool.name != HEAD || head_available)
+        .filter(move |tool| tool.name != HEAD || available.head)
+        .map(move |tool| {
+            if tool.name == HEAD && available.reconstruct {
+                &HEAD_WITH_RECONSTRUCTION
+            } else {
+                tool
+            }
+        })
 }
+
+const HEAD_DESCRIPTION: &str = "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.";
+
+static HEAD_WITH_RECONSTRUCTION: ToolDef = ToolDef {
+    name: HEAD,
+    description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing; reconstruct estimates true-scale identity from 1 to 8 workspace photographs of one person, plus the expression, jaw rotation and a surface displacement map from the first, for use with create and prepare_print. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
+    schema: workflow_schema_of::<HeadRequest>,
+    annotations: write_annotations,
+};
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -434,8 +476,8 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: HEAD,
-        description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
-        schema: workflow_schema_of::<HeadRequest>,
+        description: HEAD_DESCRIPTION,
+        schema: head_schema,
         annotations: write_annotations,
     },
     ToolDef {
@@ -550,15 +592,34 @@ mod tests {
 
     #[test]
     fn head_is_advertised_only_with_mounted_models() {
-        let names = |available| {
-            advertised(available)
-                .map(|tool| tool.name)
-                .collect::<Vec<_>>()
+        let names = |head| {
+            advertised(Availability {
+                head,
+                reconstruct: false,
+            })
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>()
         };
         assert!(!names(false).contains(&HEAD));
         assert!(names(true).contains(&HEAD));
         assert_eq!(names(true).len(), TOOLS.len());
         assert_eq!(names(false).len(), TOOLS.len() - 1);
+    }
+
+    #[test]
+    fn reconstruct_is_advertised_only_when_it_can_be_served() {
+        let head_schema = |reconstruct| {
+            let tool = advertised(Availability {
+                head: true,
+                reconstruct,
+            })
+            .find(|tool| tool.name == HEAD)
+            .unwrap();
+            serde_json::to_string(&*(tool.schema)()).unwrap()
+        };
+        assert!(!head_schema(false).contains("reconstruct"));
+        assert!(head_schema(true).contains("reconstruct"));
+        assert!(head_schema(false).contains("prepare_print"));
     }
 
     #[test]
@@ -568,10 +629,12 @@ mod tests {
             ("create", "printable_flame_create"),
             ("update", "printable_flame_update"),
             ("prepare_print", "printable_flame_prepare_print"),
+            ("reconstruct", "printable_flame_reconstruct"),
         ] {
             let params = match action {
                 "update" => json!({"object": "Head"}),
                 "prepare_print" => json!({"path": "bust.stl"}),
+                "reconstruct" => json!({"images": ["face.jpg"], "displacement_path": "detail.png"}),
                 _ => json!({}),
             };
             let call = resolve(HEAD, json!({"action": action, "params": params})).unwrap();

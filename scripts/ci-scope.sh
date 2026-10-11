@@ -48,7 +48,7 @@ else
       addon/tests/*) addon=true ;;
       addon/*) addon=true; images=true ;;
       smoke/expected-tools.txt) rust=true; images=true ;;
-      Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
+      Dockerfile|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
         images=true ;;
       compose.yaml) images=true ;;
       acceptance/products/*) rust=true; images=true ;;
@@ -68,7 +68,7 @@ else
         images=true ;;
     esac
     case "$path" in
-      *.sh|scripts/run-headless-blender|scripts/smoke-blender-gpu|scripts/smoke-blender-cpu|scripts/smoke-release-pair|scripts/check-release-target)
+      *.sh|scripts/run-headless-blender|scripts/smoke-blender-gpu|scripts/smoke-blender-cpu|scripts/smoke-release-pair|scripts/smoke-recon-worker|scripts/check-release-target)
         shell=true; tooling=true ;;
     esac
     case "$path" in

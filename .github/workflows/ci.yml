@@ -72,7 +72,7 @@ jobs:
       - name: Validate shell scripts and publication permissions
         if: steps.scope.outputs.shell == 'true' || steps.scope.outputs.tooling == 'true'
         run: |
-          for script in build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair; do
+          for script in build-docker.sh scripts/run-headless-blender scripts/smoke-blender-gpu scripts/smoke-blender-cpu scripts/smoke-release-pair scripts/smoke-recon-worker; do
             bash -n "$script"
           done
           sh scripts/check-release-target
@@ -206,6 +206,23 @@ jobs:
             --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
             --entrypoint /usr/bin/python3 printable-slicer-smoke:ci \
             /opt/printable/slicer-smoke.py
+      - name: Build and verify photo reconstruction
+        if: steps.scope.outputs.images == 'true'
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu \
+            --target recon-runtime --tag printable-recon:ci .
+          docker buildx build --builder default --platform linux/amd64 --load \
+            --build-arg RECON_IMAGE=printable-recon:ci \
+            --file recon/Dockerfile.smoke --tag printable-recon-smoke:ci .
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
+            --tmpfs /tmp:rw,size=1g,uid=10001,gid=10001,mode=1770 \
+            --env PYTHONPATH=/opt/printable/recon --env HOME=/tmp \
+            --entrypoint /opt/recon/bin/python printable-recon-smoke:ci \
+            -m unittest discover -s /opt/printable/recon/tests -v
+          scripts/smoke-recon-worker printable-recon:ci
       - name: Exercise the independent installation and direct client
         if: steps.scope.outputs.images == 'true'
         run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recovery --evidence-dir target/installation-evidence

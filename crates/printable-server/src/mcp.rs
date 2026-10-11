@@ -16,7 +16,7 @@ use rmcp::{
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
         Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
     },
-    service::RequestContext,
+    service::{NotificationContext, Peer, RequestContext},
 };
 use serde_json::{Map, Value};
 
@@ -57,6 +57,8 @@ pub struct PrintableServer {
     jobs: Arc<JobRegistry>,
     published_files: Arc<PublishedFiles>,
     incoming_files: Arc<IncomingFiles>,
+    /// Initialized sessions, told when the advertised tools change.
+    sessions: Arc<std::sync::Mutex<Vec<Peer<RoleServer>>>>,
 }
 
 impl PrintableServer {
@@ -97,7 +99,36 @@ impl PrintableServer {
             settings,
             scad,
             jobs,
+            sessions: Arc::default(),
         }
+    }
+
+    /// The advertised `head` schema depends on whether the reconstruction
+    /// worker is ready. Until `cancel` fires, tell every initialized session
+    /// when that changes, so clients list the tools again.
+    pub(crate) fn announce_tool_changes(&self, cancel: tokio_util::sync::CancellationToken) {
+        let Some(recon) = &self.settings.recon else {
+            return;
+        };
+        let mut changes = recon.subscribe();
+        let sessions = Arc::clone(&self.sessions);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    changed = changes.changed() => if changed.is_err() { break },
+                }
+                let peers: Vec<_> = {
+                    let mut sessions = sessions.lock().unwrap_or_else(|poison| poison.into_inner());
+                    sessions.retain(|peer| !peer.is_transport_closed());
+                    sessions.clone()
+                };
+                for peer in peers {
+                    // A session that has gone away simply misses the notice.
+                    let _ = peer.notify_tool_list_changed().await;
+                }
+            }
+        });
     }
 
     pub(crate) fn incoming_files(&self) -> Arc<IncomingFiles> {
@@ -130,17 +161,27 @@ impl PrintableServer {
 
     pub fn workflow_tools_payload(&self) -> ListToolsResult {
         ListToolsResult::with_all_items(
-            tools::workflows::advertised(self.head_available())
+            tools::workflows::advertised(self.availability())
                 .map(Self::to_rmcp_tool)
                 .collect(),
         )
     }
 
-    fn head_available(&self) -> bool {
-        self.settings
+    fn availability(&self) -> tools::workflows::Availability {
+        let flame = self
+            .settings
             .flame
             .as_ref()
-            .is_some_and(|library| library.is_available())
+            .filter(|library| library.is_available());
+        tools::workflows::Availability {
+            head: flame.is_some(),
+            reconstruct: flame.is_some_and(|library| library.reconstruction_variant().is_some())
+                && self
+                    .settings
+                    .recon
+                    .as_ref()
+                    .is_some_and(|recon| recon.is_ready()),
+        }
     }
 
     /// Resolve a tool name and dispatch. An unknown name is a JSON-RPC
@@ -150,8 +191,7 @@ impl PrintableServer {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        if !tools::workflows::advertised(self.head_available()).any(|tool| tool.name == params.name)
-        {
+        if !tools::workflows::advertised(self.availability()).any(|tool| tool.name == params.name) {
             return Err(McpError::method_not_found::<
                 rmcp::model::CallToolRequestMethod,
             >());
@@ -437,11 +477,18 @@ impl ServerHandler for PrintableServer {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::V_2024_11_05;
         let capabilities = ServerCapabilities::builder().enable_tools();
-        info.capabilities = if resources::RESOURCES.is_empty() {
+        let mut capabilities = if resources::RESOURCES.is_empty() {
             capabilities.build()
         } else {
             capabilities.enable_resources().build()
         };
+        // Only reconstruction readiness changes the tools after startup.
+        if self.settings.recon.is_some()
+            && let Some(tools) = capabilities.tools.as_mut()
+        {
+            tools.list_changed = Some(true);
+        }
+        info.capabilities = capabilities;
         // `from_build_env` captures rmcp's own package identity (name and
         // version), so override both: the client must see `printable_blender` at
         // this server's crate version, not the transport dependency's.
@@ -450,6 +497,15 @@ impl ServerHandler for PrintableServer {
         info.server_info.version = env!("CARGO_PKG_VERSION").to_string();
         info.instructions = Some(SERVER_INSTRUCTIONS.to_string());
         info
+    }
+
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        sessions.retain(|peer| !peer.is_transport_closed());
+        sessions.push(context.peer);
     }
 
     async fn list_tools(
@@ -542,7 +598,7 @@ impl ServerHandler for PrintableServer {
         params: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        if let Some(contract) = resources::contracts::read(&params.uri, self.head_available()) {
+        if let Some(contract) = resources::contracts::read(&params.uri, self.availability()) {
             return Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
                 ResourceContents::text(contract.to_string(), params.uri)
                     .with_mime_type("application/json"),
@@ -630,8 +686,11 @@ mod tests {
         let payload = result.structured_content.unwrap();
         for schema in [
             crate::printers::output_schema("print"),
-            crate::resources::contracts::read("printable://contracts/print/start", false).unwrap()
-                ["outputSchema"]
+            crate::resources::contracts::read(
+                "printable://contracts/print/start",
+                Default::default(),
+            )
+            .unwrap()["outputSchema"]
                 .clone(),
         ] {
             let validator = jsonschema::validator_for(&schema).unwrap();

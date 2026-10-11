@@ -90,12 +90,15 @@ Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
 any file that was skipped, with the reason.
 
-The `head` workflow has four actions:
+The `head` workflow has four actions, and a fifth when photo reconstruction is
+available:
 
 - `models` lists the mounted variants and their basis sizes.
 - `create` adds a head mesh to the Blender scene.
 - `update` re-evaluates an existing head in place, keeping its triangles.
 - `prepare_print` writes a bust STL to the workspace without using Blender.
+- `reconstruct` estimates a head from photographs; see
+  [Reconstruct a head from photographs](#reconstruct-a-head-from-photographs).
 
 ```json
 {"action": "create", "params": {
@@ -209,6 +212,140 @@ cavity open through two drain holes. Each request took about 17 seconds on a
 busy four-core machine, including validation. A 300 mm hollow bust on a
 plinth at the default triangle limit stayed within the default 1 GiB worker
 memory limit.
+
+## Reconstruct a head from photographs
+
+The `reconstruct` action estimates a head from 1 to 8 photographs of one
+person. It runs in an optional reconstruction worker:
+
+- **Identity** comes from MICA, which recovers true head size. The ArcFace
+  identity embeddings of all the photographs are averaged before MICA maps them
+  to 300 identity coefficients.
+- **Expression and jaw** come from SMIRK, applied to the first photograph.
+- **Surface detail** comes from DECA, applied to the first photograph. Its
+  detail decoder writes a 16-bit displacement map in FLAME's UV layout,
+  conditioned on DECA's own estimate of the expression and jaw.
+
+All three networks were trained with FLAME 2020, so their coefficients belong
+to the FLAME 2020 generic model. Convert and mount `generic_model.pkl` from
+the FLAME 2020 release alongside any other models, with the converter's
+default split of 300 identity and 100 expression components. The server
+recognises it by the digest of the published file and that split.
+
+### Network checkpoints
+
+The checkpoints are not included. Download them from the projects and place
+these files in one directory:
+
+| File | Source |
+| --- | --- |
+| `mica.tar` | [MICA](https://github.com/Zielon/MICA), "Pre-trained Models" |
+| `SMIRK_em1.pt` | [SMIRK](https://github.com/georgeretsi/smirk), the pretrained model link |
+| `deca_model.tar` | [DECA](https://github.com/yfeng95/DECA), the released model |
+| `uv_face_eye_mask.png` | DECA's `data` directory |
+
+The worker loads checkpoints with PyTorch's weights-only loader, which builds
+tensors and plain data but never runs code from the file. Its image includes
+MediaPipe's face landmarker, which places the face crops and the five ArcFace
+keypoints.
+
+### Run the worker
+
+Build the worker image from a source checkout, and add the service in your own
+Compose override, next to the FLAME model mount:
+
+```yaml
+services:
+  recon-worker:
+    build:
+      context: .
+      target: recon-runtime
+    image: printable-recon:local
+    platform: linux/amd64
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 8g
+    restart: unless-stopped
+    networks: [control]
+    tmpfs:
+      - /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770
+    volumes:
+      - workspace:/workspace
+      - ./recon-checkpoints:/models/recon:ro
+    environment:
+      PRINTABLE_WORKSPACE_ROOT: /workspace
+    depends_on:
+      workspace-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${PRINTABLE_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+  server:
+    volumes:
+      - ./flame-models:/models/flame:ro
+    environment:
+      PRINTABLE_FLAME_MODEL_DIR: /models/flame
+      PRINTABLE_RECON_ENDPOINT: http://recon-worker:8004
+```
+
+```sh
+docker compose --env-file .dev/compose.env -f compose.yaml -f compose.flame.yaml build recon-worker
+docker compose --env-file .dev/compose.env -f compose.yaml -f compose.flame.yaml up -d --wait --wait-timeout 600
+```
+
+The image installs PyTorch built for CUDA 12.8. Pass
+`--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu` to build a
+CPU-only image instead. The worker uses the GPU when one is visible and the CPU
+otherwise; `PRINTABLE_RECON_DEVICE` forces one or the other. It runs one
+reconstruction at a time and stops any that exceeds
+`PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
+worker is configured and ready.
+
+The `head` tool offers `reconstruct` only while the worker reports every
+checkpoint present. The server checks every 30 seconds. When the answer
+changes, it sends connected clients `notifications/tools/list_changed` so
+that they list the tools again.
+
+### Use the result
+
+```json
+{"action": "reconstruct", "params": {
+  "images": ["photos/front.jpg", "photos/left.jpg", "photos/right.jpg"],
+  "displacement_path": "photos/detail.png"
+}}
+```
+
+The response gives `variant`, `identity`, `expression` and `pose.jaw` in the
+form `create` and `prepare_print` accept, so they can be passed straight on.
+`identity_agreement` gives each photograph's cosine similarity to the fused
+identity; a photograph well below the others probably shows someone else or
+an unusable view. `clamped_coefficients` counts values limited to ±5.
+
+Photographs should show the face clearly, roughly front-on, in focus and
+without heavy occlusion. Several views improve identity; the first photograph
+alone sets the expression and detail.
+
+`displacement` describes the map: a pixel value p means
+`offset_mm + scale_mm × p / 65535` millimetres along the surface normal at life
+size. Column 0 is u = 0 and row 0 is v = 1 in FLAME's texture layout. The map
+holds DECA's learned detail within its face mask, conditioned on DECA's own
+estimate of the expression and jaw. SMIRK's larger coefficients made DECA's
+decoder exaggerate the detail, putting creases across the bridge of the nose.
+DECA's renderer also adds a fixed offset, a lattice of ripples up to 1.6 mm
+that follows FLAME's triangle layout and corrects shading; it is not surface
+shape and is left out.
+
+On MICA's own demonstration photographs, identity from MediaPipe's keypoints
+was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the
+face detector MICA was trained with. One photograph took about 40 seconds on a
+busy four-core CPU. Repeated runs on the CPU gave identical results.
 
 ## Output format
 
