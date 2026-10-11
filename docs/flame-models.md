@@ -90,11 +90,12 @@ Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
 any file that was skipped, with the reason.
 
-The `head` workflow has three actions:
+The `head` workflow has four actions:
 
 - `models` lists the mounted variants and their basis sizes.
 - `create` adds a head mesh to the Blender scene.
 - `update` re-evaluates an existing head in place, keeping its triangles.
+- `prepare_print` writes a bust STL to the workspace without using Blender.
 
 ```json
 {"action": "create", "params": {
@@ -118,6 +119,96 @@ is life size. The response reports the variant and the posed joint locations in
 millimetres. Updates are refused for objects the head tool did not create,
 objects created from another variant, and heads whose vertex count has changed.
 An update replaces every vertex position, so other edits to the mesh are lost.
+Heads in Edit Mode are refused, because Blender would overwrite the update when
+the head leaves Edit Mode.
+
+## Prepare a bust for printing
+
+A FLAME head is an open surface with separate eyeballs, so it cannot be printed
+as it is. Its surface also passes through itself in places, at the lips and the
+ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
+`pose` as `create` and writes a single closed solid:
+
+1. The mouth and neck openings are closed. Openings are found from the mesh's
+   boundary edges, and the lowest one is the neck.
+2. The head is turned upright, with the face toward -y, and scaled to
+   `height_mm`.
+3. The surface is smoothed and refined to `edge_length_mm`.
+4. The union of the head and eyeballs is rebuilt as one valid solid. A point
+   is inside when an upward ray from it crosses more outward-facing surface
+   than inward-facing surface, counted with exact arithmetic. A new surface
+   is extracted at that boundary by marching tetrahedra, which produces a
+   closed surface that never touches or crosses itself.
+5. The neck is cut flat just above its opening, so the bust rests on z = 0,
+   and the height is corrected to exactly `height_mm`.
+6. Optionally, a cylindrical plinth is added under the base.
+7. Optionally, the bust is hollowed for resin printing. Everything deeper than
+   the wall thickness is removed, and one or two drain holes open from the
+   base into the lowest part of the cavity. A pocket that no drain hole
+   reaches is left solid, so no liquid resin is sealed inside.
+
+`pose.global` must be zero, because the bust stands on its neck. Turn or tilt
+the head with `pose.neck`.
+
+The geometry work runs in the isolated geometry worker under
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`. The server validates the result,
+including a check for self-intersections. A bust that fails validation is
+reported as an error and not written.
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2023_open",
+  "identity": [1.2, -0.4],
+  "expression": [0.5],
+  "path": "busts/head.stl"
+}}
+```
+
+| Parameter | Default | Range |
+| --- | --- | --- |
+| `height_mm` | 100 | 20 to 500 |
+| `edge_length_mm` | 0.4 | 0.1 to 5 |
+| `max_triangles` | 750,000 | 10,000 to 3,000,000 |
+| `plinth_height_mm` | none | 2 to 100, counted within `height_mm` |
+| `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
+| `hollow_wall_mm` | none (solid) | 1 to 20 |
+| `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
+| `overwrite` | false | |
+
+A solid bust suits FDM printing, where the slicer's infill already saves
+material. Hollowing is for resin printers.
+
+The default triangle limit is about the most the geometry worker can prepare
+within its default 1 GiB memory limit. A hollow bust keeps a quarter of the
+limit for its cavity. Raise
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` with a higher limit; a request that
+exceeds the worker's memory fails with `geometry_resource_limit` and writes
+nothing.
+
+The response contains the written artifact, a `bust` report and the mesh
+validation report. `bust` gives the triangle count, size, volume and the edge
+length used. The edge length grows above the request only when needed to
+stay within `max_triangles`. When requested, `plinth` reports the plinth's
+height and diameter, and `hollow` reports the wall thickness, the volume
+removed and the drain hole positions on the base.
+
+`estimated_deviation_p999_mm` estimates how far the flat facets sit from the
+smooth surface they approximate, at the 99.9th percentile. It is an estimate,
+not a measurement: each edge of length L whose two faces meet at an angle θ
+contributes L·θ/8, the gap between a chord and a circular arc. Edges where
+faces meet at 30 degrees or more are creases, such as the base rim, and are
+left out. `discarded_fragments` counts separate specks of negligible volume
+that were removed.
+
+With the defaults, the FLAME 2020 generic, FLAME 2023 and FLAME 2023 Open
+models each produced one watertight, manifold solid with no self-intersections
+and 430,000 to 490,000 triangles. The estimated 99.9th-percentile deviation
+was 0.036 to 0.038 mm, well below the detail a 0.2 mm nozzle reproduces. With
+a 12 mm plinth and 2.5 mm walls, each was still one valid solid with its
+cavity open through two drain holes. Each request took about 17 seconds on a
+busy four-core machine, including validation. A 300 mm hollow bust on a
+plinth at the default triangle limit stayed within the default 1 GiB worker
+memory limit.
 
 ## Output format
 

@@ -131,6 +131,7 @@ workflow!(HeadRequest {
     Models(HeadModelsParams) => "printable_flame_models",
     Create(HeadCreateParams) => "printable_flame_create",
     Update(HeadUpdateParams) => "printable_flame_update",
+    PreparePrint(HeadPreparePrintParams) => "printable_flame_prepare_print",
 });
 
 workflow!(EditRequest {
@@ -433,7 +434,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: HEAD,
-        description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
+        description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
         schema: workflow_schema_of::<HeadRequest>,
         annotations: write_annotations,
     },
@@ -566,11 +567,12 @@ mod tests {
             ("models", "printable_flame_models"),
             ("create", "printable_flame_create"),
             ("update", "printable_flame_update"),
+            ("prepare_print", "printable_flame_prepare_print"),
         ] {
-            let params = if action == "update" {
-                json!({"object": "Head"})
-            } else {
-                json!({})
+            let params = match action {
+                "update" => json!({"object": "Head"}),
+                "prepare_print" => json!({"path": "bust.stl"}),
+                _ => json!({}),
             };
             let call = resolve(HEAD, json!({"action": action, "params": params})).unwrap();
             assert_eq!(call.name, operation);

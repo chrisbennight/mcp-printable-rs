@@ -58,7 +58,7 @@ pub enum ToolError {
     #[error(transparent)]
     Scad(#[from] printable_scad::ScadError),
     /// The isolated exact-geometry worker failed or returned a domain error.
-    #[error("assembly geometry worker failed: {message}")]
+    #[error("geometry worker failed: {message}")]
     GeometryWorker { code: &'static str, message: String },
     /// Durable render-job admission, lookup, persistence, or worker failure.
     #[error("{0}")]

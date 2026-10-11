@@ -66,7 +66,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
-| `head` | `models`, `create`, `update`; advertised only when FLAME models are mounted |
+| `head` | `models`, `create`, `update`, `prepare_print`; advertised only when FLAME models are mounted |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit`, `usage`, `cleanup_preview`, `cleanup` |
