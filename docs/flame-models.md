@@ -125,18 +125,30 @@ the head leaves Edit Mode.
 ## Prepare a bust for printing
 
 A FLAME head is an open surface with separate eyeballs, so it cannot be printed
-as it is. `prepare_print` takes the same `variant`, `identity`, `expression`
-and `pose` as `create` and writes a single closed solid:
+as it is. Its surface also passes through itself in places, at the lips and the
+ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
+`pose` as `create` and writes a single closed solid:
 
-1. The mouth and neck openings are closed.
-2. The head is turned upright, with the face toward -y, and scaled so that it
-   stands `height_mm` tall.
-3. The surface is smoothed and refined to `edge_length_mm`, and the eyeballs
-   are united with the head.
-4. The neck is cut flat just above its opening, so the bust rests on z = 0.
+1. The mouth and neck openings are closed. Openings are found from the mesh's
+   boundary edges, and the lowest one is the neck.
+2. The head is turned upright, with the face toward -y, and scaled to
+   `height_mm`.
+3. The surface is smoothed and refined to `edge_length_mm`.
+4. The union of the head and eyeballs is rebuilt as one valid solid. A point
+   is inside when an upward ray from it crosses more outward-facing surface
+   than inward-facing surface, counted with exact arithmetic. The geometry
+   kernel then extracts a new surface at that boundary, which removes the
+   places where the surface passed through itself.
+5. The neck is cut flat just above its opening, so the bust rests on z = 0,
+   and the height is corrected to exactly `height_mm`.
+
+`pose.global` must be zero, because the bust stands on its neck. Turn or tilt
+the head with `pose.neck`.
 
 The geometry work runs in the isolated geometry worker under
-`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`.
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`. The server validates the result,
+including a check for self-intersections. A bust that fails validation is
+reported as an error and not written.
 
 ```json
 {"action": "prepare_print", "params": {
@@ -151,22 +163,34 @@ The geometry work runs in the isolated geometry worker under
 | --- | --- | --- |
 | `height_mm` | 100 | 20 to 500 |
 | `edge_length_mm` | 0.4 | 0.1 to 5 |
-| `max_triangles` | 1,500,000 | 10,000 to 3,000,000 |
+| `max_triangles` | 750,000 | 10,000 to 3,000,000 |
 | `overwrite` | false | |
 
-The response contains the written artifact, a `bust` report and the mesh
-validation report. `bust` gives the triangle count, size, volume, the edge
-length used, and `chordal_deviation_p999_mm`: the distance between the facets
-and the smooth surface they approximate, at the 99.9th percentile. The edge
-length grows above the request only when needed to stay within
-`max_triangles`. `discarded_fragments` counts separate slivers of negligible
-volume that the union left where an eyeball meets an eyelid; they are removed.
+The default triangle limit is about the most the geometry worker can prepare
+within its default 1 GiB memory limit. Raise
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` with a higher limit; a request that
+exceeds the worker's memory fails with `geometry_resource_limit` and writes
+nothing.
 
-With the defaults, each of the FLAME 2020 generic, FLAME 2023 and FLAME 2023
-Open models produced one watertight, manifold solid of 340,000 to 390,000
-triangles in under 10 seconds, with a 99.9th-percentile deviation of 0.022 mm.
-That is well below the detail a 0.2 mm nozzle reproduces. A 300 mm bust at
-the triangle limit stayed within the default 1 GiB worker memory limit.
+The response contains the written artifact, a `bust` report and the mesh
+validation report. `bust` gives the triangle count, size, volume and the edge
+length used. The edge length grows above the request only when needed to
+stay within `max_triangles`.
+
+`estimated_deviation_p999_mm` estimates how far the flat facets sit from the
+smooth surface they approximate, at the 99.9th percentile. It is an estimate,
+not a measurement: each edge of length L whose two faces meet at an angle θ
+contributes L·θ/8, the gap between a chord and a circular arc. Edges where
+faces meet at 30 degrees or more are creases, such as the base rim, and are
+left out. `discarded_fragments` counts separate specks of negligible volume
+that were removed.
+
+With the defaults, the FLAME 2020 generic, FLAME 2023 and FLAME 2023 Open
+models each produced one watertight, manifold solid with no self-intersections
+and 250,000 to 290,000 triangles. The estimated 99.9th-percentile deviation
+was 0.032 mm, well below the detail a 0.2 mm nozzle reproduces. Each took 15
+to 25 seconds on a busy four-core machine. A 300 mm bust at the default
+triangle limit stayed within the default 1 GiB worker memory limit.
 
 ## Output format
 

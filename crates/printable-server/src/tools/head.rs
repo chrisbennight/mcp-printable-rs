@@ -20,7 +20,9 @@ const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
 const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
 const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
 const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
-const DEFAULT_MAX_TRIANGLES: usize = 1_500_000;
+/// About the most the geometry worker can prepare within its default 1 GiB
+/// memory limit.
+const DEFAULT_MAX_TRIANGLES: usize = 750_000;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -104,6 +106,8 @@ pub(super) struct HeadPreparePrintParams {
     /// Expression coefficients, as for `create`.
     #[serde(default)]
     expression: Vec<f32>,
+    /// Joint rotations, as for `create`. `global` must be zero: the bust
+    /// stands on its neck, so turn or tilt the head with `neck`.
     #[serde(default)]
     pose: HeadPose,
     /// Workspace path for the binary STL.
@@ -120,7 +124,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
     /// Upper bound on the triangle count, 10,000 to 3,000,000 (default
-    /// 1,500,000). The edge length grows when needed to respect it.
+    /// 750,000). The edge length grows when needed to respect it. Limits above
+    /// the default need a larger geometry worker memory limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_triangles: Option<usize>,
 }
@@ -220,6 +225,11 @@ pub(super) async fn prepare_print(
         params.max_triangles.unwrap_or(DEFAULT_MAX_TRIANGLES),
         &MAX_TRIANGLES,
     )?;
+    if params.pose.global != [0.0; 3] {
+        return Err(ToolError::Validation(
+            "pose.global must be zero for prepare_print: the bust stands on its neck; use pose.neck to turn or tilt the head".into(),
+        ));
+    }
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     let (model, head) = evaluate(
@@ -260,6 +270,20 @@ pub(super) async fn prepare_print(
         )?;
         let bytes = std::fs::read(&output_path)?;
         let validation = analyze_stl(&bytes, ValidationOptions::default())?;
+        if !validation.solid_geometry {
+            let issues: Vec<_> = validation
+                .issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect();
+            return Err(geometry_worker_error(
+                "geometry",
+                format!(
+                    "the prepared bust failed mesh validation and was not written: {}",
+                    issues.join("; ")
+                ),
+            ));
+        }
         let artifact = workspace.write_generated_bytes(&path, &bytes, overwrite)?;
         Ok::<_, ToolError>(json!({
             "artifact": artifact,

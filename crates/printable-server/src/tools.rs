@@ -1606,7 +1606,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, connected components, bounds, volume, surface area, center of mass, build-plate contact, and overhang support. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, and overhang support. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },

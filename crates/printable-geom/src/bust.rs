@@ -12,15 +12,18 @@ use std::collections::{HashMap, HashSet};
 use manifold_csg::Manifold;
 use serde::{Deserialize, Serialize};
 
-use crate::{GeometryError, TriangleMesh};
+use crate::{GeometryError, TriangleMesh, remesh};
 
 /// Smoothing treats every edge as smooth. The kernel emits zero-area
 /// triangles when smoothing preserves sharp edges, so parts are smoothed
 /// before the flat base exists and the base is cut afterwards.
 const SMOOTH_EVERY_EDGE_DEGREES: f64 = 180.0;
-/// Chordal deviation is measured where facets meet at less than this angle;
-/// sharper creases are intended features such as the base rim.
+/// Faceting is estimated where facets meet at less than this angle; sharper
+/// creases are intended features such as the base rim.
 const SMOOTH_REGION_RADIANS: f64 = std::f64::consts::PI / 6.0;
+/// Fraction of the way toward the centre of its neighbours that each vertex
+/// at a touching point moves, which is a few hundredths of a millimetre.
+const PINCH_SEPARATION: f64 = 0.25;
 /// The trim plane sits this fraction of the head's height above the top of the
 /// lowest opening, so the cut is a full section through the neck.
 const NECK_MARGIN: f64 = 0.01;
@@ -58,9 +61,13 @@ pub struct BustReport {
     /// Edge length used, larger than requested only when the triangle limit
     /// required it.
     pub edge_length_mm: f64,
-    /// Distance between facets and the smooth surface they approximate, at
-    /// the 99.9th percentile of smooth-region edges.
-    pub chordal_deviation_p999_mm: f64,
+    /// Estimated distance between the facets and the smooth surface they
+    /// approximate, at the 99.9th percentile. Each edge contributes L·θ/8,
+    /// the gap between a chord of length L and a circular arc turning
+    /// through θ, the angle between the edge's two faces. Edges where faces
+    /// meet at 30 degrees or more are creases rather than faceting and are
+    /// left out. Absent when there is no such edge.
+    pub estimated_deviation_p999_mm: Option<f64>,
     /// Whether a lowest opening was found and the head trimmed above it.
     pub trimmed_at_neck: bool,
     /// Separate shells of negligible volume that were discarded.
@@ -80,14 +87,39 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         .min_by(|a, b| a.mean_height.total_cmp(&b.mean_height))
         .map(|neck| neck.top_height + NECK_MARGIN * span);
 
-    let coarse = parts
+    // Rotate from y up with the face toward +z to z up with the face toward -y.
+    let upright = |[x, y, z]: [f64; 3]| [x, -z, y];
+    let kept_height = |vertex: &[f64; 3]| cut.is_none_or(|height| vertex[1] >= height);
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for vertex in parts
+        .iter()
+        .flat_map(|part| &part.vertices)
+        .filter(|vertex| kept_height(vertex))
+    {
+        let vertex = upright(*vertex);
+        for axis in 0..3 {
+            low[axis] = low[axis].min(vertex[axis]);
+            high[axis] = high[axis].max(vertex[axis]);
+        }
+    }
+    // Vertices are finite, so this also catches the case of none kept.
+    if high[2] <= low[2] {
+        return Err(GeometryError::Kernel("the trimmed bust is empty".into()));
+    }
+    // Place and scale before smoothing, so refinement works in final units.
+    let scale = request.height_mm / (high[2] - low[2]);
+    let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let smooth = parts
         .iter()
         .map(|part| {
-            // Rotate from y up with the face toward +z to z up with the face toward -y.
             let flat: Vec<f64> = part
                 .vertices
                 .iter()
-                .flat_map(|[x, y, z]| [*x, -*z, *y])
+                .flat_map(|vertex| {
+                    let vertex = upright(*vertex);
+                    [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
+                })
                 .collect();
             let indices: Vec<u64> = part
                 .triangles
@@ -95,54 +127,53 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
                 .flatten()
                 .map(|&index| u64::from(index))
                 .collect();
-            Manifold::from_mesh_f64(&flat, 3, &indices).map_err(|error| {
-                GeometryError::Kernel(format!("a closed head part is not a valid solid: {error}"))
-            })
+            Manifold::from_mesh_f64(&flat, 3, &indices)
+                .map(|solid| solid.smooth_out(SMOOTH_EVERY_EDGE_DEGREES, 0.0))
+                .map_err(|error| {
+                    GeometryError::Kernel(format!(
+                        "a closed head part is not a closed surface: {error}"
+                    ))
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let trim = |solid: Manifold, at: Option<f64>| match at {
-        Some(height) => solid.trim_by_plane([0.0, 0.0, 1.0], height),
-        None => solid,
-    };
-
-    // Place and scale from the coarse result, so refinement works in final units.
-    let outline = trim(Manifold::batch_union(&coarse), cut);
-    if outline.is_empty() {
-        return Err(GeometryError::Kernel("the trimmed bust is empty".into()));
-    }
-    let bounds = outline
-        .bounding_box()
-        .ok_or_else(|| GeometryError::Kernel("the bust has no extent".into()))?;
-    let (min, max) = (bounds.min(), bounds.max());
-    let scale = request.height_mm / (max[2] - min[2]);
-    let place = |solid: &Manifold| {
-        solid
-            .translate(-(min[0] + max[0]) / 2.0, -(min[1] + max[1]) / 2.0, -min[2])
-            .scale(scale, scale, scale)
-    };
-    let placed: Vec<Manifold> = coarse
-        .iter()
-        .map(|solid| place(solid).smooth_out(SMOOTH_EVERY_EDGE_DEGREES, 0.0))
-        .collect();
     let base = cut.map(|_| 0.0);
 
     let limit = request.max_triangles as f64;
-    let area: f64 = placed.iter().map(Manifold::surface_area).sum();
+    let area: f64 = smooth.iter().map(Manifold::surface_area).sum();
     let mut edge = request
         .edge_length_mm
         .max((TRIANGLES_PER_AREA * area / limit).sqrt());
-    let build = |edge: f64| {
-        let refined: Vec<Manifold> = placed
-            .iter()
-            .map(|solid| solid.refine_to_length(edge))
-            .collect();
-        trim(Manifold::batch_union(&refined), base)
+    // The smoothed parts overlap one another and can pass through themselves
+    // where FLAME's surface folds, at the lips and ears. Remeshing their
+    // union yields one valid solid; the flat base is cut afterwards.
+    let build = |edge: f64| -> Result<Manifold, GeometryError> {
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+        for part in &smooth {
+            let mesh = mesh_from(&part.refine_to_length(edge));
+            let offset =
+                u32::try_from(vertices.len()).map_err(|_| GeometryError::TooManyVertices)?;
+            vertices.extend(mesh.vertices);
+            triangles.extend(
+                mesh.triangles
+                    .iter()
+                    .map(|triangle| triangle.map(|index| index + offset)),
+            );
+        }
+        let solid = remesh::remesh_union(vertices, triangles, edge)?;
+        Ok(match base {
+            Some(height) => solid.trim_by_plane([0.0, 0.0, 1.0], height),
+            None => solid,
+        })
     };
-    let mut refined = build(edge);
+    // Large meshes are dropped as soon as they are replaced, so that no more
+    // than two copies are alive within the worker's memory limit.
+    let mut refined = build(edge)?;
     if refined.num_tri() > request.max_triangles {
         // The area estimate was low; size the edge from the observed count.
         edge *= (refined.num_tri() as f64 / limit).sqrt() * 1.02;
-        refined = build(edge);
+        drop(refined);
+        refined = build(edge)?;
     }
     if refined.num_tri() > request.max_triangles {
         return Err(GeometryError::Kernel(
@@ -152,48 +183,56 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     refined.status().map_err(|error| {
         GeometryError::Kernel(format!("the refined bust is not a valid solid: {error}"))
     })?;
-    // Where an eyeball meets the eyelid, the union can leave slivers of
-    // almost no volume as separate shells. They cannot print, so drop them.
+    // Thin gaps can leave specks of almost no volume as separate shells. They
+    // cannot print, so drop them; anything larger means the parts did not join.
     let pieces = refined.decompose();
+    drop(refined);
     let total: f64 = pieces.iter().map(Manifold::volume).sum();
-    let (kept, fragments): (Vec<_>, Vec<_>) = pieces
+    let count = pieces.len();
+    let mut kept: Vec<Manifold> = pieces
         .into_iter()
-        .partition(|piece| piece.volume() > FRAGMENT_VOLUME_FRACTION * total);
-    let refined = if fragments.is_empty() {
-        refined
-    } else {
-        Manifold::compose(&kept)
-    };
+        .filter(|piece| piece.volume() > FRAGMENT_VOLUME_FRACTION * total)
+        .collect();
+    if kept.len() != 1 {
+        return Err(GeometryError::Kernel(format!(
+            "the bust is {} separate solids rather than one",
+            kept.len()
+        )));
+    }
+    let fragments = count - 1;
+    let piece = kept.pop().expect("one piece is kept");
     // Smoothing moves the surface slightly off the coarse mesh, so restore the
     // exact requested height and recentre.
-    let bounds = refined
+    let bounds = piece
         .bounding_box()
         .ok_or_else(|| GeometryError::Kernel("the refined bust has no extent".into()))?;
     let (low, high) = (bounds.min(), bounds.max());
     let correction = request.height_mm / (high[2] - low[2]);
-    let refined = refined
+    let solid = piece
         .translate(
             -(low[0] + high[0]) / 2.0,
             -(low[1] + high[1]) / 2.0,
             -low[2],
         )
         .scale(correction, correction, correction);
+    drop(piece);
     edge *= correction;
-
-    let mesh = mesh_from(&refined);
-    let size = refined
+    let size = solid
         .bounding_box()
         .map(|bounds| bounds.dimensions())
         .ok_or_else(|| GeometryError::Kernel("the refined bust has no extent".into()))?;
+    let volume_mm3 = solid.volume();
+    let mesh = single_precision(&solid)?;
+    drop(solid);
     let report = BustReport {
         triangles: mesh.triangles.len(),
         size_mm: size,
-        volume_mm3: refined.volume(),
+        volume_mm3,
         requested_edge_length_mm: request.edge_length_mm,
         edge_length_mm: edge,
-        chordal_deviation_p999_mm: chordal_deviation_p999(&mesh),
+        estimated_deviation_p999_mm: estimated_deviation_p999(&mesh),
         trimmed_at_neck: cut.is_some(),
-        discarded_fragments: fragments.len(),
+        discarded_fragments: fragments,
     };
     Ok((mesh, report))
 }
@@ -390,6 +429,97 @@ fn close_part(
     })
 }
 
+/// The mesh as an STL stores it, checked to still be a closed solid.
+fn single_precision(manifold: &Manifold) -> Result<TriangleMesh, GeometryError> {
+    let mut mesh = mesh_from(manifold);
+    separate_pinches(&mut mesh);
+    // An STL reader joins vertices with equal coordinates, so do the same.
+    let mut welded: HashMap<[u32; 3], u32> = HashMap::with_capacity(mesh.vertices.len());
+    let mut vertices = Vec::with_capacity(mesh.vertices.len());
+    let remap: Vec<u32> = mesh
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let rounded = vertex.map(|coordinate| coordinate as f32);
+            *welded.entry(rounded.map(f32::to_bits)).or_insert_with(|| {
+                vertices.push(rounded.map(f64::from));
+                (vertices.len() - 1) as u32
+            })
+        })
+        .collect();
+    let mesh = TriangleMesh {
+        vertices,
+        triangles: mesh
+            .triangles
+            .iter()
+            .map(|triangle| triangle.map(|index| remap[index as usize]))
+            .collect(),
+    };
+    // Each edge of a closed, consistently oriented surface is used once in
+    // each direction.
+    let mut directed = HashSet::with_capacity(mesh.triangles.len() * 3);
+    for [a, b, c] in &mesh.triangles {
+        for edge in [(*a, *b), (*b, *c), (*c, *a)] {
+            if edge.0 == edge.1 || !directed.insert(edge) {
+                return Err(GeometryError::Kernel(
+                    "the bust is not a consistently oriented surface at STL precision".into(),
+                ));
+            }
+        }
+    }
+    if directed.iter().any(|(a, b)| !directed.contains(&(*b, *a))) {
+        return Err(GeometryError::Kernel(
+            "the bust is not a closed surface at STL precision".into(),
+        ));
+    }
+    Ok(mesh)
+}
+
+/// Where two parts of the surface touch at a point, the kernel keeps a
+/// separate vertex for each part at the same position. An STL cannot express
+/// that, so move each such vertex part of the way toward the centre of its
+/// own neighbours, which separates the parts without changing the topology.
+fn separate_pinches(mesh: &mut TriangleMesh) {
+    let mut positions: HashMap<[u32; 3], Vec<usize>> = HashMap::new();
+    for (index, vertex) in mesh.vertices.iter().enumerate() {
+        positions
+            .entry(vertex.map(|coordinate| (coordinate as f32).to_bits()))
+            .or_default()
+            .push(index);
+    }
+    let pinched: HashSet<usize> = positions
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .flatten()
+        .collect();
+    if pinched.is_empty() {
+        return;
+    }
+    let mut sums: HashMap<usize, ([f64; 3], usize)> = HashMap::new();
+    for triangle in &mesh.triangles {
+        for (corner, &index) in triangle.iter().enumerate() {
+            let index = index as usize;
+            if !pinched.contains(&index) {
+                continue;
+            }
+            let entry = sums.entry(index).or_insert(([0.0; 3], 0));
+            for other in [triangle[(corner + 1) % 3], triangle[(corner + 2) % 3]] {
+                for (total, value) in entry.0.iter_mut().zip(mesh.vertices[other as usize]) {
+                    *total += value;
+                }
+                entry.1 += 1;
+            }
+        }
+    }
+    for (index, (sum, count)) in sums {
+        let vertex = mesh.vertices[index];
+        let centre = sum.map(|value| value / count as f64);
+        mesh.vertices[index] = std::array::from_fn(|axis| {
+            vertex[axis] + PINCH_SEPARATION * (centre[axis] - vertex[axis])
+        });
+    }
+}
+
 fn mesh_from(manifold: &Manifold) -> TriangleMesh {
     let (vertices, properties, triangles) = manifold.to_mesh_f64();
     TriangleMesh {
@@ -406,7 +536,7 @@ fn mesh_from(manifold: &Manifold) -> TriangleMesh {
 
 /// Chordal deviation of an edge between facets meeting at angle theta is about
 /// length times theta over eight.
-fn chordal_deviation_p999(mesh: &TriangleMesh) -> f64 {
+fn estimated_deviation_p999(mesh: &TriangleMesh) -> Option<f64> {
     let normals: Vec<[f64; 3]> = mesh
         .triangles
         .iter()
@@ -441,10 +571,10 @@ fn chordal_deviation_p999(mesh: &TriangleMesh) -> f64 {
         })
         .collect();
     if deviations.is_empty() {
-        return 0.0;
+        return None;
     }
     let index = ((deviations.len() as f64 * 0.999) as usize).min(deviations.len() - 1);
-    *deviations.select_nth_unstable_by(index, f64::total_cmp).1
+    Some(*deviations.select_nth_unstable_by(index, f64::total_cmp).1)
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

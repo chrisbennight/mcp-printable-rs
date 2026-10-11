@@ -5495,6 +5495,10 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
             "max_triangles",
         ),
         (json!({"path": "head.stl", "identity": [9.0]}), "within"),
+        (
+            json!({"path": "head.stl", "pose": {"global": [0.0, 0.1, 0.0]}}),
+            "pose.global",
+        ),
         (json!({"path": "head.txt"}), ""),
     ] {
         let result = server
@@ -5553,6 +5557,11 @@ async fn head_prepare_print_makes_a_printable_bust_from_a_real_model() {
         "{value}"
     );
     assert!((value["bust"]["size_mm"][2].as_f64().unwrap() - 100.0).abs() < 1e-6);
-    assert!(value["bust"]["chordal_deviation_p999_mm"].as_f64().unwrap() < 0.05);
-    assert!(value["bust"]["triangles"].as_u64().unwrap() <= 1_500_000);
+    assert!(
+        value["bust"]["estimated_deviation_p999_mm"]
+            .as_f64()
+            .unwrap()
+            < 0.05
+    );
+    assert!(value["bust"]["triangles"].as_u64().unwrap() <= 750_000);
 }
