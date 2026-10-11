@@ -8,12 +8,19 @@
 //! built from that sign and the distance to the nearest triangle is meshed by
 //! marching tetrahedra, which yields a closed surface that never touches or
 //! crosses itself.
+//!
+//! Inside the union, the nearest triangle may be a buried surface, such as
+//! the hidden part of an eyeball behind an eyelid, so the distance there is
+//! too small. Each vertex is therefore placed where a ray from the outside
+//! end of its grid edge first meets the surface. Nothing lies between an
+//! outside point and that hit, so the hit is on the outer surface of the
+//! union.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use manifold_csg::Manifold;
 use parry3d_f64::math::Vector;
-use parry3d_f64::query::PointQuery;
+use parry3d_f64::query::{PointQuery, Ray, RayCast};
 use parry3d_f64::shape::TriMesh;
 use robust::{Coord, Coord3D, orient2d, orient3d};
 
@@ -51,7 +58,13 @@ pub(crate) fn remesh_union(
     let margin = 2.0 * edge;
     let low = field.low.map(|value| value - margin);
     let high = field.high.map(|value| value + margin);
-    let solid = mesh_solid(|point| field.signed_distance(point), low, high, edge)?;
+    let solid = mesh_solid(
+        |point| field.signed_distance(point),
+        low,
+        high,
+        edge,
+        Some(&|outside, inside| field.first_hit(outside, inside)),
+    )?;
     drop(field);
     if solid.is_empty() {
         return Err(GeometryError::Kernel("remeshing produced no solid".into()));
@@ -73,6 +86,7 @@ pub(crate) fn inner_offset(
         field.low,
         field.high,
         spacing,
+        None,
     )
 }
 
@@ -82,10 +96,11 @@ fn mesh_solid(
     low: Point,
     high: Point,
     spacing: f64,
+    crossing: Option<isosurface::Crossing<'_>>,
 ) -> Result<Manifold, GeometryError> {
     let threads =
         std::thread::available_parallelism().map_or(1, |count| count.get().min(MAX_THREADS));
-    let (vertices, triangles) = isosurface::extract(&field, low, high, spacing, threads);
+    let (vertices, triangles) = isosurface::extract(&field, low, high, spacing, threads, crossing);
     if triangles.is_empty() {
         return Ok(Manifold::empty());
     }
@@ -182,6 +197,14 @@ impl Field {
         } else {
             -distance
         }
+    }
+
+    /// The fraction of the way from `outside` to `inside` at which the
+    /// segment first meets the surface.
+    fn first_hit(&self, outside: Point, inside: Point) -> Option<f64> {
+        let origin = Vector::from_array(outside);
+        let ray = Ray::new(origin, Vector::from_array(inside) - origin);
+        self.surface.cast_local_ray(&ray, 1.0, false)
     }
 
     /// Outward-facing minus inward-facing crossings of the ray from `point`
@@ -475,6 +498,52 @@ mod tests {
         // Two 1000 mm^3 cubes overlapping in a 125 mm^3 cube.
         assert!((solid.volume() - 1875.0).abs() < 60.0, "{}", solid.volume());
         assert_eq!(solid.decompose().len(), 1);
+    }
+
+    /// Signed distance to an axis-aligned box, negative inside.
+    fn box_distance(point: Point, low: Point, size: f64) -> f64 {
+        let offsets: [f64; 3] = std::array::from_fn(|axis| {
+            (low[axis] - point[axis]).max(point[axis] - low[axis] - size)
+        });
+        let outside = offsets.map(|value| value.max(0.0));
+        let inside = offsets.iter().copied().fold(f64::MIN, f64::max).min(0.0);
+        (outside[0] * outside[0] + outside[1] * outside[1] + outside[2] * outside[2]).sqrt()
+            + inside
+    }
+
+    #[test]
+    fn vertices_lie_on_the_outer_surface_next_to_buried_ones() {
+        // A small cube buried in a large one except for a thin slice above
+        // its top face; its buried sides run up to that face.
+        let big = ([0.0; 3], 10.0);
+        let small = ([2.13, 2.37, 7.29], 3.0);
+        let (mut vertices, mut triangles) = cube(big.0, big.1);
+        let (other, other_triangles) = cube(small.0, small.1);
+        let offset = vertices.len() as u32;
+        vertices.extend(other);
+        triangles.extend(
+            other_triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        let edge = 0.3;
+        let spacing = edge / EDGE_PER_SPACING;
+        let solid = remesh_union(vertices, triangles, edge).unwrap();
+        let (flat, properties, _) = solid.to_mesh_f64();
+        let worst = flat
+            .chunks_exact(properties)
+            .map(|vertex| {
+                let point = [vertex[0], vertex[1], vertex[2]];
+                box_distance(point, big.0, big.1)
+                    .min(box_distance(point, small.0, small.1))
+                    .abs()
+            })
+            .fold(0.0, f64::max);
+        // Only crossings kept clear of the grid points move off the surface.
+        assert!(
+            worst <= isosurface::END_CLEARANCE * spacing * 3f64.sqrt() + 1e-9,
+            "a vertex lies {worst} mm from the union's surface"
+        );
     }
 
     #[test]

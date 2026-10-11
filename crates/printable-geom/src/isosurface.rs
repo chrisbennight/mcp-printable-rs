@@ -5,7 +5,9 @@
 //! lies on a grid edge whose ends have opposite signs, and each output
 //! triangle lies inside one tetrahedron. The result is therefore a closed,
 //! consistently oriented surface that never touches or crosses itself,
-//! provided no sample is exactly zero.
+//! provided no sample is exactly zero. This holds wherever along its edge
+//! each vertex is placed, so an exact crossing can replace the linear
+//! estimate from the two samples.
 
 use std::collections::HashMap;
 
@@ -36,17 +38,23 @@ const TETRAHEDRA: [[usize; 4]; 6] = [
 
 /// Crossing points stay this fraction of an edge away from its ends, so that
 /// vertices remain distinct after rounding to single precision.
-const END_CLEARANCE: f64 = 0.01;
+pub(crate) const END_CLEARANCE: f64 = 0.01;
+
+/// Where the surface crosses the segment from an outside sample to an inside
+/// one, as a fraction of the way along it, when it can be found exactly.
+pub(crate) type Crossing<'a> = &'a dyn Fn(Point, Point) -> Option<f64>;
 
 /// The surface where `field` changes sign, positive inside, sampled every
 /// `spacing` over the box from `low` to `high`. The field must be negative on
-/// the faces of the box.
+/// the faces of the box. Vertices are placed by `crossing` when it gives a
+/// position, and by interpolating the two samples otherwise.
 pub(crate) fn extract<F>(
     field: &F,
     low: Point,
     high: Point,
     spacing: f64,
     threads: usize,
+    crossing: Option<Crossing<'_>>,
 ) -> (Vec<Point>, Vec<[u32; 3]>)
 where
     F: Fn(Point) -> f64 + Sync,
@@ -88,12 +96,23 @@ where
                             + (high_corner - low_corner) as u64;
                         *edges.entry(key).or_insert_with(|| {
                             let (va, vb) = (corner_values[low_corner], corner_values[high_corner]);
-                            let t = (va / (va - vb)).clamp(END_CLEARANCE, 1.0 - END_CLEARANCE);
                             let corner = |c: usize| {
                                 let offset = CORNERS[c];
                                 position([x + offset[0], y + offset[1], z + offset[2]])
                             };
                             let (pa, pb) = (corner(low_corner), corner(high_corner));
+                            // Fraction of the way from `pa` to `pb`.
+                            let exact = crossing.and_then(|crossing| {
+                                if va > 0.0 {
+                                    crossing(pb, pa).map(|fraction| 1.0 - fraction)
+                                } else {
+                                    crossing(pa, pb)
+                                }
+                            });
+                            let t = exact
+                                .filter(|fraction| fraction.is_finite())
+                                .unwrap_or(va / (va - vb))
+                                .clamp(END_CLEARANCE, 1.0 - END_CLEARANCE);
                             vertices.push(std::array::from_fn(|axis| {
                                 pa[axis] + t * (pb[axis] - pa[axis])
                             }));
@@ -198,7 +217,7 @@ mod tests {
             let offset = 1e-7; // keeps every sample off zero
             5.0 - (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt() + offset
         };
-        let (vertices, triangles) = extract(&sphere, [-7.0; 3], [7.0; 3], 0.5, 3);
+        let (vertices, triangles) = extract(&sphere, [-7.0; 3], [7.0; 3], 0.5, 3, None);
         let flat: Vec<f64> = vertices.iter().flatten().copied().collect();
         let indices: Vec<u64> = triangles
             .iter()

@@ -138,7 +138,11 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    is inside when an upward ray from it crosses more outward-facing surface
    than inward-facing surface, counted with exact arithmetic. A new surface
    is extracted at that boundary by marching tetrahedra, which produces a
-   closed surface that never touches or crosses itself.
+   closed surface that never touches or crosses itself. Each new vertex is
+   placed where a ray from the outside end of its grid edge first meets the
+   surface. That point is on the outer surface, so surfaces buried inside the
+   union, such as the hidden parts of the eyeballs and the folds of the lips,
+   do not pull the surface inward where they meet it.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
 6. Optionally, a cylindrical plinth is added under the base.
@@ -203,9 +207,9 @@ that were removed.
 With the defaults, the FLAME 2020 generic, FLAME 2023 and FLAME 2023 Open
 models each produced one watertight, manifold solid with no self-intersections
 and 430,000 to 490,000 triangles. The estimated 99.9th-percentile deviation
-was 0.036 to 0.038 mm, well below the detail a 0.2 mm nozzle reproduces. With
+was 0.041 to 0.043 mm, well below the detail a 0.2 mm nozzle reproduces. With
 a 12 mm plinth and 2.5 mm walls, each was still one valid solid with its
-cavity open through two drain holes. Each request took about 17 seconds on a
+cavity open through two drain holes. Each request took 8 to 11 seconds on a
 busy four-core machine, including validation. A 300 mm hollow bust on a
 plinth at the default triangle limit stayed within the default 1 GiB worker
 memory limit.
