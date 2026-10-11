@@ -9,7 +9,9 @@ mod head;
 mod native;
 pub mod output;
 pub mod workflows;
-use head::{HeadCreateParams, HeadModelsParams, HeadPreparePrintParams, HeadUpdateParams};
+use head::{
+    HeadCreateParams, HeadExportParams, HeadModelsParams, HeadPreparePrintParams, HeadUpdateParams,
+};
 use native::NativeViewParams;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2086,6 +2088,7 @@ async fn dispatch_value(
         "printable_flame_prepare_print" => {
             head::prepare_print(Arc::clone(workspace), settings, de(args)?).await
         }
+        "printable_flame_export" => head::export(Arc::clone(workspace), settings, de(args)?).await,
         "printable_flame_reconstruct" => {
             head::reconstruct(Arc::clone(workspace), settings, de(args)?).await
         }

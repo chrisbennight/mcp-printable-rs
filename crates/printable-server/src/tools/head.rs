@@ -175,6 +175,28 @@ pub(super) struct DisplacementParams {
     scale_mm: f64,
 }
 
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HeadExportParams {
+    /// Model variant from the `models` action. Optional when one model is mounted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variant: Option<String>,
+    /// Identity coefficients, as for `create`.
+    #[serde(default)]
+    identity: Vec<f32>,
+    /// Expression coefficients, as for `create`.
+    #[serde(default)]
+    expression: Vec<f32>,
+    /// Joint rotations, as for `create`.
+    #[serde(default)]
+    pose: HeadPose,
+    /// Workspace path for the Wavefront OBJ file.
+    path: String,
+    /// Replace an existing file at `path`.
+    #[serde(default)]
+    overwrite: bool,
+}
+
 #[derive(serde::Serialize)]
 struct CreateCommand<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -244,6 +266,77 @@ pub(super) async fn update(
     };
     let result = blender_command(blender, "update_flame_head", &command).await?;
     Ok(annotate(result, &model, &head))
+}
+
+/// Write the evaluated head to the workspace as a Wavefront OBJ in
+/// millimetres, in the same frame as `create`, with FLAME's texture
+/// coordinates when the model was converted with its texture layout.
+pub(super) async fn export(
+    workspace: Arc<Workspace>,
+    settings: &Settings,
+    params: HeadExportParams,
+) -> Result<Value, ToolError> {
+    validate_scad_destination(&workspace, &params.path, ".obj", params.overwrite)?;
+    let (model, head) = evaluate(
+        settings,
+        params.variant.as_deref(),
+        params.identity,
+        params.expression,
+        params.pose,
+    )
+    .await?;
+    let vertices = millimetres(&head.vertices);
+    let bytes = head_obj(&model, &vertices);
+    let (path, overwrite) = (params.path, params.overwrite);
+    let artifact =
+        blocking(move || workspace.write_generated_bytes(&path, &bytes, overwrite)).await?;
+    let result = json!({
+        "artifact": artifact,
+        "units": "millimetres",
+        "variant": model.info().variant,
+        "vertices": vertices.len(),
+        "triangles": model.faces().len(),
+        "texture_coordinates": model.uv_layout().is_some(),
+    });
+    Ok(annotate(result, &model, &head))
+}
+
+/// The head as Wavefront OBJ text: vertices, then texture coordinates when the
+/// model has them, then triangles indexing both.
+fn head_obj(model: &FlameModel, vertices: &[[f32; 3]]) -> Vec<u8> {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    let mut line = |args: std::fmt::Arguments<'_>| {
+        text.write_fmt(args)
+            .expect("writing to a string cannot fail");
+        text.push('\n');
+    };
+    line(format_args!(
+        "# FLAME head ({}) in millimetres; y is up and the face looks along +z",
+        model.info().variant
+    ));
+    for [x, y, z] in vertices {
+        line(format_args!("v {x} {y} {z}"));
+    }
+    match model.uv_layout() {
+        Some(layout) => {
+            for [u, v] in &layout.coords {
+                line(format_args!("vt {u} {v}"));
+            }
+            for (face, corners) in model.faces().iter().zip(&layout.faces) {
+                let [a, b, c] = face.map(|index| index + 1);
+                let [ta, tb, tc] = corners.map(|index| index + 1);
+                line(format_args!("f {a}/{ta} {b}/{tb} {c}/{tc}"));
+            }
+        }
+        None => {
+            for face in model.faces() {
+                let [a, b, c] = face.map(|index| index + 1);
+                line(format_args!("f {a} {b} {c}"));
+            }
+        }
+    }
+    text.into_bytes()
 }
 
 /// Write a closed, upright bust STL: the head is trimmed flat just above the

@@ -5641,6 +5641,65 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_export_writes_the_head_as_an_obj_without_blender() {
+    for textured in [true, false] {
+        let (_models, library) = tetrahedron_library(textured);
+        let root = tempfile::tempdir().unwrap();
+        let server = head_print_server(root.path(), library);
+        let call = json!({
+            "action": "export",
+            "params": {"path": "heads/head.obj", "identity": [0.5], "pose": {"global": [0.0, 0.3, 0.0]}}
+        });
+        let result = server.invoke_tool(head_call(call.clone())).await.unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["texture_coordinates"], textured, "{value}");
+        assert_eq!(
+            (value["vertices"].as_u64(), value["triangles"].as_u64()),
+            (Some(4), Some(4))
+        );
+        assert_eq!(value["head"]["units"], "millimetres");
+
+        let text = std::fs::read_to_string(root.path().join("heads/head.obj")).unwrap();
+        let lines = |prefix: &str| text.lines().filter(|line| line.starts_with(prefix)).count();
+        assert_eq!(lines("v "), 4, "{text}");
+        assert_eq!(lines("vt "), if textured { 4 } else { 0 }, "{text}");
+        assert_eq!(lines("f "), 4, "{text}");
+        // Faces index from one; textured faces also name their coordinates.
+        let first_face = text.lines().find(|line| line.starts_with("f ")).unwrap();
+        assert_eq!(
+            first_face,
+            if textured { "f 1/1 3/3 2/2" } else { "f 1 3 2" }
+        );
+        // Vertices are in millimetres: the fixture spans a metre.
+        let largest = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("v "))
+            .flat_map(|line| {
+                line.split(' ')
+                    .map(|value| value.parse::<f64>().unwrap().abs())
+            })
+            .fold(0.0, f64::max);
+        assert!(largest > 500.0, "{text}");
+
+        let repeat = server.invoke_tool(head_call(call)).await.unwrap();
+        assert_eq!(repeat.is_error, Some(true), "existing files need overwrite");
+    }
+    let (_models, library) = tetrahedron_library(true);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let wrong_suffix = server
+        .invoke_tool(head_call(
+            json!({"action": "export", "params": {"path": "head.stl"}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_suffix.is_error, Some(true));
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
 async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() {
     let root = tempfile::tempdir().unwrap();
     let server = head_print_server(root.path(), head_library(&["test"]));
