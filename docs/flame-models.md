@@ -64,8 +64,9 @@ It then refuses a model unless:
 ## Generate heads
 
 Mount the directory of converted files into the server and point
-`PRINTABLE_FLAME_MODEL_DIR` at it. In the Compose installation, add a
-read-only volume and the setting to the `server` service:
+`PRINTABLE_FLAME_MODEL_DIR` at it. In the Compose installation, keep
+`compose.yaml` unchanged and create your own override file, for example
+`compose.flame.yaml`:
 
 ```yaml
 services:
@@ -75,6 +76,15 @@ services:
     environment:
       PRINTABLE_FLAME_MODEL_DIR: /models/flame
 ```
+
+Pass it after `compose.yaml`. Compose merges volumes from an override file by
+container path, so the server keeps its shared workspace mount:
+
+```sh
+docker compose --env-file .dev/compose.env -f compose.yaml -f compose.flame.yaml up -d --wait --wait-timeout 600
+```
+
+The converted files must be readable by the container user.
 
 Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
