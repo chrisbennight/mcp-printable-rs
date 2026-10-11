@@ -340,28 +340,34 @@ fn prepare_mesh(
         ));
     }
     let watertight = topology_result.is_ok() && boundary_edges == Some(0);
-    let intersections = trimesh.connected_components().map(|components| {
-        let mut shell_of = vec![0; mesh.triangles.len()];
-        for (shell, range) in components.ranges.windows(2).enumerate() {
-            for face in &components.grouped_faces[range[0]..range[1]] {
-                shell_of[*face as usize] = shell;
+    // Degenerate or duplicate faces already make the mesh invalid, and many
+    // copies of one face would only slow the search, so it is skipped.
+    let searchable = degenerate_triangles == 0 && duplicate_triangles == 0;
+    let intersections = trimesh
+        .connected_components()
+        .filter(|_| searchable)
+        .map(|components| {
+            let mut shell_of = vec![0; mesh.triangles.len()];
+            for (shell, range) in components.ranges.windows(2).enumerate() {
+                for face in &components.grouped_faces[range[0]..range[1]] {
+                    shell_of[*face as usize] = shell;
+                }
             }
-        }
-        intersect::find_intersections(&mesh.vertices, &mesh.triangles, &shell_of)
-    });
+            intersect::find_intersections(&mesh.vertices, &mesh.triangles, &shell_of)
+        });
     let shell_analysis = if watertight && degenerate_triangles == 0 && duplicate_triangles == 0 {
         let connected_components = trimesh.connected_components().ok_or_else(|| {
             GeometryError::Kernel("connected-component data is unavailable".to_string())
         })?;
-        let overlapping = intersections
+        let groups = intersections
             .as_ref()
-            .map(|found| found.overlapping_shells.clone())
+            .map(intersect::Intersections::overlap_groups)
             .unwrap_or_default();
         Some(analyze_shells(
             connected_components,
             &trimesh,
             &component_signed_volumes,
-            &overlapping,
+            &groups,
         )?)
     } else {
         None
@@ -369,7 +375,9 @@ fn prepare_mesh(
     if let Some(found) = &intersections {
         // An incomplete search reports what it confirmed as a lower bound.
         let at_least = if found.complete { "" } else { "at least " };
-        if !found.complete {
+        // A search that stopped after finding crossings within shells has
+        // already shown the mesh to be invalid.
+        if !found.complete && found.within_shells == 0 {
             issues.push(error_issue(
                 "self_intersection_unchecked",
                 "the self-intersection check stopped early because the mesh has unusually many overlapping triangles".to_string(),
@@ -435,7 +443,7 @@ fn prepare_mesh(
             .is_none_or(|found| found.complete && found.within_shells == 0);
     let overlapping = intersections
         .as_ref()
-        .map(|found| found.overlapping_shells.clone())
+        .map(intersect::Intersections::overlapping_shells)
         .unwrap_or_default();
     let manifold = if eligible_for_manifold {
         let solid = if overlapping.is_empty() {
@@ -747,14 +755,14 @@ struct ShellAnalysis {
     solid_regions: usize,
 }
 
-/// `overlapping` shells cross another shell, so containment cannot be judged
-/// from one of their vertices; they are treated as solids that the slicer
-/// unites.
+/// Shells in `overlap_groups` cross another shell, so containment cannot be
+/// judged from one of their vertices; they are treated as solids that unite
+/// with the rest of their group into one region.
 fn analyze_shells(
     components: &TriMeshConnectedComponents,
     mesh: &TriMesh,
     signed_volumes: &[f64],
-    overlapping: &std::collections::BTreeSet<usize>,
+    overlap_groups: &std::collections::BTreeMap<usize, usize>,
 ) -> Result<ShellAnalysis, GeometryError> {
     let buffers = components.to_mesh_buffers(mesh);
     if buffers.len() != signed_volumes.len() {
@@ -796,8 +804,10 @@ fn analyze_shells(
                         .contains_local_point(*sample)
             })
             .count();
-        let expected_positive = overlapping.contains(&index) || containment_depth % 2 == 0;
-        if expected_positive {
+        let group = overlap_groups.get(&index);
+        let expected_positive = group.is_some() || containment_depth % 2 == 0;
+        // A group of overlapping shells counts once, at its first shell.
+        if expected_positive && group.is_none_or(|first| *first == index) {
             solid_regions += 1;
         }
         let volume = signed_volumes[index];
@@ -1638,6 +1648,13 @@ mod tests {
                 .issues
                 .iter()
                 .all(|issue| issue.severity != IssueSeverity::Error),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.code != "multiple_components"),
             "{report:?}"
         );
         // Measured as the united solid: two unit cubes overlapping in a

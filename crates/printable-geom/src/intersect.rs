@@ -5,7 +5,7 @@
 //! floating-point rounding. Triangles that share a vertex are mesh neighbours
 //! and are not compared.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use parry3d_f64::bounding_volume::Aabb;
 use parry3d_f64::math::Vector;
@@ -18,11 +18,19 @@ type Point = [f64; 3];
 /// search gives up. Ordinary meshes need a few dozen; long fan triangles in a
 /// finely divided circle can need about as many as the circle has segments.
 const CANDIDATES_PER_TRIANGLE: usize = 2048;
-/// Exact tests per triangle, counted only for pairs that a quick plane test
-/// cannot separate. Only heavily overlapping input reaches this, and the
-/// bound keeps such input from occupying the server.
+/// An absolute bound on candidate pairs, so that no input, however large,
+/// occupies the server for more than a few seconds. Printable busts need
+/// about 16 per triangle, so meshes of about three million triangles fit.
+const MAX_CANDIDATES: usize = 50_000_000;
+/// Exact tests per triangle and in total, counted only for pairs that the
+/// quick separating-axis test cannot separate.
 const EXACT_TESTS_PER_TRIANGLE: usize = 256;
-/// Relative margin for the quick plane test, far above floating-point error.
+const MAX_EXACT_TESTS: usize = 1_000_000;
+/// The search stops after confirming this many crossings within shells; the
+/// mesh is already invalid and the count is reported as a lower bound.
+const MAX_CROSSINGS: usize = 10_000;
+/// Relative margin for the quick separating-axis test, far above
+/// floating-point error.
 const SEPARATION_MARGIN: f64 = 1e-9;
 
 /// Intersecting triangle pairs, split by whether both triangles belong to the
@@ -34,8 +42,47 @@ pub(crate) struct Intersections {
     pub complete: bool,
     pub within_shells: usize,
     pub between_shells: usize,
+    /// Pairs of distinct shells that touch or cross, smaller index first.
+    pub overlapping_pairs: BTreeSet<(usize, usize)>,
+}
+
+impl Intersections {
     /// Shells that touch or cross another shell.
-    pub overlapping_shells: BTreeSet<usize>,
+    pub fn overlapping_shells(&self) -> BTreeSet<usize> {
+        self.overlapping_pairs
+            .iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .collect()
+    }
+
+    /// For each overlapping shell, the smallest shell index among those it is
+    /// joined to through overlaps; shells with the same value unite into one
+    /// solid.
+    pub fn overlap_groups(&self) -> BTreeMap<usize, usize> {
+        let mut parent: BTreeMap<usize, usize> = BTreeMap::new();
+        fn root(parent: &mut BTreeMap<usize, usize>, shell: usize) -> usize {
+            let mut current = shell;
+            while let Some(&next) = parent.get(&current) {
+                if next == current {
+                    break;
+                }
+                current = next;
+            }
+            parent.insert(shell, current);
+            current
+        }
+        for &(a, b) in &self.overlapping_pairs {
+            parent.entry(a).or_insert(a);
+            parent.entry(b).or_insert(b);
+            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+            parent.insert(ra.max(rb), ra.min(rb));
+        }
+        let shells: Vec<usize> = parent.keys().copied().collect();
+        shells
+            .into_iter()
+            .map(|shell| (shell, root(&mut parent, shell)))
+            .collect()
+    }
 }
 
 /// Compare every pair of non-degenerate triangles whose bounds overlap and
@@ -46,8 +93,12 @@ pub(crate) fn find_intersections(
     triangles: &[[u32; 3]],
     shell_of: &[usize],
 ) -> Intersections {
-    let mut candidates = CANDIDATES_PER_TRIANGLE.saturating_mul(triangles.len());
-    let mut exact_tests = EXACT_TESTS_PER_TRIANGLE.saturating_mul(triangles.len());
+    let mut candidates = CANDIDATES_PER_TRIANGLE
+        .saturating_mul(triangles.len())
+        .min(MAX_CANDIDATES);
+    let mut exact_tests = EXACT_TESTS_PER_TRIANGLE
+        .saturating_mul(triangles.len())
+        .min(MAX_EXACT_TESTS);
     let corners = |triangle: &[u32; 3]| triangle.map(|index| vertices[index as usize]);
     let bounds: Vec<Aabb> = triangles
         .iter()
@@ -95,12 +146,16 @@ pub(crate) fn find_intersections(
             };
             exact_tests = remaining;
             if triangles_intersect(this, that) {
-                if shell_of[first] == shell_of[second] {
+                let (a, b) = (shell_of[first], shell_of[second]);
+                if a == b {
                     found.within_shells += 1;
+                    if found.within_shells >= MAX_CROSSINGS {
+                        found.complete = false;
+                        return found;
+                    }
                 } else {
                     found.between_shells += 1;
-                    found.overlapping_shells.insert(shell_of[first]);
-                    found.overlapping_shells.insert(shell_of[second]);
+                    found.overlapping_pairs.insert((a.min(b), a.max(b)));
                 }
             }
         }
@@ -108,29 +163,66 @@ pub(crate) fn find_intersections(
     found
 }
 
-/// Whether either triangle's plane has the other triangle strictly on one
-/// side, by a margin that floating-point error cannot cross.
+/// Whether a separating axis keeps the triangles apart by a margin that
+/// floating-point error cannot cross. The axes are both normals, the cross
+/// products of edge pairs, and each edge's in-plane normal, which together
+/// separate any two disjoint triangles, including coplanar ones.
 fn clearly_separated(first: [Point; 3], second: [Point; 3]) -> bool {
-    one_side(first, second) || one_side(second, first)
+    let edges = |[a, b, c]: [Point; 3]| [sub(b, a), sub(c, b), sub(a, c)];
+    let (first_edges, second_edges) = (edges(first), edges(second));
+    let first_normal = cross(first_edges[0], sub(first[2], first[0]));
+    let second_normal = cross(second_edges[0], sub(second[2], second[0]));
+    let origin = first[0];
+    let reach = first
+        .iter()
+        .chain(&second)
+        .map(|point| dot(sub(*point, origin), sub(*point, origin)))
+        .fold(0.0, f64::max)
+        .sqrt();
+    let separates = |axis: Point| {
+        let length = dot(axis, axis).sqrt();
+        if length == 0.0 {
+            return false;
+        }
+        let project = |points: [Point; 3]| {
+            let values = points.map(|point| dot(axis, sub(point, origin)));
+            (
+                values[0].min(values[1]).min(values[2]),
+                values[0].max(values[1]).max(values[2]),
+            )
+        };
+        let ((low, high), (other_low, other_high)) = (project(first), project(second));
+        let margin = SEPARATION_MARGIN * length * reach;
+        high + margin < other_low || other_high + margin < low
+    };
+    // The normals separate most pairs, so they are tried first.
+    separates(first_normal)
+        || separates(second_normal)
+        || first_edges.iter().any(|edge| {
+            separates(cross(first_normal, *edge))
+                || second_edges
+                    .iter()
+                    .any(|other| separates(cross(*edge, *other)))
+        })
+        || second_edges
+            .iter()
+            .any(|edge| separates(cross(second_normal, *edge)))
 }
 
-fn one_side([a, b, c]: [Point; 3], points: [Point; 3]) -> bool {
-    let difference =
-        |p: Point, q: Point| -> Point { std::array::from_fn(|axis| p[axis] - q[axis]) };
-    let dot = |p: Point, q: Point| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
-    let (u, v) = (difference(b, a), difference(c, a));
-    let normal = [
+fn sub(p: Point, q: Point) -> Point {
+    [p[0] - q[0], p[1] - q[1], p[2] - q[2]]
+}
+
+fn cross(u: Point, v: Point) -> Point {
+    [
         u[1] * v[2] - u[2] * v[1],
         u[2] * v[0] - u[0] * v[2],
         u[0] * v[1] - u[1] * v[0],
-    ];
-    let reach = points
-        .iter()
-        .map(|point| dot(difference(*point, a), difference(*point, a)).sqrt())
-        .fold(0.0, f64::max);
-    let margin = SEPARATION_MARGIN * dot(normal, normal).sqrt() * reach;
-    let sides = points.map(|point| dot(normal, difference(point, a)));
-    sides.iter().all(|side| *side > margin) || sides.iter().all(|side| *side < -margin)
+    ]
+}
+
+fn dot(p: Point, q: Point) -> f64 {
+    p[0] * q[0] + p[1] * q[1] + p[2] * q[2]
 }
 
 fn coord3(point: Point) -> Coord3D<f64> {
