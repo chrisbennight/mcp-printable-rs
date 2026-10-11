@@ -139,10 +139,10 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    than inward-facing surface, counted with exact arithmetic. A new surface
    is extracted at that boundary by marching tetrahedra, which produces a
    closed surface that never touches or crosses itself. Each new vertex is
-   placed where a ray from the outside end of its grid edge first meets the
-   surface. That point is on the outer surface, so surfaces buried inside the
-   union, such as the hidden parts of the eyeballs and the folds of the lips,
-   do not pull the surface inward where they meet it.
+   placed exactly where its grid edge, followed from the outside end, first
+   enters the solid. Surfaces buried inside the union, such as the hidden
+   parts of the eyeballs and the folds of the lips, therefore do not pull the
+   surface inward where they meet it.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
 6. Optionally, a cylindrical plinth is added under the base.

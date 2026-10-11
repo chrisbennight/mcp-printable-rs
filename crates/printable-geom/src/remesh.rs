@@ -11,10 +11,12 @@
 //!
 //! Inside the union, the nearest triangle may be a buried surface, such as
 //! the hidden part of an eyeball behind an eyelid, so the distance there is
-//! too small. Each vertex is therefore placed where a ray from the outside
-//! end of its grid edge first meets the surface. Nothing lies between an
-//! outside point and that hit, so the hit is on the outer surface of the
-//! union.
+//! too small. Each vertex is therefore placed where its grid edge, walked from
+//! the outside end, first enters the solid. When the edge meets the surface
+//! once, that meeting is the boundary. Where it meets the surface several
+//! times, as it can in a pocket of negative winding left by a surface that
+//! passes through itself, the exact winding count between the meetings shows
+//! which one enters the solid.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -35,6 +37,13 @@ const BAND_EDGES: f64 = 2.0;
 /// The smallest distance magnitude returned, as a fraction of the bucket
 /// size. The extracted surface moves by at most this much.
 const FLOOR_FRACTION: f64 = 1e-4;
+
+/// Surface crossings followed along one grid edge before falling back to
+/// interpolation.
+const MAX_EDGE_CROSSINGS: usize = 16;
+/// A ray restarted past a crossing begins this fraction of the edge beyond it,
+/// so that it does not meet the same triangle again.
+const RESTART_FRACTION: f64 = 1e-6;
 
 const UNKNOWN: u8 = 0;
 const NEAR: u8 = 1;
@@ -63,7 +72,7 @@ pub(crate) fn remesh_union(
         low,
         high,
         edge,
-        Some(&|outside, inside| field.first_hit(outside, inside)),
+        Some(&|outside, inside| field.entry(outside, inside)),
     )?;
     drop(field);
     if solid.is_empty() {
@@ -200,11 +209,30 @@ impl Field {
     }
 
     /// The fraction of the way from `outside` to `inside` at which the
-    /// segment first meets the surface.
-    fn first_hit(&self, outside: Point, inside: Point) -> Option<f64> {
+    /// segment first enters the solid.
+    fn entry(&self, outside: Point, inside: Point) -> Option<f64> {
         let origin = Vector::from_array(outside);
-        let ray = Ray::new(origin, Vector::from_array(inside) - origin);
-        self.surface.cast_local_ray(&ray, 1.0, false)
+        let direction = Vector::from_array(inside) - origin;
+        let hit_after = |start: f64| {
+            let ray = Ray::new(origin + direction * start, direction);
+            self.surface
+                .cast_local_ray(&ray, 1.0 - start, false)
+                .map(|fraction| start + fraction)
+        };
+        let mut crossing = hit_after(0.0)?;
+        for _ in 0..MAX_EDGE_CROSSINGS {
+            let restart = crossing + RESTART_FRACTION;
+            let Some(next) = hit_after(restart).filter(|_| restart < 1.0) else {
+                // Nothing lies between this crossing and the inside end.
+                return Some(crossing);
+            };
+            let middle = origin + direction * ((crossing + next) / 2.0);
+            if self.winding(middle.to_array()) > 0 {
+                return Some(crossing);
+            }
+            crossing = next;
+        }
+        None
     }
 
     /// Outward-facing minus inward-facing crossings of the ray from `point`
@@ -543,6 +571,43 @@ mod tests {
         assert!(
             worst <= isosurface::END_CLEARANCE * spacing * 3f64.sqrt() + 1e-9,
             "a vertex lies {worst} mm from the union's surface"
+        );
+    }
+
+    #[test]
+    fn vertices_skip_a_pocket_of_negative_winding() {
+        // An inside-out slab just outside one face of a cube has winding -1:
+        // it is outside the solid, and an edge starting in it meets the slab's
+        // face before the cube's. The grid starts at the cube's low corner, so
+        // its size keeps the far face off the grid points.
+        let big = ([0.0; 3], 10.17);
+        let (mut vertices, mut triangles) = cube(big.0, big.1);
+        let near = big.1 + 0.1;
+        let (slab, slab_triangles) = cube([near, 2.0, 2.0], 6.0);
+        let offset = vertices.len() as u32;
+        vertices.extend(
+            slab.into_iter()
+                .map(|[x, y, z]| [near + (x - near) / 6.0, y, z]),
+        );
+        triangles.extend(
+            slab_triangles
+                .iter()
+                .map(|[a, b, c]| [a + offset, c + offset, b + offset]),
+        );
+        let edge = 0.3;
+        let spacing = edge / EDGE_PER_SPACING;
+        let solid = remesh_union(vertices, triangles, edge).unwrap();
+        // The 36 mm^3 pocket is not part of the solid.
+        let volume = big.1.powi(3);
+        assert!((solid.volume() - volume).abs() < 10.0, "{}", solid.volume());
+        let (flat, properties, _) = solid.to_mesh_f64();
+        let worst = flat
+            .chunks_exact(properties)
+            .map(|vertex| box_distance([vertex[0], vertex[1], vertex[2]], big.0, big.1).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            worst <= isosurface::END_CLEARANCE * spacing * 3f64.sqrt() + 1e-9,
+            "a vertex lies {worst} mm from the cube's surface"
         );
     }
 
