@@ -1431,3 +1431,134 @@ async fn oversized_request_body_is_rejected_by_the_transport_limit() {
 
     server.shutdown().await;
 }
+
+/// A reconstruction worker whose readiness the test switches.
+async fn switchable_recon_worker(
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = axum::Router::new().route(
+        "/readyz",
+        axum::routing::get(move || {
+            let ready = ready.load(std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if ready {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind worker");
+    let address = listener.local_addr().expect("worker address");
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{address}"), task)
+}
+
+#[tokio::test]
+async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (endpoint, worker) = switchable_recon_worker(std::sync::Arc::clone(&ready)).await;
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .expect("endpoint is valid")
+    .expect("endpoint is set");
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.recon = Some(std::sync::Arc::clone(&recon));
+    let server = start_with_settings(settings).await;
+    let mcp = format!("{}/mcp", server.base);
+    let http = reqwest::Client::new();
+
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": protocol_version(),
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-endpoint-test", "version": env!("CARGO_PKG_VERSION")},
+        },
+    });
+    let resp = post(&http, &mcp, None, &init).await;
+    let session = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .expect("stateful transport assigns a session id");
+    let result = rpc_result(resp).await;
+    assert_eq!(
+        result["capabilities"]["tools"]["listChanged"], true,
+        "{result}"
+    );
+    let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert!(
+        post(&http, &mcp, Some(&session), &initialized)
+            .await
+            .status()
+            .is_success()
+    );
+    // The first readiness probe has answered before the change below.
+    recon.refresh().await;
+
+    let mut stream = http
+        .get(&mcp)
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {TEST_MCP_BEARER}"),
+        )
+        .header("mcp-protocol-version", protocol_version())
+        .header("mcp-session-id", &session)
+        .send()
+        .await
+        .expect("open the server event stream");
+    assert!(stream.status().is_success(), "{}", stream.status());
+
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(recon.refresh().await);
+    let mut received = String::new();
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(chunk) = stream.chunk().await.expect("read the event stream") {
+            received.push_str(&String::from_utf8_lossy(&chunk));
+            if received.contains("notifications/tools/list_changed") {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(heard, Ok(true), "event stream: {received}");
+
+    server.shutdown().await;
+    worker.abort();
+}
+
+#[tokio::test]
+async fn tools_are_fixed_without_a_reconstruction_worker() {
+    let server = start().await;
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": protocol_version(),
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-endpoint-test", "version": env!("CARGO_PKG_VERSION")},
+        },
+    });
+    let result = rpc_result(
+        post(
+            &reqwest::Client::new(),
+            &format!("{}/mcp", server.base),
+            None,
+            &init,
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        result["capabilities"]["tools"].get("listChanged").is_none(),
+        "{result}"
+    );
+    server.shutdown().await;
+}

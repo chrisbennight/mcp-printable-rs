@@ -434,7 +434,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(3660);
 pub struct ReconClient {
     endpoint: String,
     http: reqwest::Client,
-    ready: std::sync::atomic::AtomicBool,
+    /// The worker's last readiness answer; subscribers hear each change.
+    ready: tokio::sync::watch::Sender<bool>,
 }
 
 impl ReconClient {
@@ -458,13 +459,18 @@ impl ReconClient {
         Ok(Some(Arc::new(Self {
             endpoint: endpoint.trim().trim_end_matches('/').to_owned(),
             http,
-            ready: std::sync::atomic::AtomicBool::new(false),
+            ready: tokio::sync::watch::Sender::new(false),
         })))
     }
 
     /// Whether the worker last reported every checkpoint present.
     pub fn is_ready(&self) -> bool {
-        self.ready.load(std::sync::atomic::Ordering::Relaxed)
+        *self.ready.borrow()
+    }
+
+    /// A receiver that wakes whenever readiness changes.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.ready.subscribe()
     }
 
     /// Ask the worker now and remember the answer.
@@ -477,8 +483,12 @@ impl ReconClient {
                 .await,
             Ok(response) if response.status().is_success()
         );
-        let was = self.ready.swap(ready, std::sync::atomic::Ordering::Relaxed);
-        if was != ready {
+        let changed = self.ready.send_if_modified(|current| {
+            let changed = *current != ready;
+            *current = ready;
+            changed
+        });
+        if changed {
             tracing::info!(ready, "reconstruction worker availability changed");
         }
         ready

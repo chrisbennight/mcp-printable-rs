@@ -222,9 +222,9 @@ person. It runs in an optional reconstruction worker:
   identity embeddings of all the photographs are averaged before MICA maps them
   to 300 identity coefficients.
 - **Expression and jaw** come from SMIRK, applied to the first photograph.
-- **Surface detail** comes from DECA's detail decoder. It writes a 16-bit
-  displacement map in FLAME's UV layout, for the expression and jaw that SMIRK
-  found.
+- **Surface detail** comes from DECA, applied to the first photograph. Its
+  detail decoder writes a 16-bit displacement map in FLAME's UV layout,
+  conditioned on DECA's own estimate of the expression and jaw.
 
 All three networks were trained with FLAME 2020, so their coefficients belong
 to the FLAME 2020 generic model. Convert and mount `generic_model.pkl` from
@@ -307,6 +307,11 @@ otherwise; `PRINTABLE_RECON_DEVICE` forces one or the other. It runs one
 reconstruction at a time and stops any that exceeds
 `PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
 worker is configured and ready.
+
+The `head` tool offers `reconstruct` only while the worker reports every
+checkpoint present. The server checks every 30 seconds. When the answer
+changes, it sends connected clients `notifications/tools/list_changed` so
+that they list the tools again.
 
 ### Use the result
 

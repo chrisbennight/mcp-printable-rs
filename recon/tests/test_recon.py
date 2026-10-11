@@ -12,6 +12,7 @@ import os
 import pickle
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import numpy
@@ -35,8 +36,26 @@ def synthetic_landmarks(width: int = 400, height: int = 400) -> numpy.ndarray:
 
 
 class _Malicious:
+    """Unpickling creates the directory `marker`, which shows the code ran."""
+
+    def __init__(self, marker: Path):
+        self.marker = marker
+
     def __reduce__(self):
-        return (os.system, ("true",))
+        return (os.mkdir, (str(self.marker),))
+
+
+def _zipped(payload: bytes) -> bytes:
+    """`payload` as the data record of a checkpoint in PyTorch's zip format."""
+    buffer = io.BytesIO()
+    torch.save({"weight": torch.ones(1)}, buffer)
+    source = zipfile.ZipFile(io.BytesIO(buffer.getvalue()))
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for info in source.infolist():
+            data = payload if info.filename.endswith("/data.pkl") else source.read(info)
+            archive.writestr(info, data)
+    return output.getvalue()
 
 
 class CheckpointTests(unittest.TestCase):
@@ -46,9 +65,17 @@ class CheckpointTests(unittest.TestCase):
             torch.save({"layer": {"weight": torch.ones(2)}}, good)
             self.assertEqual(checkpoints.section(checkpoints.load(good), "layer", "good")["weight"].sum(), 2)
             bad = Path(directory) / "bad.pt"
-            bad.write_bytes(pickle.dumps({"payload": _Malicious()}))
-            with self.assertRaises(checkpoints.CheckpointError):
-                checkpoints.load(bad)
+            marker = Path(directory) / "code-ran"
+            payload = pickle.dumps({"payload": _Malicious(marker)})
+            # The payload is live: an ordinary unpickler runs it.
+            pickle.loads(payload)
+            self.assertTrue(marker.is_dir())
+            marker.rmdir()
+            for data in (payload, _zipped(payload)):
+                bad.write_bytes(data)
+                with self.assertRaises(checkpoints.CheckpointError):
+                    checkpoints.load(bad)
+                self.assertFalse(marker.exists(), "loading a checkpoint ran code from it")
             with self.assertRaises(checkpoints.CheckpointError):
                 checkpoints.load(Path(directory) / "absent.pt")
 
