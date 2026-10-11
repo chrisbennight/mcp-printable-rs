@@ -5,7 +5,7 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead};
-use printable_geom::{BustRequest, Hollow, Plinth};
+use printable_geom::{BustRequest, Displacement, Hollow, Plinth};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -30,6 +30,8 @@ const MIN_BUST_ABOVE_PLINTH_MM: f64 = 10.0;
 const HOLLOW_WALL_MM: std::ops::RangeInclusive<f64> = 1.0..=20.0;
 const DRAIN_DIAMETER_MM: std::ops::RangeInclusive<f64> = 1.0..=10.0;
 const DEFAULT_DRAIN_DIAMETER_MM: f64 = 3.5;
+/// Largest displacement map accepted, in pixels on each side.
+const MAX_DISPLACEMENT_PIXELS: u32 = 1024;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -153,6 +155,24 @@ pub(super) struct HeadPreparePrintParams {
     /// `hollow_wall_mm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     drain_hole_diameter_mm: Option<f64>,
+    /// Fine surface detail from a displacement map in FLAME's texture layout,
+    /// such as one estimated from photographs. Needs a model converted with
+    /// its texture layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    displacement: Option<DisplacementParams>,
+}
+
+/// A greyscale PNG displacement map. A pixel at fraction f of the full
+/// range, p / 65535 for 16-bit or p / 255 for 8-bit images, raises the
+/// surface by `offset_mm + scale_mm × f` millimetres at life size, scaled
+/// with the bust. Row 0 is v = 1 and column 0 is u = 0.
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DisplacementParams {
+    /// Workspace path of the PNG, at most 1024 pixels on each side.
+    path: String,
+    offset_mm: f64,
+    scale_mm: f64,
 }
 
 #[derive(serde::Serialize)]
@@ -292,6 +312,13 @@ pub(super) async fn prepare_print(
             "pose.global must be zero for prepare_print: the bust stands on its neck; use pose.neck to turn or tilt the head".into(),
         ));
     }
+    if let Some(map) = &params.displacement
+        && !(map.offset_mm.is_finite() && map.scale_mm.is_finite())
+    {
+        return Err(ToolError::Validation(
+            "displacement offset_mm and scale_mm must be finite".into(),
+        ));
+    }
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     let (model, head) = evaluate(
@@ -302,6 +329,10 @@ pub(super) async fn prepare_print(
         params.pose,
     )
     .await?;
+    let displacement = match params.displacement {
+        Some(map) => Some(displacement(&workspace, &model, map).await?),
+        None => None,
+    };
     let request = BustRequest {
         vertices: millimetres(&head.vertices)
             .into_iter()
@@ -313,6 +344,7 @@ pub(super) async fn prepare_print(
         max_triangles,
         plinth,
         hollow,
+        displacement,
     };
     let variant = model.info().variant.clone();
     let (path, overwrite) = (params.path, params.overwrite);
@@ -403,6 +435,74 @@ pub(super) async fn reconstruct(
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
     }))
+}
+
+/// Read a displacement map from the workspace and pair it with the model's
+/// texture coordinates.
+async fn displacement(
+    workspace: &Arc<Workspace>,
+    model: &FlameModel,
+    params: DisplacementParams,
+) -> Result<Displacement, ToolError> {
+    let layout = model.uv_layout().ok_or_else(|| {
+        ToolError::Validation(format!(
+            "the {} model has no texture layout; convert it again with --texture to use a displacement map",
+            model.info().variant
+        ))
+    })?;
+    let triangle_uvs = layout
+        .faces
+        .iter()
+        .map(|face| face.map(|index| layout.coords[index as usize]))
+        .collect();
+    let workspace = Arc::clone(workspace);
+    let path = params.path;
+    let (_, bytes) = blocking(move || workspace.read_artifact(&path)).await?;
+    let (width, height, fractions) = decode_displacement(&bytes)?;
+    Ok(Displacement {
+        width,
+        height,
+        values: fractions
+            .into_iter()
+            .map(|fraction| (params.offset_mm + params.scale_mm * fraction) as f32)
+            .collect(),
+        triangle_uvs,
+    })
+}
+
+/// Pixels of an 8- or 16-bit greyscale PNG as fractions of the full range,
+/// row by row from the top.
+fn decode_displacement(bytes: &[u8]) -> Result<(usize, usize, Vec<f64>), ToolError> {
+    let invalid = || {
+        ToolError::Validation("the displacement map must be an 8- or 16-bit greyscale PNG".into())
+    };
+    let reader = || {
+        let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), ImageFormat::Png);
+        reader.limits(Limits::default());
+        reader
+    };
+    let (width, height) = reader().into_dimensions().map_err(|_| invalid())?;
+    if !(2..=MAX_DISPLACEMENT_PIXELS).contains(&width)
+        || !(2..=MAX_DISPLACEMENT_PIXELS).contains(&height)
+    {
+        return Err(ToolError::Validation(format!(
+            "the displacement map must be 2 to {MAX_DISPLACEMENT_PIXELS} pixels on each side"
+        )));
+    }
+    let fractions = match reader().decode().map_err(|_| invalid())? {
+        image::DynamicImage::ImageLuma16(image) => image
+            .into_raw()
+            .into_iter()
+            .map(|level| f64::from(level) / f64::from(u16::MAX))
+            .collect(),
+        image::DynamicImage::ImageLuma8(image) => image
+            .into_raw()
+            .into_iter()
+            .map(|level| f64::from(level) / f64::from(u8::MAX))
+            .collect(),
+        _ => return Err(invalid()),
+    };
+    Ok((width as usize, height as usize, fractions))
 }
 
 fn in_range<T: PartialOrd + std::fmt::Display>(

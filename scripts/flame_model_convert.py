@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import ast
 import hashlib
 import io
 import json
@@ -30,6 +31,7 @@ import resource
 import struct
 import sys
 import tempfile
+import zipfile
 
 
 FORMAT = "printable-flame/1"
@@ -58,6 +60,7 @@ SOURCE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 CONVENTIONAL_BASIS_COMPONENTS = 400
 CONVENTIONAL_EXPRESSION_COMPONENTS = 100
 JOINT_TOLERANCE = 1e-6
+UV_TOLERANCE = 1e-6
 WEIGHT_TOLERANCE = 1e-3
 TYPECODES = {"f8": "d", "f4": "f", "i8": "q", "i4": "i", "u8": "Q", "u4": "I",
              "i2": "h", "u2": "H", "i1": "b", "u1": "B"}
@@ -417,6 +420,71 @@ def convert(data: bytes, variant: str, expression_components: int | None = None)
     return tensors, metadata
 
 
+# The texture space archive holds large appearance bases next to the small UV
+# layout; only these members are read, and each within this size.
+MAX_LAYOUT_MEMBER_BYTES = 1 << 20
+NPY_TYPES = {"<f8": "d", "<f4": "f", "<u4": "I", "<i4": "i", "<i8": "q", "<u8": "Q"}
+
+
+def _npy(archive: zipfile.ZipFile, name: str):
+    """Decode one little-endian, C-ordered array from an .npz archive."""
+    try:
+        info = archive.getinfo(f"{name}.npy")
+    except KeyError:
+        raise ModelError(f"texture space has no {name} array") from None
+    if info.file_size > MAX_LAYOUT_MEMBER_BYTES:
+        raise ModelError(f"texture space array {name} is too large")
+    with archive.open(info) as handle:
+        data = handle.read(MAX_LAYOUT_MEMBER_BYTES + 1)
+    if data[:6] != b"\x93NUMPY" or len(data) < 10:
+        raise ModelError(f"texture space array {name} is not a NumPy array")
+    major = data[6]
+    if major == 1:
+        length, start = struct.unpack("<H", data[8:10])[0], 10
+    elif major in (2, 3):
+        length, start = struct.unpack("<I", data[8:12])[0], 12
+    else:
+        raise ModelError(f"texture space array {name} has an unknown format version")
+    try:
+        header = ast.literal_eval(data[start:start + length].decode("latin1"))
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
+        raise ModelError(f"texture space array {name} has an unreadable header") from None
+    if not isinstance(header, dict) or header.get("fortran_order") is not False:
+        raise ModelError(f"texture space array {name} must be C-ordered")
+    code = NPY_TYPES.get(header.get("descr"))
+    shape = header.get("shape")
+    if code is None or not isinstance(shape, tuple) or len(shape) != 2 \
+            or not all(isinstance(size, int) and 0 < size < MAX_DIMENSION for size in shape):
+        raise ModelError(f"texture space array {name} has an unsupported type or shape")
+    body = data[start + length:]
+    count = shape[0] * shape[1]
+    if len(body) != count * struct.calcsize(code):
+        raise ModelError(f"texture space array {name} is truncated")
+    return shape, struct.unpack(f"<{count}{code}", body)
+
+
+def texture_layout(path: Path, faces: int):
+    """FLAME's UV layout from the texture space archive, as tensors: per-UV
+    coordinates and, for each triangle, the UV indices of its corners."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            (coord_shape, coords), (corner_shape, corners) = _npy(archive, "vt"), _npy(archive, "ft")
+    except zipfile.BadZipFile:
+        raise ModelError("texture space is not an .npz archive") from None
+    if coord_shape[1] != 2:
+        raise ModelError("texture space vt must hold 2D coordinates")
+    if corner_shape != (faces, 3):
+        raise ModelError("texture space ft must give UV corners for every model triangle")
+    if not all(-UV_TOLERANCE <= value <= 1 + UV_TOLERANCE for value in coords):
+        raise ModelError("texture space coordinates must lie in the unit square")
+    if not all(0 <= index < coord_shape[0] for index in corners):
+        raise ModelError("texture space ft references a coordinate that does not exist")
+    return {
+        "uv_coords": ("F32", coord_shape, _payload(_float32("uv_coords", coords))),
+        "uv_faces": ("U32", corner_shape, _payload(array.array("I", corners))),
+    }
+
+
 def write_safetensors(path: Path, tensors, metadata) -> str:
     """Atomically write tensors as safetensors and return the file's SHA-256."""
     header = {"__metadata__": metadata}
@@ -467,9 +535,14 @@ def main(argv=None) -> int:
                         help="label recorded in the output, for example flame2023_open")
     parser.add_argument("--expression-components", type=int,
                         help="trailing basis components that model expression, for sources that do not record it")
+    parser.add_argument("--texture", type=Path,
+                        help="FLAME_texture.npz from the FLAME texture space, to add the UV layout "
+                             "that surface detail is applied through")
     args = parser.parse_args(argv)
     try:
         tensors, metadata = convert(read_bounded(args.source), args.variant, args.expression_components)
+        if args.texture is not None:
+            tensors.update(texture_layout(args.texture, tensors["faces"][1][0]))
         digest = write_safetensors(args.destination, tensors, metadata)
     except (ModelError, OSError) as error:
         print(f"flame_model_convert: {error}", file=sys.stderr)

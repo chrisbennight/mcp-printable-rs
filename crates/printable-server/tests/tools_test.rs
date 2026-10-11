@@ -5518,6 +5518,128 @@ async fn head_prepare_print_can_hollow_the_bust_for_resin() {
     assert_eq!(value["validation"]["topology"]["connected_components"], 1);
 }
 
+/// A 16-bit greyscale PNG whose pixels come from `level`.
+fn displacement_png(width: u32, height: u32, level: impl Fn(u32, u32) -> u16) -> Vec<u8> {
+    let image = image::ImageBuffer::<image::Luma<u16>, Vec<u16>>::from_fn(width, height, |x, y| {
+        image::Luma([level(x, y)])
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    bytes.into_inner()
+}
+
+/// The closed tetrahedron fixture, optionally with texture coordinates.
+fn tetrahedron_library(
+    with_uv: bool,
+) -> (
+    tempfile::TempDir,
+    Arc<printable_server::flame::FlameLibrary>,
+) {
+    let models = tempfile::tempdir().unwrap();
+    let fixture = printable_flame::fixture::Fixture {
+        faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        uv: with_uv.then(|| {
+            (
+                vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            )
+        }),
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    (models, library)
+}
+
+#[tokio::test]
+async fn head_prepare_print_raises_detail_from_a_displacement_map() {
+    let (_models, library) = tetrahedron_library(true);
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("maps")).unwrap();
+    std::fs::write(
+        root.path().join("maps/detail.png"),
+        displacement_png(16, 16, |_, _| u16::MAX),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let params = json!({
+        "path": "detailed.stl", "height_mm": 50.0, "edge_length_mm": 2.0,
+        "displacement": {"path": "maps/detail.png", "offset_mm": 0.0, "scale_mm": 20.0}
+    });
+    let result = server
+        .invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    // The fixture is a metre tall at life size, so a 50 mm bust scales the
+    // uniform 20 mm raise to 1 mm before smoothing; the smoothed tetrahedron
+    // bulges, and fitting it back to 50 mm reduces the raise.
+    let applied = &value["bust"]["displacement"];
+    let (lowest, highest) = (
+        applied["lowest_mm"].as_f64().unwrap(),
+        applied["highest_mm"].as_f64().unwrap(),
+    );
+    assert!((lowest - highest).abs() < 1e-9, "{value}");
+    assert!((0.5..1.0).contains(&lowest), "{value}");
+}
+
+#[tokio::test]
+async fn head_prepare_print_rejects_unusable_displacement_maps() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(8, 8, |x, _| (x * 4000) as u16),
+    )
+    .unwrap();
+    let rgb = image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    std::fs::write(root.path().join("colour.png"), bytes.into_inner()).unwrap();
+    std::fs::write(
+        root.path().join("large.png"),
+        displacement_png(1025, 2, |_, _| 0),
+    )
+    .unwrap();
+    let map = |path: &str, offset: f64| json!({"path": path, "offset_mm": offset, "scale_mm": 1.0});
+    let (_plain_models, plain) = tetrahedron_library(false);
+    let (_models, textured) = tetrahedron_library(true);
+    for (library, displacement, message) in [
+        (
+            &plain,
+            map("detail.png", 0.0),
+            "convert it again with --texture",
+        ),
+        (&textured, map("colour.png", 0.0), "greyscale PNG"),
+        (&textured, map("large.png", 0.0), "2 to 1024 pixels"),
+        (&textured, map("missing.png", 0.0), ""),
+        (
+            &textured,
+            map("detail.png", 100.0),
+            "5% of the head's height",
+        ),
+    ] {
+        let server = head_print_server(root.path(), Arc::clone(library));
+        let params = json!({"path": "head.stl", "displacement": displacement});
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+        assert!(!root.path().join("head.stl").exists());
+    }
+}
+
 #[tokio::test]
 async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() {
     let root = tempfile::tempdir().unwrap();
@@ -5864,4 +5986,60 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
     }
     assert_eq!(seen.lock().unwrap().len(), 1);
     task.abort();
+}
+
+/// Applies a rippled displacement map to a bust of the model named by
+/// `PRINTABLE_TEST_FLAME_MODEL`, which must be converted with `--texture`.
+#[tokio::test]
+#[ignore = "requires a converted FLAME model with its texture layout"]
+async fn head_prepare_print_applies_a_displacement_map_to_a_real_bust() {
+    let model = std::env::var_os("PRINTABLE_TEST_FLAME_MODEL")
+        .expect("set PRINTABLE_TEST_FLAME_MODEL to a converted .safetensors model");
+    let models = tempfile::tempdir().unwrap();
+    std::fs::copy(&model, models.path().join("model.safetensors")).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    // Ripples of ±0.5 mm at life size, twelve across the texture.
+    let side = 256;
+    std::fs::write(
+        root.path().join("ripples.png"),
+        displacement_png(side, side, |x, y| {
+            let wave =
+                |at: u32| (std::f64::consts::TAU * 6.0 * f64::from(at) / f64::from(side)).sin();
+            (32767.5 * (1.0 + wave(x) * wave(y))).round() as u16
+        }),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let started = std::time::Instant::now();
+    let result = server
+        .invoke_tool(head_call(json!({
+            "action": "prepare_print",
+            "params": {
+                "path": "bust.stl",
+                "identity": [1.0, -0.5, 0.5],
+                "expression": [1.5, 0.5],
+                "displacement": {"path": "ripples.png", "offset_mm": -0.5, "scale_mm": 1.0}
+            }
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    eprintln!(
+        "bust in {:?}: {}\nvalidation topology: {}",
+        started.elapsed(),
+        value["bust"],
+        value["validation"]["topology"]
+    );
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    assert_eq!(
+        value["validation"]["topology"]["connected_components"], 1,
+        "{value}"
+    );
+    let applied = &value["bust"]["displacement"];
+    assert!(applied["lowest_mm"].as_f64().unwrap() < -0.1, "{value}");
+    assert!(applied["highest_mm"].as_f64().unwrap() > 0.1, "{value}");
+    assert!(value["bust"]["triangles"].as_u64().unwrap() <= 750_000);
 }

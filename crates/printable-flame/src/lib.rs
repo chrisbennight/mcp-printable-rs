@@ -13,7 +13,7 @@
 mod model;
 mod pose;
 
-pub use model::{FlameModel, JOINT_COUNT, MODEL_FORMAT, ModelError, ModelInfo};
+pub use model::{FlameModel, JOINT_COUNT, MODEL_FORMAT, ModelError, ModelInfo, UvLayout};
 pub use pose::{FlameParams, ParamError, Pose, PosedHead};
 
 #[cfg(any(test, feature = "fixture"))]

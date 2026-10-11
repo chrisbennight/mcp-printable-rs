@@ -27,6 +27,9 @@ pub struct Fixture {
     pub parents: Vec<i32>,
     pub metadata: HashMap<String, String>,
     pub omit: Vec<&'static str>,
+    /// Texture coordinates flattened as `[coordinate][u, v]` and, per face,
+    /// coordinate indices; written as `uv_coords` and `uv_faces` when present.
+    pub uv: Option<(Vec<f32>, Vec<u32>)>,
 }
 
 impl Default for Fixture {
@@ -67,6 +70,7 @@ impl Default for Fixture {
             parents: vec![-1, 0, 1, 1, 1],
             metadata,
             omit: Vec::new(),
+            uv: None,
         }
     }
 }
@@ -136,6 +140,21 @@ impl Fixture {
                     .collect(),
             ),
         ];
+        let mut tensors = tensors.to_vec();
+        if let Some((coords, faces)) = &self.uv {
+            tensors.push((
+                "uv_coords",
+                Dtype::F32,
+                vec![coords.len() / 2, 2],
+                floats(coords),
+            ));
+            tensors.push((
+                "uv_faces",
+                Dtype::U32,
+                vec![faces.len() / 3, 3],
+                faces.iter().flat_map(|value| value.to_le_bytes()).collect(),
+            ));
+        }
         let views: Vec<(&str, TensorView<'_>)> = tensors
             .iter()
             .filter(|(name, ..)| !self.omit.contains(name))
