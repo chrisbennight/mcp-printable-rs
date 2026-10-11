@@ -8,12 +8,21 @@
 //! built from that sign and the distance to the nearest triangle is meshed by
 //! marching tetrahedra, which yields a closed surface that never touches or
 //! crosses itself.
+//!
+//! Inside the union, the nearest triangle may be a buried surface, such as
+//! the hidden part of an eyeball behind an eyelid, so the distance there is
+//! too small. Each vertex is therefore placed where its grid edge, walked from
+//! the outside end, first enters the solid. When the edge meets the surface
+//! once, that meeting is the boundary. Where it meets the surface several
+//! times, as it can in a pocket of negative winding left by a surface that
+//! passes through itself, the exact winding count between the meetings shows
+//! which one enters the solid.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use manifold_csg::Manifold;
 use parry3d_f64::math::Vector;
-use parry3d_f64::query::PointQuery;
+use parry3d_f64::query::{PointQuery, Ray, RayCast};
 use parry3d_f64::shape::TriMesh;
 use robust::{Coord, Coord3D, orient2d, orient3d};
 
@@ -28,6 +37,13 @@ const BAND_EDGES: f64 = 2.0;
 /// The smallest distance magnitude returned, as a fraction of the bucket
 /// size. The extracted surface moves by at most this much.
 const FLOOR_FRACTION: f64 = 1e-4;
+
+/// Surface crossings followed along one grid edge before falling back to
+/// interpolation.
+const MAX_EDGE_CROSSINGS: usize = 16;
+/// A ray restarted past a crossing begins this fraction of the edge beyond it,
+/// so that it does not meet the same triangle again.
+const RESTART_FRACTION: f64 = 1e-6;
 
 const UNKNOWN: u8 = 0;
 const NEAR: u8 = 1;
@@ -51,7 +67,13 @@ pub(crate) fn remesh_union(
     let margin = 2.0 * edge;
     let low = field.low.map(|value| value - margin);
     let high = field.high.map(|value| value + margin);
-    let solid = mesh_solid(|point| field.signed_distance(point), low, high, edge)?;
+    let solid = mesh_solid(
+        |point| field.signed_distance(point),
+        low,
+        high,
+        edge,
+        Some(&|outside, inside| field.entry(outside, inside)),
+    )?;
     drop(field);
     if solid.is_empty() {
         return Err(GeometryError::Kernel("remeshing produced no solid".into()));
@@ -73,6 +95,7 @@ pub(crate) fn inner_offset(
         field.low,
         field.high,
         spacing,
+        None,
     )
 }
 
@@ -82,10 +105,11 @@ fn mesh_solid(
     low: Point,
     high: Point,
     spacing: f64,
+    crossing: Option<isosurface::Crossing<'_>>,
 ) -> Result<Manifold, GeometryError> {
     let threads =
         std::thread::available_parallelism().map_or(1, |count| count.get().min(MAX_THREADS));
-    let (vertices, triangles) = isosurface::extract(&field, low, high, spacing, threads);
+    let (vertices, triangles) = isosurface::extract(&field, low, high, spacing, threads, crossing);
     if triangles.is_empty() {
         return Ok(Manifold::empty());
     }
@@ -182,6 +206,33 @@ impl Field {
         } else {
             -distance
         }
+    }
+
+    /// The fraction of the way from `outside` to `inside` at which the
+    /// segment first enters the solid.
+    fn entry(&self, outside: Point, inside: Point) -> Option<f64> {
+        let origin = Vector::from_array(outside);
+        let direction = Vector::from_array(inside) - origin;
+        let hit_after = |start: f64| {
+            let ray = Ray::new(origin + direction * start, direction);
+            self.surface
+                .cast_local_ray(&ray, 1.0 - start, false)
+                .map(|fraction| start + fraction)
+        };
+        let mut crossing = hit_after(0.0)?;
+        for _ in 0..MAX_EDGE_CROSSINGS {
+            let restart = crossing + RESTART_FRACTION;
+            let Some(next) = hit_after(restart).filter(|_| restart < 1.0) else {
+                // Nothing lies between this crossing and the inside end.
+                return Some(crossing);
+            };
+            let middle = origin + direction * ((crossing + next) / 2.0);
+            if self.winding(middle.to_array()) > 0 {
+                return Some(crossing);
+            }
+            crossing = next;
+        }
+        None
     }
 
     /// Outward-facing minus inward-facing crossings of the ray from `point`
@@ -475,6 +526,89 @@ mod tests {
         // Two 1000 mm^3 cubes overlapping in a 125 mm^3 cube.
         assert!((solid.volume() - 1875.0).abs() < 60.0, "{}", solid.volume());
         assert_eq!(solid.decompose().len(), 1);
+    }
+
+    /// Signed distance to an axis-aligned box, negative inside.
+    fn box_distance(point: Point, low: Point, size: f64) -> f64 {
+        let offsets: [f64; 3] = std::array::from_fn(|axis| {
+            (low[axis] - point[axis]).max(point[axis] - low[axis] - size)
+        });
+        let outside = offsets.map(|value| value.max(0.0));
+        let inside = offsets.iter().copied().fold(f64::MIN, f64::max).min(0.0);
+        (outside[0] * outside[0] + outside[1] * outside[1] + outside[2] * outside[2]).sqrt()
+            + inside
+    }
+
+    #[test]
+    fn vertices_lie_on_the_outer_surface_next_to_buried_ones() {
+        // A small cube buried in a large one except for a thin slice above
+        // its top face; its buried sides run up to that face.
+        let big = ([0.0; 3], 10.0);
+        let small = ([2.13, 2.37, 7.29], 3.0);
+        let (mut vertices, mut triangles) = cube(big.0, big.1);
+        let (other, other_triangles) = cube(small.0, small.1);
+        let offset = vertices.len() as u32;
+        vertices.extend(other);
+        triangles.extend(
+            other_triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        let edge = 0.3;
+        let spacing = edge / EDGE_PER_SPACING;
+        let solid = remesh_union(vertices, triangles, edge).unwrap();
+        let (flat, properties, _) = solid.to_mesh_f64();
+        let worst = flat
+            .chunks_exact(properties)
+            .map(|vertex| {
+                let point = [vertex[0], vertex[1], vertex[2]];
+                box_distance(point, big.0, big.1)
+                    .min(box_distance(point, small.0, small.1))
+                    .abs()
+            })
+            .fold(0.0, f64::max);
+        // Only crossings kept clear of the grid points move off the surface.
+        assert!(
+            worst <= isosurface::END_CLEARANCE * spacing * 3f64.sqrt() + 1e-9,
+            "a vertex lies {worst} mm from the union's surface"
+        );
+    }
+
+    #[test]
+    fn vertices_skip_a_pocket_of_negative_winding() {
+        // An inside-out slab just outside one face of a cube has winding -1:
+        // it is outside the solid, and an edge starting in it meets the slab's
+        // face before the cube's. The grid starts at the cube's low corner, so
+        // its size keeps the far face off the grid points.
+        let big = ([0.0; 3], 10.17);
+        let (mut vertices, mut triangles) = cube(big.0, big.1);
+        let near = big.1 + 0.1;
+        let (slab, slab_triangles) = cube([near, 2.0, 2.0], 6.0);
+        let offset = vertices.len() as u32;
+        vertices.extend(
+            slab.into_iter()
+                .map(|[x, y, z]| [near + (x - near) / 6.0, y, z]),
+        );
+        triangles.extend(
+            slab_triangles
+                .iter()
+                .map(|[a, b, c]| [a + offset, c + offset, b + offset]),
+        );
+        let edge = 0.3;
+        let spacing = edge / EDGE_PER_SPACING;
+        let solid = remesh_union(vertices, triangles, edge).unwrap();
+        // The 36 mm^3 pocket is not part of the solid.
+        let volume = big.1.powi(3);
+        assert!((solid.volume() - volume).abs() < 10.0, "{}", solid.volume());
+        let (flat, properties, _) = solid.to_mesh_f64();
+        let worst = flat
+            .chunks_exact(properties)
+            .map(|vertex| box_distance([vertex[0], vertex[1], vertex[2]], big.0, big.1).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            worst <= isosurface::END_CLEARANCE * spacing * 3f64.sqrt() + 1e-9,
+            "a vertex lies {worst} mm from the cube's surface"
+        );
     }
 
     #[test]
