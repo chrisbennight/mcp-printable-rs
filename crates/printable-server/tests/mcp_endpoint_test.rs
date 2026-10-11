@@ -61,6 +61,7 @@ fn test_settings(blender_port: u16) -> Settings {
         slicer_endpoint: None,
         printers: None,
         flame: None,
+        recon: None,
         scad_concurrency: 2,
         ffmpeg_bin: std::path::PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,

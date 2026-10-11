@@ -362,6 +362,49 @@ pub(super) async fn prepare_print(
     .await
 }
 
+/// Estimate a head from photographs with the reconstruction worker. The
+/// coefficients belong to the mounted FLAME 2020 generic model and can be
+/// passed straight to `create` or `prepare_print` with that variant.
+pub(super) async fn reconstruct(
+    workspace: Arc<Workspace>,
+    settings: &Settings,
+    request: crate::recon::ReconRequest,
+) -> Result<Value, ToolError> {
+    request.validate()?;
+    let variant = library(settings)?
+        .reconstruction_variant()
+        .ok_or_else(|| {
+            ToolError::Validation(
+                "photo reconstruction needs the FLAME 2020 generic model mounted".into(),
+            )
+        })?
+        .to_owned();
+    let client = settings.recon.as_ref().ok_or_else(|| {
+        ToolError::Validation("the reconstruction worker is not configured".into())
+    })?;
+    for image in &request.images {
+        workspace.stat_artifact(image)?;
+    }
+    validate_scad_destination(
+        &workspace,
+        &request.displacement_path,
+        ".png",
+        request.overwrite,
+    )?;
+    let result = client.reconstruct(&request).await?;
+    let field = |name: &str| result.get(name).cloned().unwrap_or(Value::Null);
+    Ok(json!({
+        "variant": variant,
+        "identity": field("identity"),
+        "expression": field("expression"),
+        "pose": {"jaw": field("jaw")},
+        "displacement": field("displacement"),
+        "identity_agreement": field("identity_agreement"),
+        "clamped_coefficients": field("clamped_coefficients"),
+        "head_rotation": field("head_rotation"),
+    }))
+}
+
 fn in_range<T: PartialOrd + std::fmt::Display>(
     name: &str,
     value: T,

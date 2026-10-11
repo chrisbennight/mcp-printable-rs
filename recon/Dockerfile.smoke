@@ -1,0 +1,3 @@
+ARG RECON_IMAGE
+FROM ${RECON_IMAGE}
+COPY recon/tests /opt/printable/recon/tests

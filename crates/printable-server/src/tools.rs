@@ -2086,6 +2086,9 @@ async fn dispatch_value(
         "printable_flame_prepare_print" => {
             head::prepare_print(Arc::clone(workspace), settings, de(args)?).await
         }
+        "printable_flame_reconstruct" => {
+            head::reconstruct(Arc::clone(workspace), settings, de(args)?).await
+        }
         "printable_primitive_create" => {
             let p: PrimitiveCreateParams = de(args)?;
             validate_primitive(&p)?;
@@ -5621,6 +5624,14 @@ async fn status(
                 report
             },
         ),
+        "reconstruction": {
+            "configured": settings.recon.is_some(),
+            "ready": settings.recon.as_ref().is_some_and(|recon| recon.is_ready()),
+            "variant": settings
+                .flame
+                .as_ref()
+                .and_then(|library| library.reconstruction_variant()),
+        },
         "workspace": {
             "confined": ws.confined,
             "workspace_root": ws.root,

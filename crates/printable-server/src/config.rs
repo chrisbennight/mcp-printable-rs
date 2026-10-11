@@ -75,6 +75,9 @@ pub struct Settings {
     /// FLAME head models from `PRINTABLE_FLAME_MODEL_DIR`; absent leaves `head`
     /// unadvertised.
     pub flame: Option<std::sync::Arc<crate::flame::FlameLibrary>>,
+    /// Photo reconstruction worker from `PRINTABLE_RECON_ENDPOINT`; absent
+    /// leaves reconstruction unadvertised.
+    pub recon: Option<std::sync::Arc<crate::recon::ReconClient>>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
     /// FFmpeg binary used to encode durable animation frame sequences.
@@ -141,6 +144,8 @@ pub enum SettingsError {
     GeometryWorkerMemoryNotPositive(&'static str),
     #[error("{0} exceeds the platform address-space range")]
     GeometryWorkerMemoryOutOfRange(&'static str),
+    #[error("{0}")]
+    ReconInvalid(String),
 }
 
 impl Settings {
@@ -197,6 +202,8 @@ impl Settings {
             slicer_endpoint: nonempty(&get, "PRINTABLE_SLICER_ENDPOINT"),
             printers: crate::printers::configure(&get)?,
             flame: crate::flame::configure(&get),
+            recon: crate::recon::ReconClient::configure(&get)
+                .map_err(SettingsError::ReconInvalid)?,
             scad_concurrency: scad_concurrency(&get)?,
             ffmpeg_bin: nonempty(&get, "FFMPEG_BIN")
                 .map(PathBuf::from)

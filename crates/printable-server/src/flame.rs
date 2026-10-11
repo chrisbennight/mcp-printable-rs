@@ -21,6 +21,11 @@ use serde_json::{Value, json};
 const MAX_MODEL_BYTES: u64 = 256 << 20;
 const EXTENSION: &str = "safetensors";
 
+/// SHA-256 of `generic_model.pkl` from the FLAME 2020 release, the model
+/// that MICA, SMIRK and DECA were trained with.
+pub const FLAME_2020_GENERIC_SHA256: &str =
+    "efcd14cc4a69f3a3d9af8ded80146b5b6b50df3bd74cf69108213b144eba725b";
+
 /// Models available to the `head` tool, keyed by variant.
 pub struct FlameLibrary {
     models: BTreeMap<String, Arc<FlameModel>>,
@@ -102,6 +107,16 @@ impl FlameLibrary {
     /// Whether any model loaded, which decides whether `head` is advertised.
     pub fn is_available(&self) -> bool {
         !self.models.is_empty()
+    }
+
+    /// The mounted model that photo reconstruction's coefficients belong to:
+    /// FLAME 2020's generic model, recognised by the digest of its published
+    /// file.
+    pub fn reconstruction_variant(&self) -> Option<&str> {
+        self.models
+            .iter()
+            .find(|(_, model)| model.info().source_sha256 == FLAME_2020_GENERIC_SHA256)
+            .map(|(variant, _)| variant.as_str())
     }
 
     /// Choose a model by variant. The variant may be omitted when exactly one

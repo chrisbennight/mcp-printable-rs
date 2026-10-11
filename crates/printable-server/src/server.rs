@@ -88,6 +88,9 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
     incoming_files.spawn_reaper(cancel.child_token());
     let published_files = server.published_files();
     published_files.spawn_reaper(cancel.child_token());
+    if let Some(recon) = &settings.recon {
+        Arc::clone(recon).watch(cancel.child_token());
+    }
 
     let mcp_service = StreamableHttpService::new(
         move || Ok(server.clone()),

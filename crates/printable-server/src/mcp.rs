@@ -130,17 +130,27 @@ impl PrintableServer {
 
     pub fn workflow_tools_payload(&self) -> ListToolsResult {
         ListToolsResult::with_all_items(
-            tools::workflows::advertised(self.head_available())
+            tools::workflows::advertised(self.availability())
                 .map(Self::to_rmcp_tool)
                 .collect(),
         )
     }
 
-    fn head_available(&self) -> bool {
-        self.settings
+    fn availability(&self) -> tools::workflows::Availability {
+        let flame = self
+            .settings
             .flame
             .as_ref()
-            .is_some_and(|library| library.is_available())
+            .filter(|library| library.is_available());
+        tools::workflows::Availability {
+            head: flame.is_some(),
+            reconstruct: flame.is_some_and(|library| library.reconstruction_variant().is_some())
+                && self
+                    .settings
+                    .recon
+                    .as_ref()
+                    .is_some_and(|recon| recon.is_ready()),
+        }
     }
 
     /// Resolve a tool name and dispatch. An unknown name is a JSON-RPC
@@ -150,8 +160,7 @@ impl PrintableServer {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        if !tools::workflows::advertised(self.head_available()).any(|tool| tool.name == params.name)
-        {
+        if !tools::workflows::advertised(self.availability()).any(|tool| tool.name == params.name) {
             return Err(McpError::method_not_found::<
                 rmcp::model::CallToolRequestMethod,
             >());
@@ -542,7 +551,7 @@ impl ServerHandler for PrintableServer {
         params: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        if let Some(contract) = resources::contracts::read(&params.uri, self.head_available()) {
+        if let Some(contract) = resources::contracts::read(&params.uri, self.availability()) {
             return Ok(ReadResourceResponse::from(ReadResourceResult::new(vec![
                 ResourceContents::text(contract.to_string(), params.uri)
                     .with_mime_type("application/json"),
@@ -630,8 +639,11 @@ mod tests {
         let payload = result.structured_content.unwrap();
         for schema in [
             crate::printers::output_schema("print"),
-            crate::resources::contracts::read("printable://contracts/print/start", false).unwrap()
-                ["outputSchema"]
+            crate::resources::contracts::read(
+                "printable://contracts/print/start",
+                Default::default(),
+            )
+            .unwrap()["outputSchema"]
                 .clone(),
         ] {
             let validator = jsonschema::validator_for(&schema).unwrap();

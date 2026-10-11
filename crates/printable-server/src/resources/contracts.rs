@@ -75,9 +75,9 @@ fn selected_schema(schema: &Value, action: &str) -> Option<Value> {
 
 /// Return only server-owned schemas; URI segments never access the filesystem.
 /// Contracts cover the same tools the server advertises.
-pub fn read(uri: &str, head_available: bool) -> Option<Value> {
+pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
     if uri == ROOT {
-        let tools: Vec<_> = workflows::advertised(head_available)
+        let tools: Vec<_> = workflows::advertised(available)
             .map(|tool| {
                 let schema = Value::Object((tool.schema)().as_ref().clone());
                 let actions: Vec<_> = variants(&schema).iter().filter_map(action_name).collect();
@@ -95,7 +95,7 @@ pub fn read(uri: &str, head_available: bool) -> Option<Value> {
     if segments.next().is_some() || action == Some("") {
         return None;
     }
-    let tool = workflows::advertised(head_available).find(|tool| tool.name == name)?;
+    let tool = workflows::advertised(available).find(|tool| tool.name == name)?;
     let full_schema = Value::Object((tool.schema)().as_ref().clone());
     let input = match action {
         Some(action) => selected_schema(&full_schema, action)?,
@@ -150,7 +150,7 @@ mod tests {
                 Some(action) => format!("{ROOT}/{tool}/{action}"),
                 None => format!("{ROOT}/{tool}"),
             };
-            let contract = read(&uri, false).unwrap();
+            let contract = read(&uri, workflows::Availability::default()).unwrap();
             let description = contract["description"].as_str().unwrap();
             assert_eq!(description, workflows::lookup(tool).unwrap().description);
             for term in terms {
@@ -161,14 +161,24 @@ mod tests {
 
     #[test]
     fn every_advertised_action_has_a_self_contained_contract() {
-        for head_available in [false, true] {
-            let index = read(ROOT, head_available).unwrap();
+        for available in [
+            workflows::Availability::default(),
+            workflows::Availability {
+                head: true,
+                reconstruct: false,
+            },
+            workflows::Availability {
+                head: true,
+                reconstruct: true,
+            },
+        ] {
+            let index = read(ROOT, available).unwrap();
             for entry in index["tools"].as_array().unwrap() {
                 let uri = entry["uri"].as_str().unwrap();
-                assert!(read(uri, head_available).is_some());
+                assert!(read(uri, available).is_some());
                 for action in entry["actions"].as_array().unwrap() {
                     let action_uri = format!("{uri}/{}", action.as_str().unwrap());
-                    let contract = read(&action_uri, head_available).unwrap();
+                    let contract = read(&action_uri, available).unwrap();
                     jsonschema::validator_for(&contract["inputSchema"]).unwrap();
                     jsonschema::validator_for(&contract["outputSchema"]).unwrap();
                     if matches!(entry["tool"].as_str(), Some("printer" | "print")) {
@@ -177,7 +187,11 @@ mod tests {
                 }
             }
         }
-        let render = read("printable://contracts/render/product", false).unwrap();
+        let render = read(
+            "printable://contracts/render/product",
+            workflows::Availability::default(),
+        )
+        .unwrap();
         let validator = jsonschema::validator_for(&render["inputSchema"]).unwrap();
         assert!(validator.is_valid(&json!({"action":"product","params":{
             "path":"render.png","objects":["OrganicForm"],
@@ -194,6 +208,15 @@ mod tests {
 
     #[test]
     fn head_contracts_follow_model_availability() {
+        let none = workflows::Availability::default();
+        let head = workflows::Availability {
+            head: true,
+            reconstruct: false,
+        };
+        let reconstruct = workflows::Availability {
+            head: true,
+            reconstruct: true,
+        };
         let listed = |available| {
             read(ROOT, available).unwrap()["tools"]
                 .as_array()
@@ -201,10 +224,12 @@ mod tests {
                 .iter()
                 .any(|entry| entry["tool"] == "head")
         };
-        assert!(!listed(false));
-        assert!(listed(true));
-        assert!(read("printable://contracts/head/create", false).is_none());
-        assert!(read("printable://contracts/head/create", true).is_some());
+        assert!(!listed(none));
+        assert!(listed(head));
+        assert!(read("printable://contracts/head/create", none).is_none());
+        assert!(read("printable://contracts/head/create", head).is_some());
+        assert!(read("printable://contracts/head/reconstruct", head).is_none());
+        assert!(read("printable://contracts/head/reconstruct", reconstruct).is_some());
     }
 
     #[test]
@@ -218,7 +243,17 @@ mod tests {
             "printable://contracts/../render",
             "printable://contracts/status/product",
         ] {
-            assert!(read(uri, true).is_none(), "accepted {uri}");
+            assert!(
+                read(
+                    uri,
+                    workflows::Availability {
+                        head: true,
+                        reconstruct: true
+                    }
+                )
+                .is_none(),
+                "accepted {uri}"
+            );
         }
     }
 }

@@ -423,7 +423,7 @@ mod tests {
             full.validate(&value).unwrap();
             let contract = crate::resources::contracts::read(
                 &format!("printable://contracts/project/{action}"),
-                false,
+                Default::default(),
             )
             .unwrap();
             let selected = jsonschema::validator_for(&contract["outputSchema"]).unwrap();

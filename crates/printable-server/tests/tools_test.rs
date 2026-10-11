@@ -465,6 +465,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         slicer_endpoint: None,
         printers: None,
         flame: None,
+        recon: None,
         scad_concurrency: 2,
         ffmpeg_bin: PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,
@@ -1467,7 +1468,7 @@ async fn storage_actions_report_usage_and_preserve_live_and_retained_inputs() {
             .unwrap();
         let contract = printable_server::resources::contracts::read(
             &format!("printable://contracts/artifact/{action}"),
-            false,
+            Default::default(),
         )
         .unwrap();
         jsonschema::validator_for(&contract["outputSchema"])
@@ -2398,9 +2399,11 @@ async fn mesh_validation_returns_actionable_solid_and_support_properties() {
     .unwrap();
     let compact = selected.response.apply(report.clone());
     assert_eq!(compact["report"]["assessment"], *assessment);
-    let contract =
-        printable_server::resources::contracts::read("printable://contracts/validate_mesh", false)
-            .unwrap();
+    let contract = printable_server::resources::contracts::read(
+        "printable://contracts/validate_mesh",
+        Default::default(),
+    )
+    .unwrap();
     let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
     validator.validate(&compact).unwrap();
     let mut misleading = compact.clone();
@@ -5663,4 +5666,194 @@ async fn head_prepare_print_hollows_a_real_bust_on_a_plinth() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// A FLAME 2020 generic stand-in: the fixture with that release's digest.
+fn flame2020_library() -> Arc<printable_server::flame::FlameLibrary> {
+    let models = tempfile::tempdir().unwrap();
+    let mut fixture = printable_flame::fixture::Fixture::default();
+    fixture
+        .metadata
+        .insert("variant".into(), "flame2020_generic".into());
+    fixture.metadata.insert(
+        "source_sha256".into(),
+        printable_server::flame::FLAME_2020_GENERIC_SHA256.into(),
+    );
+    std::fs::write(
+        models.path().join("flame2020_generic.safetensors"),
+        fixture.bytes(),
+    )
+    .unwrap();
+    Arc::new(printable_server::flame::FlameLibrary::load(models.path()))
+}
+
+/// A reconstruction worker that is ready and answers with fixed coefficients.
+async fn fake_recon_worker(
+    ready: bool,
+) -> (
+    String,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::{Json, Router, routing::get, routing::post};
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let app = Router::new()
+        .route(
+            "/readyz",
+            get(move || async move {
+                if ready {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        )
+        .route(
+            "/reconstruct",
+            post(move |Json(request): Json<Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    recorded.lock().unwrap().push(request.clone());
+                    Json(json!({
+                        "identity": vec![0.25; 300],
+                        "expression": vec![0.5; 50],
+                        "jaw": [0.1, 0.0, 0.0],
+                        "head_rotation": [0.0, 0.1, 0.0],
+                        "identity_agreement": [1.0],
+                        "clamped_coefficients": 0,
+                        "displacement": {
+                            "offset_mm": -1.0, "scale_mm": 2.0, "width": 256, "height": 256,
+                            "artifact": {"path": request["displacement_path"], "size_bytes": 10,
+                                "media_type": "image/png", "modified_ns": 1}
+                        }
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{address}"), seen, task)
+}
+
+async fn recon_server(root: &Path, endpoint: &str) -> PrintableServer {
+    let mut cfg = settings("127.0.0.1", 9);
+    cfg.flame = Some(flame2020_library());
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.to_owned())
+    })
+    .unwrap()
+    .unwrap();
+    recon.refresh().await;
+    cfg.recon = Some(recon);
+    PrintableServer::new(
+        workspace(Some(root)),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(cfg),
+    )
+}
+
+fn head_offers_reconstruct(server: &PrintableServer) -> bool {
+    server
+        .workflow_tools_payload()
+        .tools
+        .iter()
+        .find(|tool| tool.name == "head")
+        .is_some_and(|tool| {
+            serde_json::to_string(&*tool.input_schema)
+                .unwrap()
+                .contains("reconstruct")
+        })
+}
+
+#[tokio::test]
+async fn head_reconstruct_is_offered_only_when_the_worker_is_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let (endpoint, _, task) = fake_recon_worker(false).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    assert!(!head_offers_reconstruct(&server));
+    task.abort();
+
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    assert!(head_offers_reconstruct(&server));
+    task.abort();
+
+    // A model other than FLAME 2020 generic cannot take the coefficients.
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let mut cfg = settings("127.0.0.1", 9);
+    cfg.flame = Some(head_library(&["flame2023_open"]));
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    recon.refresh().await;
+    cfg.recon = Some(recon);
+    let server = PrintableServer::new(
+        workspace(Some(root.path())),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(cfg),
+    );
+    assert!(!head_offers_reconstruct(&server));
+    task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let result = server
+        .invoke_tool(head_call(json!({
+            "action": "reconstruct",
+            "params": {"images": ["face.jpg"], "displacement_path": "detail.png"}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["variant"], "flame2020_generic");
+    assert_eq!(value["identity"].as_array().unwrap().len(), 300);
+    assert_eq!(value["pose"]["jaw"], json!([0.1, 0.0, 0.0]));
+    assert_eq!(seen.lock().unwrap()[0]["images"], json!(["face.jpg"]));
+
+    // Requests are checked before the worker is asked.
+    for (params, message) in [
+        (
+            json!({"images": [], "displacement_path": "d.png"}),
+            "between 1",
+        ),
+        (
+            json!({"images": ["face.gif"], "displacement_path": "d.png"}),
+            "photograph",
+        ),
+        (
+            json!({"images": ["absent.jpg"], "displacement_path": "d.png"}),
+            "absent.jpg",
+        ),
+        (
+            json!({"images": ["face.jpg"], "displacement_path": "d.stl"}),
+            ".png",
+        ),
+    ] {
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    task.abort();
 }

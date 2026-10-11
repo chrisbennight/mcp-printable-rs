@@ -9,6 +9,7 @@ or binaries.
 | --- | --- |
 | Rust dependencies | Versions are recorded in `Cargo.lock`; each crate retains its declared license and upstream notices. Native dependencies linked by crates are also part of the binary inventory. |
 | CadQuery and native CAD dependencies | Versions are recorded in `cad/requirements.txt`; installed distribution metadata and bundled license files belong to the CAD image inventory. Retain the notices and required source for the exact packages distributed. |
+| Photo reconstruction runtime | PyTorch, torchvision, timm, MediaPipe, OpenCV and their dependencies are recorded in `Dockerfile` and `recon/requirements.txt`; installed distribution metadata and bundled license files belong to the reconstruction image inventory. MediaPipe's face landmarker model is checksum-pinned in `Dockerfile` and is Apache-2.0 licensed. Network checkpoints are operator-supplied and are not part of the image. |
 | OrcaSlicer | The fork AppImage is checksum-pinned in `Dockerfile`, with corresponding source at [the fork revision](https://github.com/chrisbennight/OrcaSlicer/tree/6915edbfae3746da236b22630ff75a2fa304b796). It is based on upstream 2.4.2 and includes CLI thumbnail fixes. Retain its AGPL-3.0 license material, exact corresponding source, and build dependencies. The optional web resources are removed from the headless image; record that packaging change with the release materials. |
 | PyYAML | MIT-licensed repository policy tooling, installed from `requirements-tooling.txt`; not a runtime or direct-client dependency. |
 | Fira font | Embedded by `printable-imaging`; SIL Open Font License 1.1, with the Mozilla Foundation and Telefonica attribution in the [bundled notice](crates/printable-imaging/assets/LICENSE-Fira-OFL.txt). |
@@ -24,7 +25,7 @@ FFmpeg explains how optional GPL components affect its license in its
 [official legal guidance](https://www.ffmpeg.org/legal.html).
 
 The server image carries the first-party MIT text and Fira notice under
-`/usr/share/doc/printable/`. The Blender, CAD, and slicer images carry the first-party MIT
+`/usr/share/doc/printable/`. The Blender, CAD, slicer, and reconstruction images carry the first-party MIT
 text at the same location and retain their dependencies' own license material.
 Do not strip upstream documentation directories when reducing image size.
 
