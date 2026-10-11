@@ -26,6 +26,7 @@ from pathlib import Path
 import pickle
 import pickletools
 import re
+import resource
 import struct
 import sys
 import tempfile
@@ -38,6 +39,12 @@ MAX_SOURCE_BYTES = 256 << 20
 # Published models use well under a hundred memo slots.
 MAX_MEMO_INDEX = 1 << 16
 MEMO_STORES = {"PUT", "BINPUT", "LONG_BINPUT"}
+# A published model converts in about a second using about 200 MiB. The
+# command runs within these limits, far above that even at the source cap, so
+# a source that drives the unpickler into runaway work fails instead of
+# exhausting the machine.
+CPU_SECONDS = 60
+ADDRESS_SPACE_BYTES = 4 << 30
 # Stand-ins copy only values bounded by these sizes, so a value that a source
 # memoizes and references many times costs a constant amount per reference.
 MAX_ARRAY_RANK = 3
@@ -471,5 +478,17 @@ def main(argv=None) -> int:
     return 0
 
 
+def limit_resources():
+    """Lower this process's CPU, address-space and core-dump limits."""
+    for kind, value in ((resource.RLIMIT_CPU, CPU_SECONDS),
+                        (resource.RLIMIT_AS, ADDRESS_SPACE_BYTES),
+                        (resource.RLIMIT_CORE, 0)):
+        _, hard = resource.getrlimit(kind)
+        if hard != resource.RLIM_INFINITY:
+            value = min(value, hard)
+        resource.setrlimit(kind, (value, hard))
+
+
 if __name__ == "__main__":
+    limit_resources()
     sys.exit(main())

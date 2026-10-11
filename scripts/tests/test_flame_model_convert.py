@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 import pickle as P
 import struct
+import subprocess
+import sys
 import tempfile
+import textwrap
 import tracemalloc
 import unittest
 
@@ -468,6 +471,23 @@ class OutputTests(unittest.TestCase):
                 convert_module.read_bounded(source)
         finally:
             convert_module.MAX_SOURCE_BYTES = original
+
+
+class ResourceLimitTests(unittest.TestCase):
+    def test_command_runs_within_cpu_and_address_space_limits(self):
+        code = textwrap.dedent(f"""
+            import resource, runpy, sys
+            sys.argv = ["flame_model_convert", "--help"]
+            try:
+                runpy.run_path({convert_module.__file__!r}, run_name="__main__")
+            except SystemExit:
+                pass
+            print(resource.getrlimit(resource.RLIMIT_CPU)[0], resource.getrlimit(resource.RLIMIT_AS)[0])
+        """)
+        output = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        cpu, address_space = map(int, output.stdout.split()[-2:])
+        self.assertTrue(0 < cpu <= convert_module.CPU_SECONDS)
+        self.assertTrue(0 < address_space <= convert_module.ADDRESS_SPACE_BYTES)
 
 
 @unittest.skipUnless(os.environ.get("PRINTABLE_TEST_FLAME_PICKLE"),

@@ -48,6 +48,10 @@ inert stand-in that only records data, `set` accepts only the empty sets the
 published files contain, and every other symbol is refused before it is
 resolved. No code from the file runs.
 
+The command also runs within CPU-time and memory limits far above what a
+published model needs, so a malformed file fails instead of exhausting the
+machine.
+
 It then refuses a model unless:
 
 - every array's data length matches its shape and element type;
