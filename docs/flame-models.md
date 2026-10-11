@@ -203,7 +203,7 @@ that were removed.
 With the defaults, the FLAME 2020 generic, FLAME 2023 and FLAME 2023 Open
 models each produced one watertight, manifold solid with no self-intersections
 and 430,000 to 490,000 triangles. The estimated 99.9th-percentile deviation
-was 0.037 to 0.038 mm, well below the detail a 0.2 mm nozzle reproduces. With
+was 0.036 to 0.038 mm, well below the detail a 0.2 mm nozzle reproduces. With
 a 12 mm plinth and 2.5 mm walls, each was still one valid solid with its
 cavity open through two drain holes. Each request took about 17 seconds on a
 busy four-core machine, including validation. A 300 mm hollow bust on a

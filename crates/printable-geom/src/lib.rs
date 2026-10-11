@@ -133,8 +133,8 @@ pub struct TopologyReport {
     pub degenerate_triangles: usize,
     pub duplicate_triangles: usize,
     /// Pairs of triangles in the same shell that touch or cross without
-    /// sharing a vertex. Measured only for watertight meshes without
-    /// degenerate or duplicate triangles.
+    /// sharing a vertex. A lower bound when the search stopped early, and
+    /// absent when it stopped before finding any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_intersections: Option<usize>,
     /// Pairs of triangles from different shells that touch or cross.
@@ -340,7 +340,7 @@ fn prepare_mesh(
         ));
     }
     let watertight = topology_result.is_ok() && boundary_edges == Some(0);
-    let intersections = trimesh.connected_components().and_then(|components| {
+    let intersections = trimesh.connected_components().map(|components| {
         let mut shell_of = vec![0; mesh.triangles.len()];
         for (shell, range) in components.ranges.windows(2).enumerate() {
             for face in &components.grouped_faces[range[0]..range[1]] {
@@ -366,19 +366,21 @@ fn prepare_mesh(
     } else {
         None
     };
-    if intersections.is_none() && trimesh.connected_components().is_some() {
-        issues.push(warning_issue(
-            "self_intersection_unchecked",
-            "the self-intersection check stopped early because the mesh has unusually many overlapping triangles".to_string(),
-            "Treat the mesh as possibly self-intersecting; remesh it or reduce overlapping geometry.",
-        ));
-    }
     if let Some(found) = &intersections {
+        // An incomplete search reports what it confirmed as a lower bound.
+        let at_least = if found.complete { "" } else { "at least " };
+        if !found.complete {
+            issues.push(error_issue(
+                "self_intersection_unchecked",
+                "the self-intersection check stopped early because the mesh has unusually many overlapping triangles".to_string(),
+                "Remesh the part or reduce overlapping geometry so that it can be checked.",
+            ));
+        }
         if found.within_shells > 0 {
             issues.push(error_issue(
                 "self_intersection",
                 format!(
-                    "{} pairs of triangles in the same shell touch or cross",
+                    "{at_least}{} pairs of triangles in the same shell touch or cross",
                     found.within_shells
                 ),
                 "Repair the self-intersecting surface, for example by remeshing or a boolean union, before slicing.",
@@ -388,7 +390,7 @@ fn prepare_mesh(
             issues.push(warning_issue(
                 "intersecting_shells",
                 format!(
-                    "{} pairs of triangles from different shells touch or cross",
+                    "{at_least}{} pairs of triangles from different shells touch or cross",
                     found.between_shells
                 ),
                 "Union overlapping parts into one solid unless the slicer is expected to merge them.",
@@ -430,7 +432,7 @@ fn prepare_mesh(
         && duplicate_triangles == 0
         && intersections
             .as_ref()
-            .is_none_or(|found| found.within_shells == 0);
+            .is_none_or(|found| found.complete && found.within_shells == 0);
     let manifold = if eligible_for_manifold {
         let flat_vertices: Vec<_> = mesh.vertices.iter().flatten().copied().collect();
         let flat_indices: Vec<_> = mesh
@@ -514,8 +516,12 @@ fn prepare_mesh(
                 boundary_edges,
                 degenerate_triangles,
                 duplicate_triangles,
-                self_intersections: intersections.as_ref().map(|found| found.within_shells),
-                shell_intersections: intersections.as_ref().map(|found| found.between_shells),
+                self_intersections: intersections
+                    .as_ref()
+                    .and_then(|found| measured(found, found.within_shells)),
+                shell_intersections: intersections
+                    .as_ref()
+                    .and_then(|found| measured(found, found.between_shells)),
             },
             surface_area_mm2: raw_surface_area,
             signed_volume_mm3: signed_volume,
@@ -582,6 +588,12 @@ fn mesh_bounds(vertices: &[[f64; 3]]) -> MeshBounds {
         maximum_mm: maximum,
         dimensions_mm: std::array::from_fn(|axis| maximum[axis] - minimum[axis]),
     }
+}
+
+/// A count from the intersection search: exact when the search completed, a
+/// lower bound when it found some before stopping, and unknown otherwise.
+fn measured(found: &intersect::Intersections, count: usize) -> Option<usize> {
+    (found.complete || count > 0).then_some(count)
 }
 
 fn mesh_defects(mesh: &TriangleMesh, vertices: &[Vector]) -> (usize, usize) {

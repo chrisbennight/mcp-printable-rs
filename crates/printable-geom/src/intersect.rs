@@ -23,6 +23,9 @@ const CANDIDATES_PER_TRIANGLE: usize = 256;
 /// same connected shell.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Intersections {
+    /// Whether every candidate pair was examined. When the search budget runs
+    /// out, the counts are the crossings confirmed before it stopped.
+    pub complete: bool,
     pub within_shells: usize,
     pub between_shells: usize,
     /// Shells that touch or cross another shell.
@@ -31,12 +34,12 @@ pub(crate) struct Intersections {
 
 /// Compare every pair of non-degenerate triangles whose bounds overlap and
 /// that share no vertex. `shell_of` gives each triangle's connected shell.
-/// `None` when the candidate pairs exceed the search budget.
+/// The search stops once the candidate pairs exceed its budget.
 pub(crate) fn find_intersections(
     vertices: &[Point],
     triangles: &[[u32; 3]],
     shell_of: &[usize],
-) -> Option<Intersections> {
+) -> Intersections {
     let mut budget = CANDIDATES_PER_TRIANGLE.saturating_mul(triangles.len());
     let corners = |triangle: &[u32; 3]| triangle.map(|index| vertices[index as usize]);
     let bounds: Vec<Aabb> = triangles
@@ -53,13 +56,20 @@ pub(crate) fn find_intersections(
         .map(|triangle| is_degenerate(corners(triangle)))
         .collect();
     let bvh = Bvh::from_leaves(BvhBuildStrategy::default(), &bounds);
-    let mut found = Intersections::default();
+    let mut found = Intersections {
+        complete: true,
+        ..Intersections::default()
+    };
     for (first, triangle) in triangles.iter().enumerate() {
         if degenerate[first] {
             continue;
         }
         for second in bvh.intersect_aabb(&bounds[first]) {
-            budget = budget.checked_sub(1)?;
+            let Some(remaining) = budget.checked_sub(1) else {
+                found.complete = false;
+                return found;
+            };
+            budget = remaining;
             let second = second as usize;
             if second <= first || degenerate[second] {
                 continue;
@@ -79,7 +89,7 @@ pub(crate) fn find_intersections(
             }
         }
     }
-    Some(found)
+    found
 }
 
 fn coord3(point: Point) -> Coord3D<f64> {
@@ -292,7 +302,10 @@ mod tests {
         let triangles: Vec<[u32; 3]> = (0..count as u32)
             .map(|copy| [3 * copy, 3 * copy + 1, 3 * copy + 2])
             .collect();
-        assert!(find_intersections(&vertices, &triangles, &vec![0; count]).is_none());
+        let found = find_intersections(&vertices, &triangles, &vec![0; count]);
+        assert!(!found.complete);
+        // Crossings confirmed before the search stopped are kept.
+        assert!(found.within_shells > 0);
     }
 
     #[test]
@@ -308,9 +321,10 @@ mod tests {
         ];
         // Triangles 0 and 1 share an edge; triangle 2 crosses triangle 0.
         let triangles = [[0, 1, 2], [1, 3, 2], [4, 5, 6]];
-        let same = find_intersections(&vertices, &triangles, &[0, 0, 0]).unwrap();
+        let same = find_intersections(&vertices, &triangles, &[0, 0, 0]);
+        assert!(same.complete);
         assert_eq!((same.within_shells, same.between_shells), (1, 0));
-        let separate = find_intersections(&vertices, &triangles, &[0, 0, 1]).unwrap();
+        let separate = find_intersections(&vertices, &triangles, &[0, 0, 1]);
         assert_eq!((separate.within_shells, separate.between_shells), (0, 1));
     }
 }

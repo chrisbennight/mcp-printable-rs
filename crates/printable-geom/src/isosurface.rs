@@ -214,8 +214,8 @@ mod tests {
         );
         assert_eq!(solid.genus(), 0);
         let found =
-            crate::intersect::find_intersections(&vertices, &triangles, &vec![0; triangles.len()])
-                .expect("the search completes");
+            crate::intersect::find_intersections(&vertices, &triangles, &vec![0; triangles.len()]);
+        assert!(found.complete);
         assert_eq!(found.within_shells, 0);
     }
 }

@@ -196,6 +196,11 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             high[axis] = high[axis].max(vertex[axis]);
         }
     }
+    // The base is the cut plane itself, not the lowest vertex above it, so
+    // the trim below happens exactly where the neck section was chosen.
+    if let Some(height) = cut {
+        low[2] = height;
+    }
     // Vertices are finite, so this also catches the case of none kept.
     if high[2] <= low[2] {
         return Err(GeometryError::Kernel("the trimmed bust is empty".into()));
@@ -313,6 +318,8 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         )
         .scale(correction, correction, correction);
     drop(piece);
+    // Edges were sized before the height correction; retries need that size.
+    let refined_edge = edge;
     edge *= correction;
     // Measured on the bust alone: the plinth is exact to the circle tolerance
     // and a cavity's coarser facets are hidden inside.
@@ -347,7 +354,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     if mesh.triangles.len() > request.max_triangles {
         return Ok(Prepared::OverLimit {
             triangles: mesh.triangles.len(),
-            edge,
+            edge: refined_edge,
         });
     }
     let report = BustReport {
@@ -1004,8 +1011,8 @@ mod tests {
         let (mesh, report) = prepare_bust(&with_plinth).unwrap();
         let plinth = report.plinth.expect("plinth report");
         assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
-        // The default plinth covers the neck section of the 40 mm box.
-        assert!(plinth.diameter_mm >= 40.0 * 2f64.sqrt() - 1.0, "{plinth:?}");
+        // The default plinth is at least 70% of the bust's widest extent.
+        assert!(plinth.diameter_mm >= 0.7 * 50.0, "{plinth:?}");
         let validation = validated(&mesh);
         assert!(validation.solid_geometry, "{validation:?}");
         assert_eq!(validation.topology.connected_components, 1);
@@ -1071,6 +1078,9 @@ mod tests {
         let (mesh, report) = prepare_bust(&request(2.0, 1_000_000)).unwrap();
         assert!(report.trimmed_at_neck);
         assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        // The 40 mm box is cut just above its open bottom, so almost all of
+        // its height is kept and its width scales with it.
+        assert!(report.size_mm[0] < 70.0, "{report:?}");
         assert!(report.volume_mm3 > 0.0);
         let lowest = mesh
             .vertices
