@@ -151,7 +151,7 @@ impl FlameModel {
             .collect();
         self.template
             .iter()
-            .zip(self.shapedirs.chunks_exact(components.max(1)))
+            .zip(self.shapedirs.chunks_exact(components))
             .map(|(&rest, basis)| {
                 active.iter().fold(f64::from(rest), |sum, &(index, value)| {
                     sum + f64::from(basis[index]) * value

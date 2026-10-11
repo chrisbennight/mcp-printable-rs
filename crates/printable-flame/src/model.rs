@@ -118,6 +118,7 @@ impl FlameModel {
             return Err(ModelError::FaceIndex);
         }
 
+        // `parse_info` guarantees this sum is non-zero and does not overflow.
         let components = info.identity_components + info.expression_components;
         let shapedirs = shaped_floats(&tensors, "shapedirs", &[vertex_count, 3, components])?;
         let posedirs = shaped_floats(&tensors, "posedirs", &[vertex_count, 3, POSE_COMPONENTS])?;
@@ -217,13 +218,22 @@ fn parse_info(metadata: &HashMap<String, String>) -> Result<ModelInfo, ModelErro
     {
         return Err(ModelError::Metadata("source_sha256"));
     }
+    let identity_components = count("identity_components")?;
+    let expression_components = count("expression_components")?;
+    // Evaluation relies on a non-empty shape basis whose size is representable.
+    if identity_components
+        .checked_add(expression_components)
+        .is_none_or(|total| total == 0)
+    {
+        return Err(ModelError::Metadata("identity_components"));
+    }
     Ok(ModelInfo {
         variant: label("variant", |byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })?,
         source_sha256: source_sha256.to_owned(),
-        identity_components: count("identity_components")?,
-        expression_components: count("expression_components")?,
+        identity_components,
+        expression_components,
         expression_source: label("expression_source", |byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
         })?,
@@ -332,6 +342,24 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn basis_sizes_that_overflow_or_sum_to_zero_are_refused() {
+        for (identity, expression) in [(usize::MAX.to_string(), "1"), ("0".to_string(), "0")] {
+            let result = rebuilt(|fixture| {
+                fixture
+                    .metadata
+                    .insert("identity_components".into(), identity);
+                fixture
+                    .metadata
+                    .insert("expression_components".into(), expression.into());
+            });
+            assert!(matches!(
+                result,
+                Err(ModelError::Metadata("identity_components"))
+            ));
+        }
     }
 
     #[test]
