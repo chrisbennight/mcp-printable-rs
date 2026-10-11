@@ -159,7 +159,14 @@ impl FlameLibrary {
 }
 
 fn read_model(path: &Path) -> Result<FlameModel, String> {
-    let file = std::fs::File::open(path).map_err(|error| format!("not readable: {error}"))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Non-blocking open so a named pipe is rejected by the type check below
+    // instead of waiting for a writer; regular files ignore the flag.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| format!("not readable: {error}"))?;
     let metadata = file
         .metadata()
         .map_err(|error| format!("not readable: {error}"))?;
@@ -213,6 +220,27 @@ mod tests {
             .map(|entry| entry["file"].as_str().unwrap().to_owned())
             .collect();
         assert_eq!(skipped, ["b.safetensors", "c.safetensors"]);
+    }
+
+    #[test]
+    fn a_named_pipe_is_skipped_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("a.safetensors"), model_bytes("alpha")).unwrap();
+        let pipe = std::ffi::CString::new(
+            directory
+                .path()
+                .join("b.safetensors")
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .unwrap();
+        // SAFETY: `pipe` is a valid NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+        let library = FlameLibrary::load(directory.path());
+        assert!(library.is_available());
+        let report = library.report();
+        assert_eq!(report["skipped"][0]["file"], "b.safetensors");
+        assert_eq!(report["skipped"][0]["reason"], "not a regular file");
     }
 
     #[test]
