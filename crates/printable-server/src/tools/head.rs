@@ -334,7 +334,9 @@ pub(super) async fn prepare_print(
         )?;
         let bytes = std::fs::read(&output_path)?;
         let validation = analyze_stl(&bytes, ValidationOptions::default())?;
-        if !validation.solid_geometry {
+        // The bust is written only when it is known to be free of
+        // self-intersections, not merely when none were found.
+        if !validation.solid_geometry || validation.topology.self_intersections != Some(0) {
             let issues: Vec<_> = validation
                 .issues
                 .iter()

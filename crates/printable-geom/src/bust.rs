@@ -44,6 +44,8 @@ const PLINTH_WIDTH_FRACTION: f64 = 0.7;
 /// Marching tetrahedra with mean edge L yields about 3.1 triangles per unit
 /// of area divided by L squared; this allows a margin for the drain holes.
 const CAVITY_TRIANGLES_PER_AREA: f64 = 3.5;
+/// Attempts at fitting the finished bust within its triangle limit.
+const FINISH_ATTEMPTS: usize = 3;
 /// Share of the triangle limit kept for the cavity of a hollow bust.
 const CAVITY_SHARE: f64 = 0.25;
 /// Drain holes reach this far into the cavity.
@@ -144,6 +146,29 @@ pub struct BustReport {
 /// Build a closed, printable bust from an open head surface and its parts.
 pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport), GeometryError> {
     validate(request)?;
+    let mut minimum_edge = request.edge_length_mm;
+    for _ in 0..FINISH_ATTEMPTS {
+        match prepare_at(request, minimum_edge)? {
+            Prepared::Done(mesh, report) => return Ok((mesh, report)),
+            // A plinth or cavity added more triangles than expected; coarsen
+            // the whole bust in proportion and try again.
+            Prepared::OverLimit { triangles, edge } => {
+                minimum_edge =
+                    edge * (triangles as f64 / request.max_triangles as f64).sqrt() * 1.05;
+            }
+        }
+    }
+    Err(GeometryError::Kernel(
+        "the finished bust exceeds its triangle limit".into(),
+    ))
+}
+
+enum Prepared {
+    Done(TriangleMesh, BustReport),
+    OverLimit { triangles: usize, edge: f64 },
+}
+
+fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, GeometryError> {
     let bust_height = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
     let parts = closed_parts(&request.vertices, &request.triangles)?;
     let heights = request.vertices.iter().map(|vertex| vertex[1]);
@@ -214,9 +239,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     };
     let limit = surface_limit as f64;
     let area: f64 = smooth.iter().map(Manifold::surface_area).sum();
-    let mut edge = request
-        .edge_length_mm
-        .max((TRIANGLES_PER_AREA * area / limit).sqrt());
+    let mut edge = minimum_edge.max((TRIANGLES_PER_AREA * area / limit).sqrt());
     // The smoothed parts overlap one another and can pass through themselves
     // where FLAME's surface folds, at the lips and ears. Remeshing their
     // union yields one valid solid; the flat base is cut afterwards.
@@ -322,9 +345,10 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     let mesh = single_precision(&solid)?;
     drop(solid);
     if mesh.triangles.len() > request.max_triangles {
-        return Err(GeometryError::Kernel(
-            "the finished bust exceeds its triangle limit".into(),
-        ));
+        return Ok(Prepared::OverLimit {
+            triangles: mesh.triangles.len(),
+            edge,
+        });
     }
     let report = BustReport {
         triangles: mesh.triangles.len(),
@@ -338,7 +362,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
         plinth,
         hollow,
     };
-    Ok((mesh, report))
+    Ok(Prepared::Done(mesh, report))
 }
 
 /// Raise the bust onto a cylinder centred under its flat base.
@@ -994,6 +1018,18 @@ mod tests {
             prepare_bust(&with_plinth),
             Err(GeometryError::InvalidOptions(_))
         ));
+    }
+
+    #[test]
+    fn a_plinth_near_the_triangle_limit_coarsens_the_bust_instead_of_failing() {
+        let mut tight = request(0.05, 12_000);
+        tight.plinth = Some(Plinth {
+            height_mm: 8.0,
+            diameter_mm: Some(400.0),
+        });
+        let (mesh, report) = prepare_bust(&tight).unwrap();
+        assert!(mesh.triangles.len() <= 12_000, "{report:?}");
+        assert!(validated(&mesh).solid_geometry);
     }
 
     #[test]

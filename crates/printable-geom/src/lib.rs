@@ -340,7 +340,7 @@ fn prepare_mesh(
         ));
     }
     let watertight = topology_result.is_ok() && boundary_edges == Some(0);
-    let intersections = trimesh.connected_components().map(|components| {
+    let intersections = trimesh.connected_components().and_then(|components| {
         let mut shell_of = vec![0; mesh.triangles.len()];
         for (shell, range) in components.ranges.windows(2).enumerate() {
             for face in &components.grouped_faces[range[0]..range[1]] {
@@ -366,6 +366,13 @@ fn prepare_mesh(
     } else {
         None
     };
+    if intersections.is_none() && trimesh.connected_components().is_some() {
+        issues.push(warning_issue(
+            "self_intersection_unchecked",
+            "the self-intersection check stopped early because the mesh has unusually many overlapping triangles".to_string(),
+            "Treat the mesh as possibly self-intersecting; remesh it or reduce overlapping geometry.",
+        ));
+    }
     if let Some(found) = &intersections {
         if found.within_shells > 0 {
             issues.push(error_issue(

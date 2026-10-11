@@ -14,6 +14,11 @@ use robust::{Coord, Coord3D, orient2d, orient3d};
 
 type Point = [f64; 3];
 
+/// Candidate pairs examined per triangle before the search gives up. Ordinary
+/// meshes need a few dozen; only heavily overlapping input reaches this, and
+/// the bound keeps such input from occupying the server.
+const CANDIDATES_PER_TRIANGLE: usize = 256;
+
 /// Intersecting triangle pairs, split by whether both triangles belong to the
 /// same connected shell.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -26,11 +31,13 @@ pub(crate) struct Intersections {
 
 /// Compare every pair of non-degenerate triangles whose bounds overlap and
 /// that share no vertex. `shell_of` gives each triangle's connected shell.
+/// `None` when the candidate pairs exceed the search budget.
 pub(crate) fn find_intersections(
     vertices: &[Point],
     triangles: &[[u32; 3]],
     shell_of: &[usize],
-) -> Intersections {
+) -> Option<Intersections> {
+    let mut budget = CANDIDATES_PER_TRIANGLE.saturating_mul(triangles.len());
     let corners = |triangle: &[u32; 3]| triangle.map(|index| vertices[index as usize]);
     let bounds: Vec<Aabb> = triangles
         .iter()
@@ -52,6 +59,7 @@ pub(crate) fn find_intersections(
             continue;
         }
         for second in bvh.intersect_aabb(&bounds[first]) {
+            budget = budget.checked_sub(1)?;
             let second = second as usize;
             if second <= first || degenerate[second] {
                 continue;
@@ -71,7 +79,7 @@ pub(crate) fn find_intersections(
             }
         }
     }
-    found
+    Some(found)
 }
 
 fn coord3(point: Point) -> Coord3D<f64> {
@@ -268,6 +276,26 @@ mod tests {
     }
 
     #[test]
+    fn heavily_overlapping_input_stops_at_the_search_budget() {
+        // Many copies of one triangle, each shifted slightly, all overlap.
+        let count = 2 * CANDIDATES_PER_TRIANGLE;
+        let vertices: Vec<Point> = (0..count)
+            .flat_map(|copy| {
+                let shift = copy as f64 * 1e-3;
+                [
+                    [shift, 0.0, 0.0],
+                    [4.0 + shift, 0.0, 0.0],
+                    [shift, 4.0, 0.0],
+                ]
+            })
+            .collect();
+        let triangles: Vec<[u32; 3]> = (0..count as u32)
+            .map(|copy| [3 * copy, 3 * copy + 1, 3 * copy + 2])
+            .collect();
+        assert!(find_intersections(&vertices, &triangles, &vec![0; count]).is_none());
+    }
+
+    #[test]
     fn neighbours_are_skipped_and_shells_are_distinguished() {
         let vertices = [
             [0.0, 0.0, 0.0],
@@ -280,9 +308,9 @@ mod tests {
         ];
         // Triangles 0 and 1 share an edge; triangle 2 crosses triangle 0.
         let triangles = [[0, 1, 2], [1, 3, 2], [4, 5, 6]];
-        let same = find_intersections(&vertices, &triangles, &[0, 0, 0]);
+        let same = find_intersections(&vertices, &triangles, &[0, 0, 0]).unwrap();
         assert_eq!((same.within_shells, same.between_shells), (1, 0));
-        let separate = find_intersections(&vertices, &triangles, &[0, 0, 1]);
+        let separate = find_intersections(&vertices, &triangles, &[0, 0, 1]).unwrap();
         assert_eq!((separate.within_shells, separate.between_shells), (0, 1));
     }
 }
