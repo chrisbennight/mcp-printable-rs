@@ -25,6 +25,11 @@ const EXTENSION: &str = "safetensors";
 /// that MICA, SMIRK and DECA were trained with.
 pub const FLAME_2020_GENERIC_SHA256: &str =
     "efcd14cc4a69f3a3d9af8ded80146b5b6b50df3bd74cf69108213b144eba725b";
+/// Reconstruction gives MICA's 300 identity coefficients and SMIRK's first
+/// 50 expression coefficients, so the expression basis must start right after
+/// the 300 identity components.
+const RECONSTRUCTION_IDENTITY_COMPONENTS: usize = 300;
+const RECONSTRUCTION_EXPRESSION_COMPONENTS: usize = 50;
 
 /// Models available to the `head` tool, keyed by variant.
 pub struct FlameLibrary {
@@ -111,11 +116,17 @@ impl FlameLibrary {
 
     /// The mounted model that photo reconstruction's coefficients belong to:
     /// FLAME 2020's generic model, recognised by the digest of its published
-    /// file.
+    /// file, converted with its own split of identity and expression.
     pub fn reconstruction_variant(&self) -> Option<&str> {
         self.models
             .iter()
-            .find(|(_, model)| model.info().source_sha256 == FLAME_2020_GENERIC_SHA256)
+            .find(|(_, model)| {
+                let info = model.info();
+                info.source_sha256 == FLAME_2020_GENERIC_SHA256
+                    && info.identity_components == RECONSTRUCTION_IDENTITY_COMPONENTS
+                    && info.expression_components >= RECONSTRUCTION_EXPRESSION_COMPONENTS
+                    && info.expression_source == "flame"
+            })
             .map(|(variant, _)| variant.as_str())
     }
 
@@ -264,6 +275,50 @@ mod tests {
         let library = FlameLibrary::load(&directory.path().join("absent"));
         assert!(!library.is_available());
         assert_eq!(library.report()["skipped"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconstruction_needs_flame_2020_with_its_own_basis_split() {
+        let model = |identity: usize, expression: usize, digest: &str| {
+            let mut fixture = Fixture {
+                shapedirs: vec![0.0; 4 * 3 * (identity + expression)],
+                ..Default::default()
+            };
+            for (key, value) in [
+                (
+                    "variant",
+                    format!("v{identity}_{expression}_{}", &digest[..4]),
+                ),
+                ("identity_components", identity.to_string()),
+                ("expression_components", expression.to_string()),
+                ("source_sha256", digest.to_owned()),
+            ] {
+                fixture.metadata.insert(key.into(), value);
+            }
+            fixture.bytes()
+        };
+        let other = "1".repeat(64);
+        for (identity, expression, digest, recognised) in [
+            (300, 100, FLAME_2020_GENERIC_SHA256, true),
+            (300, 50, FLAME_2020_GENERIC_SHA256, true),
+            (350, 50, FLAME_2020_GENERIC_SHA256, false),
+            (300, 20, FLAME_2020_GENERIC_SHA256, false),
+            (300, 100, other.as_str(), false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(
+                directory.path().join("m.safetensors"),
+                model(identity, expression, digest),
+            )
+            .unwrap();
+            let library = FlameLibrary::load(directory.path());
+            assert!(library.is_available(), "{}", library.report());
+            assert_eq!(
+                library.reconstruction_variant().is_some(),
+                recognised,
+                "{identity} + {expression}"
+            );
+        }
     }
 
     #[test]

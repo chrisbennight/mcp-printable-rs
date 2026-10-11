@@ -59,6 +59,8 @@ class CheckpointTests(unittest.TestCase):
             checkpoints.apply(module, {"weight": torch.zeros(2, 3)}, "test")
         with self.assertRaises(checkpoints.CheckpointError):
             checkpoints.apply(module, {"weight": torch.zeros(2, 3), "bias": torch.zeros(2), "extra": torch.zeros(1)}, "test")
+        with self.assertRaises(checkpoints.CheckpointError):
+            checkpoints.apply(module, {"weight": torch.zeros(3, 3), "bias": torch.zeros(2)}, "test")
 
 
 class NetworkTests(unittest.TestCase):
@@ -74,7 +76,9 @@ class NetworkTests(unittest.TestCase):
             deca = networks.Deca().eval()
             detail = deca.detail_code(torch.rand(1, 3, 224, 224))
             self.assertEqual(detail.shape, (1, 128))
-            uv = deca.displacement(smirk["jaw"], smirk["expression"], detail)
+            jaw, expression = deca.coarse_expression(torch.rand(1, 3, 224, 224))
+            self.assertEqual((jaw.shape, expression.shape), ((1, 3), (1, 50)))
+            uv = deca.displacement(jaw, expression, detail)
             self.assertEqual(uv.shape, (1, 1, 256, 256))
             self.assertLessEqual(float(uv.abs().max()), 0.01)
 
@@ -129,23 +133,55 @@ class PipelineTests(unittest.TestCase):
         reconstructor.mapping = networks.IdentityMapping().eval()
         reconstructor.smirk = networks.Smirk().eval()
         reconstructor.deca = networks.Deca().eval()
-        reconstructor.fixed_displacement = numpy.zeros((256, 256), numpy.float32)
         reconstructor.face_eye_mask = numpy.ones((256, 256), numpy.float32)
         reconstructor.landmarker = _FixedLandmarker()
         return reconstructor
 
     def test_identity_is_fused_across_photographs(self):
         reconstructor = self.reconstructor()
-        image = numpy.random.default_rng(1).integers(0, 255, (400, 400, 3), dtype=numpy.uint8)
-        face = faces.crops(image, synthetic_landmarks())
-        single = reconstructor.reconstruct([face])
-        twice = reconstructor.reconstruct([face, face])
-        numpy.testing.assert_allclose(single.identity, twice.identity, atol=1e-5)
-        numpy.testing.assert_allclose(twice.identity_agreement, [1.0, 1.0], atol=1e-5)
+        rng = numpy.random.default_rng(1)
+        first, second = (
+            faces.crops(rng.integers(0, 255, (400, 400, 3), dtype=numpy.uint8), synthetic_landmarks())
+            for _ in range(2)
+        )
+        single = reconstructor.reconstruct([first])
+        fused = reconstructor.reconstruct([first, second])
+        with torch.inference_mode():
+            crops = pipeline._tensor(numpy.stack([first.arcface, second.arcface]), reconstructor.device) * 2.0 - 1.0
+            embeddings = torch.nn.functional.normalize(reconstructor.arcface(crops), dim=1)
+            mean = torch.nn.functional.normalize(embeddings.mean(dim=0, keepdim=True), dim=1)
+            expected = reconstructor.mapping(mean)[0].clamp(-pipeline.COEFFICIENT_LIMIT, pipeline.COEFFICIENT_LIMIT)
+        numpy.testing.assert_allclose(fused.identity, expected.tolist(), atol=1e-5)
+        self.assertGreater(numpy.abs(numpy.subtract(fused.identity, single.identity)).max(), 1e-3)
+        # Two unit embeddings are equally close to their normalised mean.
+        self.assertLess(fused.identity_agreement[0], 1.0 - 1e-6)
+        numpy.testing.assert_allclose(fused.identity_agreement[0], fused.identity_agreement[1], atol=1e-6)
+        numpy.testing.assert_allclose(single.identity_agreement, [1.0], atol=1e-5)
         self.assertEqual(len(single.identity), 300)
         self.assertEqual(len(single.expression), 50)
         self.assertTrue(all(abs(value) <= pipeline.COEFFICIENT_LIMIT for value in single.identity))
         self.assertEqual(single.displacement_mm.shape, (256, 256))
+
+    def test_detail_is_conditioned_on_decas_own_expression(self):
+        reconstructor = self.reconstructor()
+        image = numpy.random.default_rng(2).integers(0, 255, (400, 400, 3), dtype=numpy.uint8)
+        face = faces.crops(image, synthetic_landmarks())
+        baseline = reconstructor.reconstruct([face])
+        smirk = reconstructor.smirk
+
+        def exaggerated(crop):
+            output = smirk(crop)
+            return {**output, "expression": output["expression"] * 4.0}
+
+        reconstructor.smirk = exaggerated
+        changed = reconstructor.reconstruct([face])
+        self.assertGreater(numpy.abs(numpy.subtract(changed.expression, baseline.expression)).max(), 1e-3)
+        numpy.testing.assert_array_equal(changed.displacement_mm, baseline.displacement_mm)
+        with torch.inference_mode():
+            crop = pipeline._tensor(face.deca[None], reconstructor.device)
+            jaw, expression = reconstructor.deca.coarse_expression(crop)
+            uv = reconstructor.deca.displacement(jaw, expression, reconstructor.deca.detail_code(crop))
+        numpy.testing.assert_allclose(baseline.displacement_mm, uv[0, 0].numpy() * 1000.0, rtol=1e-6)
 
     def test_displacement_round_trips_through_sixteen_bit_png(self):
         values = numpy.linspace(-2.0, 3.0, 256 * 256, dtype=numpy.float32).reshape(256, 256)

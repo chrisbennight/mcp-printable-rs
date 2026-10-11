@@ -60,7 +60,11 @@ def section(data: dict[str, Any], prefix: str, name: str) -> dict[str, torch.Ten
 
 def apply(module: torch.nn.Module, weights: dict[str, torch.Tensor], name: str) -> None:
     """Load weights that must match the module exactly."""
-    result = module.load_state_dict(weights, strict=False)
+    try:
+        result = module.load_state_dict(weights, strict=False)
+    except RuntimeError as error:
+        # Raised when a named tensor has the wrong shape.
+        raise CheckpointError(f"checkpoint {name} does not match the network: {error}") from error
     missing = [key for key in result.missing_keys if not key.endswith("num_batches_tracked")]
     unexpected = [key for key in result.unexpected_keys if not key.endswith("num_batches_tracked")]
     if missing or unexpected:

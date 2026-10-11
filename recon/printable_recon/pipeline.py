@@ -4,8 +4,10 @@ Identity comes from MICA. Each photograph's ArcFace embedding is normalised,
 the embeddings are averaged and normalised again, and MICA's mapping network
 turns the result into 300 shape coefficients at true head scale. Expression,
 jaw rotation and surface detail come from the primary photograph: SMIRK gives
-the expression and jaw, and DECA's detail decoder, conditioned on them, gives
-the UV displacement map.
+the expression and jaw, and DECA gives the UV displacement map. DECA's detail
+decoder is conditioned on DECA's own estimate of the expression and jaw, the
+input it was trained with; SMIRK's coefficients are larger and give
+exaggerated detail.
 """
 
 from __future__ import annotations
@@ -66,7 +68,6 @@ class Reconstructor:
         del deca
         for module in (self.arcface, self.mapping, self.smirk, self.deca):
             module.to(self.device).eval()
-        self.fixed_displacement = _fixed_displacement(directory / FILES["fixed_displacement"])
         self.face_eye_mask = _mask(directory / FILES["face_eye_mask"])
         self.landmarker = faces.Landmarker(landmarker)
 
@@ -97,11 +98,13 @@ class Reconstructor:
         primary = found[0]
         smirk = self.smirk(_tensor(primary.smirk[None], self.device))
         expression, jaw = smirk["expression"], smirk["jaw"]
-        detail = self.deca.detail_code(_tensor(primary.deca[None], self.device))
-        uv = self.deca.displacement(jaw, expression, detail)[0, 0].cpu().numpy()
-        # DECA restricts learned detail to the face and adds a fixed offset
-        # that corrects the coarse template; both are in metres.
-        displacement = (uv * self.face_eye_mask + self.fixed_displacement) * METRES_TO_MILLIMETRES
+        crop = _tensor(primary.deca[None], self.device)
+        deca_jaw, deca_expression = self.deca.coarse_expression(crop)
+        uv = self.deca.displacement(deca_jaw, deca_expression, self.deca.detail_code(crop))
+        # DECA restricts learned detail to the face. Its renderer also adds a
+        # fixed offset that follows FLAME's triangle layout to correct
+        # shading; that is not surface shape, so it is left out.
+        displacement = uv[0, 0].cpu().numpy() * self.face_eye_mask * METRES_TO_MILLIMETRES
 
         identity, clamped_identity = _clamp(identity)
         expression_values, clamped_expression = _clamp(expression[0])
@@ -143,13 +146,6 @@ def _clamp(values: torch.Tensor) -> tuple[list[float], int]:
 
 def _extent(landmarks: numpy.ndarray) -> list[float]:
     return [float(landmarks[:, 0].min()), float(landmarks[:, 1].min()), float(landmarks[:, 0].max()), float(landmarks[:, 1].max())]
-
-
-def _fixed_displacement(path: Path) -> numpy.ndarray:
-    values = numpy.load(path, allow_pickle=False)
-    if values.shape != (256, 256) or not numpy.isfinite(values).all():
-        raise checkpoints.CheckpointError(f"{path.name} is not a finite 256 by 256 map")
-    return values.astype(numpy.float32)
 
 
 def _mask(path: Path) -> numpy.ndarray:

@@ -23,7 +23,7 @@ readiness="$(docker exec "$name" curl --silent --show-error --write-out '\n%{htt
 status="$(tail -n 1 <<<"$readiness")"
 body="$(head -n 1 <<<"$readiness")"
 [[ "$status" == 503 ]] || { echo "expected 503 without checkpoints, got $status: $body" >&2; exit 1; }
-for file in mica.tar SMIRK_em1.pt deca_model.tar fixed_displacement_256.npy uv_face_eye_mask.png; do
+for file in mica.tar SMIRK_em1.pt deca_model.tar uv_face_eye_mask.png; do
   grep -q "$file" <<<"$body" || { echo "readiness does not name $file: $body" >&2; exit 1; }
 done
 echo "reconstruction worker reports missing checkpoints as expected"

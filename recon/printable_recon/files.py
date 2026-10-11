@@ -7,7 +7,6 @@ FILES = {
     "mica": "mica.tar",
     "smirk": "SMIRK_em1.pt",
     "deca": "deca_model.tar",
-    "fixed_displacement": "fixed_displacement_256.npy",
     "face_eye_mask": "uv_face_eye_mask.png",
 }
 

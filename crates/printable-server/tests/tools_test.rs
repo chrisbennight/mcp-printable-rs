@@ -5671,14 +5671,22 @@ async fn head_prepare_print_hollows_a_real_bust_on_a_plinth() {
 /// A FLAME 2020 generic stand-in: the fixture with that release's digest.
 fn flame2020_library() -> Arc<printable_server::flame::FlameLibrary> {
     let models = tempfile::tempdir().unwrap();
-    let mut fixture = printable_flame::fixture::Fixture::default();
-    fixture
-        .metadata
-        .insert("variant".into(), "flame2020_generic".into());
-    fixture.metadata.insert(
-        "source_sha256".into(),
-        printable_server::flame::FLAME_2020_GENERIC_SHA256.into(),
-    );
+    // The published model's split: 300 identity and 100 expression components.
+    let mut fixture = printable_flame::fixture::Fixture {
+        shapedirs: vec![0.0; 4 * 3 * 400],
+        ..Default::default()
+    };
+    for (key, value) in [
+        ("variant", "flame2020_generic"),
+        (
+            "source_sha256",
+            printable_server::flame::FLAME_2020_GENERIC_SHA256,
+        ),
+        ("identity_components", "300"),
+        ("expression_components", "100"),
+    ] {
+        fixture.metadata.insert(key.into(), value.into());
+    }
     std::fs::write(
         models.path().join("flame2020_generic.safetensors"),
         fixture.bytes(),

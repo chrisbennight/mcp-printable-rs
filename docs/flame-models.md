@@ -228,8 +228,9 @@ person. It runs in an optional reconstruction worker:
 
 All three networks were trained with FLAME 2020, so their coefficients belong
 to the FLAME 2020 generic model. Convert and mount `generic_model.pkl` from
-the FLAME 2020 release alongside any other models. The server recognises it by
-the digest of the published file.
+the FLAME 2020 release alongside any other models, with the converter's
+default split of 300 identity and 100 expression components. The server
+recognises it by the digest of the published file and that split.
 
 ### Network checkpoints
 
@@ -241,7 +242,7 @@ these files in one directory:
 | `mica.tar` | [MICA](https://github.com/Zielon/MICA), "Pre-trained Models" |
 | `SMIRK_em1.pt` | [SMIRK](https://github.com/georgeretsi/smirk), the pretrained model link |
 | `deca_model.tar` | [DECA](https://github.com/yfeng95/DECA), the released model |
-| `fixed_displacement_256.npy`, `uv_face_eye_mask.png` | DECA's `data` directory |
+| `uv_face_eye_mask.png` | DECA's `data` directory |
 
 The worker loads checkpoints with PyTorch's weights-only loader, which builds
 tensors and plain data but never runs code from the file. Its image includes
@@ -328,8 +329,13 @@ alone sets the expression and detail.
 
 `displacement` describes the map: a pixel value p means
 `offset_mm + scale_mm × p / 65535` millimetres along the surface normal at life
-size. Column 0 is u = 0 and row 0 is v = 1 in FLAME's texture layout. DECA's
-fixed offset and face mask are already applied.
+size. Column 0 is u = 0 and row 0 is v = 1 in FLAME's texture layout. The map
+holds DECA's learned detail within its face mask, conditioned on DECA's own
+estimate of the expression and jaw. SMIRK's larger coefficients made DECA's
+decoder exaggerate the detail, putting creases across the bridge of the nose.
+DECA's renderer also adds a fixed offset, a lattice of ripples up to 1.6 mm
+that follows FLAME's triangle layout and corrects shading; it is not surface
+shape and is left out.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the

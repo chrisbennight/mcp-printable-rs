@@ -105,7 +105,7 @@ impl Fixture {
             (
                 "shapedirs",
                 Dtype::F32,
-                vec![VERTICES, 3, COMPONENTS],
+                vec![VERTICES, 3, self.shapedirs.len() / (VERTICES * 3)],
                 floats(&self.shapedirs),
             ),
             (

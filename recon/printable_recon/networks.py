@@ -187,7 +187,11 @@ class DecaDetailDecoder(nn.Module):
 class Deca(nn.Module):
     """DECA's coarse and detail encoders and its detail decoder."""
 
+    # Shape, texture, expression, pose (global rotation then jaw), camera and
+    # lighting, in that order.
     PARAMETERS = 100 + 50 + 50 + 6 + 3 + 27
+    EXPRESSION = slice(150, 200)
+    JAW = slice(203, 206)
     DETAIL = 128
 
     def __init__(self) -> None:
@@ -198,6 +202,11 @@ class Deca(nn.Module):
 
     def detail_code(self, image: torch.Tensor) -> torch.Tensor:
         return self.E_detail(image)
+
+    def coarse_expression(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """DECA's own jaw rotation and 50 expression coefficients for a crop."""
+        parameters = self.E_flame(image)
+        return parameters[:, self.JAW], parameters[:, self.EXPRESSION]
 
     def displacement(self, jaw: torch.Tensor, expression: torch.Tensor, detail: torch.Tensor) -> torch.Tensor:
         """UV displacement for a jaw rotation, 50 expression coefficients and a detail code."""
