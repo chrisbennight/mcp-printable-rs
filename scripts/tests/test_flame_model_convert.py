@@ -261,6 +261,26 @@ class SafetyTests(unittest.TestCase):
             convert(model(encoder, overrides={"J": encoder.array("f8", (JOINTS, 3), joints)}), "corrupt",
                     expression_components=2)
 
+    def test_missing_joint_locations_are_refused(self):
+        with self.assertRaisesRegex(ModelError, "J is missing"):
+            convert(model(Legacy(), omit=("J",)), "missing", expression_components=2)
+
+    def test_non_finite_joint_locations_are_refused(self):
+        encoder = Legacy()
+        joints = _joint_locations()
+        joints[4] = float("nan")
+        with self.assertRaisesRegex(ModelError, "joint regressor"):
+            convert(model(encoder, overrides={"J": encoder.array("f8", (JOINTS, 3), joints)}), "nan",
+                    expression_components=2)
+
+    def test_regressor_rows_must_match_the_skinned_joints(self):
+        # The declared row count sizes a dense allocation, so it is checked
+        # against the decoded skinning weights before anything is allocated.
+        encoder = Legacy()
+        oversized = _sparse(encoder, 1 << 20, VERTICES, [])
+        with self.assertRaisesRegex(ModelError, "skinned joints"):
+            convert(model(encoder, overrides={"J_regressor": oversized}), "rows", expression_components=2)
+
     def test_face_outside_the_template_is_refused(self):
         encoder = Legacy()
         faces = encoder.array("u4", (4, 3), FACES[:-1] + [VERTICES])

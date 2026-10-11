@@ -192,19 +192,23 @@ def _shaped(model, key, rank):
     return value
 
 
-def _joint_regressor(model, vertices):
+def _joint_regressor(model, vertices, joints):
+    """Return the regressor densely as joints x vertices.
+
+    Both sizes come from arrays already checked against their bytes, so the
+    dense allocation is bounded by data present in the source.
+    """
     value = model.get("J_regressor")
     if isinstance(value, _Array):
-        if value.shape[1:] != (vertices,) or len(value.shape) != 2:
-            raise ModelError("J_regressor does not map the template vertices")
-        return value.shape[0], array.array("d", value.values())
+        if value.shape != (joints, vertices):
+            raise ModelError("J_regressor does not map the template vertices to the skinned joints")
+        return array.array("d", value.values())
     if not isinstance(value, _SparseCSC) or not isinstance(value.state, dict):
         raise ModelError("J_regressor is missing or is not a sparse matrix")
     state = value.state
-    shape = state.get("_shape")
-    if not (isinstance(shape, tuple) and len(shape) == 2 and shape[1] == vertices):
-        raise ModelError("J_regressor does not map the template vertices")
-    rows, columns = shape
+    if state.get("_shape") != (joints, vertices):
+        raise ModelError("J_regressor does not map the template vertices to the skinned joints")
+    rows, columns = joints, vertices
     data, indices, indptr = (_array(state, key).values() for key in ("data", "indices", "indptr"))
     if len(indptr) != columns + 1 or indptr[0] != 0 or indptr[-1] != len(data) or len(indices) != len(data):
         raise ModelError("J_regressor sparse structure is inconsistent")
@@ -219,7 +223,7 @@ def _joint_regressor(model, vertices):
                 raise ModelError("J_regressor references a joint outside its shape")
             # Duplicate entries add, matching sparse-matrix semantics.
             dense[row * columns + column] += data[entry]
-    return rows, dense
+    return dense
 
 
 def _expression_split(model, components, requested):
@@ -293,18 +297,21 @@ def convert(data: bytes, variant: str, expression_components: int | None = None)
     if posedirs.shape[:2] != (vertices, 3):
         raise ModelError("posedirs does not match the template vertices")
 
-    joints, regressor = _joint_regressor(model, vertices)
-    if joints < 1 or posedirs.shape[2] != 9 * (joints - 1):
-        raise ModelError("posedirs does not hold one rotation-matrix basis per non-root joint")
-
     weights = _shaped(model, "weights", 2)
-    if weights.shape != (vertices, joints):
-        raise ModelError("weights do not assign every vertex across the joints")
+    if weights.shape[0] != vertices or weights.shape[1] < 1:
+        raise ModelError("weights do not assign every template vertex to the joints")
+    # Decoding checks the weights against their bytes, which bounds the joint
+    # count and every allocation sized by it.
     weight_values = weights.values()
+    joints = weights.shape[1]
     for vertex in range(vertices):
         total = math.fsum(weight_values[vertex * joints:(vertex + 1) * joints])
         if abs(total - 1.0) > WEIGHT_TOLERANCE:
             raise ModelError("skinning weights do not sum to one for every vertex")
+
+    regressor = _joint_regressor(model, vertices, joints)
+    if posedirs.shape[2] != 9 * (joints - 1):
+        raise ModelError("posedirs does not hold one rotation-matrix basis per non-root joint")
 
     kintree = _shaped(model, "kintree_table", 2)
     if kintree.shape != (2, joints):
@@ -321,20 +328,19 @@ def convert(data: bytes, variant: str, expression_components: int | None = None)
     if 0 <= tree[0] < joints:
         raise ModelError("kintree_table root joint has a parent")
 
-    stored_joints = model.get("J")
-    if stored_joints is not None:
-        stored = _shaped(model, "J", 2)
-        if stored.shape != (joints, 3):
-            raise ModelError("J does not hold one location per joint")
-        stored_values = stored.values()
-        for joint in range(joints):
-            row = regressor[joint * vertices:(joint + 1) * vertices]
-            for axis in range(3):
-                computed = math.fsum(weight * template_values[vertex * 3 + axis]
-                                     for vertex, weight in enumerate(row) if weight)
-                if abs(computed - stored_values[joint * 3 + axis]) > JOINT_TOLERANCE:
-                    raise ModelError("stored joint locations disagree with the joint regressor; "
-                                     "the source is corrupt or was decoded incorrectly")
+    stored = _shaped(model, "J", 2)
+    if stored.shape != (joints, 3):
+        raise ModelError("J does not hold one location per joint")
+    stored_values = stored.values()
+    for joint in range(joints):
+        row = regressor[joint * vertices:(joint + 1) * vertices]
+        for axis in range(3):
+            computed = math.fsum(weight * template_values[vertex * 3 + axis]
+                                 for vertex, weight in enumerate(row) if weight)
+            # Phrased so that a non-finite stored value fails the comparison.
+            if not abs(computed - stored_values[joint * 3 + axis]) <= JOINT_TOLERANCE:
+                raise ModelError("stored joint locations disagree with the joint regressor; "
+                                 "the source is corrupt or was decoded incorrectly")
 
     identity, expression, source = _expression_split(model, shapedirs.shape[2], expression_components)
 
