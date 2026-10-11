@@ -433,15 +433,24 @@ fn prepare_mesh(
         && intersections
             .as_ref()
             .is_none_or(|found| found.complete && found.within_shells == 0);
+    let overlapping = intersections
+        .as_ref()
+        .map(|found| found.overlapping_shells.clone())
+        .unwrap_or_default();
     let manifold = if eligible_for_manifold {
-        let flat_vertices: Vec<_> = mesh.vertices.iter().flatten().copied().collect();
-        let flat_indices: Vec<_> = mesh
-            .triangles
-            .iter()
-            .flatten()
-            .map(|index| u64::from(*index))
-            .collect();
-        match Manifold::from_mesh_f64(&flat_vertices, 3, &flat_indices) {
+        let solid = if overlapping.is_empty() {
+            let flat_vertices: Vec<_> = mesh.vertices.iter().flatten().copied().collect();
+            let flat_indices: Vec<_> = mesh
+                .triangles
+                .iter()
+                .flatten()
+                .map(|index| u64::from(*index))
+                .collect();
+            Manifold::from_mesh_f64(&flat_vertices, 3, &flat_indices)
+        } else {
+            united_shells(&trimesh, &overlapping)
+        };
+        match solid {
             Ok(manifold) => Some(manifold),
             Err(error) => {
                 issues.push(error_issue(
@@ -457,6 +466,23 @@ fn prepare_mesh(
     };
 
     let solid_geometry = manifold.is_some();
+    // Overlapping shells are measured as the solid they unite into, so the
+    // shared region is not counted twice.
+    let center_of_mass = match &manifold {
+        Some(solid) if !overlapping.is_empty() => {
+            let (vertices, properties, triangles) = solid.to_mesh_f64();
+            let vertices: Vec<Vector> = vertices
+                .chunks_exact(properties)
+                .map(|vertex| Vector::new(vertex[0], vertex[1], vertex[2]))
+                .collect();
+            let triangles: Vec<[u32; 3]> = triangles
+                .chunks_exact(3)
+                .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
+                .collect();
+            trimesh_signed_volume_and_center_of_mass(&vertices, &triangles).1
+        }
+        _ => center_of_mass,
+    };
     let solid_properties = manifold
         .as_ref()
         .map(|manifold| {
@@ -588,6 +614,47 @@ fn mesh_bounds(vertices: &[[f64; 3]]) -> MeshBounds {
         maximum_mm: maximum,
         dimensions_mm: std::array::from_fn(|axis| maximum[axis] - minimum[axis]),
     }
+}
+
+/// The union of the overlapping shells with the solid formed by all others.
+fn united_shells(
+    trimesh: &TriMesh,
+    overlapping: &std::collections::BTreeSet<usize>,
+) -> Result<Manifold, manifold_csg::CsgError> {
+    let components = trimesh
+        .connected_components()
+        .expect("overlapping shells come from connected components");
+    let flatten = |shells: &[(Vec<Vector>, Vec<[u32; 3]>)]| {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for (shell_vertices, shell_triangles) in shells {
+            let offset = (vertices.len() / 3) as u64;
+            vertices.extend(shell_vertices.iter().flat_map(|vertex| vertex.to_array()));
+            indices.extend(
+                shell_triangles
+                    .iter()
+                    .flatten()
+                    .map(|index| offset + u64::from(*index)),
+            );
+        }
+        (vertices, indices)
+    };
+    let (overlapping_shells, others): (Vec<_>, Vec<_>) = components
+        .to_mesh_buffers(trimesh)
+        .into_iter()
+        .enumerate()
+        .partition(|(index, _)| overlapping.contains(index));
+    let mut parts = Vec::new();
+    let others: Vec<_> = others.into_iter().map(|(_, shell)| shell).collect();
+    if !others.is_empty() {
+        let (vertices, indices) = flatten(&others);
+        parts.push(Manifold::from_mesh_f64(&vertices, 3, &indices)?);
+    }
+    for (_, shell) in overlapping_shells {
+        let (vertices, indices) = flatten(std::slice::from_ref(&shell));
+        parts.push(Manifold::from_mesh_f64(&vertices, 3, &indices)?);
+    }
+    Ok(Manifold::batch_union(&parts))
 }
 
 /// A count from the intersection search: exact when the search completed, a
@@ -1572,6 +1639,14 @@ mod tests {
                 .iter()
                 .all(|issue| issue.severity != IssueSeverity::Error),
             "{report:?}"
+        );
+        // Measured as the united solid: two unit cubes overlapping in a
+        // half-unit cube.
+        let solid = report.solid_properties.expect("solid properties");
+        assert!((solid.volume_mm3 - 1.875).abs() < 1e-9, "{solid:?}");
+        assert!(
+            (solid.center_of_mass_mm[0] - 0.75).abs() < 1e-9,
+            "{solid:?}"
         );
         assert!(
             report
