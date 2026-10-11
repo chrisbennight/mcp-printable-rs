@@ -43,9 +43,10 @@ pass `--expression-components`.
 
 Loading a pickle can run arbitrary code. The converter resolves only the
 symbols that published FLAME files use: NumPy array and type constructors, the
-SciPy sparse matrix, the chumpy array and the built-in `set`. The array, sparse
-matrix and chumpy symbols map to inert stand-ins that only record data, and
-every other symbol is refused before it is resolved. No code from the file runs.
+SciPy sparse matrix, the chumpy array and the built-in `set`. Each maps to an
+inert stand-in that only records data, `set` accepts only the empty sets the
+published files contain, and every other symbol is refused before it is
+resolved. No code from the file runs.
 
 It then refuses a model unless:
 

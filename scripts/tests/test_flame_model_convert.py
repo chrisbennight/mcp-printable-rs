@@ -242,6 +242,21 @@ class SafetyTests(unittest.TestCase):
             tracemalloc.stop()
         self.assertLess(peak, 16 * len(raw))
 
+    def test_unpickling_bounds_values_that_stand_ins_copy(self):
+        # Each value sits in an unused field, so only the unpickle-time bound
+        # can refuse it.
+        encoder = Legacy()
+        cases = {
+            "array shape": encoder.array("f8", (1, 1, 1, 1), [0.0]),
+            "type code": encoder.glob("numpy", "dtype")
+            + _tuple(encoder.text("f8f8f8"), P.NEWFALSE, P.NEWTRUE) + P.REDUCE,
+            "empty sets": encoder.glob("__builtin__", "set")
+            + _tuple(P.EMPTY_LIST + P.MARK + _int(1) + P.APPENDS) + P.REDUCE,
+        }
+        for message, value in cases.items():
+            with self.subTest(message), self.assertRaisesRegex(ModelError, message):
+                convert(model(encoder, overrides={"unused": value}), "bounded", expression_components=2)
+
     def test_array_data_that_is_not_raw_bytes_is_refused(self):
         encoder = Legacy()
         text = "Āab".encode()

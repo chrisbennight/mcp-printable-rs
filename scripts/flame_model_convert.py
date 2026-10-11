@@ -38,6 +38,10 @@ MAX_SOURCE_BYTES = 256 << 20
 # Published models use well under a hundred memo slots.
 MAX_MEMO_INDEX = 1 << 16
 MEMO_STORES = {"PUT", "BINPUT", "LONG_BINPUT"}
+# Stand-ins copy only values bounded by these sizes, so a value that a source
+# memoizes and references many times costs a constant amount per reference.
+MAX_ARRAY_RANK = 3
+MAX_TYPE_CODE = 3
 VARIANT = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 SOURCE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Published FLAME bases order 300 identity components before 100 expression
@@ -58,7 +62,7 @@ class _DType:
     """Records a NumPy dtype descriptor without constructing one."""
 
     def __init__(self, code, align=False, copy=True):
-        if not isinstance(code, str):
+        if not isinstance(code, str) or len(code) > MAX_TYPE_CODE:
             raise ModelError("array element type is not a type code")
         self.code = code.lstrip("<>|=")
         self.byteorder = code[0] if code[:1] in ("<", ">", "|") else "<"
@@ -78,7 +82,7 @@ class _Array:
 
     def __init__(self, dtype=None, shape=(), data=b"", fortran=False):
         self.dtype = dtype
-        self.shape = tuple(shape)
+        self.shape = _shape(shape)
         self.data = data
         self.fortran = fortran
 
@@ -91,7 +95,7 @@ class _Array:
         # when read, so one string shared by many arrays is not copied for each.
         if not isinstance(dtype, _DType) or not isinstance(data, (str, bytes, bytearray)):
             raise ModelError("array state does not hold raw numeric data")
-        self.dtype, self.shape, self.data, self.fortran = dtype, tuple(shape), data, bool(fortran)
+        self.dtype, self.shape, self.data, self.fortran = dtype, _shape(shape), data, bool(fortran)
 
     def values(self):
         """Return the elements in C order, in native byte order."""
@@ -135,6 +139,19 @@ class _SparseCSC:
         self.state = state
 
 
+def _shape(shape):
+    if not isinstance(shape, (tuple, list)) or len(shape) > MAX_ARRAY_RANK:
+        raise ModelError("array shape is not a FLAME array shape")
+    return tuple(shape)
+
+
+def _empty_set(items=()):
+    # Published models only build empty sets.
+    if not isinstance(items, (list, tuple)) or items:
+        raise ModelError("only empty sets appear in FLAME models")
+    return set()
+
+
 def _reconstruct(cls, shape, typecode):
     if cls is not _Array:
         raise ModelError("array reconstruction names an unexpected class")
@@ -161,8 +178,8 @@ ALLOWED = {
     ("scipy.sparse.csc", "csc_matrix"): _SparseCSC,
     ("scipy.sparse._csc", "csc_matrix"): _SparseCSC,
     ("chumpy.ch", "Ch"): _Ch,
-    ("__builtin__", "set"): set,
-    ("builtins", "set"): set,
+    ("__builtin__", "set"): _empty_set,
+    ("builtins", "set"): _empty_set,
 }
 
 
