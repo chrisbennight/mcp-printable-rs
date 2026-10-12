@@ -443,6 +443,8 @@ def textured_head_smoke(host: str, port: int) -> None:
         "    png += struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))\n"
         "Path(workspace_root, 'smoke/corrupt-colour.png').write_bytes(png)\n"
     )})
+    images = "result = sorted(image.name for image in bpy.data.images)\n"
+    before = command(host, port, "execute_code", {"code": images})["result"]
     try:
         command(host, port, "create_flame_head", {
             "name": "CorruptHeadProbe",
@@ -457,12 +459,15 @@ def textured_head_smoke(host: str, port: int) -> None:
             raise
     else:
         raise RuntimeError("a colour map with undecodable pixels made a head")
-    leftovers = command(host, port, "execute_code", {"code": (
-        "result = [name for name in [*bpy.data.objects.keys(), *bpy.data.images.keys()]\n"
-        "          if name.startswith('CorruptHeadProbe')]\n"
-    )})
-    if leftovers.get("result") != []:
-        raise RuntimeError(f"an undecodable colour map left {leftovers.get('result')}")
+    # The refused image is named after its staged copy, so compare every image.
+    after = command(host, port, "execute_code", {"code": images})["result"]
+    objects = command(host, port, "execute_code", {"code": (
+        "result = [name for name in bpy.data.objects.keys() if name.startswith('CorruptHeadProbe')]\n"
+    )})["result"]
+    if after != before or objects != []:
+        raise RuntimeError(
+            f"an undecodable colour map left images {sorted(set(after) - set(before))} and objects {objects}"
+        )
 
 
 def capability_smoke(host: str, port: int) -> None:
