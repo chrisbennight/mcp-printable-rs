@@ -10,10 +10,10 @@ kiwisolver==1.5.1
 matplotlib==3.11.2
 mediapipe==1.1.0
 numpy==2.4.6
-opencv-contrib-python-headless==5.0.0.93
 packaging==26.3
 pillow==12.3.0
 pyparsing==3.3.3
 python-dateutil==2.9.0.post0
+setuptools==84.0.0
 six==1.17.0
 timm==1.0.30

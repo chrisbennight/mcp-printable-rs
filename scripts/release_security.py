@@ -305,7 +305,7 @@ def main() -> int:
     except ValueError:
         print("release registry or source identity is invalid", file=sys.stderr)
         return 2
-    patterns = [identity.reference_pattern(role) for role in ("server", "blender", "cad", "slicer")]
+    patterns = [identity.reference_pattern(role) for role in ("server", "blender", "cad", "slicer", "recon")]
     if any(not any(pattern.fullmatch(image) for pattern in patterns) for image in images):
         print("every release scan target must be an exact Printable digest", file=sys.stderr)
         return 2
