@@ -403,7 +403,16 @@ def textured_head_smoke(host: str, port: int) -> None:
         "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         "texture": "smoke/render.png",
     })
+    # Replacing the colour map frees the image it replaces.
+    command(host, port, "update_flame_head", {
+        "object": "TexturedHeadProbe",
+        "variant": "smoke",
+        "vertices": [[0.0, 0.0, 1.0], [10.0, 0.0, 1.0], [10.0, 10.0, 1.0], [0.0, 10.0, 1.0]],
+        "texture": "smoke/render.png",
+    })
     observed = command(host, port, "execute_code", {"code": (
+        "maps = [image for image in bpy.data.images if image.name.startswith('TexturedHeadProbe colour map')]\n"
+        "assert len(maps) == 1, [image.name for image in maps]\n"
         "obj = bpy.data.objects['TexturedHeadProbe']\n"
         "layer = obj.data.uv_layers['FLAME']\n"
         "material = obj.data.materials[0]\n"

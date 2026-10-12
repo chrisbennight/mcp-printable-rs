@@ -1329,8 +1329,17 @@ class BlenderHandlers:
             )
             if node is None:
                 obj.data.materials.append(self._colour_material(name, image))
+                # Show the colour on every face, whatever slot it used before.
+                slot = len(obj.data.materials) - 1
+                obj.data.polygons.foreach_set("material_index", [slot] * len(obj.data.polygons))
             else:
+                replaced = node.image
                 node.image = image
+                # Packed images stay in memory until removed.
+                if replaced is not None and replaced.users == 0:
+                    self._bpy.data.images.remove(replaced)
+                    # Blender suffixed the new name while the old one existed.
+                    image.name = f"{name} colour map"
         obj.data.vertices.foreach_set(
             "co", [coordinate for point in vertices for coordinate in point]
         )
