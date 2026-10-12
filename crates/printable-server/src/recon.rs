@@ -18,7 +18,7 @@ use crate::error::ToolError;
 /// Photographs accepted in one request.
 pub const MAX_IMAGES: usize = 8;
 /// Largest photograph copied out of the workspace.
-const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// Largest JSON response read from the Python process.
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 /// Largest displacement map committed to the workspace.
@@ -34,9 +34,14 @@ pub struct ReconRequest {
     pub images: Vec<String>,
     /// Workspace path for the 16-bit PNG displacement map.
     pub displacement_path: String,
-    /// Replace an existing file at `displacement_path`.
+    /// Replace existing files at `displacement_path` and `texture_path`.
     #[serde(default)]
     pub overwrite: bool,
+    /// Workspace path for an RGB PNG colour map in FLAME's texture layout,
+    /// projected from the photographs. Needs the FLAME 2020 generic model
+    /// converted with its texture layout. Not made when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_path: Option<String>,
 }
 
 impl ReconRequest {
@@ -61,8 +66,40 @@ impl ReconRequest {
                 "displacement_path must end in .png".into(),
             ));
         }
+        if let Some(texture) = &self.texture_path {
+            if !texture.ends_with(".png") {
+                return Err(ToolError::Validation(
+                    "texture_path must end in .png".into(),
+                ));
+            }
+            if *texture == self.displacement_path {
+                return Err(ToolError::Validation(
+                    "texture_path and displacement_path must differ".into(),
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+/// SHA-256 of a file read in pieces, as lowercase hexadecimal.
+pub(crate) fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hex(&digest.finalize()));
+        }
+        digest.update(&buffer[..read]);
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Where the reconstruction runtime and its operator-supplied files live.
@@ -227,6 +264,13 @@ impl ReconWorker {
             MAX_MAP_BYTES,
         )?;
         result["displacement"]["artifact"] = json!(artifact);
+        // Callers that read the photographs themselves can confirm they saw
+        // the same bytes.
+        let digests = snapshots
+            .iter()
+            .map(|snapshot| file_digest(snapshot.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        result["image_sha256"] = json!(digests);
         Ok(result)
     }
 
@@ -360,6 +404,12 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
         assert_eq!(result["device"], "cpu");
         assert_eq!(result["displacement"]["artifact"]["path"], "detail/map.png");
         assert!(root.path().join("workspace/detail/map.png").is_file());
+        // The digests identify the bytes the runtime was given.
+        let digests: Vec<String> = ["face.jpg", "side.png"]
+            .iter()
+            .map(|name| file_digest(&root.path().join("workspace").join(name)).unwrap())
+            .collect();
+        assert_eq!(result["image_sha256"], json!(digests));
         // An existing map is kept unless overwrite is requested.
         let repeat = worker
             .reconstruct(request(&["face.jpg"], "detail/map.png"))
@@ -407,6 +457,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             images: images.iter().map(|image| (*image).to_owned()).collect(),
             displacement_path: displacement.into(),
             overwrite: false,
+            texture_path: None,
         }
     }
 
@@ -421,6 +472,13 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             .collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert!(request(&many, "map.png").validate().is_err());
+        let with_texture = |texture: &str| ReconRequest {
+            texture_path: Some(texture.into()),
+            ..request(&["a.jpg"], "map.png")
+        };
+        assert!(with_texture("colour.png").validate().is_ok());
+        assert!(with_texture("colour.jpg").validate().is_err());
+        assert!(with_texture("map.png").validate().is_err());
     }
 }
 
@@ -436,6 +494,9 @@ pub struct ReconClient {
     http: reqwest::Client,
     /// The worker's last readiness answer; subscribers hear each change.
     ready: tokio::sync::watch::Sender<bool>,
+    /// Building a colour map holds a photograph, its depth buffer and the map
+    /// in the server's memory, so the server builds one at a time.
+    colour_maps: Arc<Semaphore>,
 }
 
 impl ReconClient {
@@ -460,12 +521,23 @@ impl ReconClient {
             endpoint: endpoint.trim().trim_end_matches('/').to_owned(),
             http,
             ready: tokio::sync::watch::Sender::new(false),
+            colour_maps: Arc::new(Semaphore::new(1)),
         })))
     }
 
     /// Whether the worker last reported every checkpoint present.
     pub fn is_ready(&self) -> bool {
         *self.ready.borrow()
+    }
+
+    /// Permission to build a colour map, or a busy error while another is
+    /// being built.
+    pub fn colour_map_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ToolError> {
+        Arc::clone(&self.colour_maps)
+            .try_acquire_owned()
+            .map_err(|_| {
+                reconstruction_error("busy", "another colour map is being made; retry shortly")
+            })
     }
 
     /// A receiver that wakes whenever readiness changes.

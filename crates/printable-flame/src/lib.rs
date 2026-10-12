@@ -12,6 +12,7 @@
 
 mod model;
 mod pose;
+pub mod texture;
 
 pub use model::{FlameModel, JOINT_COUNT, MODEL_FORMAT, ModelError, ModelInfo, UvLayout};
 pub use pose::{FlameParams, ParamError, Pose, PosedHead};

@@ -5985,10 +5985,20 @@ async fn head_prepare_print_hollows_a_real_bust_on_a_plinth() {
 
 /// A FLAME 2020 generic stand-in: the fixture with that release's digest.
 fn flame2020_library() -> Arc<printable_server::flame::FlameLibrary> {
+    flame2020_library_with_uv(false)
+}
+
+fn flame2020_library_with_uv(textured: bool) -> Arc<printable_server::flame::FlameLibrary> {
     let models = tempfile::tempdir().unwrap();
     // The published model's split: 300 identity and 100 expression components.
     let mut fixture = printable_flame::fixture::Fixture {
         shapedirs: vec![0.0; 4 * 3 * 400],
+        uv: textured.then(|| {
+            (
+                vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            )
+        }),
         ..Default::default()
     };
     for (key, value) in [
@@ -6018,6 +6028,19 @@ async fn fake_recon_worker(
     Arc<std::sync::Mutex<Vec<Value>>>,
     tokio::task::JoinHandle<()>,
 ) {
+    fake_recon_worker_with(ready, json!({})).await
+}
+
+/// As [`fake_recon_worker`], with `changes` replacing fields of its answer.
+/// A `_delay_ms` change delays the answer instead.
+async fn fake_recon_worker_with(
+    ready: bool,
+    changes: Value,
+) -> (
+    String,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
     use axum::{Json, Router, routing::get, routing::post};
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
@@ -6036,21 +6059,45 @@ async fn fake_recon_worker(
             "/reconstruct",
             post(move |Json(request): Json<Value>| {
                 let recorded = Arc::clone(&recorded);
+                let mut changes = changes.clone();
                 async move {
                     recorded.lock().unwrap().push(request.clone());
-                    Json(json!({
+                    if let Some(delay) = changes.as_object_mut().unwrap().remove("_delay_ms") {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            delay.as_u64().unwrap(),
+                        ))
+                        .await;
+                    }
+                    let mut answer = json!({
                         "identity": vec![0.25; 300],
                         "expression": vec![0.5; 50],
                         "jaw": [0.1, 0.0, 0.0],
                         "head_rotation": [0.0, 0.1, 0.0],
                         "identity_agreement": [1.0],
                         "clamped_coefficients": 0,
+                        // The fixture head spans 0 to 1 m in x and y; this
+                        // camera centres it in a 224 pixel photograph.
+                        "views": [{
+                            "shape": [0.0], "expression": [0.0],
+                            "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+                            "camera": [1.0, -0.5, -0.5],
+                            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+                            "image_size": [224, 224]
+                        }],
                         "displacement": {
                             "offset_mm": -1.0, "scale_mm": 2.0, "width": 256, "height": 256,
                             "artifact": {"path": request["displacement_path"], "size_bytes": 10,
                                 "media_type": "image/png", "modified_ns": 1}
                         }
-                    }))
+                    });
+                    for (key, value) in changes.as_object().unwrap() {
+                        if value.is_null() {
+                            answer.as_object_mut().unwrap().remove(key);
+                        } else {
+                            answer[key] = value.clone();
+                        }
+                    }
+                    Json(answer)
                 }
             }),
         );
@@ -6063,8 +6110,16 @@ async fn fake_recon_worker(
 }
 
 async fn recon_server(root: &Path, endpoint: &str) -> PrintableServer {
+    recon_server_with(root, endpoint, flame2020_library()).await
+}
+
+async fn recon_server_with(
+    root: &Path,
+    endpoint: &str,
+    library: Arc<printable_server::flame::FlameLibrary>,
+) -> PrintableServer {
     let mut cfg = settings("127.0.0.1", 9);
-    cfg.flame = Some(flame2020_library());
+    cfg.flame = Some(library);
     let recon = printable_server::recon::ReconClient::configure(&|name| {
         (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.to_owned())
     })
@@ -6178,6 +6233,191 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
         );
     }
     assert_eq!(seen.lock().unwrap().len(), 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest = |bytes: &[u8]| -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    let photo_digest = digest(&std::fs::read(root.path().join("face.png")).unwrap());
+    let (endpoint, seen, task) =
+        fake_recon_worker_with(true, json!({"image_sha256": [photo_digest]})).await;
+    let server = recon_server_with(root.path(), &endpoint, flame2020_library_with_uv(true)).await;
+    let params = json!({
+        "images": ["face.png"], "displacement_path": "detail.png", "texture_path": "colour.png"
+    });
+    let result = server
+        .invoke_tool(head_call(
+            json!({"action": "reconstruct", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    let texture = &value["texture"];
+    assert_eq!(
+        (texture["width"].as_u64(), texture["height"].as_u64()),
+        (Some(1024), Some(1024))
+    );
+    assert!(texture["seen"].as_f64().unwrap() > 0.1, "{value}");
+    // A single-coloured photograph colours the whole map, including what it
+    // cannot see.
+    let map = image::open(root.path().join("colour.png"))
+        .unwrap()
+        .into_rgb8();
+    assert_eq!(map.dimensions(), (1024, 1024));
+    let count = f64::from(map.width() * map.height());
+    let mean: Vec<f64> = (0..3)
+        .map(|channel| {
+            map.pixels()
+                .map(|pixel| f64::from(pixel.0[channel]))
+                .sum::<f64>()
+                / count
+        })
+        .collect();
+    for (channel, expected) in mean.iter().zip([200.0, 40.0, 10.0]) {
+        assert!((channel - expected).abs() < 2.0, "{mean:?}");
+    }
+
+    let repeat = server
+        .invoke_tool(head_call(
+            json!({"action": "reconstruct", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(repeat.is_error, Some(true), "existing maps need overwrite");
+    let asked = seen.lock().unwrap().len();
+    task.abort();
+
+    // A photograph the worker fitted with different bytes, or a worker that
+    // does not describe its views, leaves the displacement map written and
+    // says so.
+    for (changes, message) in [
+        (
+            json!({"image_sha256": [digest(b"another photograph")]}),
+            "changed while",
+        ),
+        (json!({"views": null}), "did not describe"),
+    ] {
+        let (endpoint, _, task) = fake_recon_worker_with(true, changes).await;
+        let server =
+            recon_server_with(root.path(), &endpoint, flame2020_library_with_uv(true)).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "d2.png", "texture_path": "c2.png"
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{message}");
+        let text = format!("{result:?}");
+        assert!(
+            text.contains(message) && text.contains("wrote the displacement map"),
+            "{text}"
+        );
+        assert!(!root.path().join("c2.png").exists());
+        task.abort();
+    }
+
+    // A model without a texture layout, one path for both maps, or a
+    // photograph over the size limit is refused before the worker is asked.
+    std::fs::File::create(root.path().join("huge.png"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    for (library, params, message) in [
+        (
+            flame2020_library(),
+            json!({"images": ["face.png"], "displacement_path": "d.png", "texture_path": "c.png"}),
+            "--texture",
+        ),
+        (
+            flame2020_library_with_uv(true),
+            json!({"images": ["face.png"], "displacement_path": "d.png", "texture_path": "d.png"}),
+            "must differ",
+        ),
+        (
+            flame2020_library_with_uv(true),
+            json!({"images": ["face.png"], "displacement_path": "d.png", "texture_path": "./d.png"}),
+            "name the same file",
+        ),
+        (
+            flame2020_library_with_uv(true),
+            json!({"images": ["huge.png"], "displacement_path": "d.png", "texture_path": "c.png"}),
+            "snapshot limit",
+        ),
+    ] {
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(asked, 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_makes_one_colour_map_at_a_time() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([90, 90, 90]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let (endpoint, seen, task) =
+        fake_recon_worker_with(true, json!({"_delay_ms": 1500, "views": null})).await;
+    let server =
+        Arc::new(recon_server_with(root.path(), &endpoint, flame2020_library_with_uv(true)).await);
+    let request = |texture: &str| {
+        head_call(json!({"action": "reconstruct", "params": {
+            "images": ["face.png"], "displacement_path": format!("{texture}.d.png"),
+            "texture_path": format!("{texture}.png")
+        }}))
+    };
+    let first = {
+        let server = Arc::clone(&server);
+        let call = request("first");
+        tokio::spawn(async move { server.invoke_tool(call).await.unwrap() })
+    };
+    while seen.lock().unwrap().is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let second = server.invoke_tool(request("second")).await.unwrap();
+    assert_eq!(second.is_error, Some(true));
+    assert!(
+        format!("{second:?}").contains("another colour map is being made"),
+        "{second:?}"
+    );
+    // The first finishes (here with a worker that describes no views), and
+    // the next request is admitted.
+    first.await.unwrap();
+    let third = server.invoke_tool(request("third")).await.unwrap();
+    assert!(
+        !format!("{third:?}").contains("another colour map is being made"),
+        "{third:?}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
     task.abort();
 }
 
