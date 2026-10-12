@@ -519,9 +519,22 @@ impl ServerHandler for PrintableServer {
     async fn call_tool(
         &self,
         params: CallToolRequestParams,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        self.invoke_tool(params).await.map(CallToolResponse::from)
+        let permit = ctx
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<crate::admission::WorkPermit>())
+            .map(crate::admission::WorkPermit::retained);
+        let server = self.clone();
+        // Disconnecting does not undo a delivered effect. This owned task keeps
+        // admission and arguments until dispatch reaches its completion boundary.
+        tokio::spawn(async move {
+            let _permit = permit;
+            server.invoke_tool(params).await.map(CallToolResponse::from)
+        })
+        .await
+        .map_err(|_| McpError::internal_error("tool task did not complete", None))?
     }
 
     async fn on_custom_request(
