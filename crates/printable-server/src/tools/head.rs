@@ -747,8 +747,20 @@ fn decode_labels(segmentation: &ReconSegmentation) -> Result<(usize, Vec<u8>), S
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&segmentation.labels_png)
         .map_err(|_| "the photograph's labels are not base64".to_string())?;
+    let not_png = || "the photograph's labels are not a greyscale PNG".to_string();
+    // The header says the size, so nothing larger than a label square is
+    // ever decoded.
+    let (width, height) = ImageReader::with_format(std::io::Cursor::new(&bytes), ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|_| not_png())?;
+    if width != height || !(1..=MAX_LABEL_SIDE).contains(&width) {
+        return Err("the photograph's labels are not a square of a sensible size".into());
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_LABEL_SIDE);
+    limits.max_image_height = Some(MAX_LABEL_SIDE);
     let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), ImageFormat::Png);
-    reader.limits(Limits::default());
+    reader.limits(limits);
     let labels = reader
         .decode()
         .ok()
@@ -756,10 +768,9 @@ fn decode_labels(segmentation: &ReconSegmentation) -> Result<(usize, Vec<u8>), S
             image::DynamicImage::ImageLuma8(labels) => Some(labels),
             _ => None,
         })
-        .ok_or_else(|| "the photograph's labels are not a greyscale PNG".to_string())?;
-    let (width, height) = labels.dimensions();
-    if width != height || !(1..=MAX_LABEL_SIDE).contains(&width) {
-        return Err("the photograph's labels are not a square of a sensible size".into());
+        .ok_or_else(not_png)?;
+    if labels.dimensions() != (width, height) {
+        return Err(not_png());
     }
     let data = labels.into_raw();
     if data
@@ -873,7 +884,8 @@ fn colour_map(
     });
     let hair = colouring.hair_colour.or(found_hair);
     let (scalp, applied, note) = match colouring.scalp {
-        ScalpChoice::Photo => (texture::ScalpColour::Photo, "photo", None),
+        // Without a scalp region every face is skin, which takes colour
+        // only from skin, whatever was asked for the scalp.
         _ if !knows_scalp => (
             texture::ScalpColour::Skin,
             "skin",
@@ -881,6 +893,7 @@ fn colour_map(
                 "the model has no scalp region; convert it again with --masks to colour the scalp separately",
             ),
         ),
+        ScalpChoice::Photo => (texture::ScalpColour::Photo, "photo", None),
         ScalpChoice::Skin => (texture::ScalpColour::Skin, "skin", None),
         ScalpChoice::Hair => match hair {
             Some(colour) => (texture::ScalpColour::Hair(colour), "hair", None),

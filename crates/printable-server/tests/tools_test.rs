@@ -6382,6 +6382,8 @@ async fn head_reconstruct_colours_skin_from_skin_and_the_scalp_as_asked() {
         (scalp_everywhere.clone(), 3, json!({}), "hair", None),
         // Without a scalp region the whole head is skin.
         (Vec::new(), 3, json!({}), "skin", Some([200.0, 40.0, 10.0])),
+        // Even when hair is asked to be taken as photographed.
+        (Vec::new(), 1, json!({"scalp": "photo"}), "skin", None),
     ]
     .into_iter()
     .enumerate()
@@ -6445,31 +6447,45 @@ async fn head_reconstruct_colours_skin_from_skin_and_the_scalp_as_asked() {
         task.abort();
     }
 
-    // Labels with other classes are refused, and the map is not made.
-    let (endpoint, _, task) = fake_recon_worker_with(
-        true,
-        json!({"image_sha256": [digest.clone()], "views": view(3, json!(["background", "skin"]))}),
-    )
-    .await;
-    let server = recon_server_with(
-        root.path(),
-        &endpoint,
-        flame2020_library_with_regions(true, scalp_everywhere),
-    )
-    .await;
-    let result = server
-        .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
-            "images": ["face.png"], "displacement_path": "dx.png", "texture_path": "cx.png"
-        }})))
-        .await
+    // Labels with other classes, or larger than a label square, are
+    // refused before they are decoded, and the map is not made.
+    let mut oversized = view(3, classes.clone());
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::GrayImage::new(2048, 2048)
+        .write_to(&mut png, ImageFormat::Png)
         .unwrap();
-    assert_eq!(result.is_error, Some(true));
-    assert!(
-        format!("{result:?}").contains("unexpected classes"),
-        "{result:?}"
-    );
-    assert!(!root.path().join("cx.png").exists());
-    task.abort();
+    oversized[0]["segmentation"]["labels_png"] =
+        json!(base64::engine::general_purpose::STANDARD.encode(png.into_inner()));
+    for (index, (views, message)) in [
+        (view(3, json!(["background", "skin"])), "unexpected classes"),
+        (oversized, "sensible size"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (endpoint, _, task) = fake_recon_worker_with(
+            true,
+            json!({"image_sha256": [digest.clone()], "views": views}),
+        )
+        .await;
+        let server = recon_server_with(
+            root.path(),
+            &endpoint,
+            flame2020_library_with_regions(true, scalp_everywhere.clone()),
+        )
+        .await;
+        let result = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.png"], "displacement_path": format!("dx{index}.png"),
+                "texture_path": format!("cx{index}.png")
+            }})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(format!("{result:?}").contains(message), "{result:?}");
+        assert!(!root.path().join(format!("cx{index}.png")).exists());
+        task.abort();
+    }
 }
 
 #[tokio::test]
