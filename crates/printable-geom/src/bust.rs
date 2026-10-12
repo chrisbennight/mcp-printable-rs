@@ -233,6 +233,10 @@ pub struct DisplacementReport {
     /// the map carries detail. Absent when no vertex does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percentiles_mm: Option<DetailPercentiles>,
+    /// The 95th percentile of the applied distance's magnitude at those
+    /// vertices, raised and recessed alike: the depth `relief_mm` aims for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_p95_mm: Option<f64>,
     /// Factor the map was multiplied by to reach `relief_mm`; 1 without it.
     pub relief_scale: f64,
     /// Whether the relief was reduced to keep detail within its limit.
@@ -629,10 +633,14 @@ fn detail_report(
         }),
         _ => None,
     };
+    let mut magnitudes: Vec<f64> = distances.iter().map(|distance| distance.abs()).collect();
+    let depth_p95_mm =
+        percentile(&mut magnitudes, RELIEF_PERCENTILE).map(|value| value * correction);
     DisplacementReport {
         lowest_mm: lowest * correction,
         highest_mm: highest * correction,
         percentiles_mm,
+        depth_p95_mm,
         relief_scale,
         relief_limited,
     }
@@ -1783,10 +1791,7 @@ mod tests {
         assert!(applied.relief_scale != 1.0);
         // The surface samples the map unevenly, so the applied 95th
         // percentile lands near, not exactly on, the requested depth.
-        let p95 = applied
-            .percentiles_mm
-            .map(|percentiles| percentiles.p95.max(-percentiles.p5))
-            .expect("detail percentiles");
+        let p95 = applied.depth_p95_mm.expect("detail depth");
         assert!((0.15..0.45).contains(&p95), "{applied:?}");
         assert!(validated(&mesh).solid_geometry);
 
@@ -1811,6 +1816,20 @@ mod tests {
             prepare_bust(&relieved),
             Err(GeometryError::InvalidOptions(text)) if text.contains("relief")
         ));
+    }
+
+    #[test]
+    fn the_detail_depth_is_the_percentile_of_its_magnitude() {
+        // Mostly shallow detail both ways, with a little deeper detail on
+        // each side: the signed 5th and 95th percentiles stay shallow.
+        let mut distances: Vec<f64> = [(-0.3, 4), (-0.1, 46), (0.1, 46), (0.3, 4)]
+            .into_iter()
+            .flat_map(|(value, count)| std::iter::repeat_n(value, count))
+            .collect();
+        let report = detail_report(&mut distances, 2.0, (1.0, false));
+        let percentiles = report.percentiles_mm.expect("detail percentiles");
+        assert_eq!((percentiles.p5, percentiles.p95), (-0.2, 0.2));
+        assert_eq!(report.depth_p95_mm, Some(0.6));
     }
 
     #[test]

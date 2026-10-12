@@ -946,15 +946,13 @@ fn print_warnings(printer: &Printer, bust: &Value) -> Vec<String> {
                 "the default detail relief was reduced to keep the detail within 5% of the head's height".into(),
             );
         }
-        let percentiles = &detail["percentiles_mm"];
-        if let (Some(p5), Some(p95)) = (percentiles["p5"].as_f64(), percentiles["p95"].as_f64()) {
-            let depth = p95.max(-p5);
-            if depth < printer.layer_height_mm {
-                warnings.push(format!(
-                    "95% of the surface detail is less than {depth:.2} mm deep, shallower than one {} mm layer, so little of it will show; raise displacement.relief_mm",
-                    printer.layer_height_mm
-                ));
-            }
+        if let Some(depth) = detail["depth_p95_mm"].as_f64()
+            && depth < printer.layer_height_mm
+        {
+            warnings.push(format!(
+                "95% of the surface detail is less than {depth:.2} mm deep, shallower than one {} mm layer, so little of it will show; raise displacement.relief_mm",
+                printer.layer_height_mm
+            ));
         }
     }
     warnings

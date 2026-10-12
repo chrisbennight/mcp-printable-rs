@@ -443,6 +443,9 @@ The `bust` report adds `displacement`:
   applied, in millimetres at the finished size;
 - `percentiles_mm`, the 1st, 5th, 50th, 95th and 99th percentiles of the
   applied distance over the vertices where the map carries detail;
+- `depth_p95_mm`, the 95th percentile of the applied distance's magnitude
+  over those vertices, raised and recessed alike, which is what `relief_mm`
+  aims for;
 - `relief_scale`, the factor `relief_mm` multiplied the map by, or 1;
 - `filter`, the millimetres per texel used and the filter settings applied.
 
@@ -520,13 +523,13 @@ the nearest vertex that has one.
 
 The response adds `printer`, the settings used with their defaults, and
 `warnings`, plain sentences about parts thinner than `minimum_wall_mm`,
-detail whose 95th percentile is shallower than one layer, and a default
+detail whose `depth_p95_mm` is shallower than one layer, and a default
 relief that was reduced to the limit.
 
 On a 100 mm FDM bust of the FLAME 2020 generic head with a map reconstructed
 from one photograph and `high_pass_mm` 15, the defaults gave an 8 mm plinth
-with a 0.5 mm chamfer and a 0.4 mm relief, applied at 0.45 mm at its 95th
-percentile. 675 mm² of surface overhung by more than 45 degrees, largest
+with a 0.5 mm chamfer and a 0.4 mm relief; the applied distance's 95th
+percentile was +0.45 mm. 675 mm² of surface overhung by more than 45 degrees, largest
 under the chin (reported as `neck`), then under the lips, the nose and both
 ears. 3.3 mm² at the nose, ears and lips was thinner than 0.4 mm. The
 request took 7.6 seconds, about the same as without the checks. A 60 mm
