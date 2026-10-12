@@ -161,8 +161,9 @@ colour:
 }}
 ```
 
-The image is packed into the scene, so the head keeps its colour without the
-workspace file. Its material feeds the image into the base colour of a
+The colour map may be up to 12 MiB and 4096 pixels on each side, which is what
+the Blender bridge can stage before loading it. The image is packed into the
+scene, so the head keeps its colour without the workspace file. Its material feeds the image into the base colour of a
 Principled BSDF, which the viewport and the render tools show. `update`
 accepts `texture` too, to replace the colour map of a head created with
 texture coordinates. It changes the material the head actually shows: when

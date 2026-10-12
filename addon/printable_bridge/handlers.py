@@ -297,8 +297,9 @@ def _only_keys(params: dict[str, Any], allowed: set[str]) -> None:
 FLAME_VARIANT = "printable_flame_variant"
 FLAME_UV_LAYER = "FLAME"
 FLAME_COLOUR_NODE = "FLAME colour map"
-MAX_COLOUR_MAP_BYTES = 64 * 1024 * 1024
-MAX_COLOUR_MAP_PIXELS = 8192
+# Colour maps are staged in the bridge's 16 MiB run directory before loading.
+MAX_COLOUR_MAP_BYTES = 12 * 1024 * 1024
+MAX_COLOUR_MAP_PIXELS = 4096
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -351,7 +352,7 @@ def _check_colour_map(path: Path) -> None:
     """Refuse a staged colour map that is too large or not a PNG of a
     sensible size, judged from its header before anything decodes it."""
     if path.stat().st_size > MAX_COLOUR_MAP_BYTES:
-        raise HandlerError("the colour map is larger than 64 MiB")
+        raise HandlerError("the colour map is larger than 12 MiB")
     with path.open("rb") as image:
         header = image.read(24)
     if len(header) < 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
@@ -1288,7 +1289,7 @@ class BlenderHandlers:
             nonlocal chunks
             chunks += 1
             if chunks > MAX_COLOUR_MAP_BYTES // (1024 * 1024) + 2:
-                raise HandlerError("the colour map is larger than 64 MiB")
+                raise HandlerError("the colour map is larger than 12 MiB")
 
         with self._workspace.stage_input(request, check_budget=within_budget) as source:
             # The staged copy is private, so what is checked is what Blender loads.

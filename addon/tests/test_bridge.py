@@ -4754,9 +4754,9 @@ class FlameHeadHandlerTests(unittest.TestCase):
     def test_colour_map_problems_create_nothing(self) -> None:
         workspace = Path(self.directory.name) / "workspace"
         (workspace / "fake.png").write_bytes(b"not a png at all, just some bytes")
-        self.write_map("wide.png", b"wide", width=9000, height=10)
+        self.write_map("wide.png", b"wide", width=4097, height=10)
         with (workspace / "huge.png").open("wb") as huge:
-            huge.truncate(64 * 1024 * 1024 + 1)
+            huge.truncate(12 * 1024 * 1024 + 1)
         for overrides, error, message in [
             ({"texture": "colour.png"}, HandlerError, "needs the head's texture coordinates"),
             ({"uv": self.UVS[:5]}, HandlerError, "every triangle corner"),
@@ -4764,8 +4764,8 @@ class FlameHeadHandlerTests(unittest.TestCase):
             ({"uv": self.UVS, "texture": "missing.png"}, WorkspaceError, "unavailable"),
             ({"uv": self.UVS, "texture": "colour.jpg"}, WorkspaceError, ""),
             ({"uv": self.UVS, "texture": "fake.png"}, HandlerError, "not a PNG image"),
-            ({"uv": self.UVS, "texture": "wide.png"}, HandlerError, "8192 pixels"),
-            ({"uv": self.UVS, "texture": "huge.png"}, HandlerError, "larger than 64 MiB"),
+            ({"uv": self.UVS, "texture": "wide.png"}, HandlerError, "4096 pixels"),
+            ({"uv": self.UVS, "texture": "huge.png"}, HandlerError, "larger than 12 MiB"),
         ]:
             with self.subTest(message), self.assertRaisesRegex(error, message):
                 self.create(**overrides)

@@ -639,9 +639,10 @@ fn decode_displacement(bytes: &[u8]) -> Result<(usize, usize, Vec<f64>), ToolErr
     Ok((width as usize, height as usize, fractions))
 }
 
-/// Largest colour map accepted, in bytes and in pixels on each side.
-const MAX_COLOUR_MAP_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_COLOUR_MAP_PIXELS: u32 = 8192;
+/// Largest colour map accepted, in bytes and in pixels on each side. The
+/// Blender add-on stages a map in its 16 MiB run directory before loading it.
+const MAX_COLOUR_MAP_BYTES: u64 = 12 * 1024 * 1024;
+const MAX_COLOUR_MAP_PIXELS: u32 = 4096;
 
 /// A colour map must be a workspace PNG of a sensible size. Its header is read
 /// through a bounded snapshot before Blender is asked to load it.
