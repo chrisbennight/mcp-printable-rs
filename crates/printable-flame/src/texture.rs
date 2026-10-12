@@ -800,8 +800,8 @@ fn accumulate(
     };
     for sample in samples {
         weight[sample.texel] += sample.share;
-        for channel in 0..3 {
-            colour[sample.texel][channel] += sample.share * sample.colour[channel];
+        for (total, value) in colour[sample.texel].iter_mut().zip(sample.colour) {
+            *total += sample.share * value;
         }
     }
     Ok(shading)
@@ -840,8 +840,8 @@ fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
         ambient: [0.0; 3],
         direction: [[0.0; 3]; 3],
     };
-    for channel in 0..3 {
-        let solution = solve4(normal_matrix, right[channel])?;
+    for (channel, right) in right.into_iter().enumerate() {
+        let solution = solve4(normal_matrix, right)?;
         shading.ambient[channel] = solution[0] as f32;
         shading.direction[channel] =
             [solution[1], solution[2], solution[3]].map(|value| value as f32);
@@ -917,10 +917,11 @@ fn solve4(mut matrix: [[f64; 4]; 4], mut right: [f64; 4]) -> Option<[f64; 4]> {
         }
         matrix.swap(pivot, best);
         right.swap(pivot, best);
+        let pivot_row = matrix[pivot];
         for row in pivot + 1..4 {
-            let factor = matrix[row][pivot] / matrix[pivot][pivot];
-            for column in pivot..4 {
-                matrix[row][column] -= factor * matrix[pivot][column];
+            let factor = matrix[row][pivot] / pivot_row[pivot];
+            for (value, above) in matrix[row].iter_mut().zip(pivot_row).skip(pivot) {
+                *value -= factor * above;
             }
             right[row] -= factor * right[pivot];
         }
@@ -1667,7 +1668,7 @@ mod tests {
 
     /// A dome of the unit sphere over x and y from -0.7 to 0.7, facing the
     /// camera, with texture coordinates spread over the map.
-    fn dome() -> (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<[f32; 2]>) {
+    fn dome() -> Square {
         let steps = 24;
         let mut vertices = Vec::new();
         let mut coords = Vec::new();
