@@ -4725,6 +4725,19 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(head.data.polygons, [(0, 1, 2), (0, 2, 3)])
         self.assertEqual((summary["vertices"], summary["polygons"]), (4, 2))
 
+    def test_head_stands_upright_and_keeps_a_later_rotation_through_updates(self) -> None:
+        self.create()
+        head = self.objects["Head"]
+        # Rotating FLAME's y-up frame 90 degrees about x puts its +y up the
+        # z axis and its face, +z, toward -y.
+        self.assertEqual(head.rotation_euler, (math.pi / 2, 0.0, 0.0))
+        head.rotation_euler = (math.pi / 2, 0.0, 1.0)
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES},
+        )
+        self.assertEqual(head.rotation_euler, (math.pi / 2, 0.0, 1.0))
+
     UVS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
     def write_map(self, name: str, tag: bytes, width: int = 4, height: int = 4) -> None:
