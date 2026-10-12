@@ -553,9 +553,25 @@ photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
 stops the colour map instead of misplacing it. The server makes one colour map
 at a time, reading one photograph at a time, so a request that asks for one
-while another is being made is refused as busy. Lighting is not removed: the
-map keeps the photographs' light and shade. It is for viewing and rendering.
-Printed files carry no colour.
+while another is being made is refused as busy. The map is for viewing and
+rendering. Printed files carry no colour.
+
+`lighting` chooses what becomes of the photographs' light and shade:
+
+| Value | Effect |
+| --- | --- |
+| `remove` (default) | Each photograph's smooth shading is estimated over the skin and divided out, so a renderer's own lights are not added to the light already in the photograph. |
+| `keep` | The map keeps the light and shade as photographed. |
+
+The shading is fitted in linear light, separately for each colour channel, as
+an ambient term plus one direction applied to the fitted head's surface
+normals. A photograph with fewer than 200 skin samples keeps its lighting.
+Dividing by the shading would amplify noise in deep shadow, so the shading is
+never taken as less than a quarter of its average. Each channel's median over
+the skin keeps its photographed value, which keeps the subject's skin tone.
+Luminance above the skin's 97th percentile is brought down to it, which limits
+specular highlights. `texture.lighting.shading` reports the shading removed
+from each photograph, or null where it was kept.
 
 From one front-on photograph of a person with long dark hair, the
 reconstruction took about 30 seconds on a busy four-core CPU and the map under
@@ -567,6 +583,12 @@ skin-coloured ears and neck, the scalp in the hair colour found, and the
 photograph's centre parting as bare scalp. Renders of the textured head
 matched the photograph's eyes, brows, nose and mouth, and the filled back of
 the head showed no seams.
+
+On the same photograph, removing the lighting reduced the difference in
+brightness between the forehead, the cheeks and the jaw from 45 to 18 levels
+of 255. The forehead, the brightest of them, came down from 220 to 198. In
+renders under the `portrait` profile, the far cheek no longer kept the
+photograph's shadow, and the head took its shading from the render's lights.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the

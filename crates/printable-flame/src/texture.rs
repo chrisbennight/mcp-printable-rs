@@ -14,6 +14,13 @@
 //! it are left out and unseen skin is filled from skin alone. The scalp can
 //! take the photographs' colour, be treated as skin, or be painted a hair
 //! colour where no photograph shows bare skin there.
+//!
+//! The photographs' light and shade can be removed. For each photograph, a
+//! smooth shading, an ambient term plus one direction for each colour
+//! channel in linear light, is fitted to the skin from the fitted head's
+//! surface normals and divided out. The median skin colour is kept, so the
+//! subject's skin tone stays as photographed, and specular highlights are
+//! limited.
 
 use thiserror::Error;
 
@@ -59,6 +66,51 @@ pub enum FaceKind {
     Scalp,
     Eye,
 }
+
+/// What becomes of the light and shade in the photographs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lighting {
+    /// As photographed.
+    Keep,
+    /// Each photograph's smooth shading over the skin is estimated and
+    /// divided out.
+    Remove,
+}
+
+/// How a colour map treats the head's parts and the photographs' light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Colouring {
+    pub scalp: ScalpColour,
+    pub lighting: Lighting,
+}
+
+/// The shading estimated for one photograph, in linear light: for each
+/// colour channel, `ambient + direction · normal`, where the normal is in
+/// the camera's frame with x right, y up and z toward the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shading {
+    pub ambient: [f32; 3],
+    pub direction: [[f32; 3]; 3],
+}
+
+impl Shading {
+    fn at(&self, channel: usize, normal: [f32; 3]) -> f32 {
+        let direction = self.direction[channel];
+        self.ambient[channel]
+            + direction[0] * normal[0]
+            + direction[1] * normal[1]
+            + direction[2] * normal[2]
+    }
+}
+
+/// Fewer skin samples than this leave a photograph's lighting as it is.
+const MIN_LIGHTING_SAMPLES: usize = 200;
+/// Shading is not trusted below this share of its average, where dividing by
+/// it would blow up noise in deep shadow.
+const MIN_SHADING_SHARE: f32 = 0.25;
+/// Luminance above this percentile of the skin's is treated as specular
+/// highlight and brought down to it.
+const HIGHLIGHT_PERCENTILE: f64 = 97.0;
 
 /// How the scalp is coloured.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -184,6 +236,9 @@ pub struct ColourMap {
     /// Share of the map's texels on the head's surface that some photograph
     /// saw directly.
     pub seen: f64,
+    /// For each photograph in the order added, the shading removed from it:
+    /// `None` when lighting is kept or too little skin was seen to estimate it.
+    pub shading: Vec<Option<Shading>>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -212,7 +267,11 @@ pub fn bake(
     size: usize,
 ) -> Result<ColourMap, TextureError> {
     let kinds = vec![FaceKind::Skin; faces.len()];
-    let mut builder = ColourMapBuilder::new(faces, layout, size, &kinds, ScalpColour::Photo)?;
+    let colouring = Colouring {
+        scalp: ScalpColour::Photo,
+        lighting: Lighting::Keep,
+    };
+    let mut builder = ColourMapBuilder::new(faces, layout, size, &kinds, colouring)?;
     for view in views {
         builder.add(view)?;
     }
@@ -230,18 +289,20 @@ pub struct ColourMapBuilder<'a> {
     colour: Vec<[f32; 3]>,
     size: usize,
     kinds: Vec<FaceKind>,
-    scalp: ScalpColour,
+    colouring: Colouring,
+    shading: Vec<Option<Shading>>,
 }
 
 impl<'a> ColourMapBuilder<'a> {
     /// A builder for a `size` texel map. `kinds` names the part of the head
-    /// each triangle belongs to, and `scalp` says how the scalp is coloured.
+    /// each triangle belongs to, and `colouring` says how the scalp is
+    /// coloured and what becomes of the photographs' light.
     pub fn new(
         faces: &'a [[u32; 3]],
         layout: &UvLayout,
         size: usize,
         kinds: &[FaceKind],
-        scalp: ScalpColour,
+        colouring: Colouring,
     ) -> Result<Self, TextureError> {
         if size < 2 {
             return Err(TextureError::Size);
@@ -257,21 +318,24 @@ impl<'a> ColourMapBuilder<'a> {
             colour: vec![[0.0; 3]; size * size],
             size,
             kinds: kinds.to_vec(),
-            scalp,
+            colouring,
+            shading: Vec::new(),
         })
     }
 
     /// Add one photograph's colour to the texels it sees.
     pub fn add(&mut self, view: &View<'_>) -> Result<(), TextureError> {
-        accumulate(
+        let shading = accumulate(
             self.faces,
             &self.texels,
             view,
-            (&self.kinds, self.scalp),
+            (&self.kinds, self.colouring),
             &mut self.weight,
             &mut self.colour,
             &mut self.in_view,
-        )
+        )?;
+        self.shading.push(shading);
+        Ok(())
     }
 
     /// Blend the photographs and fill what none of them saw.
@@ -284,8 +348,10 @@ impl<'a> ColourMapBuilder<'a> {
             mut colour,
             size,
             kinds,
-            scalp,
+            colouring,
+            shading,
         } = self;
+        let scalp = colouring.scalp;
         let in_view =
             in_view.iter().filter(|&&seen| seen).count() as f64 / texels.on_surface().max(1) as f64;
         if in_view < MIN_SEEN {
@@ -295,9 +361,11 @@ impl<'a> ColourMapBuilder<'a> {
             ScalpColour::Hair(hair) => Some(hair.map(f32::from)),
             ScalpColour::Photo | ScalpColour::Skin => None,
         };
-        finish(faces, &texels, &weight, &mut colour, size, |face| {
+        let mut map = finish(faces, &texels, &weight, &mut colour, size, |face| {
             paint.filter(|_| kinds[face as usize] == FaceKind::Scalp)
-        })
+        })?;
+        map.shading = shading;
+        Ok(map)
     }
 }
 
@@ -405,7 +473,12 @@ fn finish(
         .iter()
         .flat_map(|texel| texel.map(|channel| channel.round().clamp(0.0, 255.0) as u8))
         .collect();
-    Ok(ColourMap { size, rgb, seen })
+    Ok(ColourMap {
+        size,
+        rgb,
+        seen,
+        shading: Vec::new(),
+    })
 }
 
 /// A colour for every vertex: photographed colour where the vertex was seen
@@ -562,15 +635,28 @@ fn texel_range(low: f64, high: f64, size: usize) -> std::ops::Range<usize> {
 
 /// Add one photograph's colour to the texels it sees, weighted by how squarely
 /// it sees them.
+/// One photographed colour for a texel, before it is added.
+struct Sample {
+    texel: usize,
+    share: f32,
+    colour: [f32; 3],
+    /// Unit surface normal in the camera's frame.
+    normal: [f32; 3],
+    skin: bool,
+}
+
+/// Add one photograph's colour to the texels it sees, weighted by how
+/// squarely it sees them, and return the shading removed from it, if any.
 fn accumulate(
     faces: &[[u32; 3]],
     texels: &TexelMap,
     view: &View<'_>,
-    (kinds, scalp): (&[FaceKind], ScalpColour),
+    (kinds, colouring): (&[FaceKind], Colouring),
     weight: &mut [f32],
     colour: &mut [[f32; 3]],
     in_view: &mut [bool],
-) -> Result<(), TextureError> {
+) -> Result<Option<Shading>, TextureError> {
+    let scalp = colouring.scalp;
     let photo = &view.photo;
     if photo.rgb.len() != photo.width * photo.height * 3 || photo.width == 0 || photo.height == 0 {
         return Err(TextureError::Photo);
@@ -613,6 +699,7 @@ fn accumulate(
     let tolerance = projection.scale * DEPTH_TOLERANCE_M;
     // One pixel more, because probes are read at the nearest pixel centre.
     let margin = OUTLINE_MARGIN * CROP_PIXELS / projection.crop_step + 1.0;
+    let mut samples = Vec::new();
     for (index, &face) in texels.face.iter().enumerate() {
         if face == NO_FACE {
             continue;
@@ -670,16 +757,175 @@ fn accumulate(
         {
             continue;
         }
-        let Some(sample) = sample(photo, pixel) else {
+        let Some(photographed) = sample(photo, pixel) else {
             continue;
         };
-        let share = ((facing - MIN_FACING) / (1.0 - MIN_FACING)).powi(2);
-        weight[index] += share;
+        samples.push(Sample {
+            texel: index,
+            share: ((facing - MIN_FACING) / (1.0 - MIN_FACING)).powi(2),
+            colour: photographed,
+            normal: normal.map(|axis| axis / length),
+            skin: kinds[face as usize] == FaceKind::Skin,
+        });
+    }
+    let shading = match colouring.lighting {
+        Lighting::Keep => None,
+        Lighting::Remove => remove_lighting(&mut samples),
+    };
+    for sample in samples {
+        weight[sample.texel] += sample.share;
         for channel in 0..3 {
-            colour[index][channel] += share * sample[channel];
+            colour[sample.texel][channel] += sample.share * sample.colour[channel];
         }
     }
-    Ok(())
+    Ok(shading)
+}
+
+/// Fit a smooth shading to the skin samples and divide it out of every
+/// sample, keeping the skin's median colour and limiting highlights.
+/// Returns the shading, or `None` when too little skin was seen to fit it.
+fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
+    let skin: Vec<usize> = (0..samples.len()).filter(|&at| samples[at].skin).collect();
+    if skin.len() < MIN_LIGHTING_SAMPLES {
+        return None;
+    }
+    let linear: Vec<[f32; 3]> = samples
+        .iter()
+        .map(|sample| sample.colour.map(|value| srgb_to_linear(value / 255.0)))
+        .collect();
+    let basis = |normal: [f32; 3]| [1.0, normal[0], normal[1], normal[2]].map(f64::from);
+    // Weighted least squares: for each channel, minimise the squared
+    // difference between the colour and ambient + direction · normal.
+    let mut normal_matrix = [[0.0f64; 4]; 4];
+    let mut right = [[0.0f64; 4]; 3];
+    for &at in &skin {
+        let terms = basis(samples[at].normal);
+        let share = f64::from(samples[at].share);
+        for row in 0..4 {
+            for column in 0..4 {
+                normal_matrix[row][column] += share * terms[row] * terms[column];
+            }
+            for channel in 0..3 {
+                right[channel][row] += share * terms[row] * f64::from(linear[at][channel]);
+            }
+        }
+    }
+    let mut shading = Shading {
+        ambient: [0.0; 3],
+        direction: [[0.0; 3]; 3],
+    };
+    for channel in 0..3 {
+        let solution = solve4(normal_matrix, right[channel])?;
+        shading.ambient[channel] = solution[0] as f32;
+        shading.direction[channel] =
+            [solution[1], solution[2], solution[3]].map(|value| value as f32);
+    }
+    let total: f64 = skin.iter().map(|&at| f64::from(samples[at].share)).sum();
+    let average = |value: &dyn Fn(usize) -> f32| -> f64 {
+        skin.iter()
+            .map(|&at| f64::from(samples[at].share) * f64::from(value(at)))
+            .sum::<f64>()
+            / total
+    };
+    let floors: [f32; 3] = std::array::from_fn(|channel| {
+        MIN_SHADING_SHARE * average(&|at| shading.at(channel, samples[at].normal)) as f32
+    });
+    if floors
+        .iter()
+        .any(|floor| !(floor.is_finite() && *floor > 0.0))
+    {
+        return None;
+    }
+    let corrected: Vec<[f32; 3]> = samples
+        .iter()
+        .zip(&linear)
+        .map(|(sample, linear)| {
+            std::array::from_fn(|channel| {
+                linear[channel] / shading.at(channel, sample.normal).max(floors[channel])
+            })
+        })
+        .collect();
+    // Keep the skin's typical colour as photographed: each channel's median
+    // over the skin maps to itself. A median, unlike a mean, is untouched by
+    // evening out the light, so the skin does not look paler afterwards.
+    let median = |values: &dyn Fn(usize) -> f32| -> f32 {
+        let mut chosen: Vec<f32> = skin.iter().map(|&at| values(at)).collect();
+        chosen.sort_unstable_by(f32::total_cmp);
+        chosen[chosen.len() / 2]
+    };
+    let gains: [f32; 3] = std::array::from_fn(|channel| {
+        median(&|at| linear[at][channel]) / median(&|at| corrected[at][channel]).max(1e-9)
+    });
+    let luminance = |colour: [f32; 3]| 0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2];
+    let balanced: Vec<[f32; 3]> = corrected
+        .iter()
+        .map(|colour| std::array::from_fn(|channel| colour[channel] * gains[channel]))
+        .collect();
+    let mut skin_luminance: Vec<f32> = skin.iter().map(|&at| luminance(balanced[at])).collect();
+    skin_luminance.sort_unstable_by(f32::total_cmp);
+    let rank = (HIGHLIGHT_PERCENTILE / 100.0 * (skin_luminance.len() - 1) as f64).round();
+    let ceiling = skin_luminance[rank as usize];
+    for (sample, colour) in samples.iter_mut().zip(balanced) {
+        let level = luminance(colour);
+        let limit = if level > ceiling && level > 0.0 {
+            ceiling / level
+        } else {
+            1.0
+        };
+        sample.colour = colour.map(|value| linear_to_srgb((value * limit).clamp(0.0, 1.0)) * 255.0);
+    }
+    Some(shading)
+}
+
+/// Solve a 4 by 4 linear system by Gaussian elimination with partial
+/// pivoting; `None` when it is singular.
+fn solve4(mut matrix: [[f64; 4]; 4], mut right: [f64; 4]) -> Option<[f64; 4]> {
+    let scale = (0..4)
+        .map(|index| matrix[index][index].abs())
+        .fold(0.0, f64::max);
+    for pivot in 0..4 {
+        let best = (pivot..4)
+            .max_by(|&a, &b| matrix[a][pivot].abs().total_cmp(&matrix[b][pivot].abs()))?;
+        if matrix[best][pivot].abs() <= 1e-12 * scale.max(1e-300) {
+            return None;
+        }
+        matrix.swap(pivot, best);
+        right.swap(pivot, best);
+        for row in pivot + 1..4 {
+            let factor = matrix[row][pivot] / matrix[pivot][pivot];
+            for column in pivot..4 {
+                matrix[row][column] -= factor * matrix[pivot][column];
+            }
+            right[row] -= factor * right[pivot];
+        }
+    }
+    let mut solution = [0.0; 4];
+    for row in (0..4).rev() {
+        let known: f64 = (row + 1..4)
+            .map(|column| matrix[row][column] * solution[column])
+            .sum();
+        solution[row] = (right[row] - known) / matrix[row][row];
+    }
+    solution
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(solution)
+}
+
+fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// The nearest surface depth at each pixel of a photograph.
@@ -886,6 +1132,11 @@ fn bilinear(colour: &[[f32; 3]], side: usize, x: f32, y: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
+    const KEEP: Colouring = Colouring {
+        scalp: ScalpColour::Photo,
+        lighting: Lighting::Keep,
+    };
+
     /// Vertices, triangles and per-vertex texture coordinates.
     type Square = (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<[f32; 2]>);
 
@@ -956,7 +1207,7 @@ mod tests {
             &faces,
             &texels,
             &views[0],
-            (&[FaceKind::Skin; 2], ScalpColour::Photo),
+            (&[FaceKind::Skin; 2], KEEP),
             &mut weight,
             &mut colour,
             &mut vec![false; 64 * 64],
@@ -1019,7 +1270,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
             &mut vec![false; size * size],
@@ -1069,7 +1320,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
             &mut vec![false; size * size],
@@ -1149,7 +1400,17 @@ mod tests {
             })
             .collect();
         let layout = layout(coords, &faces);
-        let mut builder = ColourMapBuilder::new(&faces, &layout, 32, &kinds, scalp).unwrap();
+        let mut builder = ColourMapBuilder::new(
+            &faces,
+            &layout,
+            32,
+            &kinds,
+            Colouring {
+                scalp,
+                lighting: Lighting::Keep,
+            },
+        )
+        .unwrap();
         builder
             .add(&View {
                 photo: Photo {
@@ -1250,6 +1511,163 @@ mod tests {
         );
     }
 
+    /// A dome of the unit sphere over x and y from -0.7 to 0.7, facing the
+    /// camera, with texture coordinates spread over the map.
+    fn dome() -> (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<[f32; 2]>) {
+        let steps = 24;
+        let mut vertices = Vec::new();
+        let mut coords = Vec::new();
+        for row in 0..=steps {
+            for column in 0..=steps {
+                let x = -0.7 + 1.4 * column as f32 / steps as f32;
+                let y = -0.7 + 1.4 * row as f32 / steps as f32;
+                vertices.push([x, y, (1.0 - x * x - y * y).sqrt()]);
+                coords.push([(x + 0.7) / 1.4, (y + 0.7) / 1.4]);
+            }
+        }
+        let at = |row: usize, column: usize| (row * (steps + 1) + column) as u32;
+        let mut faces = Vec::new();
+        for row in 0..steps {
+            for column in 0..steps {
+                let (a, b) = (at(row, column), at(row, column + 1));
+                let (c, d) = (at(row + 1, column + 1), at(row + 1, column));
+                faces.extend([[a, b, c], [a, c, d]]);
+            }
+        }
+        (vertices, faces, coords)
+    }
+
+    /// A photograph of the sphere, of linear albedo 0.6, lit by an ambient
+    /// light and one from the upper right.
+    fn lit_sphere() -> Vec<u8> {
+        let light = {
+            let raw = [1.0f32, 0.3, 1.0];
+            let length = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+            raw.map(|axis| axis / length)
+        };
+        (0..224 * 224)
+            .flat_map(|index| {
+                let (column, row) = ((index % 224) as f32, (index / 224) as f32);
+                let x = (column / 112.0 - 1.0) / 0.5;
+                let y = (1.0 - row / 112.0) / 0.5;
+                let squared = x * x + y * y;
+                if squared >= 1.0 {
+                    return [0u8; 3];
+                }
+                let normal = [x, y, (1.0 - squared).sqrt()];
+                let lit =
+                    (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]).max(0.0);
+                let value = linear_to_srgb(0.6 * (0.25 + 0.75 * lit)) * 255.0;
+                [value.round() as u8; 3]
+            })
+            .collect()
+    }
+
+    fn lit_bake(lighting: Lighting) -> ColourMap {
+        let (vertices, faces, coords) = dome();
+        let rgb = lit_sphere();
+        let layout = layout(coords, &faces);
+        let kinds = vec![FaceKind::Skin; faces.len()];
+        let colouring = Colouring {
+            scalp: ScalpColour::Photo,
+            lighting,
+        };
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, colouring).unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: None,
+            })
+            .unwrap();
+        builder.finish().unwrap()
+    }
+
+    /// The spread and mean of the red channel over the map's middle, which
+    /// the photograph sees.
+    fn spread_and_mean(map: &ColourMap) -> (f64, f64) {
+        let values: Vec<f64> = (16..48)
+            .flat_map(|row| (16..48).map(move |column| row * 64 + column))
+            .map(|at| f64::from(map.rgb[at * 3]))
+            .collect();
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let spread = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / values.len() as f64;
+        (spread.sqrt(), mean)
+    }
+
+    #[test]
+    fn removing_lighting_evens_out_shading_and_keeps_the_skin_tone() {
+        let kept = lit_bake(Lighting::Keep);
+        let removed = lit_bake(Lighting::Remove);
+        assert_eq!(kept.shading, vec![None]);
+        let shading = removed.shading[0].expect("shading was estimated");
+        // The light comes from +x and +z.
+        assert!(
+            shading.direction[0][0] > 0.0 && shading.direction[0][2] > 0.0,
+            "{shading:?}"
+        );
+        let (kept_spread, kept_mean) = spread_and_mean(&kept);
+        let (removed_spread, removed_mean) = spread_and_mean(&removed);
+        assert!(kept_spread > 8.0, "{kept_spread}");
+        assert!(
+            removed_spread < 0.25 * kept_spread,
+            "{removed_spread} {kept_spread}"
+        );
+        assert!(
+            (removed_mean - kept_mean).abs() < 0.15 * kept_mean,
+            "{removed_mean} {kept_mean}"
+        );
+    }
+
+    #[test]
+    fn too_little_skin_leaves_the_lighting_alone() {
+        let mut samples: Vec<Sample> = (0..10)
+            .map(|texel| Sample {
+                texel,
+                share: 1.0,
+                colour: [100.0, 80.0, 60.0],
+                normal: [0.0, 0.0, 1.0],
+                skin: true,
+            })
+            .collect();
+        assert_eq!(remove_lighting(&mut samples), None);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.colour == [100.0, 80.0, 60.0])
+        );
+    }
+
+    #[test]
+    fn small_systems_are_solved_and_singular_ones_refused() {
+        let matrix = [
+            [4.0, 1.0, 0.0, 0.0],
+            [1.0, 3.0, 1.0, 0.0],
+            [0.0, 1.0, 2.0, 1.0],
+            [0.0, 0.0, 1.0, 5.0],
+        ];
+        let expected = [1.0, -2.0, 0.5, 3.0];
+        let right: [f64; 4] = std::array::from_fn(|row| {
+            (0..4)
+                .map(|column| matrix[row][column] * expected[column])
+                .sum()
+        });
+        let solved = solve4(matrix, right).unwrap();
+        for (value, wanted) in solved.iter().zip(expected) {
+            assert!((value - wanted).abs() < 1e-9, "{solved:?}");
+        }
+        assert_eq!(solve4([[1.0; 4]; 4], [1.0; 4]), None);
+    }
+
     #[test]
     fn eyeballs_are_the_parts_beside_the_head() {
         let faces = [[0, 1, 2], [0, 2, 3], [4, 5, 6], [7, 8, 9]];
@@ -1293,17 +1711,11 @@ mod tests {
             TextureError::Size
         );
         assert_eq!(
-            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin], ScalpColour::Photo).err(),
+            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin], KEEP).err(),
             Some(TextureError::Kinds)
         );
-        let mut builder = ColourMapBuilder::new(
-            &faces,
-            &layout,
-            16,
-            &[FaceKind::Skin; 2],
-            ScalpColour::Photo,
-        )
-        .unwrap();
+        let mut builder =
+            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin; 2], KEEP).unwrap();
         let short = vec![LABEL_FACE_SKIN; 10];
         assert_eq!(
             builder
