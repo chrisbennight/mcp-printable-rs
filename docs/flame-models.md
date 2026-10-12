@@ -562,10 +562,13 @@ reconstruction at a time and stops any that exceeds
 `PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
 worker is configured and ready.
 
-The `head` tool offers `reconstruct` only while the worker reports every
-checkpoint present. The server checks every 30 seconds. When the answer
-changes, it sends connected clients `notifications/tools/list_changed` so
-that they list the tools again.
+The `head` tool offers `reconstruct` only when a matching head model is mounted
+and the worker reports every checkpoint present. The server checks every
+30 seconds. When availability changes, initialized legacy sessions and current
+clients subscribed to tool-list changes receive
+`notifications/tools/list_changed` so that they list the tools again. See
+[MCP compatibility](architecture.md#mcp-compatibility) for subscription and
+reconnection requirements.
 
 ### Use the result
 

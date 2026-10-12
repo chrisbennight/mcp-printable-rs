@@ -41,6 +41,26 @@ main-thread bridge serialize scene operations and recover from a stalled
 process. UI mode uses a private authenticated display for native viewport and
 editor observations. Neither Blender process exposes a public control port.
 
+## MCP compatibility
+
+Printable explicitly supports MCP revisions `2024-11-05`, `2025-03-26`,
+`2025-06-18`, `2025-11-25`, and `2026-07-28`. Independent HTTP tests exercise
+discovery and tool-list changes against the corresponding client lifecycle.
+Legacy clients initialize a session and receive tool-list changes on its event
+stream. Current clients use per-request metadata and `subscriptions/listen`.
+The subscription acknowledges the requested notification types it supports,
+identifies each notification with the subscription request ID, and ends when
+the HTTP stream closes. After each subscription acknowledgement, read the
+current catalog. Reconnecting requires a new subscription; previous streams
+do not replay missed changes.
+
+Only reconstruction readiness with a matching mounted head model changes the
+catalog after startup. Servers without that worker or model omit
+tool-list-change capability and accept an
+empty notification filter. Other notification categories are not advertised.
+See the [MCP subscription requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions)
+and [Streamable HTTP requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+
 ## State and failure boundaries
 
 Printable does not invent capacity ceilings for modeling, rendering, native
