@@ -8,7 +8,7 @@ pub struct PrinterFault {
     pub attr: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<i64>,
-    pub severity: u8,
+    pub severity: u16,
     #[serde(default)]
     pub actions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,9 +180,17 @@ pub struct PrinterStatus {
     pub gcode_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_negative",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub remaining_time: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_negative",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub layer_num: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_layers: Option<u64>,
@@ -290,4 +298,47 @@ pub struct Temperatures {
     pub chamber_target: Option<f64>,
     pub chamber_heating: Option<bool>,
     pub nozzle_heating: Option<bool>,
+}
+
+/// Bambuddy copies these counters from the printer without a lower bound. A
+/// negative value carries no usable reading, so it is reported as absent.
+fn non_negative<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    Ok(Option::<i64>::deserialize(deserializer)?.and_then(|value| u64::try_from(value).ok()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn printer_status_survives_unusual_counters_and_fault_levels() {
+        let status: PrinterStatus = serde_json::from_value(json!({
+            "id": 1, "name": "Workshop", "connected": true, "state": "RUNNING",
+            "remaining_time": -1, "layer_num": -2, "total_layers": 120,
+            "hms_errors": [{"code": "0x1", "severity": 256, "module": 2}, {"code": "0x2", "severity": 65535, "module": 2}]
+        }))
+        .unwrap();
+        assert_eq!(status.remaining_time, None);
+        assert_eq!(status.layer_num, None);
+        assert_eq!(status.total_layers, Some(120));
+        assert_eq!(status.state.as_deref(), Some("RUNNING"));
+        assert_eq!(status.hms_errors[0].severity, 256);
+        assert_eq!(status.hms_errors[1].severity, 65535);
+
+        let usual: PrinterStatus = serde_json::from_value(json!({
+            "id": 1, "name": "Workshop", "connected": true, "remaining_time": 42, "layer_num": 7
+        }))
+        .unwrap();
+        assert_eq!(usual.remaining_time, Some(42));
+        assert_eq!(usual.layer_num, Some(7));
+        let absent: PrinterStatus = serde_json::from_value(json!({
+            "id": 1, "name": "Workshop", "connected": false, "remaining_time": null
+        }))
+        .unwrap();
+        assert_eq!(absent.remaining_time, None);
+        assert_eq!(absent.layer_num, None);
+    }
 }
