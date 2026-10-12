@@ -433,6 +433,36 @@ def textured_head_smoke(host: str, port: int) -> None:
     }
     if observed.get("result") != expected:
         raise RuntimeError(f"textured head smoke observed {observed.get('result')}")
+    # A PNG whose header is sound but whose pixels cannot be decoded.
+    command(host, port, "execute_code", {"code": (
+        "from pathlib import Path\n"
+        "import struct, zlib\n"
+        "png = b'\\x89PNG\\r\\n\\x1a\\n'\n"
+        "for kind, data in ((b'IHDR', struct.pack('>IIBBBBB', 7, 5, 8, 2, 0, 0, 0)),\n"
+        "                   (b'IDAT', b'not a zlib stream'), (b'IEND', b'')):\n"
+        "    png += struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))\n"
+        "Path(workspace_root, 'smoke/corrupt-colour.png').write_bytes(png)\n"
+    )})
+    try:
+        command(host, port, "create_flame_head", {
+            "name": "CorruptHeadProbe",
+            "variant": "smoke",
+            "vertices": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]],
+            "faces": [[0, 1, 2]],
+            "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            "texture": "smoke/corrupt-colour.png",
+        })
+    except RuntimeError as error:
+        if "could not be decoded" not in str(error):
+            raise
+    else:
+        raise RuntimeError("a colour map with undecodable pixels made a head")
+    leftovers = command(host, port, "execute_code", {"code": (
+        "result = [name for name in [*bpy.data.objects.keys(), *bpy.data.images.keys()]\n"
+        "          if name.startswith('CorruptHeadProbe')]\n"
+    )})
+    if leftovers.get("result") != []:
+        raise RuntimeError(f"an undecodable colour map left {leftovers.get('result')}")
 
 
 def capability_smoke(host: str, port: int) -> None:

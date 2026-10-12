@@ -4575,6 +4575,16 @@ class FakeImage:
     def pack(self) -> None:
         self.packed = True
 
+    @property
+    def size(self) -> tuple[int, int]:
+        # Blender decodes on first use and reports 0 by 0 when it cannot.
+        if self.contents[33:].startswith(b"corrupt"):
+            return (0, 0)
+        return (
+            int.from_bytes(self.contents[16:20], "big"),
+            int.from_bytes(self.contents[20:24], "big"),
+        )
+
 
 class FakePolygons(list):
     def __init__(self, faces: Any = ()) -> None:
@@ -4759,6 +4769,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
         workspace = Path(self.directory.name) / "workspace"
         (workspace / "fake.png").write_bytes(b"not a png at all, just some bytes")
         self.write_map("wide.png", b"wide", width=4097, height=10)
+        self.write_map("corrupt.png", b"corrupt pixels")
         with (workspace / "huge.png").open("wb") as huge:
             huge.truncate(12 * 1024 * 1024 + 1)
         for overrides, error, message in [
@@ -4770,11 +4781,15 @@ class FlameHeadHandlerTests(unittest.TestCase):
             ({"uv": self.UVS, "texture": "fake.png"}, HandlerError, "not a PNG image"),
             ({"uv": self.UVS, "texture": "wide.png"}, HandlerError, "4096 pixels"),
             ({"uv": self.UVS, "texture": "huge.png"}, HandlerError, "larger than 12 MiB"),
+            ({"uv": self.UVS, "texture": "corrupt.png"}, HandlerError, "could not be decoded"),
         ]:
             with self.subTest(message), self.assertRaisesRegex(error, message):
                 self.create(**overrides)
         self.assertEqual(self.meshes, [])
         self.assertEqual(self.linked, [])
+        # The undecodable map was loaded to find out, then removed.
+        self.assertEqual(self.removed_images, self.images)
+        self.assertEqual([self.tag(image) for image in self.images], [b"corrupt pixels"])
 
     def test_update_replaces_the_colour_map(self) -> None:
         self.write_map("first.png", b"first")
@@ -4870,6 +4885,17 @@ class FlameHeadHandlerTests(unittest.TestCase):
         # The unused colour material in slot 0 keeps its map.
         unused = head.material_slots[0].material.node_tree.nodes.get("FLAME colour map")
         self.assertEqual(self.tag(unused.image), b"second")
+
+    def test_update_keeps_the_colour_map_when_the_new_one_cannot_be_decoded(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("corrupt.png", b"corrupt pixels")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        with self.assertRaisesRegex(HandlerError, "could not be decoded"):
+            self.update_texture("corrupt.png")
+        [material] = head.data.materials
+        self.assertEqual(self.tag(material.node_tree.nodes.get("FLAME colour map").image), b"first")
+        self.assertEqual([self.tag(image) for image in self.removed_images], [b"corrupt pixels"])
 
     def test_update_refuses_a_colour_map_without_texture_coordinates(self) -> None:
         self.write_map("colour.png", b"colour")

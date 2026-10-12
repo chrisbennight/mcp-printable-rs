@@ -349,9 +349,10 @@ def _corner_uvs(params: dict[str, Any], name: str, corners: int) -> list[float] 
     return flat
 
 
-def _check_colour_map(path: Path) -> None:
+def _check_colour_map(path: Path) -> tuple[int, int]:
     """Refuse a staged colour map that is too large or not a PNG of a
-    sensible size, judged from its header before anything decodes it."""
+    sensible size, judged from its header before anything decodes it, and
+    return the width and height the header declares."""
     if path.stat().st_size > MAX_COLOUR_MAP_BYTES:
         raise HandlerError("the colour map is larger than 12 MiB")
     with path.open("rb") as image:
@@ -364,6 +365,7 @@ def _check_colour_map(path: Path) -> None:
         raise HandlerError(
             f"a colour map must be at most {MAX_COLOUR_MAP_PIXELS} pixels on each side"
         )
+    return width, height
 
 
 def _triangles(
@@ -1294,11 +1296,16 @@ class BlenderHandlers:
 
         with self._workspace.stage_input(request, check_budget=within_budget) as source:
             # The staged copy is private, so what is checked is what Blender loads.
-            _check_colour_map(source)
+            width, height = _check_colour_map(source)
             try:
                 image = self._bpy.data.images.load(str(source), check_existing=False)
             except RuntimeError as error:
                 raise HandlerError(f"the colour map could not be loaded: {error}") from error
+            # Loading reads only the file's name; reading the size decodes the
+            # pixels, and Blender reports 0 by 0 when they cannot be decoded.
+            if tuple(image.size) != (width, height):
+                self._bpy.data.images.remove(image)
+                raise HandlerError("the colour map's pixels could not be decoded")
             image.pack()
         image.name = f"{name} colour map"
         return image
