@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "name": "Blender",
+      "version": "5.2.0",
+      "roles": ["blender"],
+      "paths": ["opt/blender/blender"],
+      "notice_prefix": "opt/blender/",
+      "license": "GPL-3.0-or-later",
+      "source_url": "https://download.blender.org/source/blender-5.2.0.tar.xz",
+      "binary_url": "https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz",
+      "binary_sha256": "96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48",
+      "description": "Official Linux bundle, including its native libraries and Python runtime. Exact bundled files and notices are retained in the image inventory. The source archive includes Blender's dependency build specifications."
+    },
+    {
+      "name": "OrcaSlicer",
+      "version": "local-2.4.2-6915edb",
+      "roles": ["slicer"],
+      "paths": ["opt/orca/AppRun"],
+      "notice_prefix": "opt/orca/",
+      "license": "AGPL-3.0-only",
+      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/6915edbfae3746da236b22630ff75a2fa304b796.tar.gz",
+      "source_commit": "6915edbfae3746da236b22630ff75a2fa304b796",
+      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-6915edb/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-6915edb.AppImage",
+      "binary_sha256": "eb46a67b37063cc5ccbe00c058b45cf5cd71e4c0c15e66a96ca2c0c89ca1da13",
+      "description": "Fork AppImage and bundled libraries. Packaging extracts the AppImage and removes resources/web; the source archive retains dependency build specifications."
+    },
+    {
+      "name": "VirtualGL",
+      "version": "3.1.5",
+      "roles": ["blender"],
+      "paths": ["opt/VirtualGL/bin/vglrun"],
+      "notice_prefix": "opt/VirtualGL/",
+      "license": "wxWindows",
+      "source_url": "https://github.com/VirtualGL/virtualgl/archive/d045fcf1777e7b47913ea363d14f71b1fb26b2b9.tar.gz",
+      "source_commit": "d045fcf1777e7b47913ea363d14f71b1fb26b2b9",
+      "binary_url": "https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb",
+      "binary_sha256": "df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e"
+    },
+    {
+      "name": "OpenCV",
+      "version": "5.0.0.93",
+      "roles": ["recon"],
+      "paths": ["opt/opencv-python/LICENSE-OpenCV"],
+      "notice_prefix": "opt/opencv-python/",
+      "license": "Apache-2.0",
+      "source_url": "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz",
+      "source_sha256": "b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c",
+      "description": "Statically built core, imgproc and Python modules only; exact build flags are retained in the Dockerfile."
+    },
+    {
+      "name": "MediaPipe face landmarker model",
+      "version": "float16/1",
+      "roles": ["recon"],
+      "paths": ["opt/printable/recon/face_landmarker.task"],
+      "notice_prefix": "opt/recon/",
+      "license": "Apache-2.0",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "source_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "asset_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "description": "Unmodified distributable model asset; operator-supplied checkpoints are outside the image."
+    }
+  ]
+}
