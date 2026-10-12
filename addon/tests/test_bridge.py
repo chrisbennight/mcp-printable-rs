@@ -4585,6 +4585,10 @@ class FakePolygons(list):
         assert attribute == "material_index" and len(values) == len(self)
         self.material_index = list(values)
 
+    def foreach_get(self, attribute: str, values: list[int]) -> None:
+        assert attribute == "material_index" and len(values) == len(self)
+        values[:] = self.material_index
+
 
 class FakeHeadMesh:
     def __init__(self) -> None:
@@ -4847,7 +4851,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(shared.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"first")
         self.assertEqual(self.removed_images, [])
 
-    def test_update_shows_the_new_colour_even_when_faces_used_another_colour_slot(self) -> None:
+    def test_update_replaces_the_colour_map_the_faces_show(self) -> None:
         self.write_map("first.png", b"first")
         self.write_map("second.png", b"second")
         self.write_map("third.png", b"third")
@@ -4861,10 +4865,11 @@ class FlameHeadHandlerTests(unittest.TestCase):
         head.data.materials.append(extra)
         head.data.polygons.foreach_set("material_index", [1, 1])
         self.update_texture("third.png")
-        index = head.data.polygons.material_index[0]
-        self.assertEqual(head.data.polygons.material_index, [index, index])
-        shown = head.material_slots[index].material.node_tree.nodes.get("FLAME colour map")
-        self.assertEqual(self.tag(shown.image), b"third")
+        self.assertEqual(head.data.polygons.material_index, [1, 1])
+        self.assertEqual(self.tag(node.image), b"third")
+        # The unused colour material in slot 0 keeps its map.
+        unused = head.material_slots[0].material.node_tree.nodes.get("FLAME colour map")
+        self.assertEqual(self.tag(unused.image), b"second")
 
     def test_update_refuses_a_colour_map_without_texture_coordinates(self) -> None:
         self.write_map("colour.png", b"colour")

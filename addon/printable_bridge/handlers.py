@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import ExitStack, contextmanager
 import hashlib
 import math
@@ -1356,8 +1357,12 @@ class BlenderHandlers:
                 )
             image = self._load_colour_map(texture, name)
             # The slots say what the head shows; a slot linked to the object
-            # can hide the mesh's own material.
-            index = next(
+            # can hide the mesh's own material. Of the colour slots, replace
+            # the one most faces show.
+            faces = [0] * len(obj.data.polygons)
+            obj.data.polygons.foreach_get("material_index", faces)
+            shown = Counter(faces)
+            index = max(
                 (
                     index
                     for index, slot in enumerate(obj.material_slots)
@@ -1365,7 +1370,8 @@ class BlenderHandlers:
                     and slot.material.node_tree is not None
                     and slot.material.node_tree.nodes.get(FLAME_COLOUR_NODE) is not None
                 ),
-                None,
+                key=lambda index: (shown[index], -index),
+                default=None,
             )
             if index is None:
                 obj.data.materials.append(self._colour_material(name, image))
