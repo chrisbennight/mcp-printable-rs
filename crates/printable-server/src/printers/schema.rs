@@ -268,7 +268,8 @@ pub(super) fn selected_output(name: &str, action: Option<&str>) -> Option<Value>
         return None;
     }
     variants.push(generator.subschema_for::<RejectedPrinterCall>());
-    Some(
+    Some(crate::tools::output::with_errors(
+        name,
         serde_json::json!({"type":"object","anyOf":variants,"$defs":generator.take_definitions(true)}),
-    )
+    ))
 }
