@@ -145,6 +145,29 @@ An update replaces every vertex position, so other edits to the mesh are lost.
 Heads in Edit Mode are refused, because Blender would overwrite the update when
 the head leaves Edit Mode.
 
+### Colour the head in Blender
+
+When the model was converted with `--texture`, `create` gives the head a UV
+layer named `FLAME` holding FLAME's texture coordinates. Pass `texture`, the
+workspace path of a PNG colour map in FLAME's texture layout, to show it in
+colour:
+
+```json
+{"action": "create", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "texture": "photos/colour.png",
+  "name": "Subject"
+}}
+```
+
+The image is packed into the scene, so the head keeps its colour without the
+workspace file. Its material feeds the image into the base colour of a
+Principled BSDF, which the viewport and the render tools show. `update`
+accepts `texture` too, to replace the colour map of a head created with
+texture coordinates. The colour stays in Blender: `export` and `prepare_print`
+write geometry only.
+
 ### Export a head
 
 `export` takes the same `variant`, `identity`, `expression` and `pose` as

@@ -295,6 +295,8 @@ def _only_keys(params: dict[str, Any], allowed: set[str]) -> None:
 
 
 FLAME_VARIANT = "printable_flame_variant"
+FLAME_UV_LAYER = "FLAME"
+FLAME_COLOUR_NODE = "FLAME colour map"
 
 
 def _points(params: dict[str, Any], name: str) -> list[tuple[float, float, float]]:
@@ -316,6 +318,30 @@ def _points(params: dict[str, Any], name: str) -> list[tuple[float, float, float
             raise HandlerError(f"{name} must contain finite three-component points")
         points.append((float(point[0]), float(point[1]), float(point[2])))
     return points
+
+
+def _corner_uvs(params: dict[str, Any], name: str, corners: int) -> list[float] | None:
+    """Texture coordinates for every triangle corner, flattened, if given."""
+    value = params.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != corners:
+        raise HandlerError(f"{name} must give texture coordinates for every triangle corner")
+    flat = []
+    for uv in value:
+        if not (
+            isinstance(uv, list)
+            and len(uv) == 2
+            and all(
+                isinstance(coordinate, (int, float))
+                and not isinstance(coordinate, bool)
+                and math.isfinite(coordinate)
+                for coordinate in uv
+            )
+        ):
+            raise HandlerError(f"{name} must contain finite two-component coordinates")
+        flat.extend((float(uv[0]), float(uv[1])))
+    return flat
 
 
 def _triangles(
@@ -1204,15 +1230,25 @@ class BlenderHandlers:
         return self._object_summary(obj)
 
     def _create_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
-        _only_keys(params, {"name", "variant", "vertices", "faces"})
+        _only_keys(params, {"name", "variant", "vertices", "faces", "uv", "texture"})
         name = _string(params, "name")
         variant = _string(params, "variant")
         vertices = _points(params, "vertices")
         faces = _triangles(params, "faces", len(vertices))
+        uvs = _corner_uvs(params, "uv", 3 * len(faces))
+        texture = params.get("texture")
+        if texture is not None and uvs is None:
+            raise HandlerError("a colour map needs the head's texture coordinates")
         if self._bpy.data.objects.get(name) is not None:
             raise HandlerError(f"object already exists: {name}")
+        image = self._load_colour_map(texture, name) if texture is not None else None
         mesh = self._bpy.data.meshes.new(name)
         mesh.from_pydata(vertices, [], faces)
+        if uvs is not None:
+            # Each triangle's loops follow its corners in order.
+            mesh.uv_layers.new(name=FLAME_UV_LAYER).data.foreach_set("uv", uvs)
+        if image is not None:
+            mesh.materials.append(self._colour_material(name, image))
         mesh.update()
         obj = self._bpy.data.objects.new(name, mesh)
         self._bpy.context.scene.collection.objects.link(obj)
@@ -1220,11 +1256,43 @@ class BlenderHandlers:
         obj[FLAME_VARIANT] = variant
         return self._object_summary(obj)
 
+    def _load_colour_map(self, path: Any, name: str) -> Any:
+        """Load a workspace PNG and pack it into the scene, so the head keeps
+        its colour without the workspace file."""
+        request = self._workspace.validate(path, ".png")
+        with self._workspace.stage_input(request) as source:
+            try:
+                image = self._bpy.data.images.load(str(source), check_existing=False)
+            except RuntimeError as error:
+                raise HandlerError(f"the colour map could not be loaded: {error}") from error
+            image.pack()
+        image.name = f"{name} colour map"
+        return image
+
+    def _colour_material(self, name: str, image: Any) -> Any:
+        """A material whose base colour is the image, read through the head's
+        texture coordinates."""
+        material = self._bpy.data.materials.new(f"{name} colour")
+        # Blender 5 always uses nodes and deprecates the switch.
+        if not material.use_nodes:
+            material.use_nodes = True
+        tree = material.node_tree
+        shader = tree.nodes.get("Principled BSDF")
+        if shader is None:
+            shader = tree.nodes.new("ShaderNodeBsdfPrincipled")
+        node = tree.nodes.new("ShaderNodeTexImage")
+        node.name = FLAME_COLOUR_NODE
+        node.image = image
+        node.location = (-400.0, 300.0)
+        tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+        return material
+
     def _update_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
-        _only_keys(params, {"object", "variant", "vertices"})
+        _only_keys(params, {"object", "variant", "vertices", "texture"})
         name = _string(params, "object")
         variant = _string(params, "variant")
         vertices = _points(params, "vertices")
+        texture = params.get("texture")
         obj = self._bpy.data.objects.get(name)
         if obj is None:
             raise HandlerError(f"object not found: {name}")
@@ -1243,6 +1311,26 @@ class BlenderHandlers:
             raise HandlerError(
                 f"{name} no longer has the head's vertex count; its mesh was edited"
             )
+        if texture is not None:
+            if obj.data.uv_layers.get(FLAME_UV_LAYER) is None:
+                raise HandlerError(
+                    f"{name} has no texture coordinates; create it from a model converted with --texture"
+                )
+            image = self._load_colour_map(texture, name)
+            node = next(
+                (
+                    material.node_tree.nodes.get(FLAME_COLOUR_NODE)
+                    for material in obj.data.materials
+                    if material is not None
+                    and material.node_tree is not None
+                    and material.node_tree.nodes.get(FLAME_COLOUR_NODE) is not None
+                ),
+                None,
+            )
+            if node is None:
+                obj.data.materials.append(self._colour_material(name, image))
+            else:
+                node.image = image
         obj.data.vertices.foreach_set(
             "co", [coordinate for point in vertices for coordinate in point]
         )

@@ -2083,8 +2083,12 @@ async fn dispatch_value(
             let _: HeadModelsParams = de(args)?;
             head::models(settings)
         }
-        "printable_flame_create" => head::create(blender, settings, de(args)?).await,
-        "printable_flame_update" => head::update(blender, settings, de(args)?).await,
+        "printable_flame_create" => {
+            head::create(Arc::clone(workspace), blender, settings, de(args)?).await
+        }
+        "printable_flame_update" => {
+            head::update(Arc::clone(workspace), blender, settings, de(args)?).await
+        }
         "printable_flame_prepare_print" => {
             head::prepare_print(Arc::clone(workspace), settings, de(args)?).await
         }

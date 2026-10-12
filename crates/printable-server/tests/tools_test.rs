@@ -5248,12 +5248,129 @@ fn head_server(
     )
 }
 
+fn head_server_in(
+    fake: &FakeAddon,
+    library: Arc<printable_server::flame::FlameLibrary>,
+    root: &Path,
+) -> PrintableServer {
+    let mut cfg = settings(&fake.host(), fake.port());
+    cfg.flame = Some(library);
+    PrintableServer::new(
+        workspace(Some(root)),
+        Arc::new(client(&fake.host(), fake.port())),
+        Arc::new(cfg),
+    )
+}
+
 fn head_call(arguments: Value) -> CallToolRequestParams {
     CallToolRequestParams::new("head").with_arguments(arguments.as_object().unwrap().clone())
 }
 
 const HEAD_SCENE_STATE: &str =
     r#"{"generation": "11111111-1111-4111-8111-111111111111", "revision": 3}"#;
+
+/// A fake add-on that records head commands and answers like Blender.
+async fn recording_addon() -> (FakeAddon, Arc<std::sync::Mutex<Vec<(String, Value)>>>) {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&captured);
+    let fake = FakeAddon::spawn(move |command, params| {
+        observed.lock().unwrap().push((command, params.clone()));
+        let name = params.get("name").or_else(|| params.get("object")).cloned();
+        let mut result = json!({"name": name, "type": "MESH", "vertices": 4, "polygons": 4});
+        result["scene_state"] = serde_json::from_str(HEAD_SCENE_STATE).unwrap();
+        ResponseSpec::Success {
+            result,
+            addon_version: Some("0.4.0".into()),
+        }
+    })
+    .await;
+    (fake, captured)
+}
+
+#[tokio::test]
+async fn head_create_sends_texture_coordinates_and_a_colour_map() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("colour.png"), b"png").unwrap();
+    let (fake, captured) = recording_addon().await;
+    let (_models, textured) = tetrahedron_library(true);
+    let server = head_server_in(&fake, textured, root.path());
+    for params in [
+        json!({"name": "Plain"}),
+        json!({"name": "Coloured", "texture": "colour.png"}),
+    ] {
+        let result = server
+            .invoke_tool(head_call(json!({"action": "create", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+    }
+    let update = server
+        .invoke_tool(head_call(json!({
+            "action": "update", "params": {"object": "Coloured", "texture": "colour.png"}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(update.is_error, Some(false), "{update:?}");
+    let calls = captured.lock().unwrap();
+    // Every corner of the four fixture triangles carries its coordinates.
+    for (_, params) in &calls[..2] {
+        let uv = params["uv"].as_array().unwrap();
+        assert_eq!(uv.len(), 12);
+        assert_eq!(uv[0], json!([0.1f32, 0.1f32]));
+        assert_eq!(uv[1], json!([0.5f32, 0.9f32]));
+    }
+    assert!(calls[0].1.get("texture").is_none());
+    assert_eq!(calls[1].1["texture"], "colour.png");
+    assert_eq!(calls[2].0, "update_flame_head");
+    assert_eq!(calls[2].1["texture"], "colour.png");
+}
+
+#[tokio::test]
+async fn head_colour_maps_are_checked_before_blender_is_asked() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("colour.png"), b"png").unwrap();
+    std::fs::write(root.path().join("colour.jpg"), b"jpg").unwrap();
+    let fake = FakeAddon::spawn(|_, _| panic!("invalid colour maps must not reach Blender")).await;
+    let (_plain_models, plain) = tetrahedron_library(false);
+    let (_models, textured) = tetrahedron_library(true);
+    for (library, action, params, message) in [
+        (
+            &plain,
+            "create",
+            json!({"texture": "colour.png"}),
+            "--texture",
+        ),
+        (
+            &plain,
+            "update",
+            json!({"object": "Head", "texture": "colour.png"}),
+            "--texture",
+        ),
+        (
+            &textured,
+            "create",
+            json!({"texture": "colour.jpg"}),
+            ".png",
+        ),
+        (
+            &textured,
+            "create",
+            json!({"texture": "missing.png"}),
+            "missing.png",
+        ),
+    ] {
+        let server = head_server_in(&fake, Arc::clone(library), root.path());
+        let result = server
+            .invoke_tool(head_call(json!({"action": action, "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+}
 
 #[tokio::test]
 async fn head_tool_is_advertised_only_with_a_mounted_model() {

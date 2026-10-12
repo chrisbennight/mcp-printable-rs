@@ -80,6 +80,11 @@ pub(super) struct HeadCreateParams {
     /// Unique name for the new object (default `Head`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// Workspace path of a PNG colour map in FLAME's texture layout, such as
+    /// one made from photographs. The head shows it through a material.
+    /// Needs a model converted with its texture layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    texture: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -101,6 +106,11 @@ pub(super) struct HeadUpdateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
+    /// Workspace path of a PNG colour map that replaces the head's own, as for
+    /// `create`. The head must have been created from a model converted with
+    /// its texture layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    texture: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -205,6 +215,11 @@ struct CreateCommand<'a> {
     variant: &'a str,
     vertices: Vec<[f32; 3]>,
     faces: &'a [[u32; 3]],
+    /// Texture coordinates of every triangle corner, in triangle order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uv: Option<Vec<[f32; 2]>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    texture: Option<&'a str>,
 }
 
 #[derive(serde::Serialize)]
@@ -214,6 +229,8 @@ struct UpdateCommand<'a> {
     object: &'a str,
     variant: &'a str,
     vertices: Vec<[f32; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    texture: Option<&'a str>,
 }
 
 pub(super) fn models(settings: &Settings) -> Result<Value, ToolError> {
@@ -221,10 +238,14 @@ pub(super) fn models(settings: &Settings) -> Result<Value, ToolError> {
 }
 
 pub(super) async fn create(
+    workspace: Arc<Workspace>,
     blender: &BlenderClient,
     settings: &Settings,
     params: HeadCreateParams,
 ) -> Result<Value, ToolError> {
+    if let Some(texture) = &params.texture {
+        check_colour_map(&workspace, texture)?;
+    }
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
@@ -234,22 +255,38 @@ pub(super) async fn create(
     )
     .await?;
     let name = params.name.unwrap_or_else(|| DEFAULT_NAME.to_owned());
+    let uv = model.uv_layout().map(|layout| {
+        layout
+            .faces
+            .iter()
+            .flat_map(|corners| corners.map(|index| layout.coords[index as usize]))
+            .collect()
+    });
+    if params.texture.is_some() && uv.is_none() {
+        return Err(no_layout_for_colour(&model));
+    }
     let command = CreateCommand {
         expected_scene: params.expected_scene.as_ref(),
         name: &name,
         variant: &model.info().variant,
         vertices: millimetres(&head.vertices),
         faces: model.faces(),
+        uv,
+        texture: params.texture.as_deref(),
     };
     let result = blender_command(blender, "create_flame_head", &command).await?;
     Ok(annotate(result, &model, &head))
 }
 
 pub(super) async fn update(
+    workspace: Arc<Workspace>,
     blender: &BlenderClient,
     settings: &Settings,
     params: HeadUpdateParams,
 ) -> Result<Value, ToolError> {
+    if let Some(texture) = &params.texture {
+        check_colour_map(&workspace, texture)?;
+    }
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
@@ -258,11 +295,15 @@ pub(super) async fn update(
         params.pose,
     )
     .await?;
+    if params.texture.is_some() && model.uv_layout().is_none() {
+        return Err(no_layout_for_colour(&model));
+    }
     let command = UpdateCommand {
         expected_scene: params.expected_scene.as_ref(),
         object: &params.object,
         variant: &model.info().variant,
         vertices: millimetres(&head.vertices),
+        texture: params.texture.as_deref(),
     };
     let result = blender_command(blender, "update_flame_head", &command).await?;
     Ok(annotate(result, &model, &head))
@@ -596,6 +637,24 @@ fn decode_displacement(bytes: &[u8]) -> Result<(usize, usize, Vec<f64>), ToolErr
         _ => return Err(invalid()),
     };
     Ok((width as usize, height as usize, fractions))
+}
+
+/// A colour map must be an existing workspace PNG.
+fn check_colour_map(workspace: &Workspace, path: &str) -> Result<(), ToolError> {
+    if !path.ends_with(".png") {
+        return Err(ToolError::Validation(
+            "texture must be a .png colour map".into(),
+        ));
+    }
+    workspace.stat_artifact(path)?;
+    Ok(())
+}
+
+fn no_layout_for_colour(model: &FlameModel) -> ToolError {
+    ToolError::Validation(format!(
+        "the {} model has no texture layout; convert it again with --texture to show a colour map",
+        model.info().variant
+    ))
 }
 
 fn in_range<T: PartialOrd + std::fmt::Display>(

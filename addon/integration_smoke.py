@@ -392,6 +392,39 @@ result = True
         command(host, port, "restore_checkpoint", {"path": "smoke/before-native.blend"})
 
 
+def textured_head_smoke(host: str, port: int) -> None:
+    """A head with texture coordinates and a colour map, as the head tool
+    makes it, using the still render as the map."""
+    command(host, port, "create_flame_head", {
+        "name": "TexturedHeadProbe",
+        "variant": "smoke",
+        "vertices": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+        "faces": [[0, 1, 2], [0, 2, 3]],
+        "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        "texture": "smoke/render.png",
+    })
+    observed = command(host, port, "execute_code", {"code": (
+        "obj = bpy.data.objects['TexturedHeadProbe']\n"
+        "layer = obj.data.uv_layers['FLAME']\n"
+        "material = obj.data.materials[0]\n"
+        "node = material.node_tree.nodes['FLAME colour map']\n"
+        "shader = next(n for n in material.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')\n"
+        "linked = any(link.from_node == node and link.to_socket == shader.inputs['Base Color'] for link in material.node_tree.links)\n"
+        "result = {'uv': [round(value, 6) for loop in layer.data for value in loop.uv],\n"
+        "          'packed': node.image.packed_file is not None,\n"
+        "          'size': list(node.image.size), 'linked': linked}\n"
+        "bpy.data.objects.remove(obj)\n"
+    )})
+    expected = {
+        "uv": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        "packed": True,
+        "size": [256, 256],
+        "linked": True,
+    }
+    if observed.get("result") != expected:
+        raise RuntimeError(f"textured head smoke observed {observed.get('result')}")
+
+
 def capability_smoke(host: str, port: int) -> None:
     wait_until_ready(host, port)
     scene_state_smoke(host, port)
@@ -776,6 +809,7 @@ def capability_smoke(host: str, port: int) -> None:
         "varied": True,
     }:
         raise RuntimeError("still smoke did not decode to a useful 256x256 RGBA image")
+    textured_head_smoke(host, port)
     clear_scene(host, port, 1)
     hollow = command(
         host,
