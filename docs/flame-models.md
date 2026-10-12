@@ -166,8 +166,12 @@ workspace file. Its material feeds the image into the base colour of a
 Principled BSDF, which the viewport and the render tools show. `update`
 accepts `texture` too, to replace the colour map of a head created with
 texture coordinates. It changes the material the head actually shows: when
-another object shares that material, the head gets its own copy, and when a
-slot linked to the object hides the colour material, a visible one is added. The colour stays in Blender: `export` and `prepare_print`
+another mesh uses that material, the head gets its own copy, and when a slot
+linked to the object hides the colour material, a visible one is added.
+Objects that share the head's mesh, such as linked duplicates, are the same
+head: `update` moves their vertices and changes their colour together. The
+material reads the `FLAME` layer by name, so another active UV layer does not
+move the colour. The colour stays in Blender: `export` and `prepare_print`
 write geometry only.
 
 ### Export a head

@@ -419,6 +419,7 @@ def textured_head_smoke(host: str, port: int) -> None:
         "node = material.node_tree.nodes['FLAME colour map']\n"
         "shader = next(n for n in material.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')\n"
         "linked = any(link.from_node == node and link.to_socket == shader.inputs['Base Color'] for link in material.node_tree.links)\n"
+        "linked = linked and any(link.to_node == node and link.to_socket.name == 'Vector' and link.from_node.type == 'UVMAP' and link.from_node.uv_map == 'FLAME' for link in material.node_tree.links)\n"
         "result = {'uv': [round(value, 6) for loop in layer.data for value in loop.uv],\n"
         "          'packed': node.image.packed_file is not None,\n"
         "          'size': list(node.image.size), 'linked': linked}\n"

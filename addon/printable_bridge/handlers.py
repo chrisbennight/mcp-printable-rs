@@ -1316,6 +1316,11 @@ class BlenderHandlers:
         node.name = FLAME_COLOUR_NODE
         node.image = image
         node.location = (-400.0, 300.0)
+        # Read through the FLAME layer by name, whichever layer is active.
+        coordinates = tree.nodes.new("ShaderNodeUVMap")
+        coordinates.uv_map = FLAME_UV_LAYER
+        coordinates.location = (-650.0, 300.0)
+        tree.links.new(coordinates.outputs["UV"], node.inputs["Vector"])
         tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
         return material
 

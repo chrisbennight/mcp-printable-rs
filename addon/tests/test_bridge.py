@@ -4504,14 +4504,16 @@ class FakeUvLayers(dict):
 
 
 class FakeImageNode:
-    """An image node that counts its image's users as Blender does."""
+    """An image node that counts its image's users as Blender does. Also
+    stands in for a UV Map node."""
 
     def __init__(self, kind: str) -> None:
         self.kind = kind
         self.name = kind
         self.location = (0.0, 0.0)
-        self.outputs = {"Color": (kind, "Color")}
-        self.inputs: dict[str, Any] = {}
+        self.uv_map = ""
+        self.outputs = {"Color": (kind, "Color"), "UV": (kind, "UV")}
+        self.inputs: dict[str, Any] = {"Vector": (kind, "Vector")}
         self._image: FakeImage | None = None
 
     @property
@@ -4736,7 +4738,12 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertTrue(material.use_nodes)
         node = material.node_tree.nodes.get("FLAME colour map")
         self.assertIs(node.image, image)
-        self.assertEqual(material.links, [(node.outputs["Color"], ("Principled BSDF", "Base Color"))])
+        coordinates = material.node_tree.nodes.get("ShaderNodeUVMap")
+        self.assertEqual(coordinates.uv_map, "FLAME")
+        self.assertEqual(material.links, [
+            (coordinates.outputs["UV"], node.inputs["Vector"]),
+            (node.outputs["Color"], ("Principled BSDF", "Base Color")),
+        ])
 
     def test_texture_coordinates_alone_add_no_material(self) -> None:
         self.create(uv=self.UVS)
