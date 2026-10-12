@@ -4503,17 +4503,38 @@ class FakeUvLayers(dict):
         return self[name]
 
 
+class FakeSocket(tuple):
+    """A node socket, equal to its (node kind, socket name) pair, with a
+    default value."""
+
+    default_value: Any = None
+
+
+class FakeSockets(dict):
+    """A node's sockets by name, made on first use."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def __missing__(self, name: str) -> FakeSocket:
+        socket = FakeSocket((self.kind, name))
+        self[name] = socket
+        return socket
+
+
 class FakeImageNode:
     """An image node that counts its image's users as Blender does. Also
-    stands in for a UV Map node."""
+    stands in for other shader nodes, whose sockets are made on first use."""
 
     def __init__(self, kind: str) -> None:
         self.kind = kind
         self.name = kind
         self.location = (0.0, 0.0)
         self.uv_map = ""
-        self.outputs = {"Color": (kind, "Color"), "UV": (kind, "UV")}
-        self.inputs: dict[str, Any] = {"Vector": (kind, "Vector")}
+        self.attribute_name = ""
+        self.outputs = FakeSockets(kind)
+        self.inputs = FakeSockets(kind)
         self._image: FakeImage | None = None
 
     @property
@@ -4544,9 +4565,7 @@ class FakeMaterial:
         self.name = name
         self.users = 1
         self.use_nodes = False
-        shader = SimpleNamespace(
-            name="Principled BSDF", inputs={"Base Color": ("Principled BSDF", "Base Color")}
-        )
+        shader = SimpleNamespace(name="Principled BSDF", inputs=FakeSockets("Principled BSDF"))
         self.links: list[tuple[Any, Any]] = []
         self.node_tree = SimpleNamespace(
             nodes=FakeNodes({"shader": shader}),
@@ -4571,6 +4590,7 @@ class FakeImage:
         self.name = ""
         self.packed = False
         self.users = 0
+        self.colorspace_settings = SimpleNamespace(name="sRGB")
 
     def pack(self) -> None:
         self.packed = True
@@ -4590,14 +4610,33 @@ class FakePolygons(list):
     def __init__(self, faces: Any = ()) -> None:
         super().__init__(faces)
         self.material_index = [0] * len(self)
+        self.use_smooth = [False] * len(self)
 
-    def foreach_set(self, attribute: str, values: list[int]) -> None:
-        assert attribute == "material_index" and len(values) == len(self)
-        self.material_index = list(values)
+    def foreach_set(self, attribute: str, values: list[Any]) -> None:
+        assert attribute in ("material_index", "use_smooth") and len(values) == len(self)
+        setattr(self, attribute, list(values))
 
     def foreach_get(self, attribute: str, values: list[int]) -> None:
         assert attribute == "material_index" and len(values) == len(self)
         values[:] = self.material_index
+
+
+class FakeAttribute:
+    def __init__(self, kind: str, domain: str) -> None:
+        self.kind = kind
+        self.domain = domain
+        self.values: list[float] = []
+        self.data = SimpleNamespace(foreach_set=self.foreach_set)
+
+    def foreach_set(self, attribute: str, values: list[float]) -> None:
+        assert attribute == "value"
+        self.values = list(values)
+
+
+class FakeAttributes(dict):
+    def new(self, name: str, type: str, domain: str) -> FakeAttribute:
+        self[name] = FakeAttribute(type, domain)
+        return self[name]
 
 
 class FakeHeadMesh:
@@ -4606,6 +4645,7 @@ class FakeHeadMesh:
         self.polygons = FakePolygons()
         self.updates = 0
         self.uv_layers = FakeUvLayers()
+        self.attributes = FakeAttributes()
         self.materials: list[FakeMaterial] = []
 
     def from_pydata(self, vertices, edges, faces) -> None:
@@ -4650,6 +4690,12 @@ class FakeHeadObject:
         self.scale = (1.0, 1.0, 1.0)
         self.dimensions = (0.0, 0.0, 0.0)
         self.properties: dict[str, Any] = {}
+        self.modifiers = SimpleNamespace(added=[], new=self._new_modifier)
+
+    def _new_modifier(self, name: str, type: str) -> SimpleNamespace:
+        modifier = SimpleNamespace(name=name, type=type, levels=0, render_levels=0)
+        self.modifiers.added.append(modifier)
+        return modifier
 
     def __setitem__(self, key: str, value: Any) -> None:
         self.properties[key] = value
@@ -4660,6 +4706,23 @@ class FakeHeadObject:
     @property
     def material_slots(self) -> list[FakeSlot]:
         return [FakeSlot(self, index) for index in range(len(self.data.materials))]
+
+
+class PortraitProfileTests(unittest.TestCase):
+    def test_portrait_is_a_grounded_perspective_profile_with_three_lights(self) -> None:
+        from printable_bridge.handlers import PRODUCT_PRESENTATION_PROFILES
+
+        portrait = PRODUCT_PRESENTATION_PROFILES["portrait"]
+        self.assertEqual((portrait["camera_type"], portrait["lens_mm"]), ("PERSP", 85.0))
+        self.assertEqual(portrait["view_transform"], "Khronos PBR Neutral")
+        self.assertIsNotNone(portrait["ground"])
+        self.assertEqual([light[0] for light in portrait["lights"]], ["key", "fill", "rim"])
+        # Dimmer than the neutral studio, so pale skin keeps its detail.
+        neutral = PRODUCT_PRESENTATION_PROFILES["studio_neutral"]
+        self.assertLess(
+            sum(light[2] for light in portrait["lights"]),
+            sum(light[2] for light in neutral["lights"]),
+        )
 
 
 class FlameHeadHandlerTests(unittest.TestCase):
@@ -4711,8 +4774,10 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.directory.cleanup()
 
     def create(self, **overrides: Any) -> dict[str, Any]:
+        # The fixture is an open surface; most tests leave its edge open.
         params = {"name": "Head", "variant": "flame2023_open",
-                  "vertices": self.VERTICES, "faces": self.FACES}
+                  "vertices": self.VERTICES, "faces": self.FACES,
+                  "appearance": {"close_neck": False}}
         params.update(overrides)
         return self.handlers.dispatch("create_flame_head", params)
 
@@ -4767,16 +4832,163 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertIs(node.image, image)
         coordinates = material.node_tree.nodes.get("ShaderNodeUVMap")
         self.assertEqual(coordinates.uv_map, "FLAME")
-        self.assertEqual(material.links, [
+        self.assertEqual(material.links[:2], [
             (coordinates.outputs["UV"], node.inputs["Vector"]),
             (node.outputs["Color"], ("Principled BSDF", "Base Color")),
         ])
 
-    def test_texture_coordinates_alone_add_no_material(self) -> None:
-        self.create(uv=self.UVS)
+    def test_heads_are_smooth_with_a_subdivision_modifier_by_default(self) -> None:
+        self.create()
+        head = self.objects["Head"]
+        self.assertEqual(head.data.polygons.use_smooth, [True, True])
+        [modifier] = head.modifiers.added
+        self.assertEqual((modifier.type, modifier.levels, modifier.render_levels), ("SUBSURF", 1, 1))
+        self.objects.clear()
+        self.create(appearance={"subdivision": 0})
+        self.assertEqual(self.objects["Head"].modifiers.added, [])
+
+    def test_the_lowest_opening_is_closed_without_new_vertices(self) -> None:
+        # A box open at the bottom (y = 0) and at the top (y = 10).
+        vertices = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0],
+                    [0.0, 10.0, 0.0], [10.0, 10.0, 0.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0]]
+        faces = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]]
+        uvs = [[0.1 * corner, 0.0] for corner in range(3 * len(faces))]
+        self.create(vertices=vertices, faces=faces, uv=uvs, appearance={})
+        mesh = self.objects["Head"].data
+        self.assertEqual(len(mesh.vertices), 8)
+        cap = mesh.polygons[-1]
+        # The bottom loop, running against the walls' edges along it.
+        self.assertEqual(cap, (3, 2, 1, 0))
+        self.assertEqual(len(mesh.uv_layers["FLAME"].uv), 2 * (3 * len(faces) + 4))
+        self.assertEqual(mesh.attributes["printable_eye"].values, [0.0] * (len(faces) + 1))
+
+    def test_the_neck_is_the_opening_with_the_longest_rim_however_the_head_is_turned(self) -> None:
+        from printable_bridge.handlers import _neck_loop
+
+        # A box open at both ends: a 10 by 10 opening at y = 0 and a 2 by 2
+        # opening in the middle of a closed top at y = 10.
+        bottom = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0]]
+        top = [[0.0, 10.0, 0.0], [10.0, 10.0, 0.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0]]
+        hole = [[4.0, 10.0, 4.0], [6.0, 10.0, 4.0], [6.0, 10.0, 6.0], [4.0, 10.0, 6.0]]
+        walls = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]]
+        ring = [[4, 5, 9], [4, 9, 8], [5, 6, 10], [5, 10, 9], [6, 7, 11], [6, 11, 10], [7, 4, 8], [7, 8, 11]]
+        faces = [tuple(face) for face in walls + ring]
+        for upside_down in (False, True):
+            vertices = [tuple(point) for point in bottom + top + hole]
+            if upside_down:
+                vertices = [(x, -y, -z) for x, y, z in vertices]
+            with self.subTest(upside_down=upside_down):
+                self.assertEqual(sorted(_neck_loop(vertices, faces)), [0, 1, 2, 3])
+
+    def test_separate_parts_are_marked_as_eyes(self) -> None:
+        vertices = self.VERTICES + [[50.0, 0.0, 0.0], [51.0, 0.0, 0.0], [50.0, 1.0, 0.0]]
+        faces = self.FACES + [[4, 5, 6]]
+        self.create(vertices=vertices, faces=faces)
+        attribute = self.objects["Head"].data.attributes["printable_eye"]
+        self.assertEqual((attribute.kind, attribute.domain), ("FLOAT", "FACE"))
+        self.assertEqual(attribute.values, [0.0, 0.0, 1.0])
+
+    def test_skin_and_eyes_take_their_finish_from_the_appearance(self) -> None:
+        self.write_map("maps/colour.png", b"colour map")
+        self.create(uv=self.UVS, texture="maps/colour.png", appearance={
+            "close_neck": False, "skin_roughness": 0.6, "eye_roughness": 0.1,
+            "skin_subsurface": 0.2, "subsurface_scale_mm": 2.0})
+        [material] = self.objects["Head"].data.materials
+        nodes = material.node_tree.nodes
+        eye = nodes.get("FLAME eye finish")
+        self.assertEqual(eye.attribute_name, "printable_eye")
+        ranges = [node for node in nodes.values() if getattr(node, "kind", "") == "ShaderNodeMapRange"]
+        self.assertEqual(
+            [(node.inputs["To Min"].default_value, node.inputs["To Max"].default_value) for node in ranges],
+            [(0.6, 0.1), (0.2, 0.0)],
+        )
+        self.assertIn((ranges[0].outputs["Result"], ("Principled BSDF", "Roughness")), material.links)
+        self.assertIn((ranges[1].outputs["Result"], ("Principled BSDF", "Subsurface Weight")), material.links)
+        self.assertEqual(nodes.get("Principled BSDF").inputs["Subsurface Scale"].default_value, 2.0)
+
+    def test_a_colour_map_added_later_keeps_the_finish_given_at_creation(self) -> None:
+        self.create(uv=self.UVS, appearance={"close_neck": False, "skin_roughness": 0.8, "eye_roughness": 0.2})
+        [plain] = self.objects["Head"].data.materials
+        self.assertIsNone(plain.node_tree.nodes.get("FLAME colour map"))
+        self.write_map("maps/colour.png", b"colour map")
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": "maps/colour.png"},
+        )
+        # The coloured material takes the plain one's slot and finish.
+        [material] = self.objects["Head"].data.materials
+        self.assertIsNotNone(material.node_tree.nodes.get("FLAME colour map"))
+        ranges = [node for node in material.node_tree.nodes.values()
+                  if getattr(node, "kind", "") == "ShaderNodeMapRange"]
+        self.assertEqual(
+            [(node.inputs["To Min"].default_value, node.inputs["To Max"].default_value) for node in ranges],
+            [(0.8, 0.2), (0.1, 0.0)],
+        )
+
+    def test_a_head_without_recorded_settings_gets_the_default_finish(self) -> None:
+        from printable_bridge.handlers import HEAD_APPEARANCE_DEFAULTS, _stored_appearance
+
+        for stored in (None, "not json", '{"skin_roughness": "rough"}', "[]"):
+            head = FakeHeadObject("Old", FakeHeadMesh())
+            if stored is not None:
+                head["printable_head_appearance"] = stored
+            self.assertEqual(_stored_appearance(head), HEAD_APPEARANCE_DEFAULTS, stored)
+
+    def test_a_detail_map_adds_bump_at_its_scale(self) -> None:
+        self.write_map("maps/colour.png", b"colour map")
+        self.write_map("maps/detail.png", b"detail map")
+        self.create(uv=self.UVS, texture="maps/colour.png", appearance={
+            "close_neck": False, "bump": {"path": "maps/detail.png", "scale_mm": 6.5, "strength": 2.0}})
+        colour, detail = self.images
+        self.assertEqual((detail.name, detail.colorspace_settings.name), ("Head detail map", "Non-Color"))
+        self.assertEqual(colour.colorspace_settings.name, "sRGB")
+        [material] = self.objects["Head"].data.materials
+        heights = material.node_tree.nodes.get("FLAME detail map")
+        self.assertIs(heights.image, detail)
+        bump = material.node_tree.nodes.get("ShaderNodeBump")
+        self.assertEqual(bump.inputs["Distance"].default_value, 13.0)
+        self.assertIn((heights.outputs["Color"], bump.inputs["Height"]), material.links)
+        self.assertIn((bump.outputs["Normal"], ("Principled BSDF", "Normal")), material.links)
+
+    def test_unusable_appearance_creates_nothing(self) -> None:
+        self.write_map("maps/colour.png", b"colour map")
+        for appearance, message in [
+            ({"subdivision": 3}, "subdivision"),
+            ({"subdivision": True}, "subdivision"),
+            ({"close_neck": "yes"}, "close_neck"),
+            ({"skin_roughness": 1.5}, "skin_roughness"),
+            ({"glow": 1}, "unknown parameter: glow"),
+            ({"bump": {"path": "maps/missing.png", "scale_mm": 1.0}}, ""),
+            ({"bump": {"path": "maps/colour.png", "scale_mm": -1.0}}, "scale_mm"),
+            ([], "appearance must be an object"),
+        ]:
+            with self.subTest(appearance=appearance):
+                with self.assertRaisesRegex(Exception, message):
+                    self.create(uv=self.UVS, texture="maps/colour.png", appearance=appearance)
+                self.assertEqual(self.objects, {})
+        with self.assertRaisesRegex(HandlerError, "needs a colour map"):
+            self.create(appearance={"bump": {"path": "maps/colour.png"}})
+        # A refused detail map frees the colour map loaded before it.
+        self.write_map("maps/wide.png", b"wide", width=4097, height=2)
+        loaded, removed = len(self.images), len(self.removed_images)
+        with self.assertRaisesRegex(HandlerError, "detail map must be at most"):
+            self.create(uv=self.UVS, texture="maps/colour.png",
+                        appearance={"bump": {"path": "maps/wide.png"}})
+        self.assertEqual(self.removed_images[removed:], self.images[loaded:])
+        self.assertEqual(self.objects, {})
+
+    def test_a_head_without_a_colour_map_gets_a_plain_head_material(self) -> None:
+        self.create(uv=self.UVS, appearance={"close_neck": False, "skin_roughness": 0.7})
         mesh = self.objects["Head"].data
         self.assertEqual(len(mesh.uv_layers["FLAME"].uv), 12)
-        self.assertEqual(mesh.materials, [])
+        [material] = mesh.materials
+        nodes = material.node_tree.nodes
+        self.assertIsNone(nodes.get("FLAME colour map"))
+        self.assertEqual(nodes.get("FLAME eye finish").attribute_name, "printable_eye")
+        self.assertEqual(nodes.get("Principled BSDF").inputs["Base Color"].default_value, (0.8, 0.8, 0.8, 1.0))
+        ranges = [node for node in nodes.values() if getattr(node, "kind", "") == "ShaderNodeMapRange"]
+        self.assertEqual(ranges[0].inputs["To Min"].default_value, 0.7)
 
     def test_colour_map_problems_create_nothing(self) -> None:
         workspace = Path(self.directory.name) / "workspace"
@@ -4834,7 +5046,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.write_map("colour.png", b"colour")
         self.create(uv=self.UVS)
         mesh = self.objects["Head"].data
-        mesh.materials.append(FakeMaterial("Clay"))
+        mesh.materials[:] = [FakeMaterial("Clay")]
         self.handlers.dispatch(
             "update_flame_head",
             {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,

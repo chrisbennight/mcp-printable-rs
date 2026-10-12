@@ -796,9 +796,11 @@ fn accumulate(
                 if !labels.agree(pixel, |label| kinds[face as usize].accepts(label, scalp)) {
                     continue;
                 }
-                labels
-                    .at(pixel)
-                    .is_some_and(|label| matches!(label, LABEL_BODY_SKIN | LABEL_FACE_SKIN))
+                // Skin only where its neighbours agree, as for every other
+                // label, so mixed pixels at a label's edge are not taken.
+                labels.agree(pixel, |label| {
+                    matches!(label, LABEL_BODY_SKIN | LABEL_FACE_SKIN)
+                })
             }
             None => false,
         };
@@ -1722,6 +1724,59 @@ mod tests {
         let map = builder.finish().unwrap();
         assert!(map.seen > 0.2, "{}", map.seen);
         assert_eq!(texel(&map, 0.5), [200, 0, 0]);
+    }
+
+    #[test]
+    fn skin_beside_hair_is_not_recorded_as_skin() {
+        // A photographed scalp, skin on the left of the photograph and hair
+        // on the right: every pixel colours it, but only skin clear of the
+        // hair counts as skin.
+        let (vertices, faces, coords) = square(0.0, [-1.0, 1.0], [0.0, 1.0], false);
+        let rgb = gradient();
+        let labels: Vec<u8> = (0..224 * 224)
+            .map(|index| {
+                if index % 224 < 112 {
+                    LABEL_FACE_SKIN
+                } else {
+                    LABEL_HAIR
+                }
+            })
+            .collect();
+        let view = View {
+            photo: Photo {
+                width: 224,
+                height: 224,
+                rgb: &rgb,
+            },
+            vertices: &vertices,
+            projection: PROJECTION,
+            labels: Some(Labels {
+                side: 224,
+                data: &labels,
+                left: 0.0,
+                top: 0.0,
+                step: 1.0,
+            }),
+        };
+        let size = 64;
+        let texels = TexelMap::new(&faces, &layout(coords, &faces), size);
+        let mut weight = vec![0.0; size * size];
+        let mut colour = vec![[0.0; 3]; size * size];
+        let mut skin = SkinSamples::new(size * size);
+        accumulate(
+            &faces,
+            &texels,
+            &view,
+            (&[FaceKind::Scalp; 2], ScalpColour::Photo),
+            &mut weight,
+            &mut colour,
+            (&mut vec![false; size * size], &mut skin),
+        )
+        .unwrap();
+        // Texel column 31 lands on photograph column 111, the last of the skin.
+        let (clear, edge) = (32 * size + 20, 32 * size + 31);
+        assert!(weight[edge] > 0.0 && skin.weight[edge] == 0.0);
+        assert!(skin.weight[clear] > 0.0);
     }
 
     #[test]
