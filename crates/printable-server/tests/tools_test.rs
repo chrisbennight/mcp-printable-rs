@@ -5335,6 +5335,13 @@ async fn head_colour_maps_are_checked_before_blender_is_asked() {
         .unwrap();
     std::fs::write(root.path().join("colour.jpg"), b"jpg").unwrap();
     std::fs::write(root.path().join("fake.png"), b"not a png").unwrap();
+    image::GrayImage::new(4097, 1)
+        .save(root.path().join("wide.png"))
+        .unwrap();
+    std::fs::File::create(root.path().join("huge.png"))
+        .unwrap()
+        .set_len(12 * 1024 * 1024 + 1)
+        .unwrap();
     let fake = FakeAddon::spawn(|_, _| panic!("invalid colour maps must not reach Blender")).await;
     let (_plain_models, plain) = tetrahedron_library(false);
     let (_models, textured) = tetrahedron_library(true);
@@ -5374,6 +5381,24 @@ async fn head_colour_maps_are_checked_before_blender_is_asked() {
             "create",
             json!({"texture": "missing.png"}),
             "missing.png",
+        ),
+        (
+            &textured,
+            "create",
+            json!({"texture": "wide.png"}),
+            "4096 pixels",
+        ),
+        (
+            &textured,
+            "create",
+            json!({"texture": "huge.png"}),
+            "read_too_large",
+        ),
+        (
+            &textured,
+            "update",
+            json!({"object": "Head", "texture": "huge.png"}),
+            "read_too_large",
         ),
     ] {
         let server = head_server_in(&fake, Arc::clone(library), root.path());
