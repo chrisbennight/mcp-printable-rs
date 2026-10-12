@@ -548,6 +548,85 @@ class TextureLayoutTests(unittest.TestCase):
         self.assertEqual((header["uv_faces"]["dtype"], header["uv_faces"]["shape"]), ("U32", [4, 3]))
 
 
+class Protocol0(Legacy):
+    """Protocol 0 pickles with escaped Python 2 strings, as FLAME_masks.pkl uses."""
+
+    def text(self, value):
+        data = value if isinstance(value, bytes) else value.encode("latin1")
+        escaped = b"".join(bytes([byte]) if 32 <= byte < 127 and byte not in b"'\\" else b"\\x%02x" % byte
+                           for byte in data)
+        return P.STRING + b"'" + escaped + b"'\n"
+
+
+def masks(encoder, regions):
+    """A masks pickle naming each region's vertex indices."""
+    pairs = [(name, encoder.array("i8", (len(indices),), indices)) for name, indices in regions.items()]
+    return encoder.mapping(pairs) + P.STOP
+
+
+class RegionMaskTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_protocol_0_masks_become_sorted_distinct_regions(self):
+        # 0x9f and quotes in the raw data are escaped, as Python 2 wrote them.
+        data = masks(Protocol0(), {"scalp": [3, 0, 2], "lips": [1, 1, 3], "eye": [39, 159]})
+        tensors = convert_module.regions(data, 160)
+        self.assertEqual(tensors["region.scalp"], ("U32", (3,), struct.pack("<3I", 0, 2, 3)))
+        self.assertEqual(tensors["region.lips"], ("U32", (2,), struct.pack("<2I", 1, 3)))
+        self.assertEqual(tensors["region.eye"], ("U32", (2,), struct.pack("<2I", 39, 159)))
+
+    def test_unusable_masks_are_refused(self):
+        encoder = Protocol0()
+        cases = [
+            (masks(encoder, {"scalp": [0, 4]}), "outside the model"),
+            (masks(encoder, {"scalp": []}), "outside the model"),
+            (masks(encoder, {"Scalp": [0]}), "lowercase"),
+            (masks(encoder, {f"r{index}": [0] for index in range(65)}), "between 1 and 64"),
+            (encoder.mapping([]) + P.STOP, "between 1 and 64"),
+            (encoder.mapping([("scalp", encoder.array("f8", (1,), [0.0]))]) + P.STOP, "not a list"),
+            (encoder.mapping([("scalp", encoder.array("i8", (1, 1), [0]))]) + P.STOP, "not a list"),
+            (encoder.mapping([("scalp", encoder.text("0"))]) + P.STOP, "not a list"),
+            (encoder.glob(__name__, "_record_call") + _tuple() + P.REDUCE + P.STOP, "masks: refusing"),
+        ]
+        CALLS.clear()
+        for data, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ModelError, message):
+                convert_module.regions(data, 4)
+        self.assertEqual(CALLS, [])
+
+    def test_oversized_memo_index_in_protocol_0_is_refused(self):
+        hostile = P.NONE + P.PUT + str(convert_module.MAX_MEMO_INDEX + 1).encode() + b"\n" + P.STOP
+        with self.assertRaisesRegex(ModelError, "memo index"):
+            convert_module.regions(hostile, 4)
+
+    def test_command_adds_the_regions_to_the_model(self):
+        source, destination = self.root / "source.pkl", self.root / "model.safetensors"
+        source.write_bytes(model(Legacy()))
+        mask_file = self.root / "FLAME_masks.pkl"
+        mask_file.write_bytes(masks(Protocol0(), {"scalp": [0, 1], "face": [2]}))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(source), str(destination), "--variant", "masked",
+                           "--expression-components", "2", "--masks", str(mask_file)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["regions"], ["face", "scalp"])
+        blob = destination.read_bytes()
+        (length,) = struct.unpack_from("<Q", blob)
+        header = json.loads(blob[8:8 + length])
+        self.assertEqual((header["region.scalp"]["dtype"], header["region.scalp"]["shape"]), ("U32", [2]))
+
+    def test_oversized_masks_file_is_refused(self):
+        mask_file = self.root / "FLAME_masks.pkl"
+        mask_file.write_bytes(b"\0" * (convert_module.MAX_MASKS_BYTES + 1))
+        with self.assertRaisesRegex(ModelError, "masks file exceeds"):
+            convert_module.read_bounded(mask_file, convert_module.MAX_MASKS_BYTES, "masks file")
+
+
 class ResourceLimitTests(unittest.TestCase):
     def test_command_runs_within_cpu_and_address_space_limits(self):
         code = textwrap.dedent(f"""
@@ -581,3 +660,14 @@ class PublishedModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("PRINTABLE_TEST_FLAME_MASKS"),
+                     "set PRINTABLE_TEST_FLAME_MASKS to the published FLAME_masks.pkl to run")
+class PublishedMasksTests(unittest.TestCase):
+    def test_published_masks_convert(self):
+        data = Path(os.environ["PRINTABLE_TEST_FLAME_MASKS"]).read_bytes()
+        tensors = convert_module.regions(data, 5023)
+        names = {name.removeprefix("region.") for name in tensors}
+        self.assertTrue({"scalp", "face", "neck", "lips", "nose", "left_ear", "right_ear",
+                         "left_eyeball", "right_eyeball"} <= names)

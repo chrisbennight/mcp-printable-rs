@@ -115,3 +115,31 @@ fn opening_the_jaw_moves_the_chin_far_more_than_the_crown() {
         "crown moved {crown} m against chin {chin} m"
     );
 }
+
+#[test]
+#[ignore = "requires PRINTABLE_TEST_FLAME_MODEL"]
+fn published_regions_sit_where_their_names_say() {
+    let model = published();
+    if model.regions().is_empty() {
+        return;
+    }
+    let head = posed(&model, Pose::default());
+    let mean = |name: &str| {
+        let region = model
+            .region(name)
+            .expect("published masks name this region");
+        let mut sum = [0.0f32; 3];
+        for &vertex in region {
+            for (total, value) in sum.iter_mut().zip(head.vertices[vertex as usize]) {
+                *total += value;
+            }
+        }
+        sum.map(|total| total / region.len() as f32)
+    };
+    // The subject's left is +x, y is up and the face looks along +z.
+    assert!(mean("left_eyeball")[0] > 0.0 && mean("right_eyeball")[0] < 0.0);
+    assert!(mean("left_ear")[0] > 0.0 && mean("right_ear")[0] < 0.0);
+    assert!(mean("scalp")[1] > mean("left_eyeball")[1]);
+    assert!(mean("neck")[1] < mean("lips")[1]);
+    assert!(mean("nose")[2] > mean("scalp")[2]);
+}

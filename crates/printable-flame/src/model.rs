@@ -1,6 +1,6 @@
 //! Converted model parsing and layout validation.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use safetensors::tensor::TensorView;
 use safetensors::{Dtype, SafeTensorError, SafeTensors};
@@ -21,6 +21,10 @@ pub(crate) const POSE_COMPONENTS: usize = 9 * (JOINT_COUNT - 1);
 
 const WEIGHT_TOLERANCE: f64 = 1e-3;
 const MAX_LABEL_BYTES: usize = 64;
+/// Region tensors are named with this prefix followed by the region's name.
+const REGION_PREFIX: &str = "region.";
+const MAX_REGIONS: usize = 64;
+const MAX_REGION_NAME_BYTES: usize = 32;
 
 /// Reasons a converted model cannot be used.
 #[derive(Debug, Error)]
@@ -50,6 +54,12 @@ pub enum ModelError {
         "model texture layout does not cover every triangle with coordinates in the unit square"
     )]
     UvLayout,
+    #[error(
+        "model regions must be at most {MAX_REGIONS} tensors named region.<name>, with a short lowercase name"
+    )]
+    RegionName,
+    #[error("model region `{0}` is not a sorted list of distinct template vertices")]
+    Region(String),
 }
 
 /// Provenance and basis sizes recorded by the converter.
@@ -85,6 +95,8 @@ pub struct FlameModel {
     pub(crate) regressor: Vec<f32>,
     /// FLAME's texture layout, when the converter was given it.
     pub(crate) uv: Option<UvLayout>,
+    /// Named vertex regions, when the converter was given FLAME's masks.
+    pub(crate) regions: BTreeMap<String, Vec<u32>>,
 }
 
 /// Texture coordinates for the model's triangles. Several coordinates can
@@ -164,6 +176,7 @@ impl FlameModel {
         }
 
         let uv = uv_layout(&tensors, faces.len())?;
+        let regions = regions(&tensors, vertex_count)?;
         Ok(Self {
             info,
             vertex_count,
@@ -174,6 +187,7 @@ impl FlameModel {
             weights,
             regressor,
             uv,
+            regions,
         })
     }
 
@@ -195,6 +209,18 @@ impl FlameModel {
     /// FLAME's texture layout, present when the model was converted with it.
     pub fn uv_layout(&self) -> Option<&UvLayout> {
         self.uv.as_ref()
+    }
+
+    /// Named vertex regions, such as `scalp`, `face` or `left_eyeball`, each a
+    /// sorted list of distinct vertex indices. Empty unless the model was
+    /// converted with FLAME's masks.
+    pub fn regions(&self) -> &BTreeMap<String, Vec<u32>> {
+        &self.regions
+    }
+
+    /// The vertices of one named region, if the model has it.
+    pub fn region(&self, name: &str) -> Option<&[u32]> {
+        self.regions.get(name).map(Vec::as_slice)
     }
 }
 
@@ -233,6 +259,45 @@ fn uv_layout(tensors: &SafeTensors<'_>, triangles: usize) -> Result<Option<UvLay
         return Err(ModelError::UvLayout);
     }
     Ok(Some(UvLayout { coords, faces }))
+}
+
+/// The optional `region.<name>` tensors: sorted, distinct vertex indices.
+fn regions(
+    tensors: &SafeTensors<'_>,
+    vertex_count: usize,
+) -> Result<BTreeMap<String, Vec<u32>>, ModelError> {
+    let mut regions = BTreeMap::new();
+    for tensor in tensors.names() {
+        let Some(name) = tensor.strip_prefix(REGION_PREFIX) else {
+            continue;
+        };
+        let valid_name = name.len() <= MAX_REGION_NAME_BYTES
+            && name
+                .bytes()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+        if !valid_name || regions.len() == MAX_REGIONS {
+            return Err(ModelError::RegionName);
+        }
+        let view = tensors.tensor(tensor).map_err(ModelError::Format)?;
+        let invalid = || ModelError::Region(name.to_owned());
+        if view.dtype() != Dtype::U32 || !matches!(view.shape(), &[count] if count > 0) {
+            return Err(invalid());
+        }
+        let indices: Vec<u32> = words(view.data()).collect();
+        if indices.windows(2).any(|pair| pair[0] >= pair[1])
+            || indices
+                .last()
+                .is_some_and(|&last| last as usize >= vertex_count)
+        {
+            return Err(invalid());
+        }
+        regions.insert(name.to_owned(), indices);
+    }
+    Ok(regions)
 }
 
 fn parse_info(metadata: &HashMap<String, String>) -> Result<ModelInfo, ModelError> {
@@ -385,6 +450,39 @@ mod tests {
             fixture.omit.push("uv_faces");
         });
         assert!(matches!(only_coords, Err(ModelError::UvLayout)));
+    }
+
+    #[test]
+    fn regions_are_optional_and_validated() {
+        assert!(Fixture::default().model().regions().is_empty());
+        let model = rebuilt(|fixture| {
+            fixture.regions = vec![("scalp".into(), vec![0, 2]), ("face".into(), vec![3])];
+        })
+        .unwrap();
+        assert_eq!(model.region("scalp"), Some(&[0, 2][..]));
+        assert_eq!(model.region("face"), Some(&[3][..]));
+        assert_eq!(model.region("neck"), None);
+        assert_eq!(
+            model.regions().keys().collect::<Vec<_>>(),
+            ["face", "scalp"]
+        );
+        for indices in [vec![2, 0], vec![1, 1], vec![4], vec![]] {
+            let result = rebuilt(|fixture| fixture.regions = vec![("scalp".into(), indices)]);
+            assert!(
+                matches!(&result, Err(ModelError::Region(name)) if name == "scalp"),
+                "{result:?}"
+            );
+        }
+        for name in ["Scalp", "", "1st", &"a".repeat(33)] {
+            let result = rebuilt(|fixture| fixture.regions = vec![(name.into(), vec![0])]);
+            assert!(matches!(result, Err(ModelError::RegionName)), "{name}");
+        }
+        let many = rebuilt(|fixture| {
+            fixture.regions = (0..65)
+                .map(|index| (format!("r{index}"), vec![0]))
+                .collect();
+        });
+        assert!(matches!(many, Err(ModelError::RegionName)));
     }
 
     #[test]
