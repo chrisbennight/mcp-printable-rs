@@ -57,6 +57,25 @@ triangle, coordinates outside the unit square and corners that reference a
 missing coordinate. All FLAME releases share the same triangles, so the one
 layout serves every release.
 
+Some head features work on named parts of the head: the scalp, face,
+forehead, nose, lips, neck, ears, eyeballs and the regions around the eyes.
+FLAME publishes these as `FLAME_masks.pkl`, inside `FLAME_masks.zip` on the
+FLAME site's download page. Add it with `--masks`:
+
+```sh
+python3 scripts/flame_model_convert.py generic_model.pkl \
+  /models/flame/flame2020_generic.safetensors --variant flame2020_generic \
+  --texture FLAME_texture.npz --masks FLAME_masks.pkl
+```
+
+The masks file is read with the same restricted loader as the model and may
+be at most 4 MiB. Each region must be a list of integer vertex indices
+within the model, with a short lowercase name. Repeated indices are dropped,
+because the published lips region lists some vertices twice. The command's
+output lists the regions it stored, and the `models` action reports them for
+each mounted model. All FLAME releases number their vertices the same way,
+so one masks file serves every release.
+
 ## What the converter checks
 
 Loading a pickle can run arbitrary code. The converter resolves only the
@@ -111,7 +130,8 @@ any file that was skipped, with the reason.
 The `head` workflow has five actions, and a sixth when photo reconstruction is
 available:
 
-- `models` lists the mounted variants and their basis sizes.
+- `models` lists the mounted variants, their basis sizes, whether each has a
+  texture layout and the regions it was converted with.
 - `create` adds a head mesh to the Blender scene.
 - `update` re-evaluates an existing head in place, keeping its triangles.
 - `export` writes the head to the workspace as an OBJ file without using
@@ -592,6 +612,7 @@ Arrays are little-endian. Floating-point data is stored as float32.
 | `kintree_parents` | I32 | joints, with -1 for the root |
 | `uv_coords` | F32 | texture coordinates × 2, with `--texture` only |
 | `uv_faces` | U32 | triangles × 3, with `--texture` only |
+| `region.<name>` | U32 | sorted vertex indices, one tensor per region, with `--masks` only |
 
 The metadata records `format`, `variant`, `source_sha256`,
 `identity_components`, `expression_components`, `expression_source`,
