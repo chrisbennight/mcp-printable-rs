@@ -64,7 +64,12 @@ serialized command boundary. See [scene state](scene-state.md) and
 [render recovery](render-worker.md) for these contracts.
 
 Geometry analysis shares a bounded execution lane. Exact constructive geometry
-runs in a disposable process with an address-space limit. OpenSCAD uses argv
+runs in a disposable process with an address-space limit. Assembly preparation
+streams immutable input snapshots without retaining complete model buffers in
+the server; the snapshots and execution lane remain owned until the worker
+exits, including when its requesting future is cancelled. See the
+[assembly input memory evidence](../evidence/assembly-input-memory.md) for
+measurement boundaries and regression contracts. OpenSCAD uses argv
 arguments, restricted source, snapshotted file inputs, and caller work budgets.
 These boundaries contain failures without granting the server control over
 unrelated workloads.
