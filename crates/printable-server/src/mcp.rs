@@ -663,6 +663,71 @@ mod tests {
     use super::aggregate_readiness;
 
     #[test]
+    fn structured_failures_match_every_advertised_and_selected_contract() {
+        use crate::error::ToolError;
+
+        let observed = serde_json::from_value(json!({
+            "generation": "12345678-1234-4234-8234-123456789abc",
+            "revision": 7
+        }))
+        .unwrap();
+        let errors = [
+            ToolError::Validation("choose a supported action and typed parameters".into()),
+            ToolError::Job("render job not found".into()),
+            ToolError::UploadNotFound,
+            ToolError::Blender(printable_blender::BlenderError::StaleSceneState { observed }),
+            ToolError::Blender(printable_blender::BlenderError::Timeout {
+                phase: printable_blender::Phase::Recv,
+            }),
+            ToolError::GeometryWorker {
+                code: "geometry_worker_failed",
+                message: "the isolated worker could not complete the analysis".into(),
+            },
+            ToolError::Printer(bambuddy_api::ApiError::AmbiguousOutcome),
+        ];
+        let available = crate::tools::workflows::Availability {
+            head: true,
+            reconstruct: true,
+        };
+        let index = crate::resources::contracts::read(crate::resources::contracts::ROOT, available)
+            .unwrap();
+        for entry in index["tools"].as_array().unwrap() {
+            let tool = entry["tool"].as_str().unwrap();
+            let uri = entry["uri"].as_str().unwrap();
+            let mut schemas = vec![serde_json::Value::Object(
+                crate::tools::output::schema(tool).as_ref().clone(),
+            )];
+            for action in entry["actions"].as_array().unwrap() {
+                schemas.push(
+                    crate::resources::contracts::read(
+                        &format!("{uri}/{}", action.as_str().unwrap()),
+                        available,
+                    )
+                    .unwrap()["outputSchema"]
+                        .clone(),
+                );
+            }
+            for schema in schemas {
+                let validator = jsonschema::validator_for(&schema).unwrap();
+                for error in &errors {
+                    let result = super::error_result(tool, error);
+                    assert_eq!(result.is_error, Some(true));
+                    let payload = result.structured_content.unwrap();
+                    assert_eq!(payload["error"]["code"], error.code());
+                    assert!(validator.is_valid(&payload), "{tool}: {payload}");
+                    for invalid in [
+                        json!({"tool": tool, "error": {"code": error.code()}}),
+                        json!({"tool": tool, "error": {"code": 1, "message": "failure"}}),
+                        json!({"tool": tool, "error": {"code": error.code(), "message": "failure", "scene_state": {"revision": -1}}}),
+                    ] {
+                        assert!(!validator.is_valid(&invalid), "{tool}: accepted {invalid}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn printer_rejection_envelope_matches_published_output_contracts() {
         let details = bambuddy_api::rejection::Rejection {
             status: 409,

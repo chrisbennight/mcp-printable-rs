@@ -172,6 +172,40 @@ fn native_bundle() -> Value {
     )
 }
 
+/// Add the shared execution-failure contract without changing success shapes.
+/// Definitions stay at the document root so existing local references resolve.
+pub(crate) fn with_errors(name: &str, mut success: Value) -> Value {
+    let mut code = json!({"type": "string", "minLength": 1});
+    if matches!(name, "printer" | "print") {
+        // Known printer rejections must use the existing typed details schema.
+        code["not"] = json!({"const": "printer_rejected"});
+    }
+    let failure = object(
+        json!({
+            "tool": {"const": name},
+            "error": object(json!({
+                "code": code,
+                "message": {"type": "string"},
+                "scene_state": scene_state()
+            }), &["code", "message"])
+        }),
+        &["tool", "error"],
+    );
+    let root = success
+        .as_object_mut()
+        .expect("success schema is an object");
+    let definitions = root.remove("$defs");
+    let dialect = root.remove("$schema");
+    let mut result = json!({"type": "object", "anyOf": [success, failure]});
+    if let Some(definitions) = definitions {
+        result["$defs"] = definitions;
+    }
+    if let Some(dialect) = dialect {
+        result["$schema"] = dialect;
+    }
+    result
+}
+
 pub fn schema(name: &str) -> Arc<Map<String, Value>> {
     let value = match name {
         "skill" => {
@@ -410,6 +444,11 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             }), &["uri", "name", "mimeType", "size", "digest"])}), &["file"])
         ]}),
         _ => unreachable!("output schema requested for an unknown workflow"),
+    };
+    let value = if matches!(name, "printer" | "print") {
+        value
+    } else {
+        with_errors(name, value)
     };
     Arc::new(
         value

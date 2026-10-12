@@ -2708,6 +2708,16 @@ async fn workflow_scene_preconditions_and_stale_metadata_reach_mcp() {
             .expect("tool response");
         assert_eq!(result.is_error, Some(stale));
         let structured = result.structured_content.expect("structured state");
+        let schema = serde_json::Value::Object(
+            printable_server::tools::output::schema("edit")
+                .as_ref()
+                .clone(),
+        );
+        assert!(
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .is_valid(&structured)
+        );
         if stale {
             assert_eq!(structured["error"]["code"], "stale_scene_state");
             assert_eq!(structured["error"]["scene_state"]["revision"], 1);
@@ -2717,6 +2727,56 @@ async fn workflow_scene_preconditions_and_stale_metadata_reach_mcp() {
     }
     assert_eq!(*revision.lock().expect("revision"), 2);
     assert_eq!(fake.connection_count(), 3);
+}
+
+#[tokio::test]
+async fn delivered_mutation_failures_validate_without_automatic_replay() {
+    for code in ["addon", "timeout"] {
+        let fake = FakeAddon::spawn(move |command, _| {
+            assert_eq!(command, "execute_code");
+            if code == "timeout" {
+                ResponseSpec::Hang
+            } else {
+                ResponseSpec::Error {
+                    message: "inspect scene state before another edit".into(),
+                    traceback: None,
+                    addon_version: None,
+                }
+            }
+        })
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let server = PrintableServer::new(
+            workspace(Some(tmp.path())),
+            Arc::new(client(&fake.host(), fake.port())),
+            Arc::new(settings(&fake.host(), fake.port())),
+        );
+        let result = server
+            .invoke_tool(
+                CallToolRequestParams::new("blender_execute").with_arguments(
+                    json!({"code": "result = None", "timeout_seconds": 0.1})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["error"]["code"], code);
+        let schema = Value::Object(
+            printable_server::tools::output::schema("blender_execute")
+                .as_ref()
+                .clone(),
+        );
+        assert!(
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .is_valid(&payload)
+        );
+        assert_eq!(fake.commands(), ["execute_code"]);
+    }
 }
 
 #[tokio::test]
@@ -5848,6 +5908,74 @@ async fn head_prepare_print_raises_detail_from_a_displacement_map() {
 }
 
 #[tokio::test]
+async fn head_prepare_print_filters_detail_and_reports_how() {
+    let (_models, library) = tetrahedron_library(true);
+    let root = tempfile::tempdir().unwrap();
+    // A one-texel band of extreme values, where the fixture's texture
+    // coordinates cross u = 0.5, beside an even 1 mm raise. The band is
+    // under a tenth of the texels the fixture's surface covers.
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(32, 32, |x, _| if x == 16 { u16::MAX } else { 6553 }),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |displacement: Value, path: &str| {
+        let params = json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 2.0, "displacement": displacement
+        });
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let map = json!({"path": "detail.png", "offset_mm": 0.0, "scale_mm": 10.0});
+    let plain = run(map.clone(), "plain.stl").await.unwrap();
+    assert_eq!(plain.is_error, Some(false), "{plain:?}");
+    let plain = plain.structured_content.unwrap();
+    let mut clipped = map.clone();
+    clipped["clip_percentile"] = json!(90.0);
+    clipped["gain"] = json!(2.0);
+    let result = run(clipped, "clipped.stl").await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    let applied = &value["bust"]["displacement"];
+    let filter = &applied["filter"];
+    assert_eq!(filter["gain"], 2.0, "{value}");
+    assert_eq!(filter["clip_percentile"], 90.0, "{value}");
+    assert!(
+        (filter["clipped_at_mm"].as_f64().unwrap() - 1.0).abs() < 1e-3,
+        "{value}"
+    );
+    assert!(filter["millimetres_per_texel"].as_f64().unwrap() > 0.0);
+    assert!(
+        applied["percentiles_mm"]["p50"].as_f64().unwrap() > 0.0,
+        "{value}"
+    );
+    // Clipping removed the extreme column, so the highest raise is about
+    // twice the plain bust's even raise rather than its spike.
+    let highest = |value: &Value| {
+        value["bust"]["displacement"]["highest_mm"]
+            .as_f64()
+            .unwrap()
+    };
+    let even = plain["bust"]["displacement"]["percentiles_mm"]["p50"]
+        .as_f64()
+        .unwrap();
+    assert!(highest(&value) < 2.5 * even, "{value} {plain}");
+    assert!(highest(&plain) > 5.0 * even, "{plain}");
+
+    let mut relieved = map.clone();
+    relieved["relief_mm"] = json!(0.25);
+    let result = run(relieved, "relieved.stl").await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    let applied = &value["bust"]["displacement"];
+    assert_eq!(applied["filter"]["relief_mm"], 0.25, "{value}");
+    assert!(applied["relief_scale"].as_f64().unwrap() > 0.0, "{value}");
+}
+
+#[tokio::test]
 async fn head_prepare_print_rejects_unusable_displacement_maps() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -5994,6 +6122,31 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
             "hollow_wall_mm",
         ),
         (json!({"path": "head.txt"}), ""),
+        (
+            json!({"path": "head.stl", "displacement": {
+                "path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0, "gain": 2.0, "relief_mm": 0.2}}),
+            "gain or relief_mm, not both",
+        ),
+        (
+            json!({"path": "head.stl", "displacement": {
+                "path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0, "high_pass_mm": 0.5}}),
+            "displacement.high_pass_mm",
+        ),
+        (
+            json!({"path": "head.stl", "displacement": {
+                "path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0, "clip_percentile": 20.0}}),
+            "displacement.clip_percentile",
+        ),
+        (
+            json!({"path": "head.stl", "displacement": {
+                "path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0, "gain": -1.0}}),
+            "displacement.gain",
+        ),
+        (
+            json!({"path": "head.stl", "displacement": {
+                "path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0, "relief_mm": 50.0}}),
+            "displacement.relief_mm",
+        ),
     ] {
         let result = server
             .invoke_tool(head_call(

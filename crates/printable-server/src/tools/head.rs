@@ -4,7 +4,7 @@
 
 use super::*;
 
-use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, texture};
+use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
 use printable_geom::{BustRequest, Displacement, Hollow, Plinth};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
@@ -32,6 +32,11 @@ const DRAIN_DIAMETER_MM: std::ops::RangeInclusive<f64> = 1.0..=10.0;
 const DEFAULT_DRAIN_DIAMETER_MM: f64 = 3.5;
 /// Largest displacement map accepted, in pixels on each side.
 const MAX_DISPLACEMENT_PIXELS: u32 = 1024;
+/// Detail filter widths, at life size, from a millimetre to the width of a face.
+const HIGH_PASS_MM: std::ops::RangeInclusive<f64> = 1.0..=100.0;
+const CLIP_PERCENTILE: std::ops::RangeInclusive<f64> = 50.0..=100.0;
+const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
+const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -267,7 +272,9 @@ pub(super) struct HeadPreparePrintParams {
 /// A greyscale PNG displacement map. A pixel at fraction f of the full
 /// range, p / 65535 for 16-bit or p / 255 for 8-bit images, raises the
 /// surface by `offset_mm + scale_mm × f` millimetres at life size, scaled
-/// with the bust. Row 0 is v = 1 and column 0 is u = 0.
+/// with the bust. Row 0 is v = 1 and column 0 is u = 0. The optional filters
+/// apply in this order: `high_pass_mm`, `clip_percentile`, then `gain` or
+/// `relief_mm`.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DisplacementParams {
@@ -275,6 +282,22 @@ pub(super) struct DisplacementParams {
     path: String,
     offset_mm: f64,
     scale_mm: f64,
+    /// Remove features wider than about this many millimetres on the
+    /// life-size head, 1 to 100, keeping finer detail such as wrinkles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    high_pass_mm: Option<f64>,
+    /// Limit the detail to this percentile of its magnitude, 50 to 100, so a
+    /// few extreme values do not dominate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clip_percentile: Option<f64>,
+    /// Multiply the detail by this factor, 0 to 10 (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gain: Option<f64>,
+    /// Scale the detail so that the 95th percentile of the map's detail is
+    /// about this many millimetres deep on the finished bust, 0.01 to 10,
+    /// whatever the bust's height. Not with `gain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relief_mm: Option<f64>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -552,12 +575,31 @@ pub(super) async fn prepare_print(
             "pose.global must be zero for prepare_print: the bust stands on its neck; use pose.neck to turn or tilt the head".into(),
         ));
     }
-    if let Some(map) = &params.displacement
-        && !(map.offset_mm.is_finite() && map.scale_mm.is_finite())
-    {
-        return Err(ToolError::Validation(
-            "displacement offset_mm and scale_mm must be finite".into(),
-        ));
+    if let Some(map) = &params.displacement {
+        if !(map.offset_mm.is_finite() && map.scale_mm.is_finite()) {
+            return Err(ToolError::Validation(
+                "displacement offset_mm and scale_mm must be finite".into(),
+            ));
+        }
+        if map.gain.is_some() && map.relief_mm.is_some() {
+            return Err(ToolError::Validation(
+                "displacement takes gain or relief_mm, not both".into(),
+            ));
+        }
+        for (name, value, range) in [
+            ("displacement.high_pass_mm", map.high_pass_mm, &HIGH_PASS_MM),
+            (
+                "displacement.clip_percentile",
+                map.clip_percentile,
+                &CLIP_PERCENTILE,
+            ),
+            ("displacement.gain", map.gain, &DETAIL_GAIN),
+            ("displacement.relief_mm", map.relief_mm, &RELIEF_MM),
+        ] {
+            if let Some(value) = value {
+                in_range(name, value, range)?;
+            }
+        }
     }
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
@@ -569,9 +611,12 @@ pub(super) async fn prepare_print(
         params.pose,
     )
     .await?;
-    let displacement = match params.displacement {
-        Some(map) => Some(displacement(&workspace, &model, map).await?),
-        None => None,
+    let (displacement, detail_filter) = match params.displacement {
+        Some(map) => {
+            let (map, report) = displacement(&workspace, &model, &head, map).await?;
+            (Some(map), Some(report))
+        }
+        None => (None, None),
     };
     let request = BustRequest {
         vertices: millimetres(&head.vertices)
@@ -623,6 +668,10 @@ pub(super) async fn prepare_print(
             ));
         }
         let artifact = workspace.write_generated_bytes(&path, &bytes, overwrite)?;
+        let mut report = serde_json::to_value(report)?;
+        if let (Some(filter), Some(applied)) = (detail_filter, report.get_mut("displacement")) {
+            applied["filter"] = filter;
+        }
         Ok::<_, ToolError>(json!({
             "artifact": artifact,
             "units": "millimetres",
@@ -1129,13 +1178,14 @@ fn decode_photo(bytes: &[u8]) -> Result<RgbImage, String> {
     Ok(image.into_rgb8())
 }
 
-/// Read a displacement map from the workspace and pair it with the model's
-/// texture coordinates.
+/// Read a displacement map from the workspace, filter it as requested and
+/// pair it with the model's texture coordinates. Also describes the filtering.
 async fn displacement(
     workspace: &Arc<Workspace>,
-    model: &FlameModel,
+    model: &Arc<FlameModel>,
+    head: &PosedHead,
     params: DisplacementParams,
-) -> Result<Displacement, ToolError> {
+) -> Result<(Displacement, Value), ToolError> {
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
             "the {} model has no texture layout; convert it again with --texture to use a displacement map",
@@ -1148,18 +1198,58 @@ async fn displacement(
         .map(|face| face.map(|index| layout.coords[index as usize]))
         .collect();
     let workspace = Arc::clone(workspace);
-    let path = params.path;
+    let path = params.path.clone();
     let (_, bytes) = blocking(move || workspace.read_artifact(&path)).await?;
     let (width, height, fractions) = decode_displacement(&bytes)?;
-    Ok(Displacement {
-        width,
-        height,
-        values: fractions
-            .into_iter()
-            .map(|fraction| (params.offset_mm + params.scale_mm * fraction) as f32)
-            .collect(),
-        triangle_uvs,
+    let mut values: Vec<f32> = fractions
+        .into_iter()
+        .map(|fraction| (params.offset_mm + params.scale_mm * fraction) as f32)
+        .collect();
+    let model = Arc::clone(model);
+    let vertices = millimetres(&head.vertices);
+    let filter = detail::DetailFilter {
+        high_pass_mm: params.high_pass_mm,
+        clip_percentile: params.clip_percentile,
+    };
+    let gain = params.gain.unwrap_or(1.0);
+    let (values, report) = blocking(move || {
+        let layout = model
+            .uv_layout()
+            .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
+        let report = detail::filter_detail(
+            &mut values,
+            width,
+            height,
+            model.faces(),
+            layout,
+            &vertices,
+            filter,
+        )
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
+        for value in &mut values {
+            *value = (f64::from(*value) * gain) as f32;
+        }
+        Ok::<_, ToolError>((values, report))
     })
+    .await?;
+    let description = json!({
+        "millimetres_per_texel": report.millimetres_per_texel,
+        "high_pass_mm": params.high_pass_mm,
+        "clip_percentile": params.clip_percentile,
+        "clipped_at_mm": report.clipped_at,
+        "gain": gain,
+        "relief_mm": params.relief_mm,
+    });
+    Ok((
+        Displacement {
+            width,
+            height,
+            values,
+            triangle_uvs,
+            relief_mm: params.relief_mm,
+        },
+        description,
+    ))
 }
 
 /// Pixels of an 8- or 16-bit greyscale PNG as fractions of the full range,

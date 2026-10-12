@@ -45,6 +45,15 @@ the client accepts a single JSON text result. A duplicate text representation
 is not printed alongside the structured result. MCP `isError` remains an
 error, and mutations are never automatically replayed.
 
+Advertised output schemas cover successful results and structured execution
+failures. A failure includes the tool name and an `error` object with a stable
+`code` and human-readable `message`; stale-scene failures also include the
+observed scene state. Printer rejections retain their typed rejection details.
+Check MCP `isError` before interpreting a result as success. A valid schema does
+not mean a failed mutation can be retried: an unknown outcome still requires
+inspection or checkpoint recovery. Unknown tool names remain JSON-RPC errors.
+See the [MCP output-schema and error requirements](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
+
 ## Record evidence on an isolated installation
 
 ```sh
