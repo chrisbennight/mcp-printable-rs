@@ -347,11 +347,13 @@ while the fine part can be shallower than a layer. These optional
 | `relief_mm` | 0.01 to 10 | Scales the detail so that the 95th percentile of the map's detail is this many millimetres at the bust's scale, whatever its height. The applied percentiles in the report land close to it, not exactly on it, because the surface samples the map unevenly. Not with `gain`. |
 
 Texels whose magnitude is below 0.5% of the map's largest are not detail.
-Filtering works on the detail by itself, so a map that covers only the face
-is not pulled toward zero at its edges, and sets the other texels to exactly
-zero, so their rounding noise is never scaled up as detail. The filter
-width is converted to texels using the model's own surface: the median, over
-the triangles that carry detail, of how many millimetres one texel covers.
+Filtering changes only the detail and sets the other texels to exactly zero,
+so their rounding noise is never scaled up as detail. Blurs are taken over the
+head's surface, the texels inside a triangle of the texture layout, so the
+gaps between the layout's pieces do not pull nearby detail toward zero. The
+filter width is converted to texels using the model's own surface: the
+median, over the texels that carry detail, of how many millimetres one texel
+of their triangle covers.
 The high-pass blur is three successive box blurs, which approximate a
 Gaussian blur and cost the same whatever the width; a width narrower than a
 texel removes nothing. `relief_mm` leaves a map unscaled when its detail is
@@ -379,9 +381,9 @@ The `bust` report adds `displacement`:
 On a 100 mm bust of the FLAME 2020 generic head with a map reconstructed from
 one photograph, the unfiltered detail ran from -0.61 to +0.70 mm between
 its 5th and 95th percentiles, and rendered as broad lumps on the cheeks and
-chin. With `high_pass_mm` 8 and `clip_percentile` 99, that span was -0.14 to
-+0.18 mm and the lumps were gone while forehead and cheek creases remained.
-Adding `relief_mm` 0.25 raised the 95th percentile to 0.24 mm. Each request
+chin. With `high_pass_mm` 8 and `clip_percentile` 99, that span was -0.12 to
++0.19 mm and the lumps were gone while forehead and cheek creases remained.
+Adding `relief_mm` 0.25 raised the 95th percentile to 0.27 mm. Each request
 took about 8 seconds, including a 1024-pixel map filtered with `high_pass_mm`
 100.
 

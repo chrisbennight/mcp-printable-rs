@@ -2,10 +2,11 @@
 //!
 //! A displacement map holds a distance along the surface normal for each
 //! texel. Detail is where the map's magnitude is a noticeable share of its
-//! largest value. Filtering works on the detail alone, so the empty
-//! surroundings of a face-only map do not pull its edges toward zero, and
-//! sets everything else to exactly zero, so rounding noise there cannot later
-//! be taken for detail.
+//! largest value. Filtering changes only the detail, and sets everything else
+//! to exactly zero, so rounding noise there cannot later be taken for detail.
+//! Blurs are taken over the head's surface, the texels inside a triangle of
+//! the texture layout, so the gaps between the layout's pieces do not pull
+//! nearby detail toward zero.
 
 use thiserror::Error;
 
@@ -39,11 +40,13 @@ pub enum DetailError {
     Layout,
 }
 
+const NO_FACE: u32 = u32::MAX;
+
 /// What filtering found and did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilterReport {
-    /// Millimetres on the head's surface per texel of the map, the median
-    /// over the triangles that carry detail.
+    /// Millimetres on the head's surface per texel of the map: over the
+    /// texels that carry detail, the median of their triangle's scale.
     pub millimetres_per_texel: f64,
     /// The high-pass standard deviation used, in texels.
     pub high_pass_texels: Option<f64>,
@@ -80,7 +83,9 @@ pub fn filter_detail(
         return Err(DetailError::Layout);
     }
     let detail = detail_mask(values);
-    let millimetres_per_texel = surface_scale(values, width, height, faces, layout, vertices);
+    let covering = covering_faces(width, height, layout);
+    let millimetres_per_texel =
+        surface_scale(&detail, &covering, faces, layout, vertices, [width, height]);
     let mut report = FilterReport {
         millimetres_per_texel,
         high_pass_texels: None,
@@ -102,8 +107,9 @@ pub fn filter_detail(
         // A Gaussian with standard deviation s passes about half of a
         // feature of width 2.5 s, so features much wider are removed.
         let sigma = width_mm / millimetres_per_texel / 2.5;
-        high_pass(values, &detail, width, height, sigma);
-        report.high_pass_texels = Some(sigma);
+        if high_pass(values, &detail, &covering, [width, height], sigma) {
+            report.high_pass_texels = Some(sigma);
+        }
     }
     if let Some(percentile) = filter.clip_percentile {
         let magnitudes: Vec<f32> = values
@@ -145,65 +151,118 @@ pub fn percentile_of(mut values: Vec<f32>, percentile: f64) -> Option<f32> {
     Some(values[rank as usize])
 }
 
-/// Millimetres per texel: for each triangle, the square root of its surface
-/// area over its area in the map, the median over triangles whose centre
-/// carries detail, or over all triangles when none does.
+/// For each texel, the triangle whose texture coordinates cover its centre,
+/// or `NO_FACE` off the head's surface.
+fn covering_faces(width: usize, height: usize, layout: &UvLayout) -> Vec<u32> {
+    let mut covering = vec![NO_FACE; width * height];
+    for (index, corners) in layout.faces.iter().enumerate() {
+        let [a, b, c] = corners.map(|corner| {
+            let [u, v] = layout.coords[corner as usize];
+            [
+                f64::from(u) * width as f64,
+                (1.0 - f64::from(v)) * height as f64,
+            ]
+        });
+        let area = edge(a, b, c);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let low = [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1])];
+        let high = [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1])];
+        let span = |low: f64, high: f64, size: usize| {
+            ((low - 0.5).floor().max(0.0) as usize).min(size)
+                ..(((high - 0.5).ceil().max(-1.0) + 1.0) as usize).min(size)
+        };
+        for row in span(low[1], high[1], height) {
+            for column in span(low[0], high[0], width) {
+                let centre = [column as f64 + 0.5, row as f64 + 0.5];
+                let shares = [edge(b, c, centre), edge(c, a, centre), edge(a, b, centre)];
+                if shares.iter().all(|share| share / area >= -1e-9) {
+                    covering[row * width + column] = index as u32;
+                }
+            }
+        }
+    }
+    covering
+}
+
+fn edge(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+}
+
+/// Millimetres per texel. Each triangle's scale is the square root of its
+/// surface area over its area in the map; the result is the median of that
+/// scale over the texels that carry detail, over every texel on the surface
+/// when none does, and over the triangles when no texel is covered.
 fn surface_scale(
-    values: &[f32],
-    width: usize,
-    height: usize,
+    detail: &[bool],
+    covering: &[u32],
     faces: &[[u32; 3]],
     layout: &UvLayout,
     vertices: &[[f32; 3]],
+    [width, height]: [usize; 2],
 ) -> f64 {
-    let detail = detail_mask(values);
-    let mut on_detail = Vec::new();
-    let mut everywhere = Vec::new();
-    for (face, corners) in faces.iter().zip(&layout.faces) {
-        let [a, b, c] = face.map(|vertex| vertices[vertex as usize].map(f64::from));
-        let surface = 0.5 * norm(cross(sub(b, a), sub(c, a)));
-        let [p, q, r] = corners.map(|corner| {
-            let [u, v] = layout.coords[corner as usize];
-            [f64::from(u) * width as f64, f64::from(v) * height as f64]
-        });
-        let texels = 0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])).abs();
-        if texels < 1e-9 || !surface.is_finite() {
-            continue;
-        }
-        let scale = (surface / texels).sqrt();
-        everywhere.push(scale as f32);
-        let centre = [(p[0] + q[0] + r[0]) / 3.0, (p[1] + q[1] + r[1]) / 3.0];
-        let column = (centre[0].floor().max(0.0) as usize).min(width - 1);
-        let row = ((height as f64 - centre[1]).floor().max(0.0) as usize).min(height - 1);
-        if detail[row * width + column] {
-            on_detail.push(scale as f32);
-        }
-    }
-    let chosen = if on_detail.is_empty() {
-        everywhere
-    } else {
-        on_detail
+    let scales: Vec<Option<f32>> = faces
+        .iter()
+        .zip(&layout.faces)
+        .map(|(face, corners)| {
+            let [a, b, c] = face.map(|vertex| vertices[vertex as usize].map(f64::from));
+            let surface = 0.5 * norm(cross(sub(b, a), sub(c, a)));
+            let [p, q, r] = corners.map(|corner| {
+                let [u, v] = layout.coords[corner as usize];
+                [f64::from(u) * width as f64, f64::from(v) * height as f64]
+            });
+            let texels = 0.5 * edge(p, q, r).abs();
+            (texels >= 1e-9 && surface.is_finite()).then(|| (surface / texels).sqrt() as f32)
+        })
+        .collect();
+    let over = |wanted: &dyn Fn(usize) -> bool| -> Vec<f32> {
+        covering
+            .iter()
+            .enumerate()
+            .filter(|&(index, &face)| face != NO_FACE && wanted(index))
+            .filter_map(|(_, &face)| scales[face as usize])
+            .collect()
     };
-    percentile_of(chosen, 50.0).map_or(0.0, f64::from)
+    [
+        over(&|index| detail[index]),
+        over(&|_| true),
+        scales.iter().flatten().copied().collect(),
+    ]
+    .into_iter()
+    .find(|chosen| !chosen.is_empty())
+    .and_then(|chosen| percentile_of(chosen, 50.0))
+    .map_or(0.0, f64::from)
 }
 
-/// Subtract a blur of the detail, taken over the detail alone, from the
+/// Subtract a blur of the map, taken over the head's surface, from the
 /// detail. The blur approximates a Gaussian of standard deviation `sigma`
-/// texels; one much narrower than a texel removes nothing.
-fn high_pass(values: &mut [f32], detail: &[bool], width: usize, height: usize, sigma: f64) {
+/// texels. Whether anything was subtracted: a blur no wider than a texel is
+/// the map itself, and removes nothing.
+fn high_pass(
+    values: &mut [f32],
+    detail: &[bool],
+    covering: &[u32],
+    [width, height]: [usize; 2],
+    sigma: f64,
+) -> bool {
     if sigma <= 0.0 || !sigma.is_finite() {
-        return;
+        return false;
     }
-    let mut total: Vec<f64> = detail
+    let widths = box_widths(sigma);
+    if widths.iter().all(|&width| width == 1) {
+        return false;
+    }
+    let mut total: Vec<f64> = covering
         .iter()
-        .map(|&inside| f64::from(u8::from(inside)))
+        .map(|&face| f64::from(u8::from(face != NO_FACE)))
         .collect();
     let mut sum: Vec<f64> = values
         .iter()
         .zip(&total)
         .map(|(value, weight)| f64::from(*value) * weight)
         .collect();
-    for box_width in box_widths(sigma) {
+    for box_width in widths {
         let radius = (box_width / 2).min(width.max(height));
         for field in [&mut sum, &mut total] {
             box_rows(field, width, height, radius);
@@ -215,6 +274,7 @@ fn high_pass(values: &mut [f32], detail: &[bool], width: usize, height: usize, s
             *value -= (sum[index] / total[index]) as f32;
         }
     }
+    true
 }
 
 /// Odd widths of the box blurs whose succession has the variance of a
@@ -439,6 +499,108 @@ mod tests {
         .unwrap();
         assert_eq!((report.high_pass_texels, report.clipped_at), (None, None));
         assert!(values.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn a_filter_narrower_than_a_texel_removes_nothing() {
+        // A texel is 100 / 64 mm, so a 1 mm filter is far below a texel.
+        let (faces, layout, vertices, side) = square(64);
+        let mut values = map(side, |x, y| {
+            ((x * 0.3).sin() * (y * 0.2).cos()) as f32 + 2.0
+        });
+        let original = values.clone();
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: Some(1.0),
+                clip_percentile: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.high_pass_texels, None);
+        assert_eq!(values, original);
+    }
+
+    #[test]
+    fn an_isolated_crease_on_a_flat_surface_keeps_its_depth() {
+        let (faces, layout, vertices, side) = square(128);
+        let mut values = map(
+            side,
+            |x, _| if (63.0..65.0).contains(&x) { -0.5 } else { 0.0 },
+        );
+        filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: Some(8.0),
+                clip_percentile: None,
+            },
+        )
+        .unwrap();
+        let crease = values[64 * side + 63];
+        assert!(crease < -0.35, "{crease}");
+        assert_eq!(values[64 * side + 10], 0.0, "the flat surface stays flat");
+    }
+
+    #[test]
+    fn the_scale_comes_from_the_texels_that_carry_detail() {
+        // Two squares of the same shape in the map: on the left 100 mm
+        // across, on the right 10 mm. A narrow line of detail on the right
+        // misses the centres of the right-hand triangles.
+        let vertices = vec![
+            [0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [100.0, 100.0, 0.0],
+            [0.0, 100.0, 0.0],
+            [200.0, 0.0, 0.0],
+            [210.0, 0.0, 0.0],
+            [210.0, 10.0, 0.0],
+            [200.0, 10.0, 0.0],
+        ];
+        let faces = vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
+        let layout = UvLayout {
+            coords: vec![
+                [0.0, 0.0],
+                [0.5, 0.0],
+                [0.5, 1.0],
+                [0.0, 1.0],
+                [0.5, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.5, 1.0],
+            ],
+            faces: faces.clone(),
+        };
+        let side = 64;
+        let mut values = map(
+            side,
+            |x, _| if (40.0..41.0).contains(&x) { 1.0 } else { 0.0 },
+        );
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter::default(),
+        )
+        .unwrap();
+        // 10 by 10 mm over 32 by 64 texels.
+        let expected = (100.0f64 / (32.0 * 64.0)).sqrt();
+        assert!(
+            (report.millimetres_per_texel - expected).abs() < 1e-4,
+            "{report:?}"
+        );
     }
 
     #[test]
