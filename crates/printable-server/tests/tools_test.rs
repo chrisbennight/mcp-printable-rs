@@ -5777,17 +5777,12 @@ async fn head_prepare_print_raises_detail_from_a_displacement_map() {
 async fn head_prepare_print_filters_detail_and_reports_how() {
     let (_models, library) = tetrahedron_library(true);
     let root = tempfile::tempdir().unwrap();
-    // A narrow band of extreme values, where the fixture's texture
-    // coordinates cross u = 0.5, beside an even 1 mm raise.
+    // A one-texel band of extreme values, where the fixture's texture
+    // coordinates cross u = 0.5, beside an even 1 mm raise. The band is
+    // under a tenth of the texels the fixture's surface covers.
     std::fs::write(
         root.path().join("detail.png"),
-        displacement_png(32, 32, |x, _| {
-            if (15..=16).contains(&x) {
-                u16::MAX
-            } else {
-                6553
-            }
-        }),
+        displacement_png(32, 32, |x, _| if x == 16 { u16::MAX } else { 6553 }),
     )
     .unwrap();
     let server = head_print_server(root.path(), library);

@@ -880,6 +880,9 @@ async fn displacement(
     let filter = detail::DetailFilter {
         high_pass_mm: params.high_pass_mm,
         clip_percentile: params.clip_percentile,
+        surface_only: params.high_pass_mm.is_some()
+            || params.clip_percentile.is_some()
+            || params.relief_mm.is_some(),
     };
     let gain = params.gain.unwrap_or(1.0);
     let (values, report) = blocking(move || {

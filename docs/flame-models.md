@@ -366,6 +366,9 @@ while the fine part can be shallower than a layer. These optional
 | `gain` | 0 to 10, default 1 | Multiplies the detail. |
 | `relief_mm` | 0.01 to 10 | Scales the detail so that the 95th percentile of the map's detail is this many millimetres at the bust's scale, whatever its height. The applied percentiles in the report land close to it, not exactly on it, because the surface samples the map unevenly. Not with `gain`. |
 
+When any of `high_pass_mm`, `clip_percentile` or `relief_mm` is given, texels
+outside every triangle of the texture layout are first set to zero. They never
+reach the head, so they cannot decide a clip limit or a relief depth.
 Texels whose magnitude is below 0.5% of the map's largest are not detail.
 Filtering changes only the detail and sets the other texels to exactly zero,
 so their rounding noise is never scaled up as detail. Blurs are taken over the

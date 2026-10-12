@@ -30,6 +30,10 @@ pub struct DetailFilter {
     /// Limit magnitudes to this percentile, 0 to 100, of the detail's
     /// magnitudes.
     pub clip_percentile: Option<f64>,
+    /// Set texels outside every triangle of the texture layout to zero.
+    /// They never reach the head, so whatever they hold must not decide a
+    /// clip limit or a relief depth.
+    pub surface_only: bool,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -82,8 +86,15 @@ pub fn filter_detail(
     {
         return Err(DetailError::Layout);
     }
-    let detail = detail_mask(values);
     let covering = covering_faces(width, height, layout);
+    if filter.surface_only {
+        for (value, &face) in values.iter_mut().zip(&covering) {
+            if face == NO_FACE {
+                *value = 0.0;
+            }
+        }
+    }
+    let detail = detail_mask(values);
     let millimetres_per_texel =
         surface_scale(&detail, &covering, faces, layout, vertices, [width, height]);
     let mut report = FilterReport {
@@ -414,6 +425,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(8.0),
                 clip_percentile: None,
+                surface_only: true,
             },
         )
         .unwrap();
@@ -444,6 +456,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: None,
                 clip_percentile: Some(90.0),
+                surface_only: true,
             },
         )
         .unwrap();
@@ -477,6 +490,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(10.0),
                 clip_percentile: None,
+                surface_only: true,
             },
         )
         .unwrap();
@@ -497,6 +511,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(50.0),
                 clip_percentile: Some(90.0),
+                surface_only: true,
             },
         )
         .unwrap();
@@ -522,6 +537,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(1.0),
                 clip_percentile: None,
+                surface_only: true,
             },
         )
         .unwrap();
@@ -546,6 +562,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(8.0),
                 clip_percentile: None,
+                surface_only: true,
             },
         )
         .unwrap();
@@ -628,6 +645,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(3.0),
                 clip_percentile: Some(95.0),
+                surface_only: true,
             },
         )
         .unwrap();
@@ -637,6 +655,44 @@ mod tests {
         );
         let crease = values[128 * side + 127];
         assert!(crease < -0.1, "{crease}");
+    }
+
+    #[test]
+    fn texels_off_the_surface_neither_reach_nor_sway_the_filter() {
+        // The square covers the left half of the map; the right half holds a
+        // large value that never reaches the head.
+        let (faces, mut layout, vertices, side) = square(32);
+        for coord in &mut layout.coords {
+            coord[0] *= 0.5;
+        }
+        let mut values = map(side, |x, _| match x {
+            x if x >= 16.0 => 5.0,
+            x if x < 1.0 => 3.0,
+            _ => 0.2,
+        });
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: None,
+                clip_percentile: Some(90.0),
+                surface_only: true,
+            },
+        )
+        .unwrap();
+        // The limit comes from the surface alone: 0.2, not the background.
+        assert_eq!(report.clipped_at, Some(0.2));
+        assert!(values.iter().enumerate().all(|(index, value)| {
+            if index % side >= 16 {
+                *value == 0.0
+            } else {
+                *value == 0.2
+            }
+        }));
     }
 
     #[test]
@@ -672,6 +728,7 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(10.0),
                 clip_percentile: None,
+                surface_only: true,
             },
         )
         .unwrap();
