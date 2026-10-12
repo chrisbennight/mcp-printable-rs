@@ -286,6 +286,8 @@ pub struct ColourMapBuilder<'a> {
     weight: Vec<f32>,
     /// Texels some photograph had in view, whether or not it coloured them.
     in_view: Vec<bool>,
+    /// The colour of each texel from pixels labelled skin alone.
+    skin: SkinSamples,
     colour: Vec<[f32; 3]>,
     size: usize,
     kinds: Vec<FaceKind>,
@@ -315,6 +317,7 @@ impl<'a> ColourMapBuilder<'a> {
             texels: TexelMap::new(faces, layout, size),
             weight: vec![0.0; size * size],
             in_view: vec![false; size * size],
+            skin: SkinSamples::new(size * size),
             colour: vec![[0.0; 3]; size * size],
             size,
             kinds: kinds.to_vec(),
@@ -332,7 +335,7 @@ impl<'a> ColourMapBuilder<'a> {
             (&self.kinds, self.colouring),
             &mut self.weight,
             &mut self.colour,
-            &mut self.in_view,
+            (&mut self.in_view, &mut self.skin),
         )?;
         self.shading.push(shading);
         Ok(())
@@ -345,6 +348,7 @@ impl<'a> ColourMapBuilder<'a> {
             texels,
             weight,
             in_view,
+            skin,
             mut colour,
             size,
             kinds,
@@ -357,7 +361,15 @@ impl<'a> ColourMapBuilder<'a> {
         if in_view < MIN_SEEN {
             return Err(TextureError::NotVisible);
         }
-        let mut map = finish(faces, &texels, &weight, &mut colour, size, &kinds, scalp)?;
+        let mut map = finish(
+            faces,
+            &texels,
+            (&weight, skin),
+            &mut colour,
+            size,
+            &kinds,
+            scalp,
+        )?;
         map.shading = shading;
         Ok(map)
     }
@@ -407,7 +419,7 @@ pub fn minor_parts(faces: &[[u32; 3]]) -> Vec<bool> {
 fn finish(
     faces: &[[u32; 3]],
     texels: &TexelMap,
-    weight: &[f32],
+    (weight, skin): (&[f32], SkinSamples),
     colour: &mut [[f32; 3]],
     size: usize,
     kinds: &[FaceKind],
@@ -437,22 +449,22 @@ fn finish(
         .unwrap_or(0);
     let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
     // Skin and eyes are filled from what the photographs showed of them.
-    // A scalp taken as photographed shows hair, so it seeds its own fill
-    // instead and does not carry hair into unseen skin.
+    // A scalp taken as photographed shows hair, so it seeds the skin fill
+    // only with what was photographed there as skin, and keeps a fill of
+    // its own built from everything it showed.
     let photographed_scalp = scalp == ScalpColour::Photo;
-    let skin_weight: Vec<f32> = texels
-        .face
-        .iter()
-        .zip(weight)
-        .map(|(&face, &weight)| {
-            if face != NO_FACE && photographed_scalp && on_scalp(face) {
-                0.0
-            } else {
-                weight
+    let mut skin_weight = weight.to_vec();
+    let mut skin_colour = colour.to_vec();
+    for (index, &face) in texels.face.iter().enumerate() {
+        if face != NO_FACE && photographed_scalp && on_scalp(face) {
+            let seen = skin.weight[index];
+            skin_weight[index] = seen;
+            if seen > 0.0 {
+                skin_colour[index] = skin.colour[index].map(|channel| channel / seen);
             }
-        })
-        .collect();
-    let fill = surface_fill(faces, vertex_count, texels, &skin_weight, colour);
+        }
+    }
+    let fill = surface_fill(faces, vertex_count, texels, &skin_weight, &skin_colour);
     let scalp_fill =
         photographed_scalp.then(|| surface_fill(faces, vertex_count, texels, weight, colour));
     let paint = match scalp {
@@ -659,8 +671,6 @@ fn texel_range(low: f64, high: f64, size: usize) -> std::ops::Range<usize> {
     first.min(size)..last.min(size)
 }
 
-/// Add one photograph's colour to the texels it sees, weighted by how squarely
-/// it sees them.
 /// One photographed colour for a texel, before it is added.
 struct Sample {
     texel: usize,
@@ -668,7 +678,10 @@ struct Sample {
     colour: [f32; 3],
     /// Unit surface normal in the camera's frame.
     normal: [f32; 3],
+    /// Whether the texel is on skin, whose shading the lighting is fitted to.
     skin: bool,
+    /// Whether the pixel was labelled skin.
+    labelled_skin: bool,
 }
 
 /// Add one photograph's colour to the texels it sees, weighted by how
@@ -680,7 +693,7 @@ fn accumulate(
     (kinds, colouring): (&[FaceKind], Colouring),
     weight: &mut [f32],
     colour: &mut [[f32; 3]],
-    in_view: &mut [bool],
+    (in_view, skin): (&mut [bool], &mut SkinSamples),
 ) -> Result<Option<Shading>, TextureError> {
     let scalp = colouring.scalp;
     let photo = &view.photo;
@@ -778,11 +791,17 @@ fn accumulate(
         in_view[index] = true;
         // Outside the labelled square nothing says what a pixel shows, so
         // it is not trusted either.
-        if let Some(labels) = &view.labels
-            && !labels.agree(pixel, |label| kinds[face as usize].accepts(label, scalp))
-        {
-            continue;
-        }
+        let labelled_skin = match &view.labels {
+            Some(labels) => {
+                if !labels.agree(pixel, |label| kinds[face as usize].accepts(label, scalp)) {
+                    continue;
+                }
+                labels
+                    .at(pixel)
+                    .is_some_and(|label| matches!(label, LABEL_BODY_SKIN | LABEL_FACE_SKIN))
+            }
+            None => false,
+        };
         let Some(photographed) = sample(photo, pixel) else {
             continue;
         };
@@ -792,6 +811,7 @@ fn accumulate(
             colour: photographed,
             normal: normal.map(|axis| axis / length),
             skin: kinds[face as usize] == FaceKind::Skin,
+            labelled_skin,
         });
     }
     let shading = match colouring.lighting {
@@ -802,6 +822,12 @@ fn accumulate(
         weight[sample.texel] += sample.share;
         for (total, value) in colour[sample.texel].iter_mut().zip(sample.colour) {
             *total += sample.share * value;
+        }
+        if sample.labelled_skin {
+            skin.weight[sample.texel] += sample.share;
+            for (total, value) in skin.colour[sample.texel].iter_mut().zip(sample.colour) {
+                *total += sample.share * value;
+            }
         }
     }
     Ok(shading)
@@ -952,6 +978,22 @@ fn linear_to_srgb(value: f32) -> f32 {
         value * 12.92
     } else {
         1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Each texel's photographed colour from pixels labelled skin alone, as
+/// weighted sums like the texel's full colour.
+struct SkinSamples {
+    weight: Vec<f32>,
+    colour: Vec<[f32; 3]>,
+}
+
+impl SkinSamples {
+    fn new(texels: usize) -> Self {
+        Self {
+            weight: vec![0.0; texels],
+            colour: vec![[0.0; 3]; texels],
+        }
     }
 }
 
@@ -1237,7 +1279,7 @@ mod tests {
             (&[FaceKind::Skin; 2], KEEP),
             &mut weight,
             &mut colour,
-            &mut vec![false; 64 * 64],
+            (&mut vec![false; 64 * 64], &mut SkinSamples::new(64 * 64)),
         )
         .unwrap();
         assert_eq!(weight[32 * 64], 0.0, "the outline takes no colour");
@@ -1300,7 +1342,10 @@ mod tests {
             (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
-            &mut vec![false; size * size],
+            (
+                &mut vec![false; size * size],
+                &mut SkinSamples::new(size * size),
+            ),
         )
         .unwrap();
         let at = |u: f64| (size / 2) * size + (u * size as f64) as usize;
@@ -1350,7 +1395,10 @@ mod tests {
             (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
-            &mut vec![false; size * size],
+            (
+                &mut vec![false; size * size],
+                &mut SkinSamples::new(size * size),
+            ),
         )
         .unwrap();
         // The margin is 2% of the 224 pixel crop at 56 pixels per metre, so
@@ -1514,6 +1562,17 @@ mod tests {
     /// photograph shows red face skin on the left, green hair in the middle
     /// and background on the right, so the right square is not coloured.
     fn strip_bake(scalp: ScalpColour) -> ColourMap {
+        strip_bake_labelled(scalp, [LABEL_FACE_SKIN, LABEL_HAIR, LABEL_BACKGROUND])
+    }
+
+    /// As `strip_bake`, with the labels of the photograph's three thirds.
+    fn strip_bake_labelled(scalp: ScalpColour, thirds: [u8; 3]) -> ColourMap {
+        strip_bake_views(scalp, &[([[200, 0, 0], [0, 200, 0], [0, 0, 200]], thirds)])
+    }
+
+    /// The strip of `strip_bake` photographed once for each view: the
+    /// colours and labels of the photograph's three thirds.
+    fn strip_bake_views(scalp: ScalpColour, views: &[([[u8; 3]; 3], [u8; 3])]) -> ColourMap {
         let xs = [-1.0f32, -1.0 / 3.0, 1.0 / 3.0, 1.0];
         let mut vertices = Vec::new();
         let mut coords = Vec::new();
@@ -1538,44 +1597,38 @@ mod tests {
         ];
         // Photograph columns 56 to 168 span the strip; thirds of it.
         let third = |column: usize| (column.saturating_sub(56) * 3 / 112).min(2);
-        let rgb: Vec<u8> = (0..224 * 224)
-            .flat_map(|index| match third(index % 224) {
-                0 => [200, 0, 0],
-                1 => [0, 200, 0],
-                _ => [0, 0, 200],
-            })
-            .collect();
-        let labels: Vec<u8> = (0..224 * 224)
-            .map(|index| match third(index % 224) {
-                0 => LABEL_FACE_SKIN,
-                1 => LABEL_HAIR,
-                _ => LABEL_BACKGROUND,
-            })
-            .collect();
         let layout = layout(coords, &faces);
         let colouring = Colouring {
             scalp,
             lighting: Lighting::Keep,
         };
         let mut builder = ColourMapBuilder::new(&faces, &layout, 48, &kinds, colouring).unwrap();
-        builder
-            .add(&View {
-                photo: Photo {
-                    width: 224,
-                    height: 224,
-                    rgb: &rgb,
-                },
-                vertices: &vertices,
-                projection: PROJECTION,
-                labels: Some(Labels {
-                    side: 224,
-                    data: &labels,
-                    left: 0.0,
-                    top: 0.0,
-                    step: 1.0,
-                }),
-            })
-            .unwrap();
+        for (colours, thirds) in views {
+            let rgb: Vec<u8> = (0..224 * 224)
+                .flat_map(|index| colours[third(index % 224)])
+                .collect();
+            let labels: Vec<u8> = (0..224 * 224)
+                .map(|index| thirds[third(index % 224)])
+                .collect();
+            builder
+                .add(&View {
+                    photo: Photo {
+                        width: 224,
+                        height: 224,
+                        rgb: &rgb,
+                    },
+                    vertices: &vertices,
+                    projection: PROJECTION,
+                    labels: Some(Labels {
+                        side: 224,
+                        data: &labels,
+                        left: 0.0,
+                        top: 0.0,
+                        step: 1.0,
+                    }),
+                })
+                .unwrap();
+        }
         builder.finish().unwrap()
     }
 
@@ -1586,6 +1639,40 @@ mod tests {
         assert_eq!(texel(&map, 0.9), [200, 0, 0]);
         // The scalp keeps its photographed hair.
         assert_eq!(texel(&map, 0.5), [0, 200, 0]);
+    }
+
+    #[test]
+    fn bare_scalp_photographed_as_skin_still_fills_unseen_skin() {
+        // Only the scalp, in the middle, is seen, and it shows bare skin.
+        let map = strip_bake_labelled(
+            ScalpColour::Photo,
+            [LABEL_BACKGROUND, LABEL_FACE_SKIN, LABEL_BACKGROUND],
+        );
+        assert_eq!(texel(&map, 0.9), [0, 200, 0]);
+        assert_eq!(texel(&map, 0.1), [0, 200, 0]);
+    }
+
+    #[test]
+    fn hair_in_another_photograph_does_not_reach_the_skin_fill() {
+        // The scalp is bare green skin in one photograph and black hair in
+        // another; only the left skin and the bare scalp may seed unseen skin.
+        let map = strip_bake_views(
+            ScalpColour::Photo,
+            &[
+                (
+                    [[0, 200, 0], [0, 200, 0], [0, 0, 200]],
+                    [LABEL_FACE_SKIN, LABEL_FACE_SKIN, LABEL_BACKGROUND],
+                ),
+                (
+                    [[0, 200, 0], [0, 0, 0], [0, 0, 200]],
+                    [LABEL_FACE_SKIN, LABEL_HAIR, LABEL_BACKGROUND],
+                ),
+            ],
+        );
+        assert_eq!(texel(&map, 0.9), [0, 200, 0]);
+        // The scalp itself shows both photographs.
+        let scalp = texel(&map, 0.5);
+        assert!(scalp[1] > 50 && scalp[1] < 150, "{scalp:?}");
     }
 
     #[test]
@@ -1792,6 +1879,7 @@ mod tests {
                 colour: [100.0, 80.0, 60.0],
                 normal: [0.0, 0.0, 1.0],
                 skin: true,
+                labelled_skin: true,
             })
             .collect();
         assert_eq!(remove_lighting(&mut samples), None);
