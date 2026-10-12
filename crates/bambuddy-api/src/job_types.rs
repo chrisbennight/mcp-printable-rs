@@ -107,6 +107,45 @@ pub struct FileListResponse {
     pub tags: Vec<TagSummary>,
 }
 
+/// A calibration that can be skipped (`off`), forced on every print (`on`), or
+/// left to the printer, which skips it when it ran recently (`auto`).
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Calibration {
+    Off,
+    On,
+    Auto,
+}
+impl From<bool> for Calibration {
+    fn from(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+impl<'de> Deserialize<'de> for Calibration {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Reported;
+        impl serde::de::Visitor<'_> for Reported {
+            type Value = Calibration;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("\"off\", \"on\", \"auto\" or a boolean")
+            }
+            // Bambuddy releases without the auto state report a boolean.
+            fn visit_bool<E>(self, on: bool) -> Result<Calibration, E> {
+                Ok(on.into())
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Calibration, E> {
+                match value {
+                    "off" => Ok(Calibration::Off),
+                    "on" => Ok(Calibration::On),
+                    "auto" => Ok(Calibration::Auto),
+                    _ => Err(E::unknown_variant(value, &["off", "on", "auto"])),
+                }
+            }
+        }
+        deserializer.deserialize_any(Reported)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct QueueItem {
     pub id: u64,
@@ -144,9 +183,9 @@ pub struct QueueItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plate_id: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bed_levelling: Option<bool>,
+    pub bed_levelling: Option<Calibration>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flow_cali: Option<bool>,
+    pub flow_cali: Option<Calibration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vibration_cali: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,7 +195,7 @@ pub struct QueueItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_ams: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nozzle_offset_cali: Option<bool>,
+    pub nozzle_offset_cali: Option<Calibration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preheat_override: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -484,4 +523,52 @@ pub struct Plates {
     pub is_multi_plate: Option<bool>,
     pub embedded_printer: Option<serde_json::Value>,
     pub embedded_process: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn queue_records_read_current_and_earlier_calibration_forms() {
+        let current: QueueItem = serde_json::from_value(json!({
+            "id": 12, "printer_id": 1, "target_model": null, "target_location": null,
+            "required_filament_types": null, "filament_overrides": null, "waiting_reason": null,
+            "archive_id": null, "library_file_id": 9, "cost_center_id": null,
+            "estimated_cost": null, "position": 1, "scheduled_time": null,
+            "require_previous_success": false, "auto_off_after": false, "manual_start": true,
+            "filament_short": false, "skip_filament_check": false, "ams_mapping": [0],
+            "plate_id": 1, "bed_levelling": "on", "flow_cali": "off", "vibration_cali": true,
+            "layer_inspect": false, "timelapse": false, "use_ams": true,
+            "nozzle_offset_cali": "auto", "confirm_outcome": false, "preheat_override": "inherit",
+            "preheat_chamber_target_override": null, "status": "pending", "started_at": null,
+            "completed_at": null, "error_message": null, "created_at": "2026-10-12T14:30:00Z",
+            "archive_has_slicer_ams_mapping": false, "variants": [], "been_jumped": false,
+            "nozzle_mapping": null, "nozzle_rack_choice": {"1": 2}
+        }))
+        .unwrap();
+        assert_eq!(current.bed_levelling, Some(Calibration::On));
+        assert_eq!(current.flow_cali, Some(Calibration::Off));
+        assert_eq!(current.nozzle_offset_cali, Some(Calibration::Auto));
+        let reported = serde_json::to_value(&current).unwrap();
+        assert_eq!(reported["nozzle_offset_cali"], "auto");
+        assert_eq!(reported["bed_levelling"], "on");
+
+        let earlier: QueueItem = serde_json::from_value(json!({
+            "id": 3, "status": "completed", "manual_start": false,
+            "bed_levelling": true, "flow_cali": false
+        }))
+        .unwrap();
+        assert_eq!(earlier.bed_levelling, Some(Calibration::On));
+        assert_eq!(earlier.flow_cali, Some(Calibration::Off));
+        assert_eq!(earlier.nozzle_offset_cali, None);
+
+        assert!(
+            serde_json::from_value::<QueueItem>(json!({
+                "id": 4, "status": "pending", "manual_start": true, "flow_cali": "sometimes"
+            }))
+            .is_err()
+        );
+    }
 }

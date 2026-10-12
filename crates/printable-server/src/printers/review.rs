@@ -4,7 +4,10 @@ use super::{
     observations::{Activity, DIAGNOSTICS_NOTE, activity, now_ms, state_note},
 };
 use crate::error::ToolError;
-use bambuddy_api::{BambuddyApi, job_types::FilamentRequirement};
+use bambuddy_api::{
+    BambuddyApi,
+    job_types::{Calibration, FilamentRequirement},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -90,12 +93,12 @@ pub struct PrintReview {
 }
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct EffectiveOptions {
-    pub bed_levelling: Option<bool>,
-    pub flow_calibration: Option<bool>,
+    pub bed_levelling: Option<Calibration>,
+    pub flow_calibration: Option<Calibration>,
     pub vibration_calibration: Option<bool>,
     pub layer_inspect: Option<bool>,
     pub timelapse: Option<bool>,
-    pub nozzle_offset_calibration: Option<bool>,
+    pub nozzle_offset_calibration: Option<Calibration>,
     pub preheat_override: Option<String>,
     pub preheat_chamber_target_override: Option<i64>,
     pub scheduled_time: Option<String>,
@@ -507,21 +510,29 @@ impl PrinterService {
                 auto_off_after: j.auto_off_after,
             })
             .unwrap_or(EffectiveOptions {
-                bed_levelling: Some(true),
-                flow_calibration: Some(true),
+                bed_levelling: Some(Calibration::On),
+                flow_calibration: Some(Calibration::On),
                 vibration_calibration: Some(true),
                 timelapse: Some(false),
+                nozzle_offset_calibration: Some(Calibration::On),
                 manual_start: true,
                 ..Default::default()
             });
-        options.bed_levelling = p.bed_levelling.or(options.bed_levelling);
-        options.flow_calibration = p.flow_calibration.or(options.flow_calibration);
+        options.bed_levelling = p
+            .bed_levelling
+            .map(Calibration::from)
+            .or(options.bed_levelling);
+        options.flow_calibration = p
+            .flow_calibration
+            .map(Calibration::from)
+            .or(options.flow_calibration);
         options.vibration_calibration = p.vibration_calibration.or(options.vibration_calibration);
         options.timelapse = p.timelapse.or(options.timelapse);
         options.layer_inspect = p.options.layer_inspect.or(options.layer_inspect);
         options.nozzle_offset_calibration = p
             .options
             .nozzle_offset_cali
+            .map(Calibration::from)
             .or(options.nozzle_offset_calibration);
         options.preheat_override = p
             .options
