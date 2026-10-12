@@ -47,7 +47,7 @@ printable-scad = { path = "../printable-scad" }
 printable-imaging = { path = "../printable-imaging" }
 printable-geom = { path = "../printable-geom" }
 printable-flame = { path = "../printable-flame" }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 quick-xml = "=0.41.0"
 libc = "=0.2.189"
 # Product renders bind the bridge response to the server's confined snapshot.

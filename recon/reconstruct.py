@@ -74,6 +74,7 @@ def main(argv: list[str]) -> int:
                     "identity_agreement": result.identity_agreement,
                     "clamped_coefficients": result.clamped_coefficients,
                     "faces": result.faces,
+                    "views": result.views,
                     "displacement": displacement,
                     "device": device,
                 }

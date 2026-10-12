@@ -34,9 +34,14 @@ pub struct ReconRequest {
     pub images: Vec<String>,
     /// Workspace path for the 16-bit PNG displacement map.
     pub displacement_path: String,
-    /// Replace an existing file at `displacement_path`.
+    /// Replace existing files at `displacement_path` and `texture_path`.
     #[serde(default)]
     pub overwrite: bool,
+    /// Workspace path for an RGB PNG colour map in FLAME's texture layout,
+    /// projected from the photographs. Needs the FLAME 2020 generic model
+    /// converted with its texture layout. Not made when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_path: Option<String>,
 }
 
 impl ReconRequest {
@@ -60,6 +65,18 @@ impl ReconRequest {
             return Err(ToolError::Validation(
                 "displacement_path must end in .png".into(),
             ));
+        }
+        if let Some(texture) = &self.texture_path {
+            if !texture.ends_with(".png") {
+                return Err(ToolError::Validation(
+                    "texture_path must end in .png".into(),
+                ));
+            }
+            if *texture == self.displacement_path {
+                return Err(ToolError::Validation(
+                    "texture_path and displacement_path must differ".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -407,6 +424,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             images: images.iter().map(|image| (*image).to_owned()).collect(),
             displacement_path: displacement.into(),
             overwrite: false,
+            texture_path: None,
         }
     }
 
@@ -421,6 +439,13 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             .collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert!(request(&many, "map.png").validate().is_err());
+        let with_texture = |texture: &str| ReconRequest {
+            texture_path: Some(texture.into()),
+            ..request(&["a.jpg"], "map.png")
+        };
+        assert!(with_texture("colour.png").validate().is_ok());
+        assert!(with_texture("colour.jpg").validate().is_err());
+        assert!(with_texture("map.png").validate().is_err());
     }
 }
 

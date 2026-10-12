@@ -4,7 +4,7 @@
 
 use super::*;
 
-use printable_flame::{FlameModel, FlameParams, Pose, PosedHead};
+use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, texture};
 use printable_geom::{BustRequest, Displacement, Hollow, Plinth};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
@@ -516,9 +516,26 @@ pub(super) async fn reconstruct(
         ".png",
         request.overwrite,
     )?;
+    let textured_model = match &request.texture_path {
+        Some(path) => {
+            validate_scad_destination(&workspace, path, ".png", request.overwrite)?;
+            let model = Arc::clone(
+                library(settings)?
+                    .select(Some(&variant))
+                    .map_err(ToolError::Validation)?,
+            );
+            if model.uv_layout().is_none() {
+                return Err(ToolError::Validation(format!(
+                    "the {variant} model has no texture layout; convert it again with --texture to make a colour map"
+                )));
+            }
+            Some(model)
+        }
+        None => None,
+    };
     let result = client.reconstruct(&request).await?;
     let field = |name: &str| result.get(name).cloned().unwrap_or(Value::Null);
-    Ok(json!({
+    let mut response = json!({
         "variant": variant,
         "identity": field("identity"),
         "expression": field("expression"),
@@ -527,7 +544,161 @@ pub(super) async fn reconstruct(
         "identity_agreement": field("identity_agreement"),
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
+    });
+    if let (Some(model), Some(path)) = (textured_model, request.texture_path.clone()) {
+        let views: Vec<ReconView> = serde_json::from_value(field("views")).map_err(|_| {
+            ToolError::Validation(
+                "the reconstruction worker did not describe its view of each photograph".into(),
+            )
+        })?;
+        let images = request.images.clone();
+        let overwrite = request.overwrite;
+        let texture = blocking(move || colour_map(&workspace, &model, &images, &views, &path, overwrite))
+            .await
+            .map_err(|error| {
+                ToolError::Validation(format!(
+                    "the reconstruction finished and wrote the displacement map, but the colour map was not made: {error}"
+                ))
+            })?;
+        response["texture"] = texture;
+    }
+    Ok(response)
+}
+
+/// Side of the colour map in texels.
+const COLOUR_MAP_TEXELS: usize = 1024;
+/// Largest photograph decoded for the colour map, in pixels.
+const MAX_PHOTO_PIXELS: u64 = 50_000_000;
+
+/// SMIRK's fit to one photograph: the head that matches the face and the
+/// orthographic camera in its 224 pixel crop.
+#[derive(serde::Deserialize)]
+struct ReconView {
+    shape: Vec<f32>,
+    expression: Vec<f32>,
+    jaw: [f32; 3],
+    head_rotation: [f32; 3],
+    camera: [f32; 3],
+    crop: ReconCrop,
+    image_size: [usize; 2],
+}
+
+#[derive(serde::Deserialize)]
+struct ReconCrop {
+    left: f64,
+    top: f64,
+    step: f64,
+}
+
+/// Project every photograph onto its fitted head, build the colour map and
+/// write it as an RGB PNG.
+fn colour_map(
+    workspace: &Workspace,
+    model: &FlameModel,
+    images: &[String],
+    views: &[ReconView],
+    path: &str,
+    overwrite: bool,
+) -> Result<Value, ToolError> {
+    if views.len() != images.len() {
+        return Err(ToolError::Validation(
+            "the reconstruction worker described a different number of photographs".into(),
+        ));
+    }
+    let layout = model
+        .uv_layout()
+        .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
+    let mut photos = Vec::with_capacity(views.len());
+    let mut heads = Vec::with_capacity(views.len());
+    for (image, view) in images.iter().zip(views) {
+        let (_, bytes) = workspace.read_generated_bytes(image)?;
+        let photo = decode_photo(&bytes)
+            .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
+        if [photo.width() as usize, photo.height() as usize] != view.image_size {
+            return Err(ToolError::Validation(format!(
+                "{image} does not have the size the reconstruction worker read"
+            )));
+        }
+        let head = model
+            .evaluate(&FlameParams {
+                identity: view.shape.clone(),
+                expression: view.expression.clone(),
+                pose: Pose {
+                    global: view.head_rotation,
+                    jaw: view.jaw,
+                    ..Pose::default()
+                },
+                translation: [0.0; 3],
+            })
+            .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
+        photos.push(photo);
+        heads.push(head);
+    }
+    let texture_views: Vec<texture::View<'_>> = photos
+        .iter()
+        .zip(&heads)
+        .zip(views)
+        .map(|((photo, head), view)| texture::View {
+            photo: texture::Photo {
+                width: photo.width() as usize,
+                height: photo.height() as usize,
+                rgb: photo.as_raw(),
+            },
+            vertices: &head.vertices,
+            projection: texture::Projection {
+                scale: view.camera[0],
+                offset: [view.camera[1], view.camera[2]],
+                crop_left: view.crop.left,
+                crop_top: view.crop.top,
+                crop_step: view.crop.step,
+            },
+        })
+        .collect();
+    let map = texture::bake(model.faces(), layout, &texture_views, COLOUR_MAP_TEXELS)
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let side = map.size as u32;
+    let image = RgbImage::from_raw(side, side, map.rgb)
+        .ok_or_else(|| ToolError::Validation("the colour map has the wrong size".into()))?;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut bytes, ImageFormat::Png)
+        .map_err(|_| ToolError::Validation("the colour map could not be encoded".into()))?;
+    let artifact = workspace.write_generated_bytes(path, &bytes.into_inner(), overwrite)?;
+    Ok(json!({
+        "artifact": artifact,
+        "width": side,
+        "height": side,
+        "seen": map.seen,
     }))
+}
+
+/// An upright RGB photograph, turned as its EXIF orientation says, as the
+/// reconstruction worker reads it.
+fn decode_photo(bytes: &[u8]) -> Result<RgbImage, String> {
+    fn unreadable<E>(_: E) -> String {
+        "it could not be decoded as a JPEG, PNG or WebP photograph".into()
+    }
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(unreadable)?;
+    if !matches!(
+        reader.format(),
+        Some(ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::WebP)
+    ) {
+        return Err("it is not a JPEG, PNG or WebP photograph".into());
+    }
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(MAX_PHOTO_PIXELS * 4);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().map_err(unreadable)?;
+    let (width, height) = image::ImageDecoder::dimensions(&decoder);
+    if u64::from(width) * u64::from(height) > MAX_PHOTO_PIXELS {
+        return Err(format!("it has more than {MAX_PHOTO_PIXELS} pixels"));
+    }
+    let orientation = image::ImageDecoder::orientation(&mut decoder).map_err(unreadable)?;
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(unreadable)?;
+    image.apply_orientation(orientation);
+    Ok(image.into_rgb8())
 }
 
 /// Read a displacement map from the workspace and pair it with the model's

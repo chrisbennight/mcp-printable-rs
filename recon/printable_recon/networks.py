@@ -130,6 +130,8 @@ class Smirk(nn.Module):
         )
         return {
             "head_rotation": pose_camera[:, :3],
+            # Orthographic scale and x, y offset of the head in the crop.
+            "camera": pose_camera[:, 3:],
             "shape": self.shape_encoder(image),
             "expression": expression[:, :n],
             "eyelids": torch.clamp(expression[:, n : n + 2], 0.0, 1.0),

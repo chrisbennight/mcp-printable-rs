@@ -258,7 +258,12 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "scale_mm": {"type": "number"}
                 }},
                 "identity_agreement": {"type": "array", "items": {"type": "number"}},
-                "clamped_coefficients": {"type": "integer", "minimum": 0}
+                "clamped_coefficients": {"type": "integer", "minimum": 0},
+                "texture": {"type": "object", "required": ["artifact", "width", "height", "seen"], "properties": {
+                    "artifact": artifact(), "width": {"type": "integer", "minimum": 2},
+                    "height": {"type": "integer", "minimum": 2},
+                    "seen": {"type": "number", "minimum": 0, "maximum": 1}
+                }}
             }}
         ]}),
         "edit" | "scene" => object(
