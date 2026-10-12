@@ -7,6 +7,9 @@
 //! PRINTABLE_TEST_FLAME_MODEL=/models/flame/flame2023_open.safetensors \
 //!   cargo test -p printable-flame --test published_model -- --ignored
 //! ```
+//!
+//! The region test reads `PRINTABLE_TEST_FLAME_MASKED_MODEL` instead, a model
+//! converted with `--masks`.
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead};
 
@@ -117,12 +120,16 @@ fn opening_the_jaw_moves_the_chin_far_more_than_the_crown() {
 }
 
 #[test]
-#[ignore = "requires PRINTABLE_TEST_FLAME_MODEL"]
+#[ignore = "requires PRINTABLE_TEST_FLAME_MASKED_MODEL"]
 fn published_regions_sit_where_their_names_say() {
-    let model = published();
-    if model.regions().is_empty() {
-        return;
-    }
+    let path = std::env::var_os("PRINTABLE_TEST_FLAME_MASKED_MODEL")
+        .expect("set PRINTABLE_TEST_FLAME_MASKED_MODEL to a model converted with --masks");
+    let bytes = std::fs::read(path).expect("converted model is readable");
+    let model = FlameModel::from_safetensors(&bytes).expect("converted model is valid");
+    assert!(
+        !model.regions().is_empty(),
+        "the model was converted without --masks"
+    );
     let head = posed(&model, Pose::default());
     let mean = |name: &str| {
         let region = model
