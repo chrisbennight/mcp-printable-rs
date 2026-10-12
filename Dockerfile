@@ -101,6 +101,37 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 # landmarker. Network checkpoints are operator-supplied on a mounted volume.
 # The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts; CI uses
 # the CPU index to test without a GPU.
+# OpenCV for the reconstruction worker, built from the hash-pinned
+# opencv-python source with core and image processing only. Published OpenCV
+# wheels bundle FFmpeg and other media libraries the worker never uses.
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-opencv
+ARG OPENCV_SOURCE_URL=https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz
+ARG OPENCV_SOURCE_SHA256=b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends build-essential cmake ninja-build python3-dev python3-venv ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/build
+COPY recon/requirements.txt /tmp/recon-requirements.txt
+RUN /opt/build/bin/pip install --no-cache-dir --no-deps "$(grep '^numpy==' /tmp/recon-requirements.txt)"
+RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
+ && echo "${OPENCV_SOURCE_SHA256}  /tmp/opencv.tar.gz" | sha256sum --check \
+ && mkdir /tmp/opencv \
+ && tar -xzf /tmp/opencv.tar.gz -C /tmp/opencv --strip-components=1 \
+ && cmake -S /tmp/opencv/opencv -B /tmp/opencv-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DBUILD_LIST=core,imgproc,python3 -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_DOCS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+      -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_1394=OFF \
+      -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF -DWITH_VTK=OFF \
+      -DWITH_IPP=OFF -DWITH_OPENCL=OFF -DWITH_ADE=OFF -DWITH_PROTOBUF=OFF -DWITH_EIGEN=OFF \
+      -DWITH_LAPACK=OFF -DWITH_ITT=OFF -DWITH_OPENEXR=OFF -DWITH_JPEG=OFF -DWITH_PNG=OFF \
+      -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
+      -DPYTHON3_EXECUTABLE=/opt/build/bin/python -DPYTHON3_LIMITED_API=ON \
+      -DOPENCV_PYTHON3_INSTALL_PATH=/opt/opencv-python \
+ && cmake --build /tmp/opencv-build \
+ && cmake --install /tmp/opencv-build \
+ && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
+
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
 ARG SOURCE_REVISION
 ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
@@ -112,6 +143,12 @@ RUN apt-get update && apt-get upgrade -y \
 COPY recon/requirements.txt /opt/printable/recon/requirements.txt
 RUN /opt/recon/bin/pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch==2.14.1 torchvision==0.29.1 \
  && /opt/recon/bin/pip install --no-cache-dir --no-deps -r /opt/printable/recon/requirements.txt
+COPY --from=recon-opencv /opt/opencv-python /opt/opencv-python
+# The worker installs nothing at run time, so pip leaves the environment.
+RUN site="$(/opt/recon/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+ && echo /opt/opencv-python > "${site}/printable-opencv.pth" \
+ && /opt/recon/bin/python -c 'import cv2; assert not hasattr(cv2, "VideoCapture")' \
+ && /opt/recon/bin/python -m pip uninstall --yes pip
 RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
  && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check
@@ -119,6 +156,7 @@ COPY recon/reconstruct.py /opt/printable/recon/reconstruct.py
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
+COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \

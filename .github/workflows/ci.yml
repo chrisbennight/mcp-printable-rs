@@ -239,7 +239,7 @@ jobs:
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Verify packaged license notices
         if: steps.scope.outputs.images == 'true'
-        run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci
+        run: python3 scripts/test-image-notices.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recon-image printable-recon:ci
       - name: Exercise native views, product workflows, and isolated render jobs
         if: steps.scope.outputs.images == 'true'
         env:
@@ -254,7 +254,7 @@ jobs:
       - name: Save tested images
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
-          docker save printable-server:ci printable-blender:ci printable-cad:ci printable-slicer:ci | gzip -1 > target/release/images.tar.gz
+          docker save printable-server:ci printable-blender:ci printable-cad:ci printable-slicer:ci printable-recon:ci | gzip -1 > target/release/images.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         with:

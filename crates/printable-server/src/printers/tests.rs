@@ -826,7 +826,10 @@ async fn review_distinguishes_exact_variants_and_explicit_transparency_without_m
             .iter()
             .any(|f| f["check"] == "bed_type" && f["observed"] == "textured_plate")
     );
-    assert_eq!(review["effective_options"]["flow_calibration"], false);
+    assert_eq!(review["effective_options"]["flow_calibration"], "off");
+    for option in ["bed_levelling", "nozzle_offset_calibration"] {
+        assert_eq!(review["effective_options"][option], "on");
+    }
     assert_eq!(review["effective_options"]["preheat_override"], "off");
     let nozzle = review["findings"]
         .as_array()
@@ -922,6 +925,9 @@ async fn pending_edits_remain_staged_and_return_partial_counts() {
     assert_eq!(result["update"]["skipped_count"], 1);
     assert_eq!(result["may_start_printing"], false);
     server.verify().await;
+    let update = &server.received_requests().await.unwrap()[0];
+    let body: Value = serde_json::from_slice(&update.body).unwrap();
+    assert!(body.get("nozzle_offset_cali").is_none());
 }
 
 #[tokio::test]
@@ -1012,6 +1018,105 @@ async fn start_reports_filament_the_printer_has_not_loaded() {
 }
 
 #[tokio::test]
+async fn staged_prints_with_auto_calibration_can_be_read_reviewed_and_started() {
+    let server = MockServer::start().await;
+    // Shaped like a current Bambuddy queue record: these calibrations are off, on
+    // or auto, and the record carries fields the connector does not declare.
+    let record = json!({"id":7,"printer_id":1,"library_file_id":9,"archive_id":null,"position":1,
+        "scheduled_time":null,"require_previous_success":false,"auto_off_after":false,
+        "manual_start":true,"filament_short":false,"skip_filament_check":false,"ams_mapping":[0],
+        "plate_id":1,"bed_levelling":"on","flow_cali":"on","vibration_cali":true,
+        "layer_inspect":false,"timelapse":false,"use_ams":true,"nozzle_offset_cali":"auto",
+        "confirm_outcome":false,"preheat_override":"inherit","status":"pending","started_at":null,
+        "completed_at":null,"error_message":null,"cost_center_id":null,"estimated_cost":null,
+        "archive_has_slicer_ams_mapping":false,"variants":[],"nozzle_rack_choice":null});
+    for (endpoint, value) in [
+        ("/api/v1/queue/7", record.clone()),
+        ("/api/v1/queue/", json!([record.clone()])),
+        (
+            "/api/v1/printers/",
+            json!([{"id":1,"name":"Workshop","model":"P1S","is_active":true}]),
+        ),
+        ("/api/v1/printers/1/status", status()),
+        (
+            "/api/v1/library/files/9",
+            json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","sliced_for_model":"P1S"}),
+        ),
+        (
+            "/api/v1/library/files/9/filament-requirements",
+            json!({"plate_id":1,"filaments":[{"slot_id":1,"type":"PLA","used_grams":10}]}),
+        ),
+        ("/api/v1/inventory/assignments", json!([])),
+        (
+            "/api/v1/printers/1/inventory-remain",
+            json!({"inventory_remain_g":{}}),
+        ),
+        ("/api/v1/printers/1/slot-presets", json!({})),
+    ] {
+        get(&server, endpoint, value).await;
+    }
+    for nozzle_offset in [true, false] {
+        Mock::given(method("POST"))
+            .and(path("/api/v1/queue/"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "bed_levelling":true,"flow_cali":true,"nozzle_offset_cali":nozzle_offset})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(record.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let mut started = record.clone();
+    started["manual_start"] = json!(false);
+    Mock::given(method("POST"))
+        .and(path("/api/v1/queue/7/start"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(started))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let service = service(&server);
+    let temp = tempfile::tempdir().unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
+    let call = async |request: Value| {
+        let result = service
+            .control(serde_json::from_value(request).unwrap(), &ws)
+            .await
+            .unwrap();
+        validate("print", &result);
+        result
+    };
+    for (options, nozzle_offset) in [
+        (json!({}), true),
+        (json!({"nozzle_offset_cali":false}), false),
+    ] {
+        let staged = call(
+            json!({"action":"stage","params":{"library_file_id":9,"printer_id":1,
+            "plate":1,"ams_mapping":[0],"use_ams":true,"options":options}}),
+        )
+        .await;
+        assert_eq!(
+            staged["setup"]["options"]["nozzle_offset_cali"],
+            nozzle_offset
+        );
+        assert_eq!(staged["print"]["nozzle_offset_cali"], "auto");
+    }
+    let listed = call(json!({"action":"list","params":{"status":"pending","detail":true}})).await;
+    assert_eq!(listed["prints"][0]["bed_levelling"], "on");
+    let inspected =
+        call(json!({"action":"status","params":{"target":{"kind":"queue","id":7},"detail":true}}))
+            .await;
+    assert_eq!(inspected["print"]["nozzle_offset_cali"], "auto");
+    let review = call(json!({"action":"review","params":{"source":{"kind":"queue","id":7}}})).await;
+    assert_eq!(review["effective_options"]["bed_levelling"], "on");
+    assert_eq!(
+        review["effective_options"]["nozzle_offset_calibration"],
+        "auto"
+    );
+    let result = call(json!({"action":"start","params":{"print_id":7}})).await;
+    assert_eq!(result["print"]["manual_start"], false);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn print_records_preserve_options_requirements_and_run_identity() {
     let server = MockServer::start().await;
     let file = json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","tags":[],"metadata":{"bed_type":"Textured PEI","nozzle_diameter":0.4}});
@@ -1056,7 +1161,8 @@ async fn print_records_preserve_options_requirements_and_run_identity() {
         .await
         .unwrap();
     validate("print", &queue);
-    assert_eq!(queue["print"]["flow_cali"], false);
+    // Bambuddy releases without the auto state report booleans.
+    assert_eq!(queue["print"]["flow_cali"], "off");
     assert_eq!(queue["print"]["layer_inspect"], true);
     assert_eq!(
         queue["requirements"]["data"]["filaments"][0]["used_grams"],

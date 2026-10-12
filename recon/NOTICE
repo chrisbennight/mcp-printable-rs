@@ -1,0 +1,21 @@
+Printable photo reconstruction worker
+
+This image includes MediaPipe's face landmarker model, face_landmarker.task,
+downloaded unmodified from
+https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+It is published by Google under the Apache License, Version 2.0. The license
+text and MediaPipe's NOTICE are installed with the mediapipe Python package in
+this image, under
+/opt/recon/lib/python3*/site-packages/mediapipe-*.dist-info/licenses/.
+
+OpenCV is built from the opencv-python 5.0.0.93 source distribution with only
+its core and image processing modules, without FFmpeg or other media
+libraries. It is under the Apache License, Version 2.0; its license is at
+/opt/opencv-python/LICENSE-OpenCV.
+
+The installed Python packages, including PyTorch and torchvision, carry their
+own licenses in their .dist-info directories under
+/opt/recon/lib/python3*/site-packages/.
+
+The image contains no MICA, SMIRK, DECA or FLAME model files. Those are
+obtained separately by the operator and mounted at run time.

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 REPOSITORIES = {"server": "mcp-printable-rs", "blender": "mcp-printable-blender",
                 "cad": "mcp-printable-cad", "slicer": "mcp-printable-slicer",
-                "pair": "mcp-printable-release"}
+                "recon": "mcp-printable-recon", "pair": "mcp-printable-release"}
 
 
 @dataclass(frozen=True)
@@ -59,3 +59,4 @@ if __name__ == "__main__":
     print(identity.source)
     print(identity.repository("cad"))
     print(identity.repository("slicer"))
+    print(identity.repository("recon"))

@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 
-ROLES = ("server", "blender", "cad", "slicer")
+ROLES = ("server", "blender", "cad", "slicer", "recon")
 
 
 def validate(candidate, identity):
@@ -18,7 +18,7 @@ def validate(candidate, identity):
         raise ValueError("candidate source does not match configured source")
     images = candidate["images"]
     if not isinstance(images, dict) or set(images) != set(ROLES):
-        raise ValueError("candidate must contain exactly four runtime images")
+        raise ValueError("candidate must contain exactly one image for each runtime role")
     for role, reference in images.items():
         expected = identity.repository(role) + ":sha-" + revision[:12] + "@sha256:"
         if not isinstance(reference, str) or not re.fullmatch(re.escape(expected) + r"[0-9a-f]{64}", reference):
