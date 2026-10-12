@@ -362,13 +362,10 @@ while the fine part can be shallower than a layer. These optional
 | Field | Range | Effect |
 | --- | --- | --- |
 | `high_pass_mm` | 1 to 100 | Removes features wider than about this many millimetres on the life-size head, keeping finer detail. |
-| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, taken over the detail that remains after `high_pass_mm`, so a few extreme values do not dominate. |
+| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, taken over the detail on the head's surface that remains after `high_pass_mm`, so a few extreme values do not dominate. |
 | `gain` | 0 to 10, default 1 | Multiplies the detail. |
-| `relief_mm` | 0.01 to 10 | Scales the detail so that the 95th percentile of the map's detail is this many millimetres at the bust's scale, whatever its height. The applied percentiles in the report land close to it, not exactly on it, because the surface samples the map unevenly. Not with `gain`. |
+| `relief_mm` | 0.01 to 10 | Scales the detail so that its 95th percentile on the head's surface is this many millimetres on the finished bust, whatever its height. The detail is sampled at every triangle's corners and centre and weighted by the triangle's area. Not with `gain`. |
 
-When any of `high_pass_mm`, `clip_percentile` or `relief_mm` is given, texels
-outside every triangle of the texture layout are first set to zero. They never
-reach the head, so they cannot decide a clip limit or a relief depth.
 Texels whose magnitude is below 0.5% of the map's largest are not detail.
 Filtering changes only the detail and sets the other texels to exactly zero,
 so their rounding noise is never scaled up as detail. Blurs are taken over the
@@ -406,7 +403,8 @@ one photograph, the unfiltered detail ran from -0.61 to +0.70 mm between
 its 5th and 95th percentiles, and rendered as broad lumps on the cheeks and
 chin. With `high_pass_mm` 8 and `clip_percentile` 99, that span was -0.12 to
 +0.19 mm and the lumps were gone while forehead and cheek creases remained.
-Adding `relief_mm` 0.25 raised the 95th percentile to 0.27 mm. Each request
+With `relief_mm` 0.15, 0.25 and 0.40 added, the applied 95th percentile was
+0.154, 0.256 and 0.410 mm. Each request
 took about 8 seconds, including a 1024-pixel map filtered with `high_pass_mm`
 100.
 

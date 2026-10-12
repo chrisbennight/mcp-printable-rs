@@ -109,8 +109,9 @@ pub struct Displacement {
     pub values: Vec<f32>,
     /// Texture coordinates of the three corners of each request triangle.
     pub triangle_uvs: Vec<[[f32; 2]; 3]>,
-    /// Scale the map so that the 95th percentile of its magnitude, over the
-    /// samples that carry detail, is this deep on the finished bust.
+    /// Scale the map so that the 95th percentile of its magnitude, sampled at
+    /// every triangle's corners and centre where it carries detail, is this
+    /// deep on the finished bust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relief_mm: Option<f64>,
 }
@@ -291,7 +292,12 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
     };
     let relieved = match &request.displacement {
-        Some(map) => Some(with_relief(map, scale, span)?),
+        Some(map) => Some(with_relief(
+            map,
+            (&request.vertices, &request.triangles),
+            scale,
+            span,
+        )?),
         None => None,
     };
     let displacement = relieved.as_ref().map(|(map, _)| map);
@@ -463,20 +469,49 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
 /// carry detail reaches that depth once the head is scaled by `scale`.
 fn with_relief(
     map: &Displacement,
+    (vertices, triangles): (&[[f64; 3]], &[[u32; 3]]),
     scale: f64,
     head_height: f64,
 ) -> Result<(Displacement, f64), GeometryError> {
     let Some(relief) = map.relief_mm else {
         return Ok((map.clone(), 1.0));
     };
-    let mut magnitudes: Vec<f64> = map
+    // The reference is the map as the head samples it: at every triangle's
+    // corners and centre, interpolated as the bust interpolates it, and
+    // weighted by the triangle's area, as the refined surface spreads its
+    // points by area. Map values the head never reaches do not count.
+    let mut samples: Vec<(f64, f64)> = map
+        .triangle_uvs
+        .iter()
+        .zip(triangles)
+        .flat_map(|(corners, triangle)| {
+            let [a, b, c] = triangle.map(|vertex| vertices[vertex as usize]);
+            let area = 0.5 * norm(cross(sub(b, a), sub(c, a)));
+            let centre = [0, 1].map(|axis| {
+                corners
+                    .iter()
+                    .map(|corner| f64::from(corner[axis]))
+                    .sum::<f64>()
+                    / 3.0
+            });
+            corners
+                .iter()
+                .map(|corner| corner.map(f64::from))
+                .chain([centre])
+                .map(move |[u, v]| (map.sample(u, v).abs(), area / 4.0))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let sampled_largest = samples
+        .iter()
+        .map(|(magnitude, _)| *magnitude)
+        .fold(0.0, f64::max);
+    samples.retain(|(magnitude, _)| *magnitude > DETAIL_SHARE * sampled_largest);
+    let largest = map
         .values
         .iter()
-        .map(|value| f64::from(value.abs()))
-        .collect();
-    let largest = magnitudes.iter().copied().fold(0.0, f64::max);
-    magnitudes.retain(|magnitude| *magnitude > DETAIL_SHARE * largest);
-    let Some(reference) = percentile(&mut magnitudes, RELIEF_PERCENTILE)
+        .fold(0.0, |most: f64, value| most.max(f64::from(value.abs())));
+    let Some(reference) = weighted_percentile(&mut samples, RELIEF_PERCENTILE)
         .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
     else {
         // A map without detail has nothing to scale.
@@ -524,6 +559,25 @@ fn detail_report(
         percentiles_mm,
         relief_scale,
     }
+}
+
+/// The value below which `rank` percent of the total weight lies, of
+/// `(value, weight)` pairs; `None` when there is no weight.
+fn weighted_percentile(samples: &mut [(f64, f64)], rank: f64) -> Option<f64> {
+    samples.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f64 = samples.iter().map(|(_, weight)| weight).sum();
+    if total.is_nan() || total <= 0.0 {
+        return None;
+    }
+    let target = rank.clamp(0.0, 100.0) / 100.0 * total;
+    let mut reached = 0.0;
+    for (value, weight) in samples.iter() {
+        reached += weight;
+        if reached >= target {
+            return Some(*value);
+        }
+    }
+    samples.last().map(|(value, _)| *value)
 }
 
 /// The value at `rank`, 0 to 100, by nearest rank; `None` when empty.
@@ -1636,6 +1690,42 @@ mod tests {
             prepare_bust(&relieved),
             Err(GeometryError::InvalidOptions(text)) if text.contains("relief")
         ));
+    }
+
+    #[test]
+    fn map_values_the_head_never_samples_do_not_decide_the_relief() {
+        let wave = |u: f64, v: f64| (0.2 * (40.0 * u).sin() * (12.0 * v).cos()) as f32;
+        let relieved = |background: f32| {
+            let mut request = with_map(request(1.0, 1_000_000), wave);
+            let map = request.displacement.as_mut().unwrap();
+            map.relief_mm = Some(0.3);
+            // The head samples only the left half of the map.
+            for corner in map.triangle_uvs.iter_mut().flatten() {
+                corner[0] *= 0.5;
+            }
+            let reach = map
+                .triangle_uvs
+                .iter()
+                .flatten()
+                .map(|corner| corner[0])
+                .fold(0.0f32, f32::max);
+            // Well beyond every sampled point, past the reach of interpolation.
+            let start = (f64::from(reach) * (map.width - 1) as f64).ceil() as usize + 2;
+            assert!(start + 8 < map.width, "the test needs unsampled columns");
+            for row in 0..map.height {
+                for column in start..map.width {
+                    map.values[row * map.width + column] = background;
+                }
+            }
+            prepare_bust(&request)
+                .unwrap()
+                .1
+                .displacement
+                .unwrap()
+                .relief_scale
+        };
+        let (quiet, loud) = (relieved(0.0), relieved(1.0));
+        assert!((quiet - loud).abs() < 1e-9 * quiet, "{quiet} {loud}");
     }
 
     #[test]

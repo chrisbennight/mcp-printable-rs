@@ -27,13 +27,9 @@ pub struct DetailFilter {
     /// Remove features wider than about this many millimetres on the head's
     /// surface, keeping finer detail.
     pub high_pass_mm: Option<f64>,
-    /// Limit magnitudes to this percentile, 0 to 100, of the detail's
-    /// magnitudes.
+    /// Limit magnitudes to this percentile, 0 to 100, of the magnitudes of
+    /// the detail on the head's surface.
     pub clip_percentile: Option<f64>,
-    /// Set texels outside every triangle of the texture layout to zero.
-    /// They never reach the head, so whatever they hold must not decide a
-    /// clip limit or a relief depth.
-    pub surface_only: bool,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -87,13 +83,6 @@ pub fn filter_detail(
         return Err(DetailError::Layout);
     }
     let covering = covering_faces(width, height, layout);
-    if filter.surface_only {
-        for (value, &face) in values.iter_mut().zip(&covering) {
-            if face == NO_FACE {
-                *value = 0.0;
-            }
-        }
-    }
     let detail = detail_mask(values);
     let millimetres_per_texel =
         surface_scale(&detail, &covering, faces, layout, vertices, [width, height]);
@@ -124,13 +113,15 @@ pub fn filter_detail(
     }
     if let Some(percentile) = filter.clip_percentile {
         // Taken over what still carries detail after the high-pass, so
-        // texels it emptied cannot pull the limit toward zero.
+        // texels it emptied cannot pull the limit toward zero, and over the
+        // head's surface, since texels off it never reach the head.
         let remaining = detail_mask(values);
         let magnitudes: Vec<f32> = values
             .iter()
             .zip(&remaining)
-            .filter(|(_, inside)| **inside)
-            .map(|(value, _)| value.abs())
+            .zip(&covering)
+            .filter(|((_, inside), face)| **inside && **face != NO_FACE)
+            .map(|((value, _), _)| value.abs())
             .collect();
         if let Some(limit) = percentile_of(magnitudes, percentile) {
             for value in values.iter_mut() {
@@ -425,7 +416,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(8.0),
                 clip_percentile: None,
-                surface_only: true,
             },
         )
         .unwrap();
@@ -456,7 +446,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: None,
                 clip_percentile: Some(90.0),
-                surface_only: true,
             },
         )
         .unwrap();
@@ -490,7 +479,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(10.0),
                 clip_percentile: None,
-                surface_only: true,
             },
         )
         .unwrap();
@@ -511,7 +499,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(50.0),
                 clip_percentile: Some(90.0),
-                surface_only: true,
             },
         )
         .unwrap();
@@ -537,7 +524,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(1.0),
                 clip_percentile: None,
-                surface_only: true,
             },
         )
         .unwrap();
@@ -562,7 +548,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(8.0),
                 clip_percentile: None,
-                surface_only: true,
             },
         )
         .unwrap();
@@ -645,7 +630,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(3.0),
                 clip_percentile: Some(95.0),
-                surface_only: true,
             },
         )
         .unwrap();
@@ -658,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn texels_off_the_surface_neither_reach_nor_sway_the_filter() {
+    fn texels_off_the_surface_do_not_sway_the_clip_limit() {
         // The square covers the left half of the map; the right half holds a
         // large value that never reaches the head.
         let (faces, mut layout, vertices, side) = square(32);
@@ -680,19 +664,11 @@ mod tests {
             DetailFilter {
                 high_pass_mm: None,
                 clip_percentile: Some(90.0),
-                surface_only: true,
             },
         )
         .unwrap();
         // The limit comes from the surface alone: 0.2, not the background.
         assert_eq!(report.clipped_at, Some(0.2));
-        assert!(values.iter().enumerate().all(|(index, value)| {
-            if index % side >= 16 {
-                *value == 0.0
-            } else {
-                *value == 0.2
-            }
-        }));
     }
 
     #[test]
@@ -728,7 +704,6 @@ mod tests {
             DetailFilter {
                 high_pass_mm: Some(10.0),
                 clip_percentile: None,
-                surface_only: true,
             },
         )
         .unwrap();
