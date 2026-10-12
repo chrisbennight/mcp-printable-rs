@@ -46,6 +46,10 @@ pub enum ModelError {
     Weights,
     #[error("model kinematic tree is not FLAME's root, neck, jaw and two eyes")]
     KinematicTree,
+    #[error(
+        "model texture layout does not cover every triangle with coordinates in the unit square"
+    )]
+    UvLayout,
 }
 
 /// Provenance and basis sizes recorded by the converter.
@@ -79,6 +83,20 @@ pub struct FlameModel {
     pub(crate) weights: Vec<f32>,
     /// Joint regressor, flattened as `[joint][vertex]`.
     pub(crate) regressor: Vec<f32>,
+    /// FLAME's texture layout, when the converter was given it.
+    pub(crate) uv: Option<UvLayout>,
+}
+
+/// Texture coordinates for the model's triangles. Several coordinates can
+/// belong to one vertex where the layout has seams, so each triangle names
+/// its own three.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UvLayout {
+    /// Coordinates in the unit square, with v increasing upward.
+    pub coords: Vec<[f32; 2]>,
+    /// For each model triangle, in the same order as the faces, the indices
+    /// of its corners' coordinates.
+    pub faces: Vec<[u32; 3]>,
 }
 
 impl FlameModel {
@@ -145,6 +163,7 @@ impl FlameModel {
             return Err(ModelError::KinematicTree);
         }
 
+        let uv = uv_layout(&tensors, faces.len())?;
         Ok(Self {
             info,
             vertex_count,
@@ -154,6 +173,7 @@ impl FlameModel {
             posedirs,
             weights,
             regressor,
+            uv,
         })
     }
 
@@ -171,6 +191,48 @@ impl FlameModel {
     pub fn faces(&self) -> &[[u32; 3]] {
         &self.faces
     }
+
+    /// FLAME's texture layout, present when the model was converted with it.
+    pub fn uv_layout(&self) -> Option<&UvLayout> {
+        self.uv.as_ref()
+    }
+}
+
+/// The optional `uv_coords` and `uv_faces` tensors, which come as a pair.
+fn uv_layout(tensors: &SafeTensors<'_>, triangles: usize) -> Result<Option<UvLayout>, ModelError> {
+    let (coords_view, faces_view) = match (tensors.tensor("uv_coords"), tensors.tensor("uv_faces"))
+    {
+        (Err(_), Err(_)) => return Ok(None),
+        (Ok(coords), Ok(faces)) => (coords, faces),
+        _ => return Err(ModelError::UvLayout),
+    };
+    let count = match (coords_view.dtype(), coords_view.shape()) {
+        (Dtype::F32, &[count, 2]) if count > 0 => count,
+        _ => return Err(mismatch("uv_coords", &coords_view, "F32 [coordinates, 2]")),
+    };
+    if faces_view.dtype() != Dtype::U32 || faces_view.shape() != [triangles, 3] {
+        return Err(mismatch("uv_faces", &faces_view, "U32 [triangles, 3]"));
+    }
+    let coords: Vec<[f32; 2]> = floats("uv_coords", &coords_view)?
+        .chunks_exact(2)
+        .map(|pair| [pair[0], pair[1]])
+        .collect();
+    if coords
+        .iter()
+        .flatten()
+        .any(|value| !(-UV_TOLERANCE..=1.0 + UV_TOLERANCE).contains(value))
+    {
+        return Err(ModelError::UvLayout);
+    }
+    let faces: Vec<[u32; 3]> = words(faces_view.data())
+        .collect::<Vec<_>>()
+        .chunks_exact(3)
+        .map(|face| [face[0], face[1], face[2]])
+        .collect();
+    if faces.iter().flatten().any(|&index| index as usize >= count) {
+        return Err(ModelError::UvLayout);
+    }
+    Ok(Some(UvLayout { coords, faces }))
 }
 
 fn parse_info(metadata: &HashMap<String, String>) -> Result<ModelInfo, ModelError> {
@@ -242,6 +304,10 @@ fn parse_info(metadata: &HashMap<String, String>) -> Result<ModelInfo, ModelErro
     })
 }
 
+/// Texture coordinates may stray this far outside the unit square through
+/// rounding in the published layout.
+const UV_TOLERANCE: f32 = 1e-6;
+
 fn view<'a>(tensors: &SafeTensors<'a>, name: &'static str) -> Result<TensorView<'a>, ModelError> {
     tensors
         .tensor(name)
@@ -293,6 +359,32 @@ mod tests {
         let mut fixture = Fixture::default();
         edit(&mut fixture);
         FlameModel::from_safetensors(&fixture.bytes())
+    }
+
+    #[test]
+    fn texture_layout_is_optional_and_validated() {
+        assert!(Fixture::default().model().uv_layout().is_none());
+        let coords = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let faces = vec![0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3];
+        let layout = rebuilt(|fixture| fixture.uv = Some((coords.clone(), faces.clone())))
+            .unwrap()
+            .uv_layout()
+            .cloned()
+            .unwrap();
+        assert_eq!(layout.coords[3], [1.0, 1.0]);
+        assert_eq!(layout.faces[1], [0, 1, 3]);
+        for (coords, faces) in [
+            (vec![0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0], faces.clone()),
+            (coords.clone(), vec![0, 1, 2, 0, 1, 4, 0, 2, 3, 1, 2, 3]),
+            (coords.clone(), vec![0, 1, 2]),
+        ] {
+            assert!(rebuilt(|fixture| fixture.uv = Some((coords, faces))).is_err());
+        }
+        let only_coords = rebuilt(|fixture| {
+            fixture.uv = Some((coords.clone(), faces.clone()));
+            fixture.omit.push("uv_faces");
+        });
+        assert!(matches!(only_coords, Err(ModelError::UvLayout)));
     }
 
     #[test]

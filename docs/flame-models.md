@@ -39,6 +39,24 @@ When the basis has the published 400 components, the converter uses FLAME's
 convention of 300 identity and 100 expression components. For any other size,
 pass `--expression-components`.
 
+Surface detail from a displacement map needs FLAME's texture layout. It is
+published separately as `FLAME_texture.npz` in the "FLAME texture space"
+download on the FLAME site. Add it with `--texture`:
+
+```sh
+python3 scripts/flame_model_convert.py generic_model.pkl \
+  /models/flame/flame2020_generic.safetensors --variant flame2020_generic \
+  --texture FLAME_texture.npz
+```
+
+The converter reads only the archive's `vt` and `ft` arrays, the texture
+coordinates and the coordinates at each triangle's corners. It decodes them
+as plain little-endian numbers and never unpickles anything. It refuses
+arrays larger than 1 MiB, a layout without one textured triangle per model
+triangle, coordinates outside the unit square and corners that reference a
+missing coordinate. All FLAME releases share the same triangles, so the one
+layout serves every release.
+
 ## What the converter checks
 
 Loading a pickle can run arbitrary code. The converter resolves only the
@@ -136,7 +154,9 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    boundary edges, and the lowest one is the neck.
 2. The head is turned upright, with the face toward -y, and scaled to
    `height_mm`.
-3. The surface is smoothed and refined to `edge_length_mm`.
+3. The surface is smoothed and refined to `edge_length_mm`. With a
+   displacement map, each point of the refined surface is then raised along
+   its normal by the map's value at that point, scaled with the head.
 4. The union of the head and eyeballs is rebuilt as one valid solid. A point
    is inside when an upward ray from it crosses more outward-facing surface
    than inward-facing surface, counted with exact arithmetic. A new surface
@@ -180,6 +200,7 @@ reported as an error and not written.
 | `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
 | `hollow_wall_mm` | none (solid) | 1 to 20 |
 | `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
+| `displacement` | none | see [Surface detail](#surface-detail) |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -216,6 +237,48 @@ cavity open through two drain holes. Each request took 8 to 11 seconds on a
 busy four-core machine, including validation. A 300 mm hollow bust on a
 plinth at the default triangle limit stayed within the default 1 GiB worker
 memory limit.
+
+### Surface detail
+
+`displacement` adds fine detail such as wrinkles from a map over FLAME's
+texture layout, such as the one `reconstruct` writes. The model must be
+converted with `--texture`.
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "path": "busts/detail.stl",
+  "displacement": {"path": "photos/detail.png", "offset_mm": -3.28, "scale_mm": 6.64}
+}}
+```
+
+The map is an 8- or 16-bit greyscale PNG of 2 to 1024 pixels on each side.
+A pixel at fraction f of the full range (p / 65535 for 16-bit images, p / 255
+for 8-bit images) raises the surface by `offset_mm + scale_mm × f`
+millimetres at life size. Negative values press the surface in. Column 0 is
+u = 0 and row 0 is v = 1, and values between pixels are interpolated. The
+raise is scaled by the same factor as the head, so a 100 mm bust of a head
+about 270 mm tall shows the detail at about 37% of its life-size depth.
+Values beyond 5% of the head's height are refused as not being detail.
+
+Texture coordinates are carried through smoothing and refinement, so every
+point of the refined surface takes its value from its own place in the map.
+Where texture coordinates differ along an edge, the points on either side
+move together by their average. The surfaces that close the mouth and neck
+openings have no texture coordinates, so the detail fades to nothing across
+them. The displaced surface is rebuilt in step 4 like any other, so the bust
+is still one valid solid even where the detail folds the surface.
+
+The `bust` report adds `displacement`, the deepest depression and the
+highest raise applied, in millimetres at the finished size.
+
+A 100 mm bust from a photograph reconstructed with `reconstruct` was one
+watertight, manifold solid with no self-intersections and 432,000 triangles.
+The applied detail ranged from -1.2 to +1.2 mm, and the request took about
+8 seconds on a busy four-core machine. Forehead lines and creases around the
+eyes and mouth were clearly visible in renders of the result. On an FDM
+print, expect detail shallower than the layer height to be lost.
 
 ## Reconstruct a head from photographs
 
@@ -346,6 +409,10 @@ DECA's renderer also adds a fixed offset, a lattice of ripples up to 1.6 mm
 that follows FLAME's triangle layout and corrects shading; it is not surface
 shape and is left out.
 
+To raise this detail on a printed bust, pass the map's `artifact.path`,
+`offset_mm` and `scale_mm` as `prepare_print`'s `displacement`, with the same
+coefficients and variant. See [Surface detail](#surface-detail).
+
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the
 face detector MICA was trained with. One photograph took about 40 seconds on a
@@ -364,6 +431,8 @@ Arrays are little-endian. Floating-point data is stored as float32.
 | `lbs_weights` | F32 | vertices × joints |
 | `joint_regressor` | F32 | joints × vertices |
 | `kintree_parents` | I32 | joints, with -1 for the root |
+| `uv_coords` | F32 | texture coordinates × 2, with `--texture` only |
+| `uv_faces` | U32 | triangles × 3, with `--texture` only |
 
 The metadata records `format`, `variant`, `source_sha256`,
 `identity_components`, `expression_components`, `expression_source`,

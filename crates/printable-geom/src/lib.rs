@@ -30,7 +30,8 @@ mod remesh;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
 pub use bust::{
-    BustReport, BustRequest, Hollow, HollowReport, Plinth, PlinthReport, bust_stl, prepare_bust,
+    BustReport, BustRequest, Displacement, DisplacementReport, Hollow, HollowReport, Plinth,
+    PlinthReport, bust_stl, prepare_bust,
 };
 
 pub use assembly::{

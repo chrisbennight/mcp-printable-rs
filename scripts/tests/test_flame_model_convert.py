@@ -473,6 +473,81 @@ class OutputTests(unittest.TestCase):
             convert_module.MAX_SOURCE_BYTES = original
 
 
+def _npy(descr, shape, values, *, fortran=False, header=None):
+    """A version 1.0 .npy file holding `values` row by row."""
+    code = {"<f8": "d", "<i4": "i", "|O": "d"}[descr]
+    text = header if header is not None else repr({"descr": descr, "fortran_order": fortran, "shape": shape})
+    encoded = text.encode("latin1")
+    encoded += b" " * (-(10 + len(encoded) + 1) % 64) + b"\n"
+    return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(encoded)) + encoded + struct.pack(f"<{len(values)}{code}", *values)
+
+
+UV_COORDS = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.5]
+UV_FACES = [0, 1, 2, 1, 3, 2, 0, 4, 1, 2, 4, 3]
+
+
+class TextureLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def archive(self, **members):
+        import zipfile
+
+        arrays = {"vt": _npy("<f8", (5, 2), UV_COORDS), "ft": _npy("<i4", (4, 3), UV_FACES)}
+        arrays.update(members)
+        path = self.root / "FLAME_texture.npz"
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in arrays.items():
+                if data is not None:
+                    archive.writestr(f"{name}.npy", data)
+        return path
+
+    def test_layout_is_read_as_coordinates_and_corner_indices(self):
+        layout = convert_module.texture_layout(self.archive(), 4)
+        self.assertEqual(layout["uv_coords"][:2], ("F32", (5, 2)))
+        self.assertEqual(_floats(layout["uv_coords"][2]), UV_COORDS)
+        self.assertEqual(layout["uv_faces"], ("U32", (4, 3), struct.pack("<12I", *UV_FACES)))
+
+    def test_unusable_layouts_are_refused(self):
+        cases = [
+            ({"ft": None}, "no ft"),
+            ({"ft": _npy("<i4", (3, 3), UV_FACES[:9])}, "every model triangle"),
+            ({"vt": _npy("<f8", (5, 2), [2.0] + UV_COORDS[1:])}, "unit square"),
+            ({"vt": _npy("<f8", (5, 2), [float("nan")] + UV_COORDS[1:])}, "unit square"),
+            ({"ft": _npy("<i4", (4, 3), [9] + UV_FACES[1:])}, "does not exist"),
+            ({"vt": _npy("<f8", (5, 2), UV_COORDS, fortran=True)}, "C-ordered"),
+            ({"vt": _npy("|O", (5, 2), UV_COORDS)}, "unsupported type"),
+            ({"vt": _npy("<f8", (5, 2), UV_COORDS)[:-8]}, "truncated"),
+            ({"vt": _npy("<f8", (5, 2), UV_COORDS, header="[" * 5000)}, "unreadable header"),
+            ({"vt": b"\0" * (convert_module.MAX_LAYOUT_MEMBER_BYTES + 1)}, "too large"),
+        ]
+        for members, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ModelError, message):
+                convert_module.texture_layout(self.archive(**members), 4)
+        text = self.root / "plain.npz"
+        text.write_text("not an archive")
+        with self.assertRaisesRegex(ModelError, "not an .npz"):
+            convert_module.texture_layout(text, 4)
+
+    def test_command_adds_the_layout_to_the_model(self):
+        source, destination = self.root / "source.pkl", self.root / "model.safetensors"
+        source.write_bytes(model(Legacy()))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(source), str(destination), "--variant", "textured",
+                           "--expression-components", "2", "--texture", str(self.archive())])
+        self.assertEqual(status, 0)
+        blob = destination.read_bytes()
+        (length,) = struct.unpack_from("<Q", blob)
+        header = json.loads(blob[8:8 + length])
+        self.assertEqual((header["uv_coords"]["dtype"], header["uv_coords"]["shape"]), ("F32", [5, 2]))
+        self.assertEqual((header["uv_faces"]["dtype"], header["uv_faces"]["shape"]), ("U32", [4, 3]))
+
+
 class ResourceLimitTests(unittest.TestCase):
     def test_command_runs_within_cpu_and_address_space_limits(self):
         code = textwrap.dedent(f"""

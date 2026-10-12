@@ -3,14 +3,16 @@
 //!
 //! Each boundary loop is closed with a fan of triangles, so every part becomes
 //! a closed surface. The parts are rotated to stand upright, scaled to the
-//! requested height, smoothed and refined to the requested edge length, and
-//! rebuilt as one valid solid, which is trimmed by a horizontal plane just
-//! above the lowest opening to give a flat base. An optional plinth is added
-//! below, and the result can be hollowed with drain holes through the base.
+//! requested height, smoothed and refined to the requested edge length,
+//! optionally raised by a displacement map over the head's texture
+//! coordinates, and rebuilt as one valid solid, which is trimmed by a
+//! horizontal plane just above the lowest opening to give a flat base. An
+//! optional plinth is added below, and the result can be hollowed with drain
+//! holes through the base.
 
 use std::collections::{HashMap, HashSet};
 
-use manifold_csg::Manifold;
+use manifold_csg::{Manifold, MeshGL64, MeshGL64Options};
 use serde::{Deserialize, Serialize};
 
 use crate::{GeometryError, TriangleMesh, remesh};
@@ -52,6 +54,11 @@ const CAVITY_SHARE: f64 = 0.25;
 const DRAIN_OVERLAP_MM: f64 = 1.0;
 /// The base outline is sampled this far above the base plane.
 const SECTION_OFFSET_MM: f64 = 0.01;
+/// Largest displacement map side accepted, in samples.
+const MAX_DISPLACEMENT_SIDE: usize = 1024;
+/// Displacement is surface detail; values beyond this fraction of the head's
+/// height are not.
+const MAX_DISPLACEMENT_FRACTION: f64 = 0.05;
 const MIN_CIRCLE_SEGMENTS: i32 = 16;
 const MAX_CIRCLE_SEGMENTS: i32 = 2048;
 
@@ -75,6 +82,37 @@ pub struct BustRequest {
     /// holes through the base.
     #[serde(default)]
     pub hollow: Option<Hollow>,
+    /// Fine surface detail raised along the normal of the smoothed surface.
+    #[serde(default)]
+    pub displacement: Option<Displacement>,
+}
+
+/// A displacement map over the head's texture coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Displacement {
+    pub width: usize,
+    pub height: usize,
+    /// Distance along the outward normal, in the units of `vertices`, row by
+    /// row. Row 0 is v = 1 and column 0 is u = 0; samples are interpolated
+    /// bilinearly.
+    pub values: Vec<f32>,
+    /// Texture coordinates of the three corners of each request triangle.
+    pub triangle_uvs: Vec<[[f32; 2]; 3]>,
+}
+
+impl Displacement {
+    fn sample(&self, u: f64, v: f64) -> f64 {
+        let x = u.clamp(0.0, 1.0) * (self.width - 1) as f64;
+        let y = (1.0 - v.clamp(0.0, 1.0)) * (self.height - 1) as f64;
+        let column = (x as usize).min(self.width - 2);
+        let row = (y as usize).min(self.height - 2);
+        let (across, down) = (x - column as f64, y - row as f64);
+        let at = |row: usize, column: usize| f64::from(self.values[row * self.width + column]);
+        let top = at(row, column) * (1.0 - across) + at(row, column + 1) * across;
+        let bottom = at(row + 1, column) * (1.0 - across) + at(row + 1, column + 1) * across;
+        top * (1.0 - down) + bottom * down
+    }
 }
 
 /// A cylindrical plinth.
@@ -141,6 +179,16 @@ pub struct BustReport {
     pub plinth: Option<PlinthReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hollow: Option<HollowReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub displacement: Option<DisplacementReport>,
+}
+
+/// The detail that was applied, in millimetres at the finished size: the
+/// deepest depression, negative, and the highest raise.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DisplacementReport {
+    pub lowest_mm: f64,
+    pub highest_mm: f64,
 }
 
 /// Build a closed, printable bust from an open head surface and its parts.
@@ -149,7 +197,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
     let mut minimum_edge = request.edge_length_mm;
     for _ in 0..FINISH_ATTEMPTS {
         match prepare_at(request, minimum_edge)? {
-            Prepared::Done(mesh, report) => return Ok((mesh, report)),
+            Prepared::Done(mesh, report) => return Ok((mesh, *report)),
             // A plinth or cavity added more triangles than expected; coarsen
             // the whole bust in proportion and try again.
             Prepared::OverLimit { triangles, edge } => {
@@ -164,7 +212,7 @@ pub fn prepare_bust(request: &BustRequest) -> Result<(TriangleMesh, BustReport),
 }
 
 enum Prepared {
-    Done(TriangleMesh, BustReport),
+    Done(TriangleMesh, Box<BustReport>),
     OverLimit { triangles: usize, edge: f64 },
 }
 
@@ -208,24 +256,15 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     // Place and scale before smoothing, so refinement works in final units.
     let scale = bust_height / (high[2] - low[2]);
     let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let place = |vertex: [f64; 3]| {
+        let vertex = upright(vertex);
+        [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
+    };
+    let displacement = request.displacement.as_ref();
     let smooth = parts
         .iter()
         .map(|part| {
-            let flat: Vec<f64> = part
-                .vertices
-                .iter()
-                .flat_map(|vertex| {
-                    let vertex = upright(*vertex);
-                    [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
-                })
-                .collect();
-            let indices: Vec<u64> = part
-                .triangles
-                .iter()
-                .flatten()
-                .map(|&index| u64::from(index))
-                .collect();
-            Manifold::from_mesh_f64(&flat, 3, &indices)
+            part_solid(part, place, displacement)
                 .map(|solid| solid.smooth_out(SMOOTH_EVERY_EDGE_DEGREES, 0.0))
                 .map_err(|error| {
                     GeometryError::Kernel(format!(
@@ -248,11 +287,21 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     // The smoothed parts overlap one another and can pass through themselves
     // where FLAME's surface folds, at the lips and ears. Remeshing their
     // union yields one valid solid; the flat base is cut afterwards.
-    let build = |edge: f64| -> Result<Manifold, GeometryError> {
+    let build = |edge: f64| -> Result<(Manifold, [f64; 2]), GeometryError> {
         let mut vertices = Vec::new();
         let mut triangles = Vec::new();
+        let mut range = [f64::INFINITY, f64::NEG_INFINITY];
         for part in &smooth {
-            let mesh = mesh_from(&part.refine_to_length(edge));
+            let refined = part.refine_to_length(edge);
+            let mesh = match displacement {
+                Some(map) => {
+                    let (mesh, [low, high]) = displaced(&refined, map, scale);
+                    range = [range[0].min(low), range[1].max(high)];
+                    mesh
+                }
+                None => mesh_from(&refined),
+            };
+            drop(refined);
             let offset =
                 u32::try_from(vertices.len()).map_err(|_| GeometryError::TooManyVertices)?;
             vertices.extend(mesh.vertices);
@@ -263,19 +312,20 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             );
         }
         let solid = remesh::remesh_union(vertices, triangles, edge)?;
-        Ok(match base {
+        let solid = match base {
             Some(height) => solid.trim_by_plane([0.0, 0.0, 1.0], height),
             None => solid,
-        })
+        };
+        Ok((solid, range))
     };
     // Large meshes are dropped as soon as they are replaced, so that no more
     // than two copies are alive within the worker's memory limit.
-    let mut refined = build(edge)?;
+    let (mut refined, mut range) = build(edge)?;
     if refined.num_tri() > surface_limit {
         // The area estimate was low; size the edge from the observed count.
         edge *= (refined.num_tri() as f64 / limit).sqrt() * 1.02;
         drop(refined);
-        refined = build(edge)?;
+        (refined, range) = build(edge)?;
     }
     if refined.num_tri() > surface_limit {
         return Err(GeometryError::Kernel(
@@ -368,8 +418,12 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         discarded_fragments: fragments,
         plinth,
         hollow,
+        displacement: displacement.map(|_| DisplacementReport {
+            lowest_mm: range[0] * correction,
+            highest_mm: range[1] * correction,
+        }),
     };
-    Ok(Prepared::Done(mesh, report))
+    Ok(Prepared::Done(mesh, Box::new(report)))
 }
 
 /// Raise the bust onto a cylinder centred under its flat base.
@@ -617,6 +671,43 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
             return invalid("a head triangle repeats a vertex");
         }
     }
+    if let Some(map) = &request.displacement {
+        if !(2..=MAX_DISPLACEMENT_SIDE).contains(&map.width)
+            || !(2..=MAX_DISPLACEMENT_SIDE).contains(&map.height)
+        {
+            return invalid(&format!(
+                "a displacement map must be 2 to {MAX_DISPLACEMENT_SIDE} samples on each side"
+            ));
+        }
+        if map.values.len() != map.width * map.height {
+            return invalid("the displacement values do not match the map size");
+        }
+        let heights = request.vertices.iter().map(|vertex| vertex[1]);
+        let span = heights.clone().fold(f64::MIN, f64::max) - heights.fold(f64::MAX, f64::min);
+        let limit = MAX_DISPLACEMENT_FRACTION * span;
+        if !map
+            .values
+            .iter()
+            .all(|&value| value.is_finite() && f64::from(value).abs() <= limit)
+        {
+            return invalid(&format!(
+                "displacement values must be finite and within {:.0}% of the head's height",
+                MAX_DISPLACEMENT_FRACTION * 100.0
+            ));
+        }
+        if map.triangle_uvs.len() != request.triangles.len() {
+            return invalid("there must be texture coordinates for every head triangle");
+        }
+        if !map
+            .triangle_uvs
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|value| value.is_finite())
+        {
+            return invalid("texture coordinates must be finite");
+        }
+    }
     Ok(())
 }
 
@@ -628,6 +719,9 @@ struct Opening {
 struct ClosedPart {
     vertices: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
+    /// The input triangle each part triangle came from; `None` for the fan
+    /// triangles that close an opening.
+    sources: Vec<Option<usize>>,
     openings: Vec<Opening>,
 }
 
@@ -654,16 +748,16 @@ fn closed_parts(
             parent[a] = b;
         }
     }
-    let mut groups: HashMap<usize, Vec<[u32; 3]>> = HashMap::new();
-    for triangle in triangles {
+    let mut groups: HashMap<usize, Vec<(usize, [u32; 3])>> = HashMap::new();
+    for (index, triangle) in triangles.iter().enumerate() {
         groups
             .entry(root(&mut parent, triangle[0] as usize))
             .or_default()
-            .push(*triangle);
+            .push((index, *triangle));
     }
-    let mut groups: Vec<Vec<[u32; 3]>> = groups.into_values().collect();
+    let mut groups: Vec<Vec<(usize, [u32; 3])>> = groups.into_values().collect();
     // Largest first; ties broken by first triangle so the order is deterministic.
-    groups.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].1.cmp(&b[0].1)));
     groups
         .into_iter()
         .map(|group| close_part(vertices, group))
@@ -672,8 +766,10 @@ fn closed_parts(
 
 fn close_part(
     vertices: &[[f64; 3]],
-    mut triangles: Vec<[u32; 3]>,
+    group: Vec<(usize, [u32; 3])>,
 ) -> Result<ClosedPart, GeometryError> {
+    let mut sources: Vec<Option<usize>> = group.iter().map(|(index, _)| Some(*index)).collect();
+    let mut triangles: Vec<[u32; 3]> = group.into_iter().map(|(_, triangle)| triangle).collect();
     let invalid = |message: &str| GeometryError::InvalidOptions(message.into());
     let mut directed = HashSet::with_capacity(triangles.len() * 3);
     for [a, b, c] in &triangles {
@@ -746,6 +842,7 @@ fn close_part(
         for (position, &a) in boundary.iter().enumerate() {
             let b = boundary[(position + 1) % boundary.len()];
             triangles.push([local[&b], local[&a], centre_index]);
+            sources.push(None);
         }
         openings.push(Opening {
             mean_height: points.iter().map(|point| point[1]).sum::<f64>() / count,
@@ -755,8 +852,226 @@ fn close_part(
     Ok(ClosedPart {
         vertices: part_vertices,
         triangles,
+        sources,
         openings,
     })
+}
+
+/// Vertex properties of a displaced part: position, texture coordinates and
+/// the weight given to the map.
+const DISPLACED_PROPERTIES: usize = 6;
+
+/// A placed part as a solid. With a displacement map, each vertex carries its
+/// texture coordinates and a weight as properties, which smoothing and
+/// refinement interpolate. Where texture coordinates differ across an edge,
+/// a vertex is repeated with each set and the copies are merged. A fan
+/// centre takes the mean coordinates of the vertices around it and weight
+/// zero, so detail fades out across the fan.
+fn part_solid(
+    part: &ClosedPart,
+    place: impl Fn([f64; 3]) -> [f64; 3],
+    displacement: Option<&Displacement>,
+) -> Result<Manifold, manifold_csg::CsgError> {
+    let Some(map) = displacement else {
+        let flat: Vec<f64> = part
+            .vertices
+            .iter()
+            .flat_map(|vertex| place(*vertex))
+            .collect();
+        let indices: Vec<u64> = part
+            .triangles
+            .iter()
+            .flatten()
+            .map(|&index| u64::from(index))
+            .collect();
+        return Manifold::from_mesh_f64(&flat, 3, &indices);
+    };
+    let mut built = PropertyMesh {
+        properties: Vec::new(),
+        first: vec![None; part.vertices.len()],
+        merge_from: Vec::new(),
+        merge_to: Vec::new(),
+    };
+    let mut ids: HashMap<(u32, [u32; 2]), u64> = HashMap::new();
+    let mut indices = vec![0u64; part.triangles.len() * 3];
+    for (slot, (triangle, source)) in part.triangles.iter().zip(&part.sources).enumerate() {
+        let Some(source) = *source else { continue };
+        for corner in 0..3 {
+            let vertex = triangle[corner];
+            let uv = map.triangle_uvs[source][corner];
+            indices[slot * 3 + corner] =
+                *ids.entry((vertex, uv.map(f32::to_bits)))
+                    .or_insert_with(|| {
+                        built.add(
+                            place(part.vertices[vertex as usize]),
+                            vertex,
+                            uv.map(f64::from),
+                            1.0,
+                        )
+                    });
+        }
+    }
+    // Every fan vertex except its centre belongs to a surface triangle.
+    let mut centres: HashMap<u32, ([f64; 2], usize)> = HashMap::new();
+    for (triangle, source) in part.triangles.iter().zip(&part.sources) {
+        if source.is_some() {
+            continue;
+        }
+        let rim: Vec<[f64; 2]> = triangle
+            .iter()
+            .filter_map(|&vertex| built.first[vertex as usize].map(|id| built.uv(id)))
+            .collect();
+        for &vertex in triangle {
+            if built.first[vertex as usize].is_none() {
+                let (sum, count) = centres.entry(vertex).or_insert(([0.0; 2], 0));
+                for uv in &rim {
+                    sum[0] += uv[0];
+                    sum[1] += uv[1];
+                    *count += 1;
+                }
+            }
+        }
+    }
+    let mut centres: Vec<_> = centres.into_iter().collect();
+    centres.sort_by_key(|(vertex, _)| *vertex);
+    for (vertex, (sum, count)) in centres {
+        let mean = sum.map(|value| value / count.max(1) as f64);
+        built.add(place(part.vertices[vertex as usize]), vertex, mean, 0.0);
+    }
+    for (slot, (triangle, source)) in part.triangles.iter().zip(&part.sources).enumerate() {
+        if source.is_none() {
+            for corner in 0..3 {
+                indices[slot * 3 + corner] =
+                    built.first[triangle[corner] as usize].expect("every vertex has properties");
+            }
+        }
+    }
+    let PropertyMesh {
+        properties,
+        merge_from,
+        merge_to,
+        ..
+    } = built;
+    let mesh = MeshGL64::new_with_options(
+        &properties,
+        DISPLACED_PROPERTIES,
+        &indices,
+        MeshGL64Options::new().merge_vertices(&merge_from, &merge_to),
+    )?;
+    Manifold::from_meshgl64(&mesh)
+}
+
+/// Property vertices under construction, with the first copy of each part
+/// vertex and the later copies to merge into it.
+struct PropertyMesh {
+    properties: Vec<f64>,
+    first: Vec<Option<u64>>,
+    merge_from: Vec<u64>,
+    merge_to: Vec<u64>,
+}
+
+impl PropertyMesh {
+    fn add(&mut self, position: [f64; 3], vertex: u32, uv: [f64; 2], weight: f64) -> u64 {
+        let id = (self.properties.len() / DISPLACED_PROPERTIES) as u64;
+        self.properties.extend(position);
+        self.properties.extend([uv[0], uv[1], weight]);
+        match self.first[vertex as usize] {
+            Some(original) => {
+                self.merge_from.push(id);
+                self.merge_to.push(original);
+            }
+            None => self.first[vertex as usize] = Some(id),
+        }
+        id
+    }
+
+    fn uv(&self, id: u64) -> [f64; 2] {
+        let at = id as usize * DISPLACED_PROPERTIES;
+        [self.properties[at + 3], self.properties[at + 4]]
+    }
+}
+
+/// The refined surface of a displaced part, each vertex moved along its
+/// normal by the map value at its texture coordinates times its weight,
+/// scaled from the request's units to the bust's.
+fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh, [f64; 2]) {
+    let mesh = solid.to_meshgl64();
+    let width = mesh.num_prop();
+    let properties = mesh.vert_properties();
+    let count = properties.len() / width;
+    // Copies of a vertex with different texture coordinates share one
+    // position; merge them so that they move together.
+    let mut canonical: Vec<usize> = (0..count).collect();
+    for (from, to) in mesh.merge_from_vert().into_iter().zip(mesh.merge_to_vert()) {
+        canonical[from as usize] = to as usize;
+    }
+    for index in 0..count {
+        let mut root = canonical[index];
+        while canonical[root] != root {
+            root = canonical[root];
+        }
+        canonical[index] = root;
+    }
+    let position = |index: usize| {
+        let at = index * width;
+        [properties[at], properties[at + 1], properties[at + 2]]
+    };
+    let triangles: Vec<[usize; 3]> = mesh
+        .tri_verts()
+        .chunks_exact(3)
+        .map(|triangle| [0, 1, 2].map(|corner| canonical[triangle[corner] as usize]))
+        .collect();
+    let mut offsets = vec![(0.0, 0u32); count];
+    for index in 0..count {
+        let at = index * width;
+        let value = properties[at + 5] * map.sample(properties[at + 3], properties[at + 4]);
+        let entry = &mut offsets[canonical[index]];
+        entry.0 += value;
+        entry.1 += 1;
+    }
+    // Area-weighted normals.
+    let mut normals = vec![[0.0; 3]; count];
+    for &[a, b, c] in &triangles {
+        let (pa, pb, pc) = (position(a), position(b), position(c));
+        let normal = cross(sub(pb, pa), sub(pc, pa));
+        for corner in [a, b, c] {
+            for axis in 0..3 {
+                normals[corner][axis] += normal[axis];
+            }
+        }
+    }
+    let mut remap = vec![u32::MAX; count];
+    let mut vertices = Vec::new();
+    let mut range = [f64::INFINITY, f64::NEG_INFINITY];
+    let triangles = triangles
+        .iter()
+        .map(|triangle| {
+            triangle.map(|index| {
+                if remap[index] == u32::MAX {
+                    remap[index] = vertices.len() as u32;
+                    let (sum, copies) = offsets[index];
+                    let distance = sum / f64::from(copies.max(1)) * scale;
+                    range = [range[0].min(distance), range[1].max(distance)];
+                    let normal = normals[index];
+                    let length = norm(normal);
+                    let point = position(index);
+                    vertices.push(if length > 0.0 {
+                        [0, 1, 2].map(|axis| point[axis] + normal[axis] / length * distance)
+                    } else {
+                        point
+                    });
+                }
+                remap[index]
+            })
+        })
+        .collect();
+    (
+        TriangleMesh {
+            vertices,
+            triangles,
+        },
+        range,
+    )
 }
 
 /// The mesh as an STL stores it, checked to still be a closed solid.
@@ -994,7 +1309,177 @@ mod tests {
             max_triangles,
             plinth: None,
             hollow: None,
+            displacement: None,
         }
+    }
+
+    /// Each face of the box and the part gets its own island in texture
+    /// space, so every edge is a seam where texture coordinates change.
+    fn with_map(mut request: BustRequest, value: impl Fn(f64, f64) -> f32) -> BustRequest {
+        let side = 64;
+        let values = (0..side * side)
+            .map(|index| {
+                let (row, column) = (index / side, index % side);
+                let u = column as f64 / (side - 1) as f64;
+                let v = 1.0 - row as f64 / (side - 1) as f64;
+                value(u, v)
+            })
+            .collect();
+        let triangle_uvs = request
+            .triangles
+            .iter()
+            .enumerate()
+            .map(|(index, triangle)| {
+                let island = (index / 2) as f32;
+                let normal = cross(
+                    sub(
+                        request.vertices[triangle[1] as usize],
+                        request.vertices[triangle[0] as usize],
+                    ),
+                    sub(
+                        request.vertices[triangle[2] as usize],
+                        request.vertices[triangle[0] as usize],
+                    ),
+                );
+                let axis = (0..3)
+                    .max_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
+                    .unwrap();
+                let (first, second) = ((axis + 1) % 3, (axis + 2) % 3);
+                triangle.map(|vertex| {
+                    let point = request.vertices[vertex as usize];
+                    [
+                        (island + point[first] as f32 / 50.0) / 12.0,
+                        point[second] as f32 / 50.0,
+                    ]
+                })
+            })
+            .collect();
+        request.displacement = Some(Displacement {
+            width: side,
+            height: side,
+            values,
+            triangle_uvs,
+        });
+        request
+    }
+
+    #[test]
+    fn zero_displacement_leaves_the_bust_unchanged_despite_texture_seams() {
+        let (plain_mesh, plain) = prepare_bust(&request(1.0, 1_000_000)).unwrap();
+        let (mesh, report) = prepare_bust(&with_map(request(1.0, 1_000_000), |_, _| 0.0)).unwrap();
+        assert!(
+            (report.volume_mm3 - plain.volume_mm3).abs() < 1e-9 * plain.volume_mm3,
+            "{report:?} {plain:?}"
+        );
+        assert_eq!(mesh.triangles.len(), plain_mesh.triangles.len());
+    }
+
+    #[test]
+    fn a_uniform_map_raises_every_point_along_its_normal() {
+        let sphere = Manifold::sphere(10.0, 48);
+        let mesh = mesh_from(&sphere);
+        let part = ClosedPart {
+            sources: (0..mesh.triangles.len()).map(Some).collect(),
+            vertices: mesh.vertices,
+            triangles: mesh.triangles,
+            openings: Vec::new(),
+        };
+        let map = Displacement {
+            width: 2,
+            height: 2,
+            values: vec![0.25; 4],
+            triangle_uvs: vec![[[0.5, 0.5]; 3]; part.triangles.len()],
+        };
+        let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
+        let (raised, range) = displaced(&solid, &map, 2.0);
+        assert_eq!(range, [0.5, 0.5]);
+        for vertex in &raised.vertices {
+            let radius = norm(*vertex);
+            assert!((radius - 10.5).abs() < 0.01, "radius {radius}");
+        }
+    }
+
+    #[test]
+    fn detail_fades_to_nothing_at_the_centre_of_an_opening() {
+        let (vertices, triangles) = open_box_with_part();
+        let parts = closed_parts(&vertices, &triangles).unwrap();
+        let head = parts
+            .iter()
+            .find(|part| !part.openings.is_empty())
+            .expect("the box has an opening");
+        assert_eq!(head.openings.len(), 1);
+        let map = Displacement {
+            width: 2,
+            height: 2,
+            values: vec![1.0; 4],
+            triangle_uvs: (0..triangles.len())
+                .map(|index| [[0.2, 0.2], [0.4, 0.2], [0.2 + 0.01 * index as f32, 0.6]])
+                .collect(),
+        };
+        let solid = part_solid(head, |vertex| vertex, Some(&map)).unwrap();
+        let mesh = solid.to_meshgl64();
+        let properties = mesh.vert_properties();
+        let weights: Vec<[f64; 3]> = properties
+            .chunks_exact(DISPLACED_PROPERTIES)
+            .map(|vertex| [vertex[3], vertex[4], vertex[5]])
+            .collect();
+        // One fan centre has weight zero and the mean coordinates of its rim;
+        // every other vertex carries the map at full weight.
+        let centres: Vec<_> = weights.iter().filter(|vertex| vertex[2] == 0.0).collect();
+        assert_eq!(centres.len(), 1, "{weights:?}");
+        assert!(centres[0][0] > 0.0 && centres[0][1] > 0.0);
+        assert!(
+            weights
+                .iter()
+                .all(|vertex| vertex[2] == 0.0 || vertex[2] == 1.0)
+        );
+        // Corners whose triangles disagree on texture coordinates are
+        // repeated and merged back to one position.
+        assert!(!mesh.merge_from_vert().is_empty());
+    }
+
+    #[test]
+    fn unusable_displacement_maps_are_refused() {
+        let base = with_map(request(2.0, 1_000_000), |_, _| 0.0);
+        type Change = fn(&mut Displacement);
+        let cases: [(&str, Change); 5] = [
+            ("samples on each side", |map| map.width = 1),
+            ("do not match the map size", |map| {
+                map.values.pop();
+            }),
+            ("within 5%", |map| map.values[0] = 3.0),
+            ("within 5%", |map| map.values[0] = f32::NAN),
+            ("every head triangle", |map| {
+                map.triangle_uvs.pop();
+            }),
+        ];
+        for (message, change) in cases {
+            let mut bad = base.clone();
+            change(bad.displacement.as_mut().unwrap());
+            match prepare_bust(&bad) {
+                Err(GeometryError::InvalidOptions(text)) => {
+                    assert!(text.contains(message), "{text}")
+                }
+                other => panic!("{message}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_displaced_bust_is_one_valid_solid_and_reports_the_applied_range() {
+        let (mesh, report) = prepare_bust(&with_map(request(1.0, 1_000_000), |u, v| {
+            (1.5 * (12.0 * u).sin() * (12.0 * v).cos()) as f32
+        }))
+        .unwrap();
+        let applied = report.displacement.expect("displacement report");
+        assert!(
+            applied.lowest_mm < -0.5 && applied.highest_mm > 0.5,
+            "{applied:?}"
+        );
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+        assert_eq!(validation.topology.self_intersections, Some(0));
     }
 
     fn validated(mesh: &TriangleMesh) -> crate::ValidationReport {
