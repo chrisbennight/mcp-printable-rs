@@ -362,7 +362,7 @@ while the fine part can be shallower than a layer. These optional
 | Field | Range | Effect |
 | --- | --- | --- |
 | `high_pass_mm` | 1 to 100 | Removes features wider than about this many millimetres on the life-size head, keeping finer detail. |
-| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, so a few extreme values do not dominate. |
+| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, taken over the detail that remains after `high_pass_mm`, so a few extreme values do not dominate. |
 | `gain` | 0 to 10, default 1 | Multiplies the detail. |
 | `relief_mm` | 0.01 to 10 | Scales the detail so that the 95th percentile of the map's detail is this many millimetres at the bust's scale, whatever its height. The applied percentiles in the report land close to it, not exactly on it, because the surface samples the map unevenly. Not with `gain`. |
 

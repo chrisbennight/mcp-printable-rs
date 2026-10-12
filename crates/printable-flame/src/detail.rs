@@ -112,9 +112,12 @@ pub fn filter_detail(
         }
     }
     if let Some(percentile) = filter.clip_percentile {
+        // Taken over what still carries detail after the high-pass, so
+        // texels it emptied cannot pull the limit toward zero.
+        let remaining = detail_mask(values);
         let magnitudes: Vec<f32> = values
             .iter()
-            .zip(&detail)
+            .zip(&remaining)
             .filter(|(_, inside)| **inside)
             .map(|(value, _)| value.abs())
             .collect();
@@ -601,6 +604,39 @@ mod tests {
             (report.millimetres_per_texel - expected).abs() < 1e-4,
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn clipping_after_a_high_pass_counts_only_the_detail_that_remains() {
+        // An even 1 mm raise, which the high-pass removes, beside a crease it
+        // keeps; clipping at the 95th percentile must keep the crease.
+        let (faces, layout, vertices, side) = square(256);
+        let mut values = map(side, |x, _| {
+            if (127.0..129.0).contains(&x) {
+                0.5
+            } else {
+                1.0
+            }
+        });
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: Some(3.0),
+                clip_percentile: Some(95.0),
+            },
+        )
+        .unwrap();
+        assert!(
+            report.clipped_at.is_some_and(|limit| limit > 0.1),
+            "{report:?}"
+        );
+        let crease = values[128 * side + 127];
+        assert!(crease < -0.1, "{crease}");
     }
 
     #[test]
