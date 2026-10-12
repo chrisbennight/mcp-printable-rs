@@ -8,6 +8,12 @@
 //! is filled smoothly across the head's surface, so the fill follows the
 //! head rather than the texture layout and has no seams where the layout is
 //! cut apart.
+//!
+//! When a photograph comes with labels saying what each pixel shows, skin
+//! takes colour only from pixels of skin, so hair and clothing in front of
+//! it are left out and unseen skin is filled from skin alone. The scalp can
+//! take the photographs' colour, be treated as skin, or be painted a hair
+//! colour where no photograph shows bare skin there.
 
 use thiserror::Error;
 
@@ -27,14 +33,100 @@ const FULL_WEIGHT: f32 = 0.5;
 /// A point counts as visible when it is no more than this far, in metres,
 /// behind the nearest surface at its pixel.
 const DEPTH_TOLERANCE_M: f32 = 0.002;
-/// Below this share of the map seen by some photograph, the projection is
-/// taken to have failed.
+/// Below this share of the map in view of some photograph, the projection
+/// is taken to have failed. A texel is in view whether or not its colour is
+/// used, so hair in front of skin does not count against the projection.
 const MIN_SEEN: f64 = 0.02;
 /// Sweeps of the surface fill. Over-relaxation makes each sweep carry colour
 /// several edges, so this reaches across the whole head.
 const FILL_SWEEPS: usize = 3000;
 const OVER_RELAXATION: f32 = 1.8;
 const NO_FACE: u32 = u32::MAX;
+
+/// Pixel labels, as MediaPipe's multiclass selfie segmenter numbers them.
+pub const LABEL_BACKGROUND: u8 = 0;
+pub const LABEL_HAIR: u8 = 1;
+pub const LABEL_BODY_SKIN: u8 = 2;
+pub const LABEL_FACE_SKIN: u8 = 3;
+pub const LABEL_CLOTHES: u8 = 4;
+pub const LABEL_OTHER: u8 = 5;
+
+/// Which part of the head a triangle belongs to, which decides the pixels
+/// it may take colour from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceKind {
+    Skin,
+    Scalp,
+    Eye,
+}
+
+/// How the scalp is coloured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScalpColour {
+    /// From whatever the photographs show there, hair included.
+    Photo,
+    /// As skin: from pixels of skin only, and filled from skin.
+    Skin,
+    /// From pixels of skin where the photographs show bare scalp, and this
+    /// sRGB colour elsewhere.
+    Hair([u8; 3]),
+}
+
+/// A photograph's pixel labels over a square: label pixel p lies at
+/// photograph pixel `p / step + (left, top)`.
+pub struct Labels<'a> {
+    pub side: usize,
+    pub data: &'a [u8],
+    pub left: f64,
+    pub top: f64,
+    pub step: f64,
+}
+
+impl Labels<'_> {
+    /// Whether `accepts` holds at a photograph pixel position and one label
+    /// pixel to each side of it. Pixels at the edge of a labelled region mix
+    /// what lies on either side, such as strands of hair over skin.
+    fn agree(&self, pixel: [f64; 2], accepts: impl Fn(u8) -> bool) -> bool {
+        let reach = 1.0 / self.step;
+        [
+            [0.0, 0.0],
+            [reach, 0.0],
+            [-reach, 0.0],
+            [0.0, reach],
+            [0.0, -reach],
+        ]
+        .iter()
+        .all(|offset| {
+            self.at([pixel[0] + offset[0], pixel[1] + offset[1]])
+                .is_some_and(&accepts)
+        })
+    }
+
+    /// The label at a photograph pixel position, or `None` outside the square.
+    fn at(&self, pixel: [f64; 2]) -> Option<u8> {
+        let column = ((pixel[0] - self.left) * self.step).round();
+        let row = ((pixel[1] - self.top) * self.step).round();
+        let side = self.side as f64;
+        if !(0.0..side).contains(&column) || !(0.0..side).contains(&row) {
+            return None;
+        }
+        self.data
+            .get(row as usize * self.side + column as usize)
+            .copied()
+    }
+}
+
+impl FaceKind {
+    /// Whether a pixel with this label may colour this part of the head.
+    fn accepts(self, label: u8, scalp: ScalpColour) -> bool {
+        let skin = matches!(label, LABEL_BODY_SKIN | LABEL_FACE_SKIN);
+        match self {
+            Self::Skin => skin,
+            Self::Scalp => matches!(scalp, ScalpColour::Photo) || skin,
+            Self::Eye => !matches!(label, LABEL_BACKGROUND | LABEL_HAIR | LABEL_CLOTHES),
+        }
+    }
+}
 
 /// An RGB photograph, three bytes per pixel, row by row from the top.
 pub struct Photo<'a> {
@@ -79,6 +171,9 @@ pub struct View<'a> {
     /// Posed head vertices in metres, one per model vertex.
     pub vertices: &'a [[f32; 3]],
     pub projection: Projection,
+    /// What each pixel around the face shows. Without labels every visible
+    /// pixel may colour the head.
+    pub labels: Option<Labels<'a>>,
 }
 
 /// A square RGB colour map, row 0 at v = 1 and column 0 at u = 0.
@@ -103,6 +198,10 @@ pub enum TextureError {
     Projection,
     #[error("too little of the head was visible in the photographs to colour it")]
     NotVisible,
+    #[error("the head's parts do not match its triangles")]
+    Kinds,
+    #[error("a photograph's labels do not match their size")]
+    Labels,
 }
 
 /// Project the photographs onto the head and fill what they do not show.
@@ -112,7 +211,8 @@ pub fn bake(
     views: &[View<'_>],
     size: usize,
 ) -> Result<ColourMap, TextureError> {
-    let mut builder = ColourMapBuilder::new(faces, layout, size)?;
+    let kinds = vec![FaceKind::Skin; faces.len()];
+    let mut builder = ColourMapBuilder::new(faces, layout, size, &kinds, ScalpColour::Photo)?;
     for view in views {
         builder.add(view)?;
     }
@@ -125,25 +225,39 @@ pub struct ColourMapBuilder<'a> {
     faces: &'a [[u32; 3]],
     texels: TexelMap,
     weight: Vec<f32>,
+    /// Texels some photograph had in view, whether or not it coloured them.
+    in_view: Vec<bool>,
     colour: Vec<[f32; 3]>,
     size: usize,
+    kinds: Vec<FaceKind>,
+    scalp: ScalpColour,
 }
 
 impl<'a> ColourMapBuilder<'a> {
+    /// A builder for a `size` texel map. `kinds` names the part of the head
+    /// each triangle belongs to, and `scalp` says how the scalp is coloured.
     pub fn new(
         faces: &'a [[u32; 3]],
         layout: &UvLayout,
         size: usize,
+        kinds: &[FaceKind],
+        scalp: ScalpColour,
     ) -> Result<Self, TextureError> {
         if size < 2 {
             return Err(TextureError::Size);
+        }
+        if kinds.len() != faces.len() {
+            return Err(TextureError::Kinds);
         }
         Ok(Self {
             faces,
             texels: TexelMap::new(faces, layout, size),
             weight: vec![0.0; size * size],
+            in_view: vec![false; size * size],
             colour: vec![[0.0; 3]; size * size],
             size,
+            kinds: kinds.to_vec(),
+            scalp,
         })
     }
 
@@ -153,8 +267,10 @@ impl<'a> ColourMapBuilder<'a> {
             self.faces,
             &self.texels,
             view,
+            (&self.kinds, self.scalp),
             &mut self.weight,
             &mut self.colour,
+            &mut self.in_view,
         )
     }
 
@@ -164,11 +280,66 @@ impl<'a> ColourMapBuilder<'a> {
             faces,
             texels,
             weight,
+            in_view,
             mut colour,
             size,
+            kinds,
+            scalp,
         } = self;
-        finish(faces, &texels, &weight, &mut colour, size)
+        let in_view =
+            in_view.iter().filter(|&&seen| seen).count() as f64 / texels.on_surface().max(1) as f64;
+        if in_view < MIN_SEEN {
+            return Err(TextureError::NotVisible);
+        }
+        let paint = match scalp {
+            ScalpColour::Hair(hair) => Some(hair.map(f32::from)),
+            ScalpColour::Photo | ScalpColour::Skin => None,
+        };
+        finish(faces, &texels, &weight, &mut colour, size, |face| {
+            paint.filter(|_| kinds[face as usize] == FaceKind::Scalp)
+        })
     }
+}
+
+/// Parts of a mesh separate from its largest connected part, triangle by
+/// triangle. FLAME's eyeballs are separate from its head.
+pub fn minor_parts(faces: &[[u32; 3]]) -> Vec<bool> {
+    let vertex_count = faces
+        .iter()
+        .flatten()
+        .map(|&vertex| vertex as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let mut parent: Vec<usize> = (0..vertex_count).collect();
+    fn root(parent: &mut [usize], mut index: usize) -> usize {
+        while parent[index] != index {
+            parent[index] = parent[parent[index]];
+            index = parent[index];
+        }
+        index
+    }
+    for face in faces {
+        for pair in [[face[0], face[1]], [face[1], face[2]]] {
+            let (a, b) = (
+                root(&mut parent, pair[0] as usize),
+                root(&mut parent, pair[1] as usize),
+            );
+            parent[a] = b;
+        }
+    }
+    let roots: Vec<usize> = faces
+        .iter()
+        .map(|face| root(&mut parent, face[0] as usize))
+        .collect();
+    let mut sizes = std::collections::HashMap::new();
+    for &part in &roots {
+        *sizes.entry(part).or_insert(0usize) += 1;
+    }
+    let largest = sizes
+        .iter()
+        .max_by_key(|(part, size)| (**size, std::cmp::Reverse(**part)))
+        .map(|(part, _)| *part);
+    roots.iter().map(|part| Some(*part) != largest).collect()
 }
 
 fn finish(
@@ -177,6 +348,7 @@ fn finish(
     weight: &[f32],
     colour: &mut [[f32; 3]],
     size: usize,
+    painted: impl Fn(u32) -> Option<[f32; 3]>,
 ) -> Result<ColourMap, TextureError> {
     let mut on_surface = 0usize;
     let mut seen = 0usize;
@@ -189,9 +361,6 @@ fn finish(
         }
     }
     let seen = seen as f64 / on_surface.max(1) as f64;
-    if seen < MIN_SEEN {
-        return Err(TextureError::NotVisible);
-    }
     for (colour, weight) in colour.iter_mut().zip(weight) {
         if *weight > 0.0 {
             *colour = colour.map(|channel| channel / weight);
@@ -220,6 +389,10 @@ fn finish(
             for channel in 0..3 {
                 filled[channel] += share * fill[*corner as usize][channel];
             }
+        }
+        // A painted part shows its paint wherever no photograph saw it.
+        if let Some(paint) = painted(face) {
+            filled = paint;
         }
         let keep = (weight[index] / FULL_WEIGHT).min(1.0);
         for channel in 0..3 {
@@ -333,6 +506,11 @@ struct TexelMap {
 }
 
 impl TexelMap {
+    /// Texels on the head's surface.
+    fn on_surface(&self) -> usize {
+        self.face.iter().filter(|&&face| face != NO_FACE).count()
+    }
+
     fn new(faces: &[[u32; 3]], layout: &UvLayout, size: usize) -> Self {
         let mut face_of = vec![NO_FACE; size * size];
         let mut barycentric = vec![[0.0f32; 2]; size * size];
@@ -388,12 +566,23 @@ fn accumulate(
     faces: &[[u32; 3]],
     texels: &TexelMap,
     view: &View<'_>,
+    (kinds, scalp): (&[FaceKind], ScalpColour),
     weight: &mut [f32],
     colour: &mut [[f32; 3]],
+    in_view: &mut [bool],
 ) -> Result<(), TextureError> {
     let photo = &view.photo;
     if photo.rgb.len() != photo.width * photo.height * 3 || photo.width == 0 || photo.height == 0 {
         return Err(TextureError::Photo);
+    }
+    if let Some(labels) = &view.labels
+        && (labels.data.len() != labels.side * labels.side
+            || !(labels.step.is_finite()
+                && labels.step > 0.0
+                && labels.left.is_finite()
+                && labels.top.is_finite()))
+    {
+        return Err(TextureError::Labels);
     }
     let projection = view.projection;
     if !(projection.scale.is_finite()
@@ -471,6 +660,14 @@ fn accumulate(
                 .is_none_or(|depth| depth == f32::NEG_INFINITY)
         });
         if near_outline {
+            continue;
+        }
+        in_view[index] = true;
+        // Outside the labelled square nothing says what a pixel shows, so
+        // it is not trusted either.
+        if let Some(labels) = &view.labels
+            && !labels.agree(pixel, |label| kinds[face as usize].accepts(label, scalp))
+        {
             continue;
         }
         let Some(sample) = sample(photo, pixel) else {
@@ -746,6 +943,7 @@ mod tests {
             },
             vertices: &vertices,
             projection: PROJECTION,
+            labels: None,
         }];
         let layout = layout(coords, &faces);
         let map = bake(&faces, &layout, &views, 64).unwrap();
@@ -754,7 +952,16 @@ mod tests {
         let texels = TexelMap::new(&faces, &layout, 64);
         let mut weight = vec![0.0; 64 * 64];
         let mut colour = vec![[0.0; 3]; 64 * 64];
-        accumulate(&faces, &texels, &views[0], &mut weight, &mut colour).unwrap();
+        accumulate(
+            &faces,
+            &texels,
+            &views[0],
+            (&[FaceKind::Skin; 2], ScalpColour::Photo),
+            &mut weight,
+            &mut colour,
+            &mut vec![false; 64 * 64],
+        )
+        .unwrap();
         assert_eq!(weight[32 * 64], 0.0, "the outline takes no colour");
         assert!(weight[32 * 64 + 32] > 0.0);
         for (column, row) in [(10usize, 50usize), (32, 16), (55, 40)] {
@@ -802,12 +1009,22 @@ mod tests {
             },
             vertices: &vertices,
             projection: PROJECTION,
+            labels: None,
         };
         let size = 64;
         let texels = TexelMap::new(&faces, &layout(coords, &uv_faces), size);
         let mut weight = vec![0.0; size * size];
         let mut colour = vec![[0.0; 3]; size * size];
-        accumulate(&faces, &texels, &view, &mut weight, &mut colour).unwrap();
+        accumulate(
+            &faces,
+            &texels,
+            &view,
+            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            &mut weight,
+            &mut colour,
+            &mut vec![false; size * size],
+        )
+        .unwrap();
         let at = |u: f64| (size / 2) * size + (u * size as f64) as usize;
         // Back square: x = 4u - 1, visible for x < 0 and hidden for x > 0.
         assert!(weight[at(0.1)] > 0.0);
@@ -842,12 +1059,22 @@ mod tests {
             },
             vertices: &vertices,
             projection: PROJECTION,
+            labels: None,
         };
         let size = 512;
         let texels = TexelMap::new(&faces, &layout, size);
         let mut weight = vec![0.0; size * size];
         let mut colour = vec![[0.0; 3]; size * size];
-        accumulate(&faces, &texels, &view, &mut weight, &mut colour).unwrap();
+        accumulate(
+            &faces,
+            &texels,
+            &view,
+            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            &mut weight,
+            &mut colour,
+            &mut vec![false; size * size],
+        )
+        .unwrap();
         // The margin is 2% of the 224 pixel crop at 56 pixels per metre, so
         // 0.08 m. A point 0.07 m inside the edge x + y = 1 is within it.
         let texel = |distance: f64| {
@@ -877,6 +1104,7 @@ mod tests {
             },
             vertices: &vertices,
             projection: PROJECTION,
+            labels: None,
         }];
         assert_eq!(
             bake(&faces, &layout(coords, &faces), &views, 32).unwrap_err(),
@@ -900,6 +1128,134 @@ mod tests {
         }
     }
 
+    /// Two side-by-side squares facing the camera, each half of the map:
+    /// the left one skin and the right one `right`. The photograph is red;
+    /// its labels say face skin on the left half and `label` on the right.
+    fn labelled_bake(right: FaceKind, label: u8, scalp: ScalpColour) -> ColourMap {
+        let (mut vertices, mut faces, mut coords) = square(0.0, [-1.0, 0.0], [0.0, 0.5], false);
+        let (more, more_faces, more_coords) = square(0.0, [0.0, 1.0], [0.5, 1.0], false);
+        vertices.extend(more);
+        faces.extend(more_faces.iter().map(|face| face.map(|vertex| vertex + 4)));
+        coords.extend(more_coords);
+        let kinds = [FaceKind::Skin, FaceKind::Skin, right, right];
+        let rgb: Vec<u8> = (0..224 * 224).flat_map(|_| [200, 0, 0]).collect();
+        let labels: Vec<u8> = (0..224 * 224)
+            .map(|index| {
+                if index % 224 < 112 {
+                    LABEL_FACE_SKIN
+                } else {
+                    label
+                }
+            })
+            .collect();
+        let layout = layout(coords, &faces);
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 32, &kinds, scalp).unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &labels,
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
+            })
+            .unwrap();
+        builder.finish().unwrap()
+    }
+
+    fn texel(map: &ColourMap, u: f64) -> [u8; 3] {
+        let at = (map.size / 2) * map.size + (u * map.size as f64) as usize;
+        [0, 1, 2].map(|channel| map.rgb[at * 3 + channel])
+    }
+
+    #[test]
+    fn skin_takes_no_colour_from_hair_in_front_of_it() {
+        let photographed = labelled_bake(FaceKind::Skin, LABEL_FACE_SKIN, ScalpColour::Photo);
+        let covered = labelled_bake(FaceKind::Skin, LABEL_HAIR, ScalpColour::Photo);
+        assert!(
+            covered.seen < photographed.seen * 0.7,
+            "{} {}",
+            covered.seen,
+            photographed.seen
+        );
+        // The covered half is filled from the skin beside it.
+        assert_eq!(texel(&covered, 0.75), [200, 0, 0]);
+    }
+
+    #[test]
+    fn the_scalp_follows_its_colouring() {
+        let green = [10, 200, 30];
+        // Hair over the scalp: painted, filled as skin, or photographed.
+        let painted = labelled_bake(FaceKind::Scalp, LABEL_HAIR, ScalpColour::Hair(green));
+        assert_eq!(texel(&painted, 0.75), green);
+        assert_eq!(texel(&painted, 0.25), [200, 0, 0]);
+        let skin = labelled_bake(FaceKind::Scalp, LABEL_HAIR, ScalpColour::Skin);
+        assert_eq!(texel(&skin, 0.75), [200, 0, 0]);
+        let photo = labelled_bake(FaceKind::Scalp, LABEL_HAIR, ScalpColour::Photo);
+        assert!(photo.seen > skin.seen);
+        // Bare scalp keeps its photographed colour even when painting hair.
+        let bare = labelled_bake(FaceKind::Scalp, LABEL_FACE_SKIN, ScalpColour::Hair(green));
+        assert_eq!(texel(&bare, 0.75), [200, 0, 0]);
+    }
+
+    #[test]
+    fn eyes_take_colour_from_anything_but_hair_clothes_and_background() {
+        for (label, seen) in [
+            (LABEL_OTHER, true),
+            (LABEL_FACE_SKIN, true),
+            (LABEL_HAIR, false),
+            (LABEL_CLOTHES, false),
+            (LABEL_BACKGROUND, false),
+        ] {
+            let map = labelled_bake(FaceKind::Eye, label, ScalpColour::Photo);
+            let skin_only = labelled_bake(FaceKind::Eye, LABEL_HAIR, ScalpColour::Photo);
+            assert_eq!(map.seen > skin_only.seen, seen, "label {label}");
+        }
+    }
+
+    #[test]
+    fn pixels_at_the_edge_of_a_label_are_not_trusted() {
+        let data: Vec<u8> = (0..16 * 16)
+            .map(|index| {
+                if index % 16 < 8 {
+                    LABEL_FACE_SKIN
+                } else {
+                    LABEL_HAIR
+                }
+            })
+            .collect();
+        // Each label pixel covers ten photograph pixels.
+        let labels = Labels {
+            side: 16,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 0.1,
+        };
+        let skin = |label| label == LABEL_FACE_SKIN;
+        assert!(labels.agree([40.0, 80.0], skin));
+        // Label column 7 borders the hair at column 8.
+        assert!(!labels.agree([70.0, 80.0], skin));
+        assert!(
+            !labels.agree([0.0, 80.0], skin),
+            "the square's edge is not trusted"
+        );
+    }
+
+    #[test]
+    fn eyeballs_are_the_parts_beside_the_head() {
+        let faces = [[0, 1, 2], [0, 2, 3], [4, 5, 6], [7, 8, 9]];
+        assert_eq!(minor_parts(&faces), [false, false, true, true]);
+    }
+
     #[test]
     fn unusable_inputs_are_refused() {
         let (vertices, faces, coords) = square(0.0, [-1.0, 1.0], [0.0, 1.0], false);
@@ -914,6 +1270,7 @@ mod tests {
                 },
                 vertices,
                 projection,
+                labels: None,
             }];
             bake(&faces, &layout, &views, 16)
         };
@@ -934,6 +1291,40 @@ mod tests {
         assert_eq!(
             bake(&faces, &layout, &[], 1).unwrap_err(),
             TextureError::Size
+        );
+        assert_eq!(
+            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin], ScalpColour::Photo).err(),
+            Some(TextureError::Kinds)
+        );
+        let mut builder = ColourMapBuilder::new(
+            &faces,
+            &layout,
+            16,
+            &[FaceKind::Skin; 2],
+            ScalpColour::Photo,
+        )
+        .unwrap();
+        let short = vec![LABEL_FACE_SKIN; 10];
+        assert_eq!(
+            builder
+                .add(&View {
+                    photo: Photo {
+                        width: 224,
+                        height: 224,
+                        rgb: &rgb,
+                    },
+                    vertices: &vertices,
+                    projection: PROJECTION,
+                    labels: Some(Labels {
+                        side: 224,
+                        data: &short,
+                        left: 0.0,
+                        top: 0.0,
+                        step: 1.0,
+                    }),
+                })
+                .unwrap_err(),
+            TextureError::Labels
         );
     }
 }

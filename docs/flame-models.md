@@ -395,8 +395,9 @@ these files in one directory:
 
 The worker loads checkpoints with PyTorch's weights-only loader, which builds
 tensors and plain data but never runs code from the file. Its image includes
-MediaPipe's face landmarker, which places the face crops and the five ArcFace
-keypoints.
+two MediaPipe models: the face landmarker, which places the face crops and the
+five ArcFace keypoints, and the multiclass selfie segmenter, which labels hair,
+skin and clothing for the colour map.
 
 ### Run the worker
 
@@ -514,31 +515,58 @@ colour comes from the photographs themselves:
 
 1. SMIRK fits a head and an orthographic camera to each photograph. The server
    poses FLAME to match each fit.
-2. Each point of the head takes the colour under it in each photograph where it
-   faces the camera, is not hidden by nearer surface, and is not within about 2% of
-   the crop of the head's outline. The fitted outline never matches the real
-   one exactly, and the background lies just beyond it.
-3. Photographs are blended by how squarely they see each point.
-4. Surface that no photograph sees, such as the back of the head, is filled
-   smoothly across the head's surface from the colour around it. The fill
-   follows the head rather than the texture layout, so it has no seams where
-   the layout is cut apart.
+2. The segmenter labels a square around each face, wide enough to take in the
+   hair and neck, as background, hair, face skin, body skin, clothes or other.
+3. Each point of the head takes the colour under it in each photograph where it
+   faces the camera, is not hidden by nearer surface, is not within about 2% of
+   the crop of the head's outline, and shows the right thing. The fitted
+   outline never matches the real one exactly, and the background lies just
+   beyond it. Skin takes colour only from pixels labelled skin, so hair over
+   the forehead or ears and clothing over the neck are left out. The eyeballs
+   take colour from anything but hair, clothing and background.
+4. Photographs are blended by how squarely they see each point.
+5. Surface that no photograph sees, such as the back of the head, is filled
+   smoothly across the head's surface from the colour around it. Skin is
+   therefore filled from skin alone. The fill follows the head rather than the
+   texture layout, so it has no seams where the layout is cut apart.
+
+`scalp` chooses how the scalp is coloured:
+
+| Value | Scalp colour |
+| --- | --- |
+| `hair` (default) | the hair colour wherever the photographs do not show bare scalp |
+| `skin` | as skin: from pixels of skin, and filled from skin |
+| `photo` | whatever the photographs show there, hair included |
+
+The hair colour is the median colour of the pixels labelled hair, averaged over
+the photographs by how much hair each shows. `hair_colour`, an sRGB triple from
+0 to 255, replaces it. `hair` and `skin` need to know where the scalp is, so
+the FLAME 2020 generic model must be converted with `--masks`; without its
+regions the whole head is coloured as skin, and the response says so.
 
 The response adds `texture` with the artifact, its size and `seen`, the share
-of the head's surface that some photograph saw directly. The server reads the
+of the head's surface whose colour some photograph gave directly. `skin_only`
+says whether every photograph was segmented. `scalp` reports the colouring
+requested and applied, the hair colour used and the hair colour found, and a
+`note` when the colouring applied differs from the one requested. The server reads the
 photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
 stops the colour map instead of misplacing it. The server makes one colour map
 at a time, reading one photograph at a time, so a request that asks for one
-while another is being made is refused as busy. The map shows what the
-photographs show: lighting is not removed, hair falls on the scalp where the
-photographs show it, and clothing falls on the neck where the neck is covered
-in a photograph. It is for viewing and rendering. Printed files carry no colour.
+while another is being made is refused as busy. Lighting is not removed: the
+map keeps the photographs' light and shade. It is for viewing and rendering.
+Printed files carry no colour.
 
-From one front-on photograph, the map took about 30 seconds in total on a busy
-four-core CPU, and 45% of the surface was seen directly. Renders of the
-textured head matched the photograph's eyes, brows, nose and mouth, and the
-filled back of the head showed no seams.
+From one front-on photograph of a person with long dark hair, the
+reconstruction took about 30 seconds on a busy four-core CPU and the map under
+a second more. 31% of the surface took its colour from the photograph. Before
+skin was told apart from hair and clothing, 44% did, and the extra share was
+hair over the ears and neck and clothing at the base of the neck, which
+rendered as grey ears and a dark neck. With the segmentation, renders showed
+skin-coloured ears and neck, the scalp in the hair colour found, and the
+photograph's centre parting as bare scalp. Renders of the textured head
+matched the photograph's eyes, brows, nose and mouth, and the filled back of
+the head showed no seams.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the

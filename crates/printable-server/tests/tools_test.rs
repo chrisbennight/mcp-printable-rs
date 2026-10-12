@@ -6040,6 +6040,14 @@ fn flame2020_library() -> Arc<printable_server::flame::FlameLibrary> {
 }
 
 fn flame2020_library_with_uv(textured: bool) -> Arc<printable_server::flame::FlameLibrary> {
+    flame2020_library_with_regions(textured, Vec::new())
+}
+
+/// The FLAME 2020 fixture with named vertex regions.
+fn flame2020_library_with_regions(
+    textured: bool,
+    regions: Vec<(String, Vec<u32>)>,
+) -> Arc<printable_server::flame::FlameLibrary> {
     let models = tempfile::tempdir().unwrap();
     // The published model's split: 300 identity and 100 expression components.
     let mut fixture = printable_flame::fixture::Fixture {
@@ -6050,6 +6058,7 @@ fn flame2020_library_with_uv(textured: bool) -> Arc<printable_server::flame::Fla
                 vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             )
         }),
+        regions,
         ..Default::default()
     };
     for (key, value) in [
@@ -6284,6 +6293,182 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
         );
     }
     assert_eq!(seen.lock().unwrap().len(), 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_colours_skin_from_skin_and_the_scalp_as_asked() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Labels saying every pixel shows hair.
+    let labels = |label: u8| {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_pixel(16, 16, image::Luma([label]))
+            .write_to(&mut png, ImageFormat::Png)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let view = |label: u8, classes: Value| {
+        json!([{
+            "shape": [0.0], "expression": [0.0],
+            "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+            "camera": [1.0, -0.5, -0.5],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "image_size": [224, 224],
+            "segmentation": {
+                "labels_png": labels(label), "classes": classes,
+                "crop": {"left": 0.0, "top": 0.0, "step": 16.0 / 224.0},
+                "hair_rgb": [10, 20, 30], "hair_pixels": 256
+            }
+        }])
+    };
+    let classes = json!([
+        "background",
+        "hair",
+        "body_skin",
+        "face_skin",
+        "clothes",
+        "other"
+    ]);
+    let scalp_everywhere = vec![("scalp".to_owned(), vec![0, 1, 2, 3])];
+    let mean = |path: &str| -> Vec<f64> {
+        let map = image::open(root.path().join(path)).unwrap().into_rgb8();
+        let count = f64::from(map.width() * map.height());
+        (0..3)
+            .map(|channel| {
+                map.pixels()
+                    .map(|pixel| f64::from(pixel.0[channel]))
+                    .sum::<f64>()
+                    / count
+            })
+            .collect()
+    };
+    for (index, (regions, label, params, applied, colour)) in [
+        // Hair over a scalp painted with the hair the photograph shows.
+        (
+            scalp_everywhere.clone(),
+            1,
+            json!({}),
+            "hair",
+            Some([10.0, 20.0, 30.0]),
+        ),
+        // A caller's own hair colour.
+        (
+            scalp_everywhere.clone(),
+            1,
+            json!({"hair_colour": [90, 60, 30]}),
+            "hair",
+            Some([90.0, 60.0, 30.0]),
+        ),
+        // Hair taken as photographed.
+        (
+            scalp_everywhere.clone(),
+            1,
+            json!({"scalp": "photo"}),
+            "photo",
+            Some([200.0, 40.0, 10.0]),
+        ),
+        // Bare scalp keeps the skin it shows; the fixture shows little of
+        // its surface, so the unseen rest is painted hair.
+        (scalp_everywhere.clone(), 3, json!({}), "hair", None),
+        // Without a scalp region the whole head is skin.
+        (Vec::new(), 3, json!({}), "skin", Some([200.0, 40.0, 10.0])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (endpoint, _, task) = fake_recon_worker_with(
+            true,
+            json!({"image_sha256": [digest.clone()], "views": view(label, classes.clone())}),
+        )
+        .await;
+        let server = recon_server_with(
+            root.path(),
+            &endpoint,
+            flame2020_library_with_regions(true, regions),
+        )
+        .await;
+        let mut request = json!({
+            "images": ["face.png"], "displacement_path": format!("d{index}.png"),
+            "texture_path": format!("c{index}.png")
+        });
+        for (key, value) in params.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": request}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{index}: {result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        let texture = &value["texture"];
+        assert_eq!(texture["skin_only"], true, "{value}");
+        assert_eq!(texture["scalp"]["applied"], applied, "{index}: {value}");
+        assert_eq!(
+            texture["scalp"]["hair_found"],
+            json!([10, 20, 30]),
+            "{value}"
+        );
+        // Hair-labelled pixels colour nothing unless taken as photographed.
+        let seen = texture["seen"].as_f64().unwrap();
+        assert_eq!(
+            seen > 0.0,
+            label != 1 || applied == "photo",
+            "{index}: {value}"
+        );
+        let observed = mean(&format!("c{index}.png"));
+        match colour {
+            Some(colour) => {
+                for (channel, expected) in observed.iter().zip(colour) {
+                    assert!(
+                        (channel - expected).abs() < 2.0,
+                        "{index}: {observed:?} {value}"
+                    );
+                }
+            }
+            // Where the photograph sees bare scalp it keeps the skin, so
+            // the map is redder than hair alone.
+            None => assert!(observed[0] > 13.0, "{index}: {observed:?} {value}"),
+        }
+        task.abort();
+    }
+
+    // Labels with other classes are refused, and the map is not made.
+    let (endpoint, _, task) = fake_recon_worker_with(
+        true,
+        json!({"image_sha256": [digest.clone()], "views": view(3, json!(["background", "skin"]))}),
+    )
+    .await;
+    let server = recon_server_with(
+        root.path(),
+        &endpoint,
+        flame2020_library_with_regions(true, scalp_everywhere),
+    )
+    .await;
+    let result = server
+        .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+            "images": ["face.png"], "displacement_path": "dx.png", "texture_path": "cx.png"
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        format!("{result:?}").contains("unexpected classes"),
+        "{result:?}"
+    );
+    assert!(!root.path().join("cx.png").exists());
     task.abort();
 }
 

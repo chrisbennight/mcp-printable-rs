@@ -8,11 +8,15 @@ face landmarker gives 478 landmarks. From them come three crops:
   facial landmarks, by 1.1 and then 1.25,
 - a 112 pixel ArcFace crop for MICA, aligned by a similarity transform of five
   keypoints to the standard ArcFace template.
+
+MediaPipe's multiclass selfie segmenter then labels a wider square around the
+face, taking in the hair and neck, as background, hair, body skin, face skin,
+clothes or other.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -52,6 +56,16 @@ ARCFACE_TEMPLATE = numpy.array(
 )
 
 
+# The segmenter's classes, in the order of its labels.
+SEGMENT_CLASSES = ("background", "hair", "body_skin", "face_skin", "clothes", "other")
+HAIR = SEGMENT_CLASSES.index("hair")
+# The segmenter works at this resolution, so the square it labels is cut to it.
+SEGMENT_SIDE = 256
+# The labelled square spans this multiple of the face's landmark extent, so it
+# reaches the hair above the face and the neck below it.
+SEGMENT_SCALE = 2.4
+
+
 class FaceError(Exception):
     """An image cannot be read or has no usable face."""
 
@@ -67,9 +81,22 @@ class Crop:
 
 
 @dataclass(frozen=True)
+class Segmentation:
+    """Segmenter labels for a square around the face: label pixel p is image
+    pixel p / crop.step + (crop.left, crop.top). `hair_rgb` is the median
+    colour of the pixels labelled hair, if any are."""
+
+    labels: numpy.ndarray
+    crop: Crop
+    hair_rgb: tuple[int, int, int] | None
+    hair_pixels: int
+
+
+@dataclass(frozen=True)
 class Face:
     """One face: its landmarks in pixels, the three crops, where the SMIRK
-    crop came from and the image's width and height."""
+    crop came from, the image's width and height and, once segmented, the
+    labels around it."""
 
     landmarks: numpy.ndarray
     smirk: numpy.ndarray
@@ -77,6 +104,7 @@ class Face:
     arcface: numpy.ndarray
     smirk_crop: Crop
     image_size: tuple[int, int]
+    segmentation: Segmentation | None = field(default=None)
 
 
 def decode(path: Path) -> numpy.ndarray:
@@ -126,6 +154,46 @@ class Landmarker:
         return max(faces, key=lambda points: numpy.ptp(points[:, 0]) * numpy.ptp(points[:, 1]))
 
 
+class Segmenter:
+    """MediaPipe's multiclass selfie segmenter, labelling a square around a face."""
+
+    def __init__(self, model: Path) -> None:
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+
+        options = vision.ImageSegmenterOptions(
+            base_options=python.BaseOptions(model_asset_path=str(model)),
+            output_category_mask=True,
+            output_confidence_masks=False,
+        )
+        self._segmenter = vision.ImageSegmenter.create_from_options(options)
+
+    def close(self) -> None:
+        self._segmenter.close()
+
+    def labels(self, square: numpy.ndarray) -> numpy.ndarray:
+        """A label for each pixel of an RGB square."""
+        import mediapipe
+
+        result = self._segmenter.segment(mediapipe.Image(image_format=mediapipe.ImageFormat.SRGB, data=square))
+        labels = numpy.asarray(result.category_mask.numpy_view(), dtype=numpy.uint8).reshape(square.shape[:2])
+        if labels.max(initial=0) >= len(SEGMENT_CLASSES):
+            raise FaceError("the segmenter returned an unknown label")
+        return labels
+
+    def __call__(self, image: numpy.ndarray, landmarks: numpy.ndarray) -> Segmentation:
+        return segment(image, landmarks, self.labels)
+
+
+def segment(image: numpy.ndarray, landmarks: numpy.ndarray, labeller) -> Segmentation:
+    """Label a square around the face with `labeller` and measure the hair."""
+    square, crop = _square(image, *_extent(landmarks), SEGMENT_SCALE, side=SEGMENT_SIDE)
+    labels = labeller(square)
+    hair = square[labels == HAIR]
+    hair_rgb = tuple(int(value) for value in numpy.median(hair, axis=0)) if len(hair) else None
+    return Segmentation(labels=labels, crop=crop, hair_rgb=hair_rgb, hair_pixels=int(len(hair)))
+
+
 def crops(image: numpy.ndarray, landmarks: numpy.ndarray) -> Face:
     """Cut the SMIRK, DECA and ArcFace inputs for one face."""
     if landmarks.shape != (478, 2) or not numpy.isfinite(landmarks).all():
@@ -148,14 +216,16 @@ def _extent(points: numpy.ndarray) -> tuple[float, float, float, float]:
 
 
 def _square(
-    image: numpy.ndarray, left: float, right: float, top: float, bottom: float, scale: float
+    image: numpy.ndarray, left: float, right: float, top: float, bottom: float, scale: float,
+    side: int = 224,
 ) -> tuple[numpy.ndarray, Crop]:
-    """A 224 pixel square about the box centre, as the networks were trained."""
+    """A square of `side` pixels about the box centre, 224 as the networks
+    were trained."""
     size = int((right - left + bottom - top) / 2 * scale)
     if size < 16:
         raise FaceError("the face is too small to reconstruct")
     centre_x, centre_y = (left + right) / 2, (top + bottom) / 2
-    step = 223 / size
+    step = (side - 1) / size
     matrix = numpy.array(
         [
             [step, 0.0, -step * (centre_x - size / 2)],
@@ -163,7 +233,7 @@ def _square(
         ]
     )
     crop = Crop(left=float(centre_x - size / 2), top=float(centre_y - size / 2), step=step)
-    return cv2.warpAffine(image, matrix, (224, 224), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0)), crop
+    return cv2.warpAffine(image, matrix, (side, side), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0)), crop
 
 
 def _arcface(image: numpy.ndarray, landmarks: numpy.ndarray) -> numpy.ndarray:
