@@ -112,15 +112,72 @@ pub fn bake(
     views: &[View<'_>],
     size: usize,
 ) -> Result<ColourMap, TextureError> {
-    if size < 2 {
-        return Err(TextureError::Size);
-    }
-    let texels = TexelMap::new(faces, layout, size);
-    let mut weight = vec![0.0f32; size * size];
-    let mut colour = vec![[0.0f32; 3]; size * size];
+    let mut builder = ColourMapBuilder::new(faces, layout, size)?;
     for view in views {
-        accumulate(faces, &texels, view, &mut weight, &mut colour)?;
+        builder.add(view)?;
     }
+    builder.finish()
+}
+
+/// A colour map built one photograph at a time, so that only one photograph
+/// needs to be held at once.
+pub struct ColourMapBuilder<'a> {
+    faces: &'a [[u32; 3]],
+    texels: TexelMap,
+    weight: Vec<f32>,
+    colour: Vec<[f32; 3]>,
+    size: usize,
+}
+
+impl<'a> ColourMapBuilder<'a> {
+    pub fn new(
+        faces: &'a [[u32; 3]],
+        layout: &UvLayout,
+        size: usize,
+    ) -> Result<Self, TextureError> {
+        if size < 2 {
+            return Err(TextureError::Size);
+        }
+        Ok(Self {
+            faces,
+            texels: TexelMap::new(faces, layout, size),
+            weight: vec![0.0; size * size],
+            colour: vec![[0.0; 3]; size * size],
+            size,
+        })
+    }
+
+    /// Add one photograph's colour to the texels it sees.
+    pub fn add(&mut self, view: &View<'_>) -> Result<(), TextureError> {
+        accumulate(
+            self.faces,
+            &self.texels,
+            view,
+            &mut self.weight,
+            &mut self.colour,
+        )
+    }
+
+    /// Blend the photographs and fill what none of them saw.
+    pub fn finish(self) -> Result<ColourMap, TextureError> {
+        let Self {
+            faces,
+            texels,
+            weight,
+            mut colour,
+            size,
+        } = self;
+        finish(faces, &texels, &weight, &mut colour, size)
+    }
+}
+
+fn finish(
+    faces: &[[u32; 3]],
+    texels: &TexelMap,
+    weight: &[f32],
+    colour: &mut [[f32; 3]],
+    size: usize,
+) -> Result<ColourMap, TextureError> {
     let mut on_surface = 0usize;
     let mut seen = 0usize;
     for (index, face) in texels.face.iter().enumerate() {
@@ -135,7 +192,7 @@ pub fn bake(
     if seen < MIN_SEEN {
         return Err(TextureError::NotVisible);
     }
-    for (colour, weight) in colour.iter_mut().zip(&weight) {
+    for (colour, weight) in colour.iter_mut().zip(weight) {
         if *weight > 0.0 {
             *colour = colour.map(|channel| channel / weight);
         }
@@ -146,7 +203,7 @@ pub fn bake(
         .map(|&vertex| vertex as usize + 1)
         .max()
         .unwrap_or(0);
-    let fill = surface_fill(faces, vertex_count, &texels, &weight, &colour);
+    let fill = surface_fill(faces, vertex_count, texels, weight, colour);
     // On the surface, each texel keeps its photographed colour in proportion
     // to how well it was seen; texels off the surface border the islands so
     // that filtering near their edges picks up matching colour.
@@ -170,7 +227,7 @@ pub fn bake(
         }
         confidence[index] = 1.0;
     }
-    let filled = pull_push(size, confidence, colour);
+    let filled = pull_push(size, confidence, colour.to_vec());
     let rgb = filled
         .iter()
         .flat_map(|texel| texel.map(|channel| channel.round().clamp(0.0, 255.0) as u8))

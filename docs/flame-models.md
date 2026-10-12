@@ -465,7 +465,9 @@ The response adds `texture` with the artifact, its size and `seen`, the share
 of the head's surface that some photograph saw directly. The server reads the
 photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
-stops the colour map instead of misplacing it. The map shows what the
+stops the colour map instead of misplacing it. The server makes one colour map
+at a time, reading one photograph at a time, so a request that asks for one
+while another is being made is refused as busy. The map shows what the
 photographs show: lighting is not removed, hair falls on the scalp where the
 photographs show it, and clothing falls on the neck where the neck is covered
 in a photograph. It is for viewing and rendering. Printed files carry no colour.

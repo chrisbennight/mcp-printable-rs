@@ -82,13 +82,24 @@ impl ReconRequest {
     }
 }
 
-/// SHA-256 of a photograph's bytes, as lowercase hexadecimal.
-pub(crate) fn photo_digest(bytes: &[u8]) -> String {
+/// SHA-256 of a file read in pieces, as lowercase hexadecimal.
+pub(crate) fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hex(&digest.finalize()));
+        }
+        digest.update(&buffer[..read]);
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Where the reconstruction runtime and its operator-supplied files live.
@@ -257,7 +268,7 @@ impl ReconWorker {
         // the same bytes.
         let digests = snapshots
             .iter()
-            .map(|snapshot| std::fs::read(snapshot.path()).map(|bytes| photo_digest(&bytes)))
+            .map(|snapshot| file_digest(snapshot.path()))
             .collect::<Result<Vec<_>, _>>()?;
         result["image_sha256"] = json!(digests);
         Ok(result)
@@ -396,9 +407,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
         // The digests identify the bytes the runtime was given.
         let digests: Vec<String> = ["face.jpg", "side.png"]
             .iter()
-            .map(|name| {
-                photo_digest(&std::fs::read(root.path().join("workspace").join(name)).unwrap())
-            })
+            .map(|name| file_digest(&root.path().join("workspace").join(name)).unwrap())
             .collect();
         assert_eq!(result["image_sha256"], json!(digests));
         // An existing map is kept unless overwrite is requested.
@@ -485,6 +494,9 @@ pub struct ReconClient {
     http: reqwest::Client,
     /// The worker's last readiness answer; subscribers hear each change.
     ready: tokio::sync::watch::Sender<bool>,
+    /// Building a colour map holds a photograph, its depth buffer and the map
+    /// in the server's memory, so the server builds one at a time.
+    colour_maps: Arc<Semaphore>,
 }
 
 impl ReconClient {
@@ -509,12 +521,23 @@ impl ReconClient {
             endpoint: endpoint.trim().trim_end_matches('/').to_owned(),
             http,
             ready: tokio::sync::watch::Sender::new(false),
+            colour_maps: Arc::new(Semaphore::new(1)),
         })))
     }
 
     /// Whether the worker last reported every checkpoint present.
     pub fn is_ready(&self) -> bool {
         *self.ready.borrow()
+    }
+
+    /// Permission to build a colour map, or a busy error while another is
+    /// being built.
+    pub fn colour_map_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ToolError> {
+        Arc::clone(&self.colour_maps)
+            .try_acquire_owned()
+            .map_err(|_| {
+                reconstruction_error("busy", "another colour map is being made; retry shortly")
+            })
     }
 
     /// A receiver that wakes whenever readiness changes.

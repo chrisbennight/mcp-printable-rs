@@ -516,6 +516,10 @@ pub(super) async fn reconstruct(
         ".png",
         request.overwrite,
     )?;
+    let _colour_permit = match &request.texture_path {
+        Some(_) => Some(client.colour_map_permit()?),
+        None => None,
+    };
     let textured_model = match &request.texture_path {
         Some(path) => {
             validate_scad_destination(&workspace, path, ".png", request.overwrite)?;
@@ -540,9 +544,9 @@ pub(super) async fn reconstruct(
         }
         None => None,
     };
-    // The colour map projects the bytes read here; the worker reports the
-    // digest of the bytes it fitted, so a photograph replaced in between is
-    // caught rather than misregistered.
+    // The colour map projects private snapshots taken here; the worker
+    // reports the digest of the bytes it fitted, so a photograph replaced in
+    // between is caught rather than misregistered. Snapshots stay on disk.
     let photos = match textured_model {
         Some(_) => {
             let workspace = Arc::clone(&workspace);
@@ -551,7 +555,7 @@ pub(super) async fn reconstruct(
                 blocking(move || {
                     images
                         .iter()
-                        .map(|image| read_photo(&workspace, image))
+                        .map(|image| snapshot_photo(&workspace, image))
                         .collect::<Result<Vec<_>, ToolError>>()
                 })
                 .await?,
@@ -590,11 +594,8 @@ pub(super) async fn reconstruct(
                     "the reconstruction worker did not identify the photographs it used".into(),
                 )
             })?;
-            let read: Vec<String> = photos
-                .iter()
-                .map(|bytes| crate::recon::photo_digest(bytes))
-                .collect();
-            if fitted != read {
+            let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
+            if fitted.iter().collect::<Vec<_>>() != read {
                 return Err(ToolError::Validation(
                     "a photograph changed while it was being reconstructed".into(),
                 ));
@@ -612,11 +613,12 @@ pub(super) async fn reconstruct(
     Ok(response)
 }
 
-/// A photograph's bytes, copied through a bounded snapshot so that an
-/// oversized file is refused without being held in memory.
-fn read_photo(workspace: &Workspace, image: &str) -> Result<Vec<u8>, ToolError> {
+/// A private, bounded copy of a photograph and the SHA-256 of its bytes.
+/// An oversized file is refused while it is copied.
+fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, String), ToolError> {
     let snapshot = workspace.snapshot_artifact_bounded(image, crate::recon::MAX_IMAGE_BYTES)?;
-    Ok(std::fs::read(snapshot.path())?)
+    let digest = crate::recon::file_digest(snapshot.path())?;
+    Ok((snapshot, digest))
 }
 
 /// Side of the colour map in texels.
@@ -650,7 +652,7 @@ fn colour_map(
     workspace: &Workspace,
     model: &FlameModel,
     images: &[String],
-    photos: &[Vec<u8>],
+    photos: &[(Snapshot, String)],
     views: &[ReconView],
     path: &str,
     overwrite: bool,
@@ -663,10 +665,12 @@ fn colour_map(
     let layout = model
         .uv_layout()
         .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
-    let mut decoded = Vec::with_capacity(views.len());
-    let mut heads = Vec::with_capacity(views.len());
-    for ((image, bytes), view) in images.iter().zip(photos).zip(views) {
-        let photo = decode_photo(bytes)
+    let mut builder = texture::ColourMapBuilder::new(model.faces(), layout, COLOUR_MAP_TEXELS)
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
+    // One photograph at a time: each is read, decoded, projected and dropped
+    // before the next.
+    for ((image, (snapshot, _)), view) in images.iter().zip(photos).zip(views) {
+        let photo = decode_photo(&std::fs::read(snapshot.path())?)
             .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
         if [photo.width() as usize, photo.height() as usize] != view.image_size {
             return Err(ToolError::Validation(format!(
@@ -685,30 +689,26 @@ fn colour_map(
                 translation: [0.0; 3],
             })
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
-        decoded.push(photo);
-        heads.push(head);
+        builder
+            .add(&texture::View {
+                photo: texture::Photo {
+                    width: photo.width() as usize,
+                    height: photo.height() as usize,
+                    rgb: photo.as_raw(),
+                },
+                vertices: &head.vertices,
+                projection: texture::Projection {
+                    scale: view.camera[0],
+                    offset: [view.camera[1], view.camera[2]],
+                    crop_left: view.crop.left,
+                    crop_top: view.crop.top,
+                    crop_step: view.crop.step,
+                },
+            })
+            .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
     }
-    let texture_views: Vec<texture::View<'_>> = decoded
-        .iter()
-        .zip(&heads)
-        .zip(views)
-        .map(|((photo, head), view)| texture::View {
-            photo: texture::Photo {
-                width: photo.width() as usize,
-                height: photo.height() as usize,
-                rgb: photo.as_raw(),
-            },
-            vertices: &head.vertices,
-            projection: texture::Projection {
-                scale: view.camera[0],
-                offset: [view.camera[1], view.camera[2]],
-                crop_left: view.crop.left,
-                crop_top: view.crop.top,
-                crop_step: view.crop.step,
-            },
-        })
-        .collect();
-    let map = texture::bake(model.faces(), layout, &texture_views, COLOUR_MAP_TEXELS)
+    let map = builder
+        .finish()
         .map_err(|error| ToolError::Validation(error.to_string()))?;
     let side = map.size as u32;
     let image = RgbImage::from_raw(side, side, map.rgb)

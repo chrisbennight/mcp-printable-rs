@@ -5898,6 +5898,7 @@ async fn fake_recon_worker(
 }
 
 /// As [`fake_recon_worker`], with `changes` replacing fields of its answer.
+/// A `_delay_ms` change delays the answer instead.
 async fn fake_recon_worker_with(
     ready: bool,
     changes: Value,
@@ -5924,9 +5925,15 @@ async fn fake_recon_worker_with(
             "/reconstruct",
             post(move |Json(request): Json<Value>| {
                 let recorded = Arc::clone(&recorded);
-                let changes = changes.clone();
+                let mut changes = changes.clone();
                 async move {
                     recorded.lock().unwrap().push(request.clone());
+                    if let Some(delay) = changes.as_object_mut().unwrap().remove("_delay_ms") {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            delay.as_u64().unwrap(),
+                        ))
+                        .await;
+                    }
                     let mut answer = json!({
                         "identity": vec![0.25; 300],
                         "expression": vec![0.5; 50],
@@ -6235,6 +6242,48 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
     }
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(asked, 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_makes_one_colour_map_at_a_time() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([90, 90, 90]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let (endpoint, seen, task) =
+        fake_recon_worker_with(true, json!({"_delay_ms": 1500, "views": null})).await;
+    let server =
+        Arc::new(recon_server_with(root.path(), &endpoint, flame2020_library_with_uv(true)).await);
+    let request = |texture: &str| {
+        head_call(json!({"action": "reconstruct", "params": {
+            "images": ["face.png"], "displacement_path": format!("{texture}.d.png"),
+            "texture_path": format!("{texture}.png")
+        }}))
+    };
+    let first = {
+        let server = Arc::clone(&server);
+        let call = request("first");
+        tokio::spawn(async move { server.invoke_tool(call).await.unwrap() })
+    };
+    while seen.lock().unwrap().is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let second = server.invoke_tool(request("second")).await.unwrap();
+    assert_eq!(second.is_error, Some(true));
+    assert!(
+        format!("{second:?}").contains("another colour map is being made"),
+        "{second:?}"
+    );
+    // The first finishes (here with a worker that describes no views), and
+    // the next request is admitted.
+    first.await.unwrap();
+    let third = server.invoke_tool(request("third")).await.unwrap();
+    assert!(
+        !format!("{third:?}").contains("another colour map is being made"),
+        "{third:?}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
     task.abort();
 }
 
