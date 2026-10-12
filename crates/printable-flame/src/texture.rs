@@ -426,11 +426,16 @@ fn finish(
         }
         let mut keep = (weight[index] / FULL_WEIGHT).min(1.0);
         // A painted scalp shows its paint wherever no photograph saw bare
-        // scalp, and the photographed colour in full wherever one did.
+        // scalp, and in full the colour of the pixels labelled skin wherever
+        // one did. A photograph without labels cannot show bare scalp.
         if let Some(paint) = paint.filter(|_| on_scalp(face)) {
-            filled = paint;
-            if weight[index] > 0.0 {
+            let bare = skin.weight[index];
+            if bare > 0.0 {
+                colour[index] = skin.colour[index].map(|channel| channel / bare);
                 keep = 1.0;
+            } else {
+                filled = paint;
+                keep = 0.0;
             }
         }
         for channel in 0..3 {
@@ -1407,6 +1412,37 @@ mod tests {
         // The scalp itself shows both photographs.
         let scalp = texel(&map, 0.5);
         assert!(scalp[1] > 50 && scalp[1] < 150, "{scalp:?}");
+    }
+
+    #[test]
+    fn a_photograph_without_labels_cannot_show_bare_scalp() {
+        let (vertices, faces, coords) = square(0.0, [-1.0, 1.0], [0.0, 1.0], false);
+        let rgb: Vec<u8> = (0..224 * 224).flat_map(|_| [200, 0, 0]).collect();
+        let layout = layout(coords, &faces);
+        let paint = [10, 200, 30];
+        let mut builder = ColourMapBuilder::new(
+            &faces,
+            &layout,
+            32,
+            &[FaceKind::Scalp; 2],
+            ScalpColour::Hair(paint),
+        )
+        .unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: None,
+            })
+            .unwrap();
+        let map = builder.finish().unwrap();
+        assert!(map.seen > 0.5, "the photograph saw the scalp: {}", map.seen);
+        assert_eq!(texel(&map, 0.5), paint);
     }
 
     #[test]
