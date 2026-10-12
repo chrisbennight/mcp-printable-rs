@@ -412,7 +412,8 @@ that they list the tools again.
 ```json
 {"action": "reconstruct", "params": {
   "images": ["photos/front.jpg", "photos/left.jpg", "photos/right.jpg"],
-  "displacement_path": "photos/detail.png"
+  "displacement_path": "photos/detail.png",
+  "texture_path": "photos/colour.png"
 }}
 ```
 
@@ -440,6 +441,41 @@ shape and is left out.
 To raise this detail on a printed bust, pass the map's `artifact.path`,
 `offset_mm` and `scale_mm` as `prepare_print`'s `displacement`, with the same
 coefficients and variant. See [Surface detail](#surface-detail).
+
+### Colour map
+
+With `texture_path`, `reconstruct` also writes a 1024 by 1024 RGB PNG colour
+map in FLAME's texture layout. It needs the FLAME 2020 generic model converted
+with `--texture`, and `overwrite` applies to it as to the displacement map. The
+colour comes from the photographs themselves:
+
+1. SMIRK fits a head and an orthographic camera to each photograph. The server
+   poses FLAME to match each fit.
+2. Each point of the head takes the colour under it in each photograph where it
+   faces the camera, is not hidden by nearer surface, and is not within about 2% of
+   the crop of the head's outline. The fitted outline never matches the real
+   one exactly, and the background lies just beyond it.
+3. Photographs are blended by how squarely they see each point.
+4. Surface that no photograph sees, such as the back of the head, is filled
+   smoothly across the head's surface from the colour around it. The fill
+   follows the head rather than the texture layout, so it has no seams where
+   the layout is cut apart.
+
+The response adds `texture` with the artifact, its size and `seen`, the share
+of the head's surface that some photograph saw directly. The server reads the
+photographs before the worker does and compares their SHA-256 digests with the
+ones the worker fitted, so a photograph replaced during the reconstruction
+stops the colour map instead of misplacing it. The server makes one colour map
+at a time, reading one photograph at a time, so a request that asks for one
+while another is being made is refused as busy. The map shows what the
+photographs show: lighting is not removed, hair falls on the scalp where the
+photographs show it, and clothing falls on the neck where the neck is covered
+in a photograph. It is for viewing and rendering. Printed files carry no colour.
+
+From one front-on photograph, the map took about 30 seconds in total on a busy
+four-core CPU, and 45% of the surface was seen directly. Renders of the
+textured head matched the photograph's eyes, brows, nose and mouth, and the
+filled back of the head showed no seams.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the

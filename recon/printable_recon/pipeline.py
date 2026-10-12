@@ -40,6 +40,9 @@ class Reconstruction:
     identity_agreement: list[float]
     clamped_coefficients: int
     faces: list[dict] = field(default_factory=list)
+    # SMIRK's own fit to each photograph: the head and orthographic camera
+    # that place FLAME's surface over the face, for projecting colour.
+    views: list[dict] = field(default_factory=list)
 
 
 class Reconstructor:
@@ -96,8 +99,8 @@ class Reconstructor:
         identity = self.mapping(fused)[0]
 
         primary = found[0]
-        smirk = self.smirk(_tensor(primary.smirk[None], self.device))
-        expression, jaw = smirk["expression"], smirk["jaw"]
+        smirk = self.smirk(_tensor(numpy.stack([face.smirk for face in found]), self.device))
+        expression, jaw = smirk["expression"][:1], smirk["jaw"][:1]
         crop = _tensor(primary.deca[None], self.device)
         deca_jaw, deca_expression = self.deca.coarse_expression(crop)
         uv = self.deca.displacement(deca_jaw, deca_expression, self.deca.detail_code(crop))
@@ -117,6 +120,7 @@ class Reconstructor:
             identity_agreement=agreement,
             clamped_coefficients=clamped_identity + clamped_expression,
             faces=[{"landmark_extent_px": _extent(face.landmarks)} for face in found],
+            views=[_view(smirk, index, face) for index, face in enumerate(found)],
         )
 
 
@@ -142,6 +146,22 @@ def _tensor(images: numpy.ndarray, device: torch.device) -> torch.Tensor:
 def _clamp(values: torch.Tensor) -> tuple[list[float], int]:
     clamped = int((values.abs() > COEFFICIENT_LIMIT).sum())
     return values.clamp(-COEFFICIENT_LIMIT, COEFFICIENT_LIMIT).tolist(), clamped
+
+
+def _view(smirk: dict[str, torch.Tensor], index: int, face: faces.Face) -> dict:
+    """SMIRK's fit to one photograph and where its crop lies in the image."""
+    def value(name: str) -> list[float]:
+        return smirk[name][index].tolist()
+
+    return {
+        "shape": value("shape"),
+        "expression": value("expression"),
+        "jaw": value("jaw"),
+        "head_rotation": value("head_rotation"),
+        "camera": value("camera"),
+        "crop": {"left": face.smirk_crop.left, "top": face.smirk_crop.top, "step": face.smirk_crop.step},
+        "image_size": list(face.image_size),
+    }
 
 
 def _extent(landmarks: numpy.ndarray) -> list[float]:

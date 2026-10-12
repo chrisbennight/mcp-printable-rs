@@ -57,13 +57,26 @@ class FaceError(Exception):
 
 
 @dataclass(frozen=True)
+class Crop:
+    """Where a 224 pixel crop came from: crop pixel p is image pixel
+    p / step + (left, top)."""
+
+    left: float
+    top: float
+    step: float
+
+
+@dataclass(frozen=True)
 class Face:
-    """One face: its RGB image, landmarks in pixels and the three crops."""
+    """One face: its landmarks in pixels, the three crops, where the SMIRK
+    crop came from and the image's width and height."""
 
     landmarks: numpy.ndarray
     smirk: numpy.ndarray
     deca: numpy.ndarray
     arcface: numpy.ndarray
+    smirk_crop: Crop
+    image_size: tuple[int, int]
 
 
 def decode(path: Path) -> numpy.ndarray:
@@ -117,17 +130,26 @@ def crops(image: numpy.ndarray, landmarks: numpy.ndarray) -> Face:
     """Cut the SMIRK, DECA and ArcFace inputs for one face."""
     if landmarks.shape != (478, 2) or not numpy.isfinite(landmarks).all():
         raise FaceError("face landmarks are incomplete")
-    smirk = _square(image, *_extent(landmarks), 1.4)
+    smirk, smirk_crop = _square(image, *_extent(landmarks), 1.4)
     left, right, top, bottom = _extent(landmarks[LANDMARKS_68])
-    deca = _square(image, left, right, top, bottom, 1.1 * 1.25)
-    return Face(landmarks=landmarks, smirk=smirk, deca=deca, arcface=_arcface(image, landmarks))
+    deca, _ = _square(image, left, right, top, bottom, 1.1 * 1.25)
+    return Face(
+        landmarks=landmarks,
+        smirk=smirk,
+        deca=deca,
+        arcface=_arcface(image, landmarks),
+        smirk_crop=smirk_crop,
+        image_size=(image.shape[1], image.shape[0]),
+    )
 
 
 def _extent(points: numpy.ndarray) -> tuple[float, float, float, float]:
     return points[:, 0].min(), points[:, 0].max(), points[:, 1].min(), points[:, 1].max()
 
 
-def _square(image: numpy.ndarray, left: float, right: float, top: float, bottom: float, scale: float) -> numpy.ndarray:
+def _square(
+    image: numpy.ndarray, left: float, right: float, top: float, bottom: float, scale: float
+) -> tuple[numpy.ndarray, Crop]:
     """A 224 pixel square about the box centre, as the networks were trained."""
     size = int((right - left + bottom - top) / 2 * scale)
     if size < 16:
@@ -140,7 +162,8 @@ def _square(image: numpy.ndarray, left: float, right: float, top: float, bottom:
             [0.0, step, -step * (centre_y - size / 2)],
         ]
     )
-    return cv2.warpAffine(image, matrix, (224, 224), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+    crop = Crop(left=float(centre_x - size / 2), top=float(centre_y - size / 2), step=step)
+    return cv2.warpAffine(image, matrix, (224, 224), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0)), crop
 
 
 def _arcface(image: numpy.ndarray, landmarks: numpy.ndarray) -> numpy.ndarray:

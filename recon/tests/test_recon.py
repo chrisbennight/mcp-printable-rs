@@ -99,6 +99,7 @@ class NetworkTests(unittest.TestCase):
             smirk = networks.Smirk().eval()(torch.rand(1, 3, 224, 224))
             self.assertEqual(smirk["expression"].shape, (1, 50))
             self.assertEqual(smirk["jaw"].shape, (1, 3))
+            self.assertEqual(smirk["camera"].shape, (1, 3))
             self.assertGreaterEqual(float(smirk["jaw"][0, 0]), 0.0)
             deca = networks.Deca().eval()
             detail = deca.detail_code(torch.rand(1, 3, 224, 224))
@@ -127,6 +128,17 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(face.arcface.shape, (112, 112, 3))
         with self.assertRaises(faces.FaceError):
             faces.crops(image, synthetic_landmarks()[:100])
+
+    def test_crop_records_where_its_pixels_came_from(self):
+        image = numpy.zeros((400, 500, 3), dtype=numpy.uint8)
+        image[230:233, 270:273] = 255
+        face = faces.crops(image, synthetic_landmarks(500, 400))
+        self.assertEqual(face.image_size, (500, 400))
+        row, column = numpy.unravel_index(face.smirk[..., 0].argmax(), face.smirk.shape[:2])
+        crop = face.smirk_crop
+        # The brightest crop pixel maps back onto the bright patch.
+        self.assertAlmostEqual(column / crop.step + crop.left, 271, delta=2)
+        self.assertAlmostEqual(row / crop.step + crop.top, 231, delta=2)
 
     def test_untrusted_images_are_checked_before_decoding(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -188,6 +200,14 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(single.expression), 50)
         self.assertTrue(all(abs(value) <= pipeline.COEFFICIENT_LIMIT for value in single.identity))
         self.assertEqual(single.displacement_mm.shape, (256, 256))
+        self.assertEqual(len(fused.views), 2)
+        view = fused.views[1]
+        self.assertEqual(
+            [len(view[name]) for name in ("shape", "expression", "jaw", "head_rotation", "camera")],
+            [300, 50, 3, 3, 3],
+        )
+        self.assertEqual(set(view["crop"]), {"left", "top", "step"})
+        self.assertEqual(view["image_size"], [400, 400])
 
     def test_detail_is_conditioned_on_decas_own_expression(self):
         reconstructor = self.reconstructor()
