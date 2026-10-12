@@ -658,10 +658,6 @@ class PublishedModelTests(unittest.TestCase):
                          tensors["shapedirs"][1][2])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 @unittest.skipUnless(os.environ.get("PRINTABLE_TEST_FLAME_MASKS"),
                      "set PRINTABLE_TEST_FLAME_MASKS to the published FLAME_masks.pkl to run")
 class PublishedMasksTests(unittest.TestCase):
@@ -671,3 +667,7 @@ class PublishedMasksTests(unittest.TestCase):
         names = {name.removeprefix("region.") for name in tensors}
         self.assertTrue({"scalp", "face", "neck", "lips", "nose", "left_ear", "right_ear",
                          "left_eyeball", "right_eyeball"} <= names)
+
+
+if __name__ == "__main__":
+    unittest.main()
