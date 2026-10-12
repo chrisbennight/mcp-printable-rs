@@ -60,7 +60,7 @@ impl fmt::Debug for ApiKey {
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum ApiError {
     #[error("Bambuddy rejected the operation: {0}")]
-    Rejected(rejection::Rejection),
+    Rejected(Box<rejection::Rejection>),
     #[error("invalid Bambuddy client configuration: {0}")]
     InvalidConfiguration(&'static str),
     #[error("Bambuddy authentication failed")]
@@ -252,10 +252,10 @@ impl Client {
             bytes.extend_from_slice(&chunk);
         }
         if rejected {
-            return Err(ApiError::Rejected(rejection::Rejection::decode(
+            return Err(ApiError::Rejected(Box::new(rejection::Rejection::decode(
                 status.as_u16(),
                 &bytes,
-            )));
+            ))));
         }
         serde_json::from_slice(&bytes).map_err(|_| {
             if mutation {

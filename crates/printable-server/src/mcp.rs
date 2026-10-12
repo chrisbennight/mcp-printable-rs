@@ -647,7 +647,7 @@ fn error_result(tool: &str, err: &ToolError) -> CallToolResult {
         payload["error"]["scene_state"] = serde_json::json!(state);
     }
     if let ToolError::Printer(bambuddy_api::ApiError::Rejected(details)) = err {
-        payload = crate::printers::rejection_payload(tool, err.to_string(), details.clone());
+        payload = crate::printers::rejection_payload(tool, err.to_string(), (**details).clone());
     }
     let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
@@ -676,11 +676,12 @@ mod tests {
                 required_grams: 25.0,
                 remaining_grams: Some(10.0),
             }],
+            missing: vec![],
             fields: vec![],
         };
         let result = super::error_result(
             "print",
-            &crate::error::ToolError::Printer(bambuddy_api::ApiError::Rejected(details)),
+            &crate::error::ToolError::Printer(bambuddy_api::ApiError::Rejected(Box::new(details))),
         );
         assert_eq!(result.is_error, Some(true));
         let payload = result.structured_content.unwrap();

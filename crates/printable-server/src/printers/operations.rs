@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 #[serde(deny_unknown_fields)]
 pub struct StartParams {
     pub print_id: u64,
-    /// Explicitly override Bambuddy's filament deficit warning for this job.
+    /// Explicitly override Bambuddy's filament checks for this job: too little filament,
+    /// or a filament the print needs that no loaded tray matches.
     #[serde(default)]
     pub skip_filament_check: bool,
 }

@@ -107,10 +107,10 @@ mod tests {
             (
                 400,
                 json!({"detail":"Printer not connected"}),
-                ApiError::Rejected(crate::rejection::Rejection::decode(
+                ApiError::Rejected(Box::new(crate::rejection::Rejection::decode(
                     400,
                     br#"{"detail":"Printer not connected"}"#,
-                )),
+                ))),
             ),
         ] {
             let server = MockServer::start().await;
