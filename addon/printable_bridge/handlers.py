@@ -1275,6 +1275,10 @@ class BlenderHandlers:
             mesh.materials.append(self._colour_material(name, image))
         mesh.update()
         obj = self._bpy.data.objects.new(name, mesh)
+        # FLAME's frame has y up and the face along +z. Stand the head upright
+        # in Blender's z-up frame, facing -y like the front view and the printed
+        # bust. The mesh keeps FLAME's frame, so updates leave this alone.
+        obj.rotation_euler = (math.pi / 2, 0.0, 0.0)
         self._bpy.context.scene.collection.objects.link(obj)
         # Updates are accepted only for the variant that produced the mesh.
         obj[FLAME_VARIANT] = variant

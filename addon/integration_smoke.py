@@ -420,9 +420,12 @@ def textured_head_smoke(host: str, port: int) -> None:
         "shader = next(n for n in material.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')\n"
         "linked = any(link.from_node == node and link.to_socket == shader.inputs['Base Color'] for link in material.node_tree.links)\n"
         "linked = linked and any(link.to_node == node and link.to_socket.name == 'Vector' and link.from_node.type == 'UVMAP' and link.from_node.uv_map == 'FLAME' for link in material.node_tree.links)\n"
+        "bpy.context.view_layer.update()\n"
+        "world = obj.matrix_world @ obj.data.vertices[2].co\n"
         "result = {'uv': [round(value, 6) for loop in layer.data for value in loop.uv],\n"
         "          'packed': node.image.packed_file is not None,\n"
-        "          'size': list(node.image.size), 'linked': linked}\n"
+        "          'size': list(node.image.size), 'linked': linked,\n"
+        "          'upright': [round(value, 4) for value in world]}\n"
         "bpy.data.objects.remove(obj)\n"
     )})
     expected = {
@@ -430,6 +433,8 @@ def textured_head_smoke(host: str, port: int) -> None:
         "packed": True,
         "size": [256, 256],
         "linked": True,
+        # Standing upright turns the updated corner (10, 10, 1) to face -y.
+        "upright": [10.0, -1.0, 10.0],
     }
     if observed.get("result") != expected:
         raise RuntimeError(f"textured head smoke observed {observed.get('result')}")

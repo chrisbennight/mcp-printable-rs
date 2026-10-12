@@ -138,8 +138,12 @@ rotation about +x opens the mouth. `variant` may be omitted when only one model
 is mounted.
 
 The mesh is in millimetres, like other Printable geometry, so an unscaled head
-is life size. The response reports the variant and the posed joint locations in
-millimetres. Updates are refused for objects the head tool did not create,
+is life size. In Blender the new head stands upright: its object is rotated 90
+degrees about x, so the crown points up +z and the face looks along -y, toward
+Blender's front view, as the printed bust does. The mesh itself keeps FLAME's
+frame, and `update` leaves the object's rotation as it finds it. The response
+reports the variant and the posed joint locations in millimetres, in FLAME's
+frame. Updates are refused for objects the head tool did not create,
 objects created from another variant, and heads whose vertex count has changed.
 An update replaces every vertex position, so other edits to the mesh are lost.
 Heads in Edit Mode are refused, because Blender would overwrite the update when
