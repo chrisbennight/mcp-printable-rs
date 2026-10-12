@@ -5686,6 +5686,32 @@ fn tetrahedron_library(
 }
 
 #[tokio::test]
+async fn head_prepare_print_writes_the_same_bytes_with_or_without_a_texture_layout() {
+    // Appearance must not change the printed shape: without a displacement
+    // map, a model converted with --texture prints exactly as one without.
+    let params = json!({"path": "bust.stl", "height_mm": 50.0, "edge_length_mm": 2.0});
+    let mut written = Vec::new();
+    for with_uv in [false, true] {
+        let (_models, library) = tetrahedron_library(with_uv);
+        let root = tempfile::tempdir().unwrap();
+        let server = head_print_server(root.path(), library);
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        written.push(std::fs::read(root.path().join("bust.stl")).unwrap());
+    }
+    assert!(!written[0].is_empty());
+    assert!(
+        written[0] == written[1],
+        "the texture layout changed the print"
+    );
+}
+
+#[tokio::test]
 async fn head_prepare_print_raises_detail_from_a_displacement_map() {
     let (_models, library) = tetrahedron_library(true);
     let root = tempfile::tempdir().unwrap();
