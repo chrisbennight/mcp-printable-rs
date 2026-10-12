@@ -320,6 +320,9 @@ FLAME_VARIANT = "printable_flame_variant"
 FLAME_UV_LAYER = "FLAME"
 FLAME_COLOUR_NODE = "FLAME colour map"
 FLAME_DETAIL_NODE = "FLAME detail map"
+# Every head material reads the eye attribute through this node; one without
+# the colour node is a plain head material, which a colour map replaces.
+FLAME_EYE_NODE = "FLAME eye finish"
 # A face attribute that is 1 on the eyeballs and 0 elsewhere. The head
 # material reads it to give the eyes their own finish.
 FLAME_EYE_ATTRIBUTE = "printable_eye"
@@ -339,6 +342,8 @@ HEAD_APPEARANCE_DEFAULTS = {
     "eye_roughness": 0.05,
 }
 MAX_HEAD_SUBDIVISION = 2
+# A head without a colour map shows this linear RGBA colour, a neutral clay.
+HEAD_PLAIN_COLOUR = (0.8, 0.8, 0.8, 1.0)
 # Colour maps are staged in the bridge's 16 MiB run directory before loading.
 MAX_COLOUR_MAP_BYTES = 12 * 1024 * 1024
 MAX_COLOUR_MAP_PIXELS = 4096
@@ -1448,8 +1453,7 @@ class BlenderHandlers:
         eye_attribute = mesh.attributes.new(name=FLAME_EYE_ATTRIBUTE, type="FLOAT", domain="FACE")
         eye_attribute.data.foreach_set("value", [1.0 if eye else 0.0 for eye in eyes])
         mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
-        if image is not None:
-            mesh.materials.append(self._colour_material(name, image, appearance, detail))
+        mesh.materials.append(self._colour_material(name, image, appearance, detail))
         mesh.update()
         obj = self._bpy.data.objects.new(name, mesh)
         if appearance["subdivision"]:
@@ -1506,12 +1510,13 @@ class BlenderHandlers:
         appearance: dict[str, Any] | None = None,
         detail: Any = None,
     ) -> Any:
-        """A material whose base colour is the image, read through the head's
-        texture coordinates. Skin and eyes take their roughness and
-        subsurface scattering from the appearance, chosen per face by the
-        eye attribute, and a detail map, when given, adds bump."""
+        """The head's material. Its base colour is the image, read through
+        the head's texture coordinates, or a plain neutral colour without
+        one. Skin and eyes take their roughness and subsurface scattering
+        from the appearance, chosen per face by the eye attribute, and a
+        detail map, when given, adds bump."""
         appearance = appearance or HEAD_APPEARANCE_DEFAULTS
-        material = self._bpy.data.materials.new(f"{name} colour")
+        material = self._bpy.data.materials.new(f"{name} colour" if image is not None else f"{name} skin")
         # Blender 5 always uses nodes and deprecates the switch.
         if not material.use_nodes:
             material.use_nodes = True
@@ -1519,17 +1524,21 @@ class BlenderHandlers:
         shader = tree.nodes.get("Principled BSDF")
         if shader is None:
             shader = tree.nodes.new("ShaderNodeBsdfPrincipled")
-        node = tree.nodes.new("ShaderNodeTexImage")
-        node.name = FLAME_COLOUR_NODE
-        node.image = image
-        node.location = (-400.0, 300.0)
-        # Read through the FLAME layer by name, whichever layer is active.
-        coordinates = tree.nodes.new("ShaderNodeUVMap")
-        coordinates.uv_map = FLAME_UV_LAYER
-        coordinates.location = (-650.0, 300.0)
-        tree.links.new(coordinates.outputs["UV"], node.inputs["Vector"])
-        tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+        if image is None:
+            shader.inputs["Base Color"].default_value = HEAD_PLAIN_COLOUR
+        else:
+            node = tree.nodes.new("ShaderNodeTexImage")
+            node.name = FLAME_COLOUR_NODE
+            node.image = image
+            node.location = (-400.0, 300.0)
+            # Read through the FLAME layer by name, whichever layer is active.
+            coordinates = tree.nodes.new("ShaderNodeUVMap")
+            coordinates.uv_map = FLAME_UV_LAYER
+            coordinates.location = (-650.0, 300.0)
+            tree.links.new(coordinates.outputs["UV"], node.inputs["Vector"])
+            tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
         eye = tree.nodes.new("ShaderNodeAttribute")
+        eye.name = FLAME_EYE_NODE
         eye.attribute_name = FLAME_EYE_ATTRIBUTE
         eye.location = (-650.0, -100.0)
         for index, (socket, skin, eyes) in enumerate((
@@ -1543,7 +1552,7 @@ class BlenderHandlers:
             tree.links.new(eye.outputs["Fac"], blend.inputs["Value"])
             tree.links.new(blend.outputs["Result"], shader.inputs[socket])
         shader.inputs["Subsurface Scale"].default_value = appearance["subsurface_scale_mm"]
-        if detail is not None:
+        if detail is not None and image is not None:
             heights = tree.nodes.new("ShaderNodeTexImage")
             heights.name = FLAME_DETAIL_NODE
             heights.image = detail
@@ -1608,7 +1617,25 @@ class BlenderHandlers:
                 key=lambda index: (shown[index], -index),
                 default=None,
             )
-            if index is None:
+            plain = max(
+                (
+                    index
+                    for index, slot in enumerate(obj.material_slots)
+                    if slot.material is not None
+                    and slot.material.node_tree is not None
+                    and slot.material.node_tree.nodes.get(FLAME_EYE_NODE) is not None
+                ),
+                key=lambda index: (shown[index], -index),
+                default=None,
+            )
+            if index is None and plain is not None:
+                # The head's plain material gives way to a coloured one with
+                # the same finish, in the same slot.
+                obj.material_slots[plain].material = self._colour_material(
+                    name, image, _stored_appearance(obj)
+                )
+                index = plain
+            elif index is None:
                 obj.data.materials.append(
                     self._colour_material(name, image, _stored_appearance(obj))
                 )

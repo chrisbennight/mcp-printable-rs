@@ -4877,7 +4877,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
             "skin_subsurface": 0.2, "subsurface_scale_mm": 2.0})
         [material] = self.objects["Head"].data.materials
         nodes = material.node_tree.nodes
-        eye = nodes.get("ShaderNodeAttribute")
+        eye = nodes.get("FLAME eye finish")
         self.assertEqual(eye.attribute_name, "printable_eye")
         ranges = [node for node in nodes.values() if getattr(node, "kind", "") == "ShaderNodeMapRange"]
         self.assertEqual(
@@ -4890,14 +4890,17 @@ class FlameHeadHandlerTests(unittest.TestCase):
 
     def test_a_colour_map_added_later_keeps_the_finish_given_at_creation(self) -> None:
         self.create(uv=self.UVS, appearance={"close_neck": False, "skin_roughness": 0.8, "eye_roughness": 0.2})
-        self.assertEqual(self.objects["Head"].data.materials, [])
+        [plain] = self.objects["Head"].data.materials
+        self.assertIsNone(plain.node_tree.nodes.get("FLAME colour map"))
         self.write_map("maps/colour.png", b"colour map")
         self.handlers.dispatch(
             "update_flame_head",
             {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
              "texture": "maps/colour.png"},
         )
+        # The coloured material takes the plain one's slot and finish.
         [material] = self.objects["Head"].data.materials
+        self.assertIsNotNone(material.node_tree.nodes.get("FLAME colour map"))
         ranges = [node for node in material.node_tree.nodes.values()
                   if getattr(node, "kind", "") == "ShaderNodeMapRange"]
         self.assertEqual(
@@ -4957,11 +4960,17 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(self.removed_images[removed:], self.images[loaded:])
         self.assertEqual(self.objects, {})
 
-    def test_texture_coordinates_alone_add_no_material(self) -> None:
-        self.create(uv=self.UVS)
+    def test_a_head_without_a_colour_map_gets_a_plain_head_material(self) -> None:
+        self.create(uv=self.UVS, appearance={"close_neck": False, "skin_roughness": 0.7})
         mesh = self.objects["Head"].data
         self.assertEqual(len(mesh.uv_layers["FLAME"].uv), 12)
-        self.assertEqual(mesh.materials, [])
+        [material] = mesh.materials
+        nodes = material.node_tree.nodes
+        self.assertIsNone(nodes.get("FLAME colour map"))
+        self.assertEqual(nodes.get("FLAME eye finish").attribute_name, "printable_eye")
+        self.assertEqual(nodes.get("Principled BSDF").inputs["Base Color"].default_value, (0.8, 0.8, 0.8, 1.0))
+        ranges = [node for node in nodes.values() if getattr(node, "kind", "") == "ShaderNodeMapRange"]
+        self.assertEqual(ranges[0].inputs["To Min"].default_value, 0.7)
 
     def test_colour_map_problems_create_nothing(self) -> None:
         workspace = Path(self.directory.name) / "workspace"
@@ -5019,7 +5028,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.write_map("colour.png", b"colour")
         self.create(uv=self.UVS)
         mesh = self.objects["Head"].data
-        mesh.materials.append(FakeMaterial("Clay"))
+        mesh.materials[:] = [FakeMaterial("Clay")]
         self.handlers.dispatch(
             "update_flame_head",
             {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
