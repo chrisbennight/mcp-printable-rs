@@ -905,6 +905,7 @@ async fn displacement(
     let description = json!({
         "millimetres_per_texel": report.millimetres_per_texel,
         "high_pass_mm": params.high_pass_mm,
+        "clip_percentile": params.clip_percentile,
         "clipped_at_mm": report.clipped_at,
         "gain": gain,
         "relief_mm": params.relief_mm,

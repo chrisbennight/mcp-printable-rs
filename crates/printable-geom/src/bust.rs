@@ -65,6 +65,10 @@ const MAX_DISPLACEMENT_FRACTION: f64 = 0.05;
 const DETAIL_SHARE: f64 = 0.005;
 /// `relief_mm` sets the depth of detail at this percentile of its magnitude.
 const RELIEF_PERCENTILE: f64 = 95.0;
+/// A map whose detail at that percentile is shallower than this, in the
+/// request's millimetres, holds rounding noise rather than detail, and
+/// `relief_mm` leaves it unscaled.
+const MIN_RELIEF_REFERENCE_MM: f64 = 1e-3;
 const MIN_CIRCLE_SEGMENTS: i32 = 16;
 const MAX_CIRCLE_SEGMENTS: i32 = 2048;
 
@@ -472,7 +476,9 @@ fn with_relief(
         .collect();
     let largest = magnitudes.iter().copied().fold(0.0, f64::max);
     magnitudes.retain(|magnitude| *magnitude > DETAIL_SHARE * largest);
-    let Some(reference) = percentile(&mut magnitudes, RELIEF_PERCENTILE) else {
+    let Some(reference) = percentile(&mut magnitudes, RELIEF_PERCENTILE)
+        .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
+    else {
         // A map without detail has nothing to scale.
         return Ok((map.clone(), 1.0));
     };
@@ -1640,6 +1646,11 @@ mod tests {
         let applied = report.displacement.expect("displacement report");
         assert_eq!(applied.relief_scale, 1.0);
         assert_eq!(applied.percentiles_mm, None);
+        // Rounding noise is not detail either.
+        let mut noise = with_map(request(1.0, 1_000_000), |u, _| (1e-5 * u) as f32);
+        noise.displacement.as_mut().unwrap().relief_mm = Some(0.3);
+        let (_, report) = prepare_bust(&noise).unwrap();
+        assert_eq!(report.displacement.unwrap().relief_scale, 1.0);
     }
 
     fn validated(mesh: &TriangleMesh) -> crate::ValidationReport {

@@ -2,9 +2,10 @@
 //!
 //! A displacement map holds a distance along the surface normal for each
 //! texel. Detail is where the map's magnitude is a noticeable share of its
-//! largest value; elsewhere the map is left as it is. Filtering works on the
-//! detail alone, so the empty surroundings of a face-only map do not pull its
-//! edges toward zero.
+//! largest value. Filtering works on the detail alone, so the empty
+//! surroundings of a face-only map do not pull its edges toward zero, and
+//! sets everything else to exactly zero, so rounding noise there cannot later
+//! be taken for detail.
 
 use thiserror::Error;
 
@@ -14,8 +15,10 @@ use crate::UvLayout;
 /// are not detail. Maps stored as 16-bit integers carry rounding noise of
 /// about one part in 65,535 where they are meant to be zero.
 const DETAIL_SHARE: f32 = 0.005;
-/// A Gaussian kernel reaches this many standard deviations each way.
-const KERNEL_REACH: f64 = 3.0;
+/// Successive box blurs that together approximate a Gaussian blur. Three
+/// keep the error within a few percent, and each costs the same whatever
+/// its width.
+const BOX_PASSES: usize = 3;
 
 /// How to filter a displacement map before it is applied.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -83,6 +86,16 @@ pub fn filter_detail(
         high_pass_texels: None,
         clipped_at: None,
     };
+    if !detail.contains(&true)
+        || (filter.high_pass_mm.is_none() && filter.clip_percentile.is_none())
+    {
+        return Ok(report);
+    }
+    for (value, inside) in values.iter_mut().zip(&detail) {
+        if !inside {
+            *value = 0.0;
+        }
+    }
     if let Some(width_mm) = filter.high_pass_mm
         && millimetres_per_texel > 0.0
     {
@@ -174,34 +187,29 @@ fn surface_scale(
     percentile_of(chosen, 50.0).map_or(0.0, f64::from)
 }
 
-/// Subtract a Gaussian blur of the detail, taken over the detail alone, from
-/// the detail. Texels outside the detail are left unchanged.
+/// Subtract a blur of the detail, taken over the detail alone, from the
+/// detail. The blur approximates a Gaussian of standard deviation `sigma`
+/// texels; one much narrower than a texel removes nothing.
 fn high_pass(values: &mut [f32], detail: &[bool], width: usize, height: usize, sigma: f64) {
     if sigma <= 0.0 || !sigma.is_finite() {
         return;
     }
-    let reach = (KERNEL_REACH * sigma).ceil().min(width.max(height) as f64) as usize;
-    let kernel: Vec<f64> = (0..=reach)
-        .map(|offset| (-(offset as f64).powi(2) / (2.0 * sigma * sigma)).exp())
-        .collect();
-    let weight: Vec<f64> = detail
+    let mut total: Vec<f64> = detail
         .iter()
         .map(|&inside| f64::from(u8::from(inside)))
         .collect();
-    let weighted: Vec<f64> = values
+    let mut sum: Vec<f64> = values
         .iter()
-        .zip(&weight)
+        .zip(&total)
         .map(|(value, weight)| f64::from(*value) * weight)
         .collect();
-    let blur = |field: &[f64]| {
-        blur_rows(
-            &blur_columns(field, width, height, &kernel),
-            width,
-            height,
-            &kernel,
-        )
-    };
-    let (sum, total) = (blur(&weighted), blur(&weight));
+    for box_width in box_widths(sigma) {
+        let radius = (box_width / 2).min(width.max(height));
+        for field in [&mut sum, &mut total] {
+            box_rows(field, width, height, radius);
+            box_columns(field, width, height, radius);
+        }
+    }
     for (index, value) in values.iter_mut().enumerate() {
         if detail[index] && total[index] > 1e-9 {
             *value -= (sum[index] / total[index]) as f32;
@@ -209,35 +217,51 @@ fn high_pass(values: &mut [f32], detail: &[bool], width: usize, height: usize, s
     }
 }
 
-fn blur_rows(field: &[f64], width: usize, height: usize, kernel: &[f64]) -> Vec<f64> {
-    let reach = kernel.len() - 1;
-    let mut out = vec![0.0; field.len()];
-    for row in 0..height {
-        let line = &field[row * width..(row + 1) * width];
-        for column in 0..width {
-            let first = column.saturating_sub(reach);
-            let last = (column + reach).min(width - 1);
-            out[row * width + column] = (first..=last)
-                .map(|at| line[at] * kernel[at.abs_diff(column)])
-                .sum();
-        }
+/// Odd widths of the box blurs whose succession has the variance of a
+/// Gaussian with standard deviation `sigma`: the smaller width for the first
+/// passes and the next odd width for the rest.
+fn box_widths(sigma: f64) -> [usize; BOX_PASSES] {
+    let passes = BOX_PASSES as f64;
+    let ideal = (12.0 * sigma * sigma / passes + 1.0).sqrt();
+    let mut lower = ideal.floor().max(1.0) as usize;
+    if lower.is_multiple_of(2) {
+        lower -= 1;
     }
-    out
+    let small = lower as f64;
+    let narrow =
+        ((12.0 * sigma * sigma - passes * small * small - 4.0 * passes * small - 3.0 * passes)
+            / (-4.0 * small - 4.0))
+            .round()
+            .clamp(0.0, passes) as usize;
+    std::array::from_fn(|pass| if pass < narrow { lower } else { lower + 2 })
 }
 
-fn blur_columns(field: &[f64], width: usize, height: usize, kernel: &[f64]) -> Vec<f64> {
-    let reach = kernel.len() - 1;
-    let mut out = vec![0.0; field.len()];
-    for row in 0..height {
-        let first = row.saturating_sub(reach);
-        let last = (row + reach).min(height - 1);
-        for column in 0..width {
-            out[row * width + column] = (first..=last)
-                .map(|at| field[at * width + column] * kernel[at.abs_diff(row)])
-                .sum();
+/// Replace each value with the sum of the values within `radius` along its
+/// row. Values beyond the map's edge count as zero.
+fn box_rows(field: &mut [f64], width: usize, height: usize, radius: usize) {
+    let mut prefix = vec![0.0; width + 1];
+    for line in field.chunks_exact_mut(width).take(height) {
+        for (index, value) in line.iter().enumerate() {
+            prefix[index + 1] = prefix[index] + value;
+        }
+        for (index, value) in line.iter_mut().enumerate() {
+            *value = prefix[(index + radius + 1).min(width)] - prefix[index.saturating_sub(radius)];
         }
     }
-    out
+}
+
+/// As `box_rows`, along each column.
+fn box_columns(field: &mut [f64], width: usize, height: usize, radius: usize) {
+    let mut prefix = vec![0.0; height + 1];
+    for column in 0..width {
+        for row in 0..height {
+            prefix[row + 1] = prefix[row] + field[row * width + column];
+        }
+        for row in 0..height {
+            field[row * width + column] =
+                prefix[(row + radius + 1).min(height)] - prefix[row.saturating_sub(radius)];
+        }
+    }
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -362,6 +386,78 @@ mod tests {
         .unwrap();
         assert_eq!(report.clipped_at, Some(0.2));
         assert!(values.iter().all(|&value| value == 0.2));
+    }
+
+    #[test]
+    fn rounding_noise_outside_the_detail_becomes_zero_when_filtered() {
+        let (faces, layout, vertices, side) = square(64);
+        let mut values = map(side, |x, _| if x < 32.0 { 1e-6 } else { 1.0 });
+        let original = values.clone();
+        filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter::default(),
+        )
+        .unwrap();
+        assert_eq!(values, original, "no filter, no change");
+        filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: Some(10.0),
+                clip_percentile: None,
+            },
+        )
+        .unwrap();
+        assert!(values[..32].iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn a_map_without_detail_is_left_alone() {
+        let (faces, layout, vertices, side) = square(16);
+        let mut values = vec![0.0; side * side];
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: Some(50.0),
+                clip_percentile: Some(90.0),
+            },
+        )
+        .unwrap();
+        assert_eq!((report.high_pass_texels, report.clipped_at), (None, None));
+        assert!(values.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn box_blurs_match_the_gaussian_variance() {
+        // Below a texel the boxes cannot blur at all, so nothing is removed.
+        assert_eq!(box_widths(0.4), [1, 1, 1]);
+        for sigma in [1.0, 3.0, 7.5, 40.0] {
+            let widths = box_widths(sigma);
+            assert!(widths.iter().all(|width| width % 2 == 1), "{widths:?}");
+            // A box of odd width w has variance (w² - 1) / 12.
+            let variance: f64 = widths
+                .iter()
+                .map(|&width| ((width * width - 1) as f64) / 12.0)
+                .sum();
+            assert!(
+                (variance.sqrt() - sigma).abs() < 0.35_f64.max(0.05 * sigma),
+                "{sigma}: {widths:?}"
+            );
+        }
     }
 
     #[test]

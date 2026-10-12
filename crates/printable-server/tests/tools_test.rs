@@ -5813,6 +5813,7 @@ async fn head_prepare_print_filters_detail_and_reports_how() {
     let applied = &value["bust"]["displacement"];
     let filter = &applied["filter"];
     assert_eq!(filter["gain"], 2.0, "{value}");
+    assert_eq!(filter["clip_percentile"], 90.0, "{value}");
     assert!(
         (filter["clipped_at_mm"].as_f64().unwrap() - 1.0).abs() < 1e-3,
         "{value}"
