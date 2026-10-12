@@ -83,7 +83,7 @@ pub fn filter_detail(
         return Err(DetailError::Layout);
     }
     let covering = covering_faces(width, height, layout);
-    let detail = detail_mask(values);
+    let detail = detail_mask(values, &covering);
     let millimetres_per_texel =
         surface_scale(&detail, &covering, faces, layout, vertices, [width, height]);
     let mut report = FilterReport {
@@ -115,7 +115,7 @@ pub fn filter_detail(
         // Taken over what still carries detail after the high-pass, so
         // texels it emptied cannot pull the limit toward zero, and over the
         // head's surface, since texels off it never reach the head.
-        let remaining = detail_mask(values);
+        let remaining = detail_mask(values, &covering);
         let magnitudes: Vec<f32> = values
             .iter()
             .zip(&remaining)
@@ -133,11 +133,14 @@ pub fn filter_detail(
     Ok(report)
 }
 
-/// Texels that carry detail.
-pub fn detail_mask(values: &[f32]) -> Vec<bool> {
+/// Texels that carry detail, judged against the largest magnitude on the
+/// head's surface, since texels off it never reach the head.
+fn detail_mask(values: &[f32], covering: &[u32]) -> Vec<bool> {
     let largest = values
         .iter()
-        .fold(0.0f32, |most, value| most.max(value.abs()));
+        .zip(covering)
+        .filter(|(_, face)| **face != NO_FACE)
+        .fold(0.0f32, |most, (value, _)| most.max(value.abs()));
     let threshold = largest * DETAIL_SHARE;
     values
         .iter()
@@ -669,6 +672,27 @@ mod tests {
         .unwrap();
         // The limit comes from the surface alone: 0.2, not the background.
         assert_eq!(report.clipped_at, Some(0.2));
+
+        // Detail far smaller than the background still counts as detail.
+        let mut values = map(side, |x, _| match x {
+            x if x >= 16.0 => 5.0,
+            x if x < 1.0 => 0.02,
+            _ => 0.01,
+        });
+        let report = filter_detail(
+            &mut values,
+            side,
+            side,
+            &faces,
+            &layout,
+            &vertices,
+            DetailFilter {
+                high_pass_mm: None,
+                clip_percentile: Some(90.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.clipped_at, Some(0.01));
     }
 
     #[test]

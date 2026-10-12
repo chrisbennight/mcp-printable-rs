@@ -366,7 +366,8 @@ while the fine part can be shallower than a layer. These optional
 | `gain` | 0 to 10, default 1 | Multiplies the detail. |
 | `relief_mm` | 0.01 to 10 | Scales the detail so that its 95th percentile on the head's surface is this many millimetres on the finished bust, whatever its height. The detail is sampled at every triangle's corners and centre and weighted by the triangle's area. Not with `gain`. |
 
-Texels whose magnitude is below 0.5% of the map's largest are not detail.
+Texels whose magnitude is below 0.5% of the largest on the head's surface are not
+detail.
 Filtering changes only the detail and sets the other texels to exactly zero,
 so their rounding noise is never scaled up as detail. Blurs are taken over the
 head's surface, the texels inside a triangle of the texture layout, so the
