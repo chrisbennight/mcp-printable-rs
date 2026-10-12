@@ -392,6 +392,84 @@ result = True
         command(host, port, "restore_checkpoint", {"path": "smoke/before-native.blend"})
 
 
+def textured_head_smoke(host: str, port: int) -> None:
+    """A head with texture coordinates and a colour map, as the head tool
+    makes it, using the still render as the map."""
+    command(host, port, "create_flame_head", {
+        "name": "TexturedHeadProbe",
+        "variant": "smoke",
+        "vertices": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+        "faces": [[0, 1, 2], [0, 2, 3]],
+        "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        "texture": "smoke/render.png",
+    })
+    # Replacing the colour map frees the image it replaces.
+    command(host, port, "update_flame_head", {
+        "object": "TexturedHeadProbe",
+        "variant": "smoke",
+        "vertices": [[0.0, 0.0, 1.0], [10.0, 0.0, 1.0], [10.0, 10.0, 1.0], [0.0, 10.0, 1.0]],
+        "texture": "smoke/render.png",
+    })
+    observed = command(host, port, "execute_code", {"code": (
+        "maps = [image for image in bpy.data.images if image.name.startswith('TexturedHeadProbe colour map')]\n"
+        "assert len(maps) == 1, [image.name for image in maps]\n"
+        "obj = bpy.data.objects['TexturedHeadProbe']\n"
+        "layer = obj.data.uv_layers['FLAME']\n"
+        "material = obj.data.materials[0]\n"
+        "node = material.node_tree.nodes['FLAME colour map']\n"
+        "shader = next(n for n in material.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')\n"
+        "linked = any(link.from_node == node and link.to_socket == shader.inputs['Base Color'] for link in material.node_tree.links)\n"
+        "linked = linked and any(link.to_node == node and link.to_socket.name == 'Vector' and link.from_node.type == 'UVMAP' and link.from_node.uv_map == 'FLAME' for link in material.node_tree.links)\n"
+        "result = {'uv': [round(value, 6) for loop in layer.data for value in loop.uv],\n"
+        "          'packed': node.image.packed_file is not None,\n"
+        "          'size': list(node.image.size), 'linked': linked}\n"
+        "bpy.data.objects.remove(obj)\n"
+    )})
+    expected = {
+        "uv": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        "packed": True,
+        "size": [256, 256],
+        "linked": True,
+    }
+    if observed.get("result") != expected:
+        raise RuntimeError(f"textured head smoke observed {observed.get('result')}")
+    # A PNG whose header is sound but whose pixels cannot be decoded.
+    command(host, port, "execute_code", {"code": (
+        "from pathlib import Path\n"
+        "import struct, zlib\n"
+        "png = b'\\x89PNG\\r\\n\\x1a\\n'\n"
+        "for kind, data in ((b'IHDR', struct.pack('>IIBBBBB', 7, 5, 8, 2, 0, 0, 0)),\n"
+        "                   (b'IDAT', b'not a zlib stream'), (b'IEND', b'')):\n"
+        "    png += struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))\n"
+        "Path(workspace_root, 'smoke/corrupt-colour.png').write_bytes(png)\n"
+    )})
+    images = "result = sorted(image.name for image in bpy.data.images)\n"
+    before = command(host, port, "execute_code", {"code": images})["result"]
+    try:
+        command(host, port, "create_flame_head", {
+            "name": "CorruptHeadProbe",
+            "variant": "smoke",
+            "vertices": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]],
+            "faces": [[0, 1, 2]],
+            "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            "texture": "smoke/corrupt-colour.png",
+        })
+    except RuntimeError as error:
+        if "could not be decoded" not in str(error):
+            raise
+    else:
+        raise RuntimeError("a colour map with undecodable pixels made a head")
+    # The refused image is named after its staged copy, so compare every image.
+    after = command(host, port, "execute_code", {"code": images})["result"]
+    objects = command(host, port, "execute_code", {"code": (
+        "result = [name for name in bpy.data.objects.keys() if name.startswith('CorruptHeadProbe')]\n"
+    )})["result"]
+    if after != before or objects != []:
+        raise RuntimeError(
+            f"an undecodable colour map left images {sorted(set(after) - set(before))} and objects {objects}"
+        )
+
+
 def capability_smoke(host: str, port: int) -> None:
     wait_until_ready(host, port)
     scene_state_smoke(host, port)
@@ -776,6 +854,7 @@ def capability_smoke(host: str, port: int) -> None:
         "varied": True,
     }:
         raise RuntimeError("still smoke did not decode to a useful 256x256 RGBA image")
+    textured_head_smoke(host, port)
     clear_scene(host, port, 1)
     hollow = command(
         host,

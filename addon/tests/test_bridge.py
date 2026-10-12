@@ -4487,22 +4487,160 @@ class FakeVertices(list):
         self[:] = [tuple(values[index:index + 3]) for index in range(0, len(values), 3)]
 
 
+class FakeUvLayer:
+    def __init__(self) -> None:
+        self.uv: list[float] = []
+        self.data = SimpleNamespace(foreach_set=self.foreach_set)
+
+    def foreach_set(self, attribute: str, values: list[float]) -> None:
+        assert attribute == "uv"
+        self.uv = list(values)
+
+
+class FakeUvLayers(dict):
+    def new(self, name: str) -> FakeUvLayer:
+        self[name] = FakeUvLayer()
+        return self[name]
+
+
+class FakeImageNode:
+    """An image node that counts its image's users as Blender does. Also
+    stands in for a UV Map node."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.name = kind
+        self.location = (0.0, 0.0)
+        self.uv_map = ""
+        self.outputs = {"Color": (kind, "Color"), "UV": (kind, "UV")}
+        self.inputs: dict[str, Any] = {"Vector": (kind, "Vector")}
+        self._image: FakeImage | None = None
+
+    @property
+    def image(self) -> FakeImage | None:
+        return self._image
+
+    @image.setter
+    def image(self, image: FakeImage | None) -> None:
+        if self._image is not None:
+            self._image.users -= 1
+        if image is not None:
+            image.users += 1
+        self._image = image
+
+
+class FakeNodes(dict):
+    def new(self, kind: str) -> FakeImageNode:
+        node = FakeImageNode(kind)
+        self[f"{kind}.{len(self)}"] = node
+        return node
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return next((node for node in self.values() if node.name == name), default)
+
+
+class FakeMaterial:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.users = 1
+        self.use_nodes = False
+        shader = SimpleNamespace(
+            name="Principled BSDF", inputs={"Base Color": ("Principled BSDF", "Base Color")}
+        )
+        self.links: list[tuple[Any, Any]] = []
+        self.node_tree = SimpleNamespace(
+            nodes=FakeNodes({"shader": shader}),
+            links=SimpleNamespace(new=lambda output, socket: self.links.append((output, socket))),
+        )
+
+    def copy(self) -> "FakeMaterial":
+        duplicate = FakeMaterial(f"{self.name}.001")
+        duplicate.use_nodes = self.use_nodes
+        for key, node in self.node_tree.nodes.items():
+            if isinstance(node, FakeImageNode):
+                copied = FakeImageNode(node.kind)
+                copied.name = node.name
+                copied.image = node.image
+                duplicate.node_tree.nodes[key] = copied
+        return duplicate
+
+
+class FakeImage:
+    def __init__(self, contents: bytes) -> None:
+        self.contents = contents
+        self.name = ""
+        self.packed = False
+        self.users = 0
+
+    def pack(self) -> None:
+        self.packed = True
+
+    @property
+    def size(self) -> tuple[int, int]:
+        # Blender decodes on first use and reports 0 by 0 when it cannot.
+        if self.contents[33:].startswith(b"corrupt"):
+            return (0, 0)
+        return (
+            int.from_bytes(self.contents[16:20], "big"),
+            int.from_bytes(self.contents[20:24], "big"),
+        )
+
+
+class FakePolygons(list):
+    def __init__(self, faces: Any = ()) -> None:
+        super().__init__(faces)
+        self.material_index = [0] * len(self)
+
+    def foreach_set(self, attribute: str, values: list[int]) -> None:
+        assert attribute == "material_index" and len(values) == len(self)
+        self.material_index = list(values)
+
+    def foreach_get(self, attribute: str, values: list[int]) -> None:
+        assert attribute == "material_index" and len(values) == len(self)
+        values[:] = self.material_index
+
+
 class FakeHeadMesh:
     def __init__(self) -> None:
         self.vertices = FakeVertices()
-        self.polygons: list[tuple[int, int, int]] = []
+        self.polygons = FakePolygons()
         self.updates = 0
+        self.uv_layers = FakeUvLayers()
+        self.materials: list[FakeMaterial] = []
 
     def from_pydata(self, vertices, edges, faces) -> None:
         self.vertices = FakeVertices(vertices)
-        self.polygons = list(faces)
+        self.polygons = FakePolygons(faces)
 
     def update(self) -> None:
         self.updates += 1
 
 
+class FakeSlot:
+    """A material slot: the object's own material when linked to the object,
+    otherwise the mesh's."""
+
+    def __init__(self, obj: "FakeHeadObject", index: int) -> None:
+        self._obj = obj
+        self._index = index
+
+    @property
+    def material(self) -> Any:
+        if self._index in self._obj.overrides:
+            return self._obj.overrides[self._index]
+        return self._obj.data.materials[self._index]
+
+    @material.setter
+    def material(self, material: Any) -> None:
+        if self._index in self._obj.overrides:
+            self._obj.overrides[self._index] = material
+        else:
+            self._obj.data.materials[self._index] = material
+
+
 class FakeHeadObject:
     def __init__(self, name: str, mesh: Any, kind: str = "MESH") -> None:
+        self.overrides: dict[int, Any] = {}
         self.name = name
         self.type = kind
         self.mode = "OBJECT"
@@ -4518,6 +4656,10 @@ class FakeHeadObject:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.properties.get(key, default)
+
+    @property
+    def material_slots(self) -> list[FakeSlot]:
+        return [FakeSlot(self, index) for index in range(len(self.data.materials))]
 
 
 class FlameHeadHandlerTests(unittest.TestCase):
@@ -4539,11 +4681,22 @@ class FlameHeadHandlerTests(unittest.TestCase):
             self.objects[name] = FakeHeadObject(name, mesh)
             return self.objects[name]
 
+        self.images: list[FakeImage] = []
+        self.removed_images: list[FakeImage] = []
+
+        def load_image(path: str, check_existing: bool) -> FakeImage:
+            assert not check_existing
+            image = FakeImage(Path(path).read_bytes())
+            self.images.append(image)
+            return image
+
         bpy = SimpleNamespace(
             data=SimpleNamespace(
                 scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))],
                 objects=SimpleNamespace(get=self.objects.get, new=new_object),
                 meshes=SimpleNamespace(new=new_mesh),
+                images=SimpleNamespace(load=load_image, remove=self.removed_images.append),
+                materials=SimpleNamespace(new=FakeMaterial),
             ),
             context=SimpleNamespace(
                 scene=SimpleNamespace(
@@ -4571,6 +4724,189 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(list(head.data.vertices), [tuple(point) for point in self.VERTICES])
         self.assertEqual(head.data.polygons, [(0, 1, 2), (0, 2, 3)])
         self.assertEqual((summary["vertices"], summary["polygons"]), (4, 2))
+
+    UVS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+
+    def write_map(self, name: str, tag: bytes, width: int = 4, height: int = 4) -> None:
+        """A file with a PNG header of the given size followed by `tag`."""
+        header = (
+            b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+            + width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes(9)
+        )
+        path = Path(self.directory.name) / "workspace" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(header + tag)
+
+    @staticmethod
+    def tag(image: FakeImage) -> bytes:
+        return image.contents[33:]
+
+    def test_head_gets_texture_coordinates_and_a_packed_colour_map(self) -> None:
+        self.write_map("maps/colour.png", b"colour map")
+        self.create(uv=self.UVS, texture="maps/colour.png")
+        mesh = self.objects["Head"].data
+        self.assertEqual(mesh.uv_layers["FLAME"].uv, [value for uv in self.UVS for value in uv])
+        [image] = self.images
+        self.assertEqual((self.tag(image), image.packed, image.name), (b"colour map", True, "Head colour map"))
+        [material] = mesh.materials
+        self.assertTrue(material.use_nodes)
+        node = material.node_tree.nodes.get("FLAME colour map")
+        self.assertIs(node.image, image)
+        coordinates = material.node_tree.nodes.get("ShaderNodeUVMap")
+        self.assertEqual(coordinates.uv_map, "FLAME")
+        self.assertEqual(material.links, [
+            (coordinates.outputs["UV"], node.inputs["Vector"]),
+            (node.outputs["Color"], ("Principled BSDF", "Base Color")),
+        ])
+
+    def test_texture_coordinates_alone_add_no_material(self) -> None:
+        self.create(uv=self.UVS)
+        mesh = self.objects["Head"].data
+        self.assertEqual(len(mesh.uv_layers["FLAME"].uv), 12)
+        self.assertEqual(mesh.materials, [])
+
+    def test_colour_map_problems_create_nothing(self) -> None:
+        workspace = Path(self.directory.name) / "workspace"
+        (workspace / "fake.png").write_bytes(b"not a png at all, just some bytes")
+        self.write_map("wide.png", b"wide", width=4097, height=10)
+        self.write_map("corrupt.png", b"corrupt pixels")
+        with (workspace / "huge.png").open("wb") as huge:
+            huge.truncate(12 * 1024 * 1024 + 1)
+        for overrides, error, message in [
+            ({"texture": "colour.png"}, HandlerError, "needs the head's texture coordinates"),
+            ({"uv": self.UVS[:5]}, HandlerError, "every triangle corner"),
+            ({"uv": self.UVS[:5] + [[0.0, float("inf")]]}, HandlerError, "finite two-component"),
+            ({"uv": self.UVS, "texture": "missing.png"}, WorkspaceError, "unavailable"),
+            ({"uv": self.UVS, "texture": "colour.jpg"}, WorkspaceError, ""),
+            ({"uv": self.UVS, "texture": "fake.png"}, HandlerError, "not a PNG image"),
+            ({"uv": self.UVS, "texture": "wide.png"}, HandlerError, "4096 pixels"),
+            ({"uv": self.UVS, "texture": "huge.png"}, HandlerError, "larger than 12 MiB"),
+            ({"uv": self.UVS, "texture": "corrupt.png"}, HandlerError, "could not be decoded"),
+        ]:
+            with self.subTest(message), self.assertRaisesRegex(error, message):
+                self.create(**overrides)
+        self.assertEqual(self.meshes, [])
+        self.assertEqual(self.linked, [])
+        # The undecodable map was loaded to find out, then removed.
+        self.assertEqual(self.removed_images, self.images)
+        self.assertEqual([self.tag(image) for image in self.images], [b"corrupt pixels"])
+
+    def test_update_replaces_the_colour_map(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.create(uv=self.UVS, texture="first.png")
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": "second.png"},
+        )
+        [material] = self.objects["Head"].data.materials
+        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
+        # The replaced map is no longer used, so it is removed from memory.
+        self.assertEqual([self.tag(image) for image in self.removed_images], [b"first"])
+        self.assertEqual(self.images[-1].name, "Head colour map")
+
+    def test_update_adds_a_colour_map_to_a_head_with_texture_coordinates(self) -> None:
+        self.write_map("colour.png", b"colour")
+        self.create(uv=self.UVS)
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": "colour.png"},
+        )
+        [material] = self.objects["Head"].data.materials
+        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"colour")
+
+    def test_update_shows_the_colour_on_every_face_beside_other_materials(self) -> None:
+        self.write_map("colour.png", b"colour")
+        self.create(uv=self.UVS)
+        mesh = self.objects["Head"].data
+        mesh.materials.append(FakeMaterial("Clay"))
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": "colour.png"},
+        )
+        self.assertEqual([material.name for material in mesh.materials], ["Clay", "Head colour"])
+        self.assertEqual(mesh.polygons.material_index, [1, 1])
+
+    def update_texture(self, path: str) -> None:
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": path},
+        )
+
+    def test_update_shows_colour_where_an_object_override_hid_it(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        [hidden] = head.data.materials
+        head.overrides[0] = FakeMaterial("Clay override")
+        self.update_texture("second.png")
+        # The hidden mesh material is untouched; a visible colour material is added.
+        self.assertEqual(hidden.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"first")
+        self.assertEqual(head.data.polygons.material_index, [1, 1])
+        added = head.material_slots[1].material
+        self.assertEqual(added.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
+
+    def test_update_gives_a_shared_colour_material_its_own_copy(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        [shared] = head.data.materials
+        shared.users = 2
+        self.update_texture("second.png")
+        own = head.material_slots[0].material
+        self.assertIsNot(own, shared)
+        self.assertEqual(own.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
+        # The other user keeps its map, which is still in use.
+        self.assertEqual(shared.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"first")
+        self.assertEqual(self.removed_images, [])
+
+    def test_update_replaces_the_colour_map_the_faces_show(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.write_map("third.png", b"third")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        self.update_texture("second.png")
+        # A second colour material in slot 1 that the faces use.
+        extra = FakeMaterial("Other colour")
+        node = extra.node_tree.nodes.new("ShaderNodeTexImage")
+        node.name = "FLAME colour map"
+        head.data.materials.append(extra)
+        head.data.polygons.foreach_set("material_index", [1, 1])
+        self.update_texture("third.png")
+        self.assertEqual(head.data.polygons.material_index, [1, 1])
+        self.assertEqual(self.tag(node.image), b"third")
+        # The unused colour material in slot 0 keeps its map.
+        unused = head.material_slots[0].material.node_tree.nodes.get("FLAME colour map")
+        self.assertEqual(self.tag(unused.image), b"second")
+
+    def test_update_keeps_the_colour_map_when_the_new_one_cannot_be_decoded(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("corrupt.png", b"corrupt pixels")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        with self.assertRaisesRegex(HandlerError, "could not be decoded"):
+            self.update_texture("corrupt.png")
+        [material] = head.data.materials
+        self.assertEqual(self.tag(material.node_tree.nodes.get("FLAME colour map").image), b"first")
+        self.assertEqual([self.tag(image) for image in self.removed_images], [b"corrupt pixels"])
+
+    def test_update_refuses_a_colour_map_without_texture_coordinates(self) -> None:
+        self.write_map("colour.png", b"colour")
+        self.create()
+        with self.assertRaisesRegex(HandlerError, "no texture coordinates"):
+            self.handlers.dispatch(
+                "update_flame_head",
+                {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+                 "texture": "colour.png"},
+            )
+        self.assertEqual(self.images, [])
 
     def test_creation_validates_everything_before_creating(self) -> None:
         self.objects["Taken"] = FakeHeadObject("Taken", FakeHeadMesh())
