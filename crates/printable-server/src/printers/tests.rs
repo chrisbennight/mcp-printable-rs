@@ -967,6 +967,51 @@ async fn start_refuses_a_job_changed_during_inspection() {
 }
 
 #[tokio::test]
+async fn start_reports_filament_the_printer_has_not_loaded() {
+    let server = MockServer::start().await;
+    for (endpoint, value) in [
+        (
+            "/api/v1/queue/7",
+            json!({"id":7,"printer_id":1,"library_file_id":9,"status":"pending","manual_start":true,"ams_mapping":[0]}),
+        ),
+        ("/api/v1/printers/1/status", status()),
+        (
+            "/api/v1/printers/",
+            json!([{"id":1,"name":"Workshop","model":"P1S","is_active":true}]),
+        ),
+        (
+            "/api/v1/library/files/9",
+            json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","sliced_for_model":"P1S"}),
+        ),
+    ] {
+        get(&server, endpoint, value).await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/api/v1/queue/7/start"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(
+            json!({"detail":{"code":"unmatched_filament","missing":["PETG #000000"]}}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let ws = Arc::new(printable_workspace::Workspace::open(Some(temp.path()), None).unwrap());
+    let result = service(&server)
+        .control(
+            serde_json::from_value(json!({"action":"start","params":{"print_id":7}})).unwrap(),
+            &ws,
+        )
+        .await;
+    let Err(crate::error::ToolError::Printer(bambuddy_api::ApiError::Rejected(rejection))) = result
+    else {
+        panic!("expected a typed rejection, got {result:?}");
+    };
+    assert_eq!(rejection.code, "unmatched_filament");
+    assert_eq!(rejection.missing, vec!["PETG #000000"]);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn print_records_preserve_options_requirements_and_run_identity() {
     let server = MockServer::start().await;
     let file = json!({"id":9,"filename":"test.gcode.3mf","file_type":"gcode.3mf","tags":[],"metadata":{"bed_type":"Textured PEI","nozzle_diameter":0.4}});

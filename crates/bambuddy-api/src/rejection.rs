@@ -17,6 +17,9 @@ pub struct Rejection {
     pub message: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub deficit: Vec<FilamentDeficit>,
+    /// Filaments the print needs that no loaded tray matches, as Bambuddy describes them.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub missing: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub fields: Vec<String>,
 }
@@ -32,6 +35,7 @@ impl Rejection {
             code: "upstream_rejected".into(),
             message: "Bambuddy rejected the request; inspect the selected job and options".into(),
             deficit: vec![],
+            missing: vec![],
             fields: vec![],
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -55,6 +59,18 @@ impl Rejection {
                 result.message = "Assigned filament is insufficient for the print".into();
                 result.deficit = deficit;
             }
+        } else if status == 409 && detail["code"] == "unmatched_filament" {
+            if let Ok(missing) = serde_json::from_value::<Vec<String>>(detail["missing"].clone())
+                && missing.len() <= 64
+            {
+                result.code = "unmatched_filament".into();
+                result.message =
+                    "No loaded filament matches one or more filaments the print needs".into();
+                result.missing = missing
+                    .into_iter()
+                    .map(|m| m.chars().take(64).collect())
+                    .collect();
+            }
         } else if status == 422 {
             result.code = "invalid_options".into();
             result.message = "Bambuddy rejected one or more option fields".into();
@@ -75,7 +91,12 @@ impl Rejection {
             if let Some(state) = message
                 .strip_prefix("Can only start pending items, current status: '")
                 .and_then(|s| s.strip_suffix('\''))
-                .filter(|s| matches!(*s, "printing" | "completed" | "failed" | "cancelled"))
+                .filter(|s| {
+                    matches!(
+                        *s,
+                        "printing" | "completed" | "failed" | "skipped" | "cancelled"
+                    )
+                })
             {
                 result.code = "queue_item_not_pending".into();
                 result.message =
@@ -83,23 +104,24 @@ impl Rejection {
             } else if let Some(state) = message
                 .strip_prefix("Printer is not awaiting plate-clear acknowledgment (state=")
                 .and_then(|s| s.strip_suffix(')'))
-                .filter(|s| {
-                    matches!(
-                        *s,
-                        "IDLE"
-                            | "FINISH"
-                            | "FAILED"
-                            | "RUNNING"
-                            | "PAUSE"
-                            | "PREPARE"
-                            | "SLICING"
-                            | "unknown"
-                    )
-                })
             {
                 result.code = "plate_clear_not_pending".into();
-                result.message =
-                    format!("Printer is not awaiting plate-clear acknowledgement (state={state})");
+                // The state is the printer's own report; repeat only states we recognise.
+                result.message = if matches!(
+                    state,
+                    "IDLE"
+                        | "FINISH"
+                        | "FAILED"
+                        | "RUNNING"
+                        | "PAUSE"
+                        | "PREPARE"
+                        | "SLICING"
+                        | "unknown"
+                ) {
+                    format!("Printer is not awaiting plate-clear acknowledgement (state={state})")
+                } else {
+                    "Printer is not awaiting plate-clear acknowledgement".into()
+                };
             }
             match message {
                 "Printer not connected" => {
@@ -129,7 +151,15 @@ mod tests {
                 "queue_item_not_pending",
             ),
             (
+                "Can only start pending items, current status: 'skipped'",
+                "queue_item_not_pending",
+            ),
+            (
                 "Printer is not awaiting plate-clear acknowledgment (state=RUNNING)",
+                "plate_clear_not_pending",
+            ),
+            (
+                "Printer is not awaiting plate-clear acknowledgment (state=private-value)",
                 "plate_clear_not_pending",
             ),
             (
@@ -156,6 +186,28 @@ mod tests {
             Rejection::decode(409, b"not JSON").code,
             "upstream_rejected"
         );
+        let unmatched = Rejection::decode(
+            409,
+            br#"{"detail":{"code":"unmatched_filament","missing":["PETG #000000 (left nozzle)"]}}"#,
+        );
+        assert_eq!(unmatched.code, "unmatched_filament");
+        assert_eq!(unmatched.missing, vec!["PETG #000000 (left nozzle)"]);
+        let long = "x".repeat(200);
+        let bounded = Rejection::decode(
+            409,
+            &serde_json::to_vec(
+                &serde_json::json!({"detail":{"code":"unmatched_filament","missing":[long]}}),
+            )
+            .unwrap(),
+        );
+        assert_eq!(bounded.missing[0].chars().count(), 64);
+        let excessive = Rejection::decode(
+            409,
+            &serde_json::to_vec(&serde_json::json!({"detail":{"code":"unmatched_filament","missing":vec!["PLA"; 65]}}))
+                .unwrap(),
+        );
+        assert_eq!(excessive.code, "upstream_rejected");
+        assert!(excessive.missing.is_empty());
         let validation=Rejection::decode(422,br#"{"detail":[{"loc":["body","ams_mapping"],"input":"private-input","msg":"private-message"}]}"#);
         assert_eq!(validation.fields, vec!["body", "ams_mapping"]);
         assert!(
