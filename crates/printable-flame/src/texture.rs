@@ -380,15 +380,24 @@ fn finish(
         .max()
         .unwrap_or(0);
     let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
-    // Skin and eyes are filled from what the photographs showed of them.
-    // A scalp taken as photographed shows hair, so it seeds the skin fill
-    // only with what was photographed there as skin, and keeps a fill of
-    // its own built from everything it showed.
+    let on_eye = |face: u32| kinds[face as usize] == FaceKind::Eye;
+    // Skin is filled only from what the photographs showed as skin. Eyes
+    // are left out, and a scalp taken as photographed shows hair, so it
+    // seeds the skin fill only with what was photographed there as skin.
+    // Such a scalp, and eyes that were seen, keep fills of their own built
+    // from everything they showed.
     let photographed_scalp = scalp == ScalpColour::Photo;
     let mut skin_weight = weight.to_vec();
     let mut skin_colour = colour.to_vec();
+    let mut eye_weight = vec![0.0f32; weight.len()];
     for (index, &face) in texels.face.iter().enumerate() {
-        if face != NO_FACE && photographed_scalp && on_scalp(face) {
+        if face == NO_FACE {
+            continue;
+        }
+        if on_eye(face) {
+            eye_weight[index] = weight[index];
+            skin_weight[index] = 0.0;
+        } else if photographed_scalp && on_scalp(face) {
             let seen = skin.weight[index];
             skin_weight[index] = seen;
             if seen > 0.0 {
@@ -399,6 +408,10 @@ fn finish(
     let fill = surface_fill(faces, vertex_count, texels, &skin_weight, &skin_colour);
     let scalp_fill =
         photographed_scalp.then(|| surface_fill(faces, vertex_count, texels, weight, colour));
+    let eye_fill = eye_weight
+        .iter()
+        .any(|&weight| weight > 0.0)
+        .then(|| surface_fill(faces, vertex_count, texels, &eye_weight, colour));
     let paint = match scalp {
         ScalpColour::Hair(hair) => Some(hair.map(f32::from)),
         ScalpColour::Photo | ScalpColour::Skin => None,
@@ -414,8 +427,9 @@ fn finish(
         let corners = faces[face as usize];
         let [wa, wb] = texels.barycentric[index];
         let shares = [wa, wb, 1.0 - wa - wb];
-        let source = match &scalp_fill {
-            Some(scalp_fill) if on_scalp(face) => scalp_fill,
+        let source = match (&scalp_fill, &eye_fill) {
+            (Some(scalp_fill), _) if on_scalp(face) => scalp_fill,
+            (_, Some(eye_fill)) if on_eye(face) => eye_fill,
             _ => &fill,
         };
         let mut filled = [0.0f32; 3];
@@ -1412,6 +1426,60 @@ mod tests {
         // The scalp itself shows both photographs.
         let scalp = texel(&map, 0.5);
         assert!(scalp[1] > 50 && scalp[1] < 150, "{scalp:?}");
+    }
+
+    #[test]
+    fn unseen_skin_is_not_filled_from_the_eyes() {
+        // A seen eye on the left and, apart from it, skin the photograph
+        // shows only as background on the right.
+        let (mut vertices, mut faces, mut coords) = square(0.0, [-1.0, 0.0], [0.0, 0.5], false);
+        let (skin_vertices, skin_faces, skin_coords) = square(0.0, [0.0, 1.0], [0.5, 1.0], false);
+        vertices.extend(skin_vertices);
+        faces.extend(skin_faces.iter().map(|face| face.map(|vertex| vertex + 4)));
+        coords.extend(skin_coords);
+        let rgb: Vec<u8> = (0..224 * 224)
+            .flat_map(|index| {
+                if index % 224 < 112 {
+                    [0, 0, 200]
+                } else {
+                    [200, 0, 0]
+                }
+            })
+            .collect();
+        let labels: Vec<u8> = (0..224 * 224)
+            .map(|index| {
+                if index % 224 < 112 {
+                    LABEL_OTHER
+                } else {
+                    LABEL_BACKGROUND
+                }
+            })
+            .collect();
+        let layout = layout(coords, &faces);
+        let kinds = [FaceKind::Eye, FaceKind::Eye, FaceKind::Skin, FaceKind::Skin];
+        let mut builder =
+            ColourMapBuilder::new(&faces, &layout, 32, &kinds, ScalpColour::Photo).unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &labels,
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
+            })
+            .unwrap();
+        let map = builder.finish().unwrap();
+        assert_eq!(texel(&map, 0.25), [0, 0, 200]);
+        assert_eq!(texel(&map, 0.75), [128, 128, 128]);
     }
 
     #[test]
