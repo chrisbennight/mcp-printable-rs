@@ -4540,6 +4540,7 @@ class FakeNodes(dict):
 class FakeMaterial:
     def __init__(self, name: str) -> None:
         self.name = name
+        self.users = 1
         self.use_nodes = False
         shader = SimpleNamespace(
             name="Principled BSDF", inputs={"Base Color": ("Principled BSDF", "Base Color")}
@@ -4549,6 +4550,17 @@ class FakeMaterial:
             nodes=FakeNodes({"shader": shader}),
             links=SimpleNamespace(new=lambda output, socket: self.links.append((output, socket))),
         )
+
+    def copy(self) -> "FakeMaterial":
+        duplicate = FakeMaterial(f"{self.name}.001")
+        duplicate.use_nodes = self.use_nodes
+        for key, node in self.node_tree.nodes.items():
+            if isinstance(node, FakeImageNode):
+                copied = FakeImageNode(node.kind)
+                copied.name = node.name
+                copied.image = node.image
+                duplicate.node_tree.nodes[key] = copied
+        return duplicate
 
 
 class FakeImage:
@@ -4588,8 +4600,31 @@ class FakeHeadMesh:
         self.updates += 1
 
 
+class FakeSlot:
+    """A material slot: the object's own material when linked to the object,
+    otherwise the mesh's."""
+
+    def __init__(self, obj: "FakeHeadObject", index: int) -> None:
+        self._obj = obj
+        self._index = index
+
+    @property
+    def material(self) -> Any:
+        if self._index in self._obj.overrides:
+            return self._obj.overrides[self._index]
+        return self._obj.data.materials[self._index]
+
+    @material.setter
+    def material(self, material: Any) -> None:
+        if self._index in self._obj.overrides:
+            self._obj.overrides[self._index] = material
+        else:
+            self._obj.data.materials[self._index] = material
+
+
 class FakeHeadObject:
     def __init__(self, name: str, mesh: Any, kind: str = "MESH") -> None:
+        self.overrides: dict[int, Any] = {}
         self.name = name
         self.type = kind
         self.mode = "OBJECT"
@@ -4605,6 +4640,10 @@ class FakeHeadObject:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.properties.get(key, default)
+
+    @property
+    def material_slots(self) -> list[FakeSlot]:
+        return [FakeSlot(self, index) for index in range(len(self.data.materials))]
 
 
 class FlameHeadHandlerTests(unittest.TestCase):
@@ -4747,6 +4786,42 @@ class FlameHeadHandlerTests(unittest.TestCase):
         )
         self.assertEqual([material.name for material in mesh.materials], ["Clay", "Head colour"])
         self.assertEqual(mesh.polygons.material_index, [1, 1])
+
+    def update_texture(self, path: str) -> None:
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": path},
+        )
+
+    def test_update_shows_colour_where_an_object_override_hid_it(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        [hidden] = head.data.materials
+        head.overrides[0] = FakeMaterial("Clay override")
+        self.update_texture("second.png")
+        # The hidden mesh material is untouched; a visible colour material is added.
+        self.assertEqual(hidden.node_tree.nodes.get("FLAME colour map").image.contents, b"first")
+        self.assertEqual(head.data.polygons.material_index, [1, 1])
+        added = head.material_slots[1].material
+        self.assertEqual(added.node_tree.nodes.get("FLAME colour map").image.contents, b"second")
+
+    def test_update_gives_a_shared_colour_material_its_own_copy(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        [shared] = head.data.materials
+        shared.users = 2
+        self.update_texture("second.png")
+        own = head.material_slots[0].material
+        self.assertIsNot(own, shared)
+        self.assertEqual(own.node_tree.nodes.get("FLAME colour map").image.contents, b"second")
+        # The other user keeps its map, which is still in use.
+        self.assertEqual(shared.node_tree.nodes.get("FLAME colour map").image.contents, b"first")
+        self.assertEqual(self.removed_images, [])
 
     def test_update_refuses_a_colour_map_without_texture_coordinates(self) -> None:
         self.write_map("colour.png", b"colour")

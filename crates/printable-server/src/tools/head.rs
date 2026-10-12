@@ -244,7 +244,7 @@ pub(super) async fn create(
     params: HeadCreateParams,
 ) -> Result<Value, ToolError> {
     if let Some(texture) = &params.texture {
-        check_colour_map(&workspace, texture)?;
+        check_colour_map(&workspace, texture).await?;
     }
     let (model, head) = evaluate(
         settings,
@@ -285,7 +285,7 @@ pub(super) async fn update(
     params: HeadUpdateParams,
 ) -> Result<Value, ToolError> {
     if let Some(texture) = &params.texture {
-        check_colour_map(&workspace, texture)?;
+        check_colour_map(&workspace, texture).await?;
     }
     let (model, head) = evaluate(
         settings,
@@ -639,15 +639,36 @@ fn decode_displacement(bytes: &[u8]) -> Result<(usize, usize, Vec<f64>), ToolErr
     Ok((width as usize, height as usize, fractions))
 }
 
-/// A colour map must be an existing workspace PNG.
-fn check_colour_map(workspace: &Workspace, path: &str) -> Result<(), ToolError> {
+/// Largest colour map accepted, in bytes and in pixels on each side.
+const MAX_COLOUR_MAP_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_COLOUR_MAP_PIXELS: u32 = 8192;
+
+/// A colour map must be a workspace PNG of a sensible size. Its header is read
+/// through a bounded snapshot before Blender is asked to load it.
+async fn check_colour_map(workspace: &Arc<Workspace>, path: &str) -> Result<(), ToolError> {
     if !path.ends_with(".png") {
         return Err(ToolError::Validation(
             "texture must be a .png colour map".into(),
         ));
     }
-    workspace.stat_artifact(path)?;
-    Ok(())
+    let workspace = Arc::clone(workspace);
+    let path = path.to_owned();
+    blocking(move || {
+        let snapshot = workspace.snapshot_artifact_bounded(&path, MAX_COLOUR_MAP_BYTES)?;
+        let file = std::io::BufReader::new(std::fs::File::open(snapshot.path())?);
+        let (width, height) = ImageReader::with_format(file, ImageFormat::Png)
+            .into_dimensions()
+            .map_err(|_| ToolError::Validation(format!("{path} is not a PNG image")))?;
+        if !(1..=MAX_COLOUR_MAP_PIXELS).contains(&width)
+            || !(1..=MAX_COLOUR_MAP_PIXELS).contains(&height)
+        {
+            return Err(ToolError::Validation(format!(
+                "a colour map must be at most {MAX_COLOUR_MAP_PIXELS} pixels on each side"
+            )));
+        }
+        Ok::<_, ToolError>(())
+    })
+    .await
 }
 
 fn no_layout_for_colour(model: &FlameModel) -> ToolError {

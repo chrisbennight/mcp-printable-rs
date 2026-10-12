@@ -1317,22 +1317,31 @@ class BlenderHandlers:
                     f"{name} has no texture coordinates; create it from a model converted with --texture"
                 )
             image = self._load_colour_map(texture, name)
-            node = next(
+            # The slots say what the head shows; a slot linked to the object
+            # can hide the mesh's own material.
+            slot = next(
                 (
-                    material.node_tree.nodes.get(FLAME_COLOUR_NODE)
-                    for material in obj.data.materials
-                    if material is not None
-                    and material.node_tree is not None
-                    and material.node_tree.nodes.get(FLAME_COLOUR_NODE) is not None
+                    slot
+                    for slot in obj.material_slots
+                    if slot.material is not None
+                    and slot.material.node_tree is not None
+                    and slot.material.node_tree.nodes.get(FLAME_COLOUR_NODE) is not None
                 ),
                 None,
             )
-            if node is None:
+            if slot is None:
                 obj.data.materials.append(self._colour_material(name, image))
                 # Show the colour on every face, whatever slot it used before.
-                slot = len(obj.data.materials) - 1
-                obj.data.polygons.foreach_set("material_index", [slot] * len(obj.data.polygons))
+                index = len(obj.data.materials) - 1
+                obj.data.polygons.foreach_set("material_index", [index] * len(obj.data.polygons))
             else:
+                material = slot.material
+                if material.users > 1:
+                    # Another object or mesh shares the material; the new map
+                    # is for this head alone.
+                    material = material.copy()
+                    slot.material = material
+                node = material.node_tree.nodes.get(FLAME_COLOUR_NODE)
                 replaced = node.image
                 node.image = image
                 # Packed images stay in memory until removed.

@@ -5290,7 +5290,9 @@ async fn recording_addon() -> (FakeAddon, Arc<std::sync::Mutex<Vec<(String, Valu
 #[tokio::test]
 async fn head_create_sends_texture_coordinates_and_a_colour_map() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("colour.png"), b"png").unwrap();
+    image::RgbImage::new(8, 8)
+        .save(root.path().join("colour.png"))
+        .unwrap();
     let (fake, captured) = recording_addon().await;
     let (_models, textured) = tetrahedron_library(true);
     let server = head_server_in(&fake, textured, root.path());
@@ -5328,8 +5330,11 @@ async fn head_create_sends_texture_coordinates_and_a_colour_map() {
 #[tokio::test]
 async fn head_colour_maps_are_checked_before_blender_is_asked() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("colour.png"), b"png").unwrap();
+    image::RgbImage::new(8, 8)
+        .save(root.path().join("colour.png"))
+        .unwrap();
     std::fs::write(root.path().join("colour.jpg"), b"jpg").unwrap();
+    std::fs::write(root.path().join("fake.png"), b"not a png").unwrap();
     let fake = FakeAddon::spawn(|_, _| panic!("invalid colour maps must not reach Blender")).await;
     let (_plain_models, plain) = tetrahedron_library(false);
     let (_models, textured) = tetrahedron_library(true);
@@ -5351,6 +5356,18 @@ async fn head_colour_maps_are_checked_before_blender_is_asked() {
             "create",
             json!({"texture": "colour.jpg"}),
             ".png",
+        ),
+        (
+            &textured,
+            "create",
+            json!({"texture": "fake.png"}),
+            "not a PNG image",
+        ),
+        (
+            &textured,
+            "update",
+            json!({"object": "Head", "texture": "fake.png"}),
+            "not a PNG image",
         ),
         (
             &textured,

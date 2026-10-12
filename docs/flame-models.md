@@ -165,7 +165,9 @@ The image is packed into the scene, so the head keeps its colour without the
 workspace file. Its material feeds the image into the base colour of a
 Principled BSDF, which the viewport and the render tools show. `update`
 accepts `texture` too, to replace the colour map of a head created with
-texture coordinates. The colour stays in Blender: `export` and `prepare_print`
+texture coordinates. It changes the material the head actually shows: when
+another object shares that material, the head gets its own copy, and when a
+slot linked to the object hides the colour material, a visible one is added. The colour stays in Blender: `export` and `prepare_print`
 write geometry only.
 
 ### Export a head
