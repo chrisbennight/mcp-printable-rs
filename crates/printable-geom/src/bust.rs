@@ -59,6 +59,12 @@ const MAX_DISPLACEMENT_SIDE: usize = 1024;
 /// Displacement is surface detail; values beyond this fraction of the head's
 /// height are not.
 const MAX_DISPLACEMENT_FRACTION: f64 = 0.05;
+/// Map samples and applied distances below this share of the largest
+/// magnitude are not detail. Maps stored as 16-bit integers carry rounding
+/// noise of about one part in 65,535 where they are meant to be zero.
+const DETAIL_SHARE: f64 = 0.005;
+/// `relief_mm` sets the depth of detail at this percentile of its magnitude.
+const RELIEF_PERCENTILE: f64 = 95.0;
 const MIN_CIRCLE_SEGMENTS: i32 = 16;
 const MAX_CIRCLE_SEGMENTS: i32 = 2048;
 
@@ -99,6 +105,10 @@ pub struct Displacement {
     pub values: Vec<f32>,
     /// Texture coordinates of the three corners of each request triangle.
     pub triangle_uvs: Vec<[[f32; 2]; 3]>,
+    /// Scale the map so that the 95th percentile of its magnitude, over the
+    /// samples that carry detail, is this deep on the finished bust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relief_mm: Option<f64>,
 }
 
 impl Displacement {
@@ -189,6 +199,22 @@ pub struct BustReport {
 pub struct DisplacementReport {
     pub lowest_mm: f64,
     pub highest_mm: f64,
+    /// Percentiles of the distance applied at the surface's vertices where
+    /// the map carries detail. Absent when no vertex does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percentiles_mm: Option<DetailPercentiles>,
+    /// Factor the map was multiplied by to reach `relief_mm`; 1 without it.
+    pub relief_scale: f64,
+}
+
+/// Percentiles of applied detail, in millimetres at the finished size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DetailPercentiles {
+    pub p1: f64,
+    pub p5: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
 }
 
 /// Build a closed, printable bust from an open head surface and its parts.
@@ -260,7 +286,11 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         let vertex = upright(vertex);
         [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
     };
-    let displacement = request.displacement.as_ref();
+    let relieved = match &request.displacement {
+        Some(map) => Some(with_relief(map, scale, span)?),
+        None => None,
+    };
+    let displacement = relieved.as_ref().map(|(map, _)| map);
     let smooth = parts
         .iter()
         .map(|part| {
@@ -287,16 +317,16 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     // The smoothed parts overlap one another and can pass through themselves
     // where FLAME's surface folds, at the lips and ears. Remeshing their
     // union yields one valid solid; the flat base is cut afterwards.
-    let build = |edge: f64| -> Result<(Manifold, [f64; 2]), GeometryError> {
+    let build = |edge: f64| -> Result<(Manifold, Vec<f64>), GeometryError> {
         let mut vertices = Vec::new();
         let mut triangles = Vec::new();
-        let mut range = [f64::INFINITY, f64::NEG_INFINITY];
+        let mut distances = Vec::new();
         for part in &smooth {
             let refined = part.refine_to_length(edge);
             let mesh = match displacement {
                 Some(map) => {
-                    let (mesh, [low, high]) = displaced(&refined, map, scale);
-                    range = [range[0].min(low), range[1].max(high)];
+                    let (mesh, applied) = displaced(&refined, map, scale);
+                    distances.extend(applied);
                     mesh
                 }
                 None => mesh_from(&refined),
@@ -316,16 +346,16 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             Some(height) => solid.trim_by_plane([0.0, 0.0, 1.0], height),
             None => solid,
         };
-        Ok((solid, range))
+        Ok((solid, distances))
     };
     // Large meshes are dropped as soon as they are replaced, so that no more
     // than two copies are alive within the worker's memory limit.
-    let (mut refined, mut range) = build(edge)?;
+    let (mut refined, mut distances) = build(edge)?;
     if refined.num_tri() > surface_limit {
         // The area estimate was low; size the edge from the observed count.
         edge *= (refined.num_tri() as f64 / limit).sqrt() * 1.02;
         drop(refined);
-        (refined, range) = build(edge)?;
+        (refined, distances) = build(edge)?;
     }
     if refined.num_tri() > surface_limit {
         return Err(GeometryError::Kernel(
@@ -418,12 +448,86 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         discarded_fragments: fragments,
         plinth,
         hollow,
-        displacement: displacement.map(|_| DisplacementReport {
-            lowest_mm: range[0] * correction,
-            highest_mm: range[1] * correction,
-        }),
+        displacement: relieved
+            .map(|(_, relief_scale)| detail_report(&mut distances, correction, relief_scale)),
     };
     Ok(Prepared::Done(mesh, Box::new(report)))
+}
+
+/// The map to apply and the factor it was scaled by: with `relief_mm`, the
+/// map is scaled so that its 95th-percentile magnitude over samples that
+/// carry detail reaches that depth once the head is scaled by `scale`.
+fn with_relief(
+    map: &Displacement,
+    scale: f64,
+    head_height: f64,
+) -> Result<(Displacement, f64), GeometryError> {
+    let Some(relief) = map.relief_mm else {
+        return Ok((map.clone(), 1.0));
+    };
+    let mut magnitudes: Vec<f64> = map
+        .values
+        .iter()
+        .map(|value| f64::from(value.abs()))
+        .collect();
+    let largest = magnitudes.iter().copied().fold(0.0, f64::max);
+    magnitudes.retain(|magnitude| *magnitude > DETAIL_SHARE * largest);
+    let Some(reference) = percentile(&mut magnitudes, RELIEF_PERCENTILE) else {
+        // A map without detail has nothing to scale.
+        return Ok((map.clone(), 1.0));
+    };
+    let factor = relief / (reference * scale);
+    if largest * factor > MAX_DISPLACEMENT_FRACTION * head_height {
+        return Err(GeometryError::InvalidOptions(format!(
+            "relief_mm would raise detail beyond {:.0}% of the head's height",
+            MAX_DISPLACEMENT_FRACTION * 100.0
+        )));
+    }
+    let mut scaled = map.clone();
+    for value in &mut scaled.values {
+        *value = (f64::from(*value) * factor) as f32;
+    }
+    Ok((scaled, factor))
+}
+
+/// The applied range and, over the vertices that carry detail, its
+/// percentiles, scaled by `correction` to the finished size.
+fn detail_report(
+    distances: &mut Vec<f64>,
+    correction: f64,
+    relief_scale: f64,
+) -> DisplacementReport {
+    let lowest = distances.iter().copied().fold(f64::INFINITY, f64::min);
+    let highest = distances.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let largest = lowest.abs().max(highest.abs());
+    distances.retain(|distance| distance.abs() > DETAIL_SHARE * largest);
+    let mut at = |rank: f64| percentile(distances, rank).map(|value| value * correction);
+    let percentiles_mm = match (at(1.0), at(5.0), at(50.0), at(95.0), at(99.0)) {
+        (Some(p1), Some(p5), Some(p50), Some(p95), Some(p99)) => Some(DetailPercentiles {
+            p1,
+            p5,
+            p50,
+            p95,
+            p99,
+        }),
+        _ => None,
+    };
+    DisplacementReport {
+        lowest_mm: lowest * correction,
+        highest_mm: highest * correction,
+        percentiles_mm,
+        relief_scale,
+    }
+}
+
+/// The value at `rank`, 0 to 100, by nearest rank; `None` when empty.
+fn percentile(values: &mut [f64], rank: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable_by(f64::total_cmp);
+    let index = (rank.clamp(0.0, 100.0) / 100.0 * (values.len() - 1) as f64).round();
+    Some(values[index as usize])
 }
 
 /// Raise the bust onto a cylinder centred under its flat base.
@@ -697,6 +801,12 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
         }
         if map.triangle_uvs.len() != request.triangles.len() {
             return invalid("there must be texture coordinates for every head triangle");
+        }
+        if map
+            .relief_mm
+            .is_some_and(|relief| !(relief.is_finite() && relief > 0.0))
+        {
+            return invalid("relief must be a positive number of millimetres");
         }
         if !map
             .triangle_uvs
@@ -993,8 +1103,9 @@ impl PropertyMesh {
 
 /// The refined surface of a displaced part, each vertex moved along its
 /// normal by the map value at its texture coordinates times its weight,
-/// scaled from the request's units to the bust's.
-fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh, [f64; 2]) {
+/// scaled from the request's units to the bust's, and the distance each
+/// vertex moved.
+fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh, Vec<f64>) {
     let mesh = solid.to_meshgl64();
     let width = mesh.num_prop();
     let properties = mesh.vert_properties();
@@ -1042,7 +1153,7 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
     }
     let mut remap = vec![u32::MAX; count];
     let mut vertices = Vec::new();
-    let mut range = [f64::INFINITY, f64::NEG_INFINITY];
+    let mut distances = Vec::new();
     let triangles = triangles
         .iter()
         .map(|triangle| {
@@ -1051,7 +1162,7 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
                     remap[index] = vertices.len() as u32;
                     let (sum, copies) = offsets[index];
                     let distance = sum / f64::from(copies.max(1)) * scale;
-                    range = [range[0].min(distance), range[1].max(distance)];
+                    distances.push(distance);
                     let normal = normals[index];
                     let length = norm(normal);
                     let point = position(index);
@@ -1070,7 +1181,7 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
             vertices,
             triangles,
         },
-        range,
+        distances,
     )
 }
 
@@ -1359,6 +1470,7 @@ mod tests {
             height: side,
             values,
             triangle_uvs,
+            relief_mm: None,
         });
         request
     }
@@ -1389,10 +1501,11 @@ mod tests {
             height: 2,
             values: vec![0.25; 4],
             triangle_uvs: vec![[[0.5, 0.5]; 3]; part.triangles.len()],
+            relief_mm: None,
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
-        let (raised, range) = displaced(&solid, &map, 2.0);
-        assert_eq!(range, [0.5, 0.5]);
+        let (raised, distances) = displaced(&solid, &map, 2.0);
+        assert!(distances.iter().all(|&distance| distance == 0.5));
         for vertex in &raised.vertices {
             let radius = norm(*vertex);
             assert!((radius - 10.5).abs() < 0.01, "radius {radius}");
@@ -1415,6 +1528,7 @@ mod tests {
             triangle_uvs: (0..triangles.len())
                 .map(|index| [[0.2, 0.2], [0.4, 0.2], [0.2 + 0.01 * index as f32, 0.6]])
                 .collect(),
+            relief_mm: None,
         };
         let solid = part_solid(head, |vertex| vertex, Some(&map)).unwrap();
         let mesh = solid.to_meshgl64();
@@ -1480,6 +1594,52 @@ mod tests {
         assert!(validation.solid_geometry, "{validation:?}");
         assert_eq!(validation.topology.connected_components, 1);
         assert_eq!(validation.topology.self_intersections, Some(0));
+    }
+
+    #[test]
+    fn relief_scales_detail_to_the_requested_depth_and_reports_percentiles() {
+        let wave = |u: f64, v: f64| (0.5 * (12.0 * u).sin() * (12.0 * v).cos()) as f32;
+        let (_, plain) = prepare_bust(&with_map(request(1.0, 1_000_000), wave)).unwrap();
+        let plain = plain.displacement.expect("displacement report");
+        assert_eq!(plain.relief_scale, 1.0);
+        let percentiles = plain.percentiles_mm.expect("detail percentiles");
+        assert!(percentiles.p1 < percentiles.p50 && percentiles.p50 < percentiles.p99);
+        assert!(plain.lowest_mm <= percentiles.p1 && percentiles.p99 <= plain.highest_mm);
+
+        let mut relieved = with_map(request(1.0, 1_000_000), wave);
+        relieved.displacement.as_mut().unwrap().relief_mm = Some(0.3);
+        let (mesh, report) = prepare_bust(&relieved).unwrap();
+        let applied = report.displacement.expect("displacement report");
+        assert!(applied.relief_scale != 1.0);
+        // The surface samples the map unevenly, so the applied 95th
+        // percentile lands near, not exactly on, the requested depth.
+        let p95 = applied
+            .percentiles_mm
+            .map(|percentiles| percentiles.p95.max(-percentiles.p5))
+            .expect("detail percentiles");
+        assert!((0.15..0.45).contains(&p95), "{applied:?}");
+        assert!(validated(&mesh).solid_geometry);
+
+        relieved.displacement.as_mut().unwrap().relief_mm = Some(1000.0);
+        assert!(matches!(
+            prepare_bust(&relieved),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("relief_mm")
+        ));
+        relieved.displacement.as_mut().unwrap().relief_mm = Some(-1.0);
+        assert!(matches!(
+            prepare_bust(&relieved),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("relief")
+        ));
+    }
+
+    #[test]
+    fn a_map_without_detail_is_left_unscaled_by_relief() {
+        let mut flat = with_map(request(1.0, 1_000_000), |_, _| 0.0);
+        flat.displacement.as_mut().unwrap().relief_mm = Some(0.3);
+        let (_, report) = prepare_bust(&flat).unwrap();
+        let applied = report.displacement.expect("displacement report");
+        assert_eq!(applied.relief_scale, 1.0);
+        assert_eq!(applied.percentiles_mm, None);
     }
 
     fn validated(mesh: &TriangleMesh) -> crate::ValidationReport {

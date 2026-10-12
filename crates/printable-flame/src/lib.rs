@@ -10,6 +10,7 @@
 //! subject's left is +x. Model data is float32; evaluation accumulates in f64.
 //! The crate performs no filesystem, network, or async I/O.
 
+pub mod detail;
 mod model;
 mod pose;
 pub mod texture;

@@ -328,8 +328,52 @@ openings have no texture coordinates, so the detail fades to nothing across
 them. The displaced surface is rebuilt in step 4 like any other, so the bust
 is still one valid solid even where the detail folds the surface.
 
-The `bust` report adds `displacement`, the deepest depression and the
-highest raise applied, in millimetres at the finished size.
+### Filter detail for printing
+
+A map estimated from a photograph mixes fine detail, such as wrinkles and
+creases, with broader shape. At bust scale the broad part prints as lumps,
+while the fine part can be shallower than a layer. These optional
+`displacement` fields shape the detail before it is applied, in this order:
+
+| Field | Range | Effect |
+| --- | --- | --- |
+| `high_pass_mm` | 1 to 100 | Removes features wider than about this many millimetres on the life-size head, keeping finer detail. |
+| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, so a few extreme values do not dominate. |
+| `gain` | 0 to 10, default 1 | Multiplies the detail. |
+| `relief_mm` | 0.01 to 10 | Scales the detail so that the 95th percentile of the map's detail is this many millimetres at the bust's scale, whatever its height. The applied percentiles in the report land close to it, not exactly on it, because the surface samples the map unevenly. Not with `gain`. |
+
+Texels whose magnitude is below 0.5% of the map's largest are not detail;
+filtering leaves them alone and works on the detail by itself, so a map that
+covers only the face is not pulled toward zero at its edges. The filter
+width is converted to texels using the model's own surface: the median, over
+the triangles that carry detail, of how many millimetres one texel covers.
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "path": "busts/detail.stl",
+  "displacement": {"path": "photos/detail.png", "offset_mm": -3.07, "scale_mm": 6.64,
+                   "high_pass_mm": 8, "clip_percentile": 99, "relief_mm": 0.25}
+}}
+```
+
+The `bust` report adds `displacement`:
+
+- `lowest_mm` and `highest_mm`, the deepest depression and the highest raise
+  applied, in millimetres at the finished size;
+- `percentiles_mm`, the 1st, 5th, 50th, 95th and 99th percentiles of the
+  applied distance over the vertices where the map carries detail;
+- `relief_scale`, the factor `relief_mm` multiplied the map by, or 1;
+- `filter`, the millimetres per texel used and the filter settings applied.
+
+On a 100 mm bust of the FLAME 2020 generic head with a map reconstructed from
+one photograph, the unfiltered detail ran from -0.61 to +0.70 mm between
+its 5th and 95th percentiles, and rendered as broad lumps on the cheeks and
+chin. With `high_pass_mm` 8 and `clip_percentile` 99, that span was -0.13 to
++0.16 mm and the lumps were gone while forehead and cheek creases remained.
+Adding `relief_mm` 0.25 raised the 95th percentile to 0.24 mm. Each request
+took about 8 seconds.
 
 A 100 mm bust from a photograph reconstructed with `reconstruct` was one
 watertight, manifold solid with no self-intersections and 432,000 triangles.
