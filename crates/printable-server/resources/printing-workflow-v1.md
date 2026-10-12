@@ -39,7 +39,12 @@ Stage explicitly with the target printer, project plate and ordered AMS mapping.
 Use reported tray IDs rather than assuming the printer's display labels or a
 particular AMS variant. External spools use `use_ams: false` and the target's
 supported mapping. Select calibration and timelapse options deliberately for the
-hardware and plate. Staging requests manual start and returns its effective setup.
+hardware and plate. Unless turned off, staging runs bed levelling, flow,
+vibration and nozzle offset calibration on every print; Bambuddy applies nozzle
+offset calibration only to dual-nozzle printers. Print records report bed
+levelling, flow and nozzle offset calibration as `off`, `on` or `auto`, where
+`auto` lets the printer skip a calibration that ran recently. Staging requests
+manual start and returns its effective setup.
 
 Inspect status before control, and start only with current physical readiness
 answers and an appropriate slice. Bambuddy owns scheduling and authoritative

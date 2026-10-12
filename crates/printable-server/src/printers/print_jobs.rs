@@ -223,8 +223,11 @@ impl PrinterService {
                         "provenance":receipt,"local_sha256":source_sha256,"backend_digest_verification":"unverified"}),
                 )
             }
-            PrintRequest::Stage(params) => {
+            PrintRequest::Stage(mut params) => {
                 validate_id(params.printer_id)?;
+                // Nozzle offset calibration is on unless the caller turns it off, like
+                // the other calibrations. Bambuddy sends it only to dual-nozzle printers.
+                params.options.nozzle_offset_cali.get_or_insert(true);
                 let (source_id, is_archive) = match (params.library_file_id, params.archive_id) {
                     (Some(id), None) => (id, false),
                     (None, Some(id)) => (id, true),

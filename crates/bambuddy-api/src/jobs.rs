@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use url::Url;
 
-pub use crate::job_types::{FileMetadata, LibraryFile, PrintArchive, QueueItem};
+pub use crate::job_types::{Calibration, FileMetadata, LibraryFile, PrintArchive, QueueItem};
 
 #[derive(Debug, Serialize)]
 pub struct StageJob {
