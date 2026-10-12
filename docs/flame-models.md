@@ -203,7 +203,8 @@ write geometry only.
 ### Head appearance in Blender
 
 New heads are shaded smooth. By default a subdivision modifier smooths them
-further, and the neck opening is closed with a single face. The face uses the
+further, and the neck opening, the opening with the longest rim, is closed
+with a single face. The face uses the
 existing vertices, so `update` still applies. Each face also gets a
 `printable_eye` attribute: 1 on the eyeballs, which are the parts of the mesh
 separate from the head, and 0 elsewhere. The head's material uses it to give

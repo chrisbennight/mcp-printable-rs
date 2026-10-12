@@ -4862,6 +4862,24 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(len(mesh.uv_layers["FLAME"].uv), 2 * (3 * len(faces) + 4))
         self.assertEqual(mesh.attributes["printable_eye"].values, [0.0] * (len(faces) + 1))
 
+    def test_the_neck_is_the_opening_with_the_longest_rim_however_the_head_is_turned(self) -> None:
+        from printable_bridge.handlers import _neck_loop
+
+        # A box open at both ends: a 10 by 10 opening at y = 0 and a 2 by 2
+        # opening in the middle of a closed top at y = 10.
+        bottom = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0]]
+        top = [[0.0, 10.0, 0.0], [10.0, 10.0, 0.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0]]
+        hole = [[4.0, 10.0, 4.0], [6.0, 10.0, 4.0], [6.0, 10.0, 6.0], [4.0, 10.0, 6.0]]
+        walls = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]]
+        ring = [[4, 5, 9], [4, 9, 8], [5, 6, 10], [5, 10, 9], [6, 7, 11], [6, 11, 10], [7, 4, 8], [7, 8, 11]]
+        faces = [tuple(face) for face in walls + ring]
+        for upside_down in (False, True):
+            vertices = [tuple(point) for point in bottom + top + hole]
+            if upside_down:
+                vertices = [(x, -y, -z) for x, y, z in vertices]
+            with self.subTest(upside_down=upside_down):
+                self.assertEqual(sorted(_neck_loop(vertices, faces)), [0, 1, 2, 3])
+
     def test_separate_parts_are_marked_as_eyes(self) -> None:
         vertices = self.VERTICES + [[50.0, 0.0, 0.0], [51.0, 0.0, 0.0], [50.0, 1.0, 0.0]]
         faces = self.FACES + [[4, 5, 6]]

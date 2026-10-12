@@ -468,9 +468,11 @@ def _stored_appearance(obj: Any) -> dict[str, Any]:
 def _neck_loop(
     vertices: list[tuple[float, float, float]], faces: list[tuple[int, int, int]]
 ) -> list[int] | None:
-    """The lowest boundary loop of the head surface, ordered to close it
-    with a face that keeps the surface consistently oriented. Heads are in
-    FLAME's frame, with y up. None when the surface has no simple boundary."""
+    """The neck: the boundary loop of the head surface with the longest rim,
+    ordered to close it with a face that keeps the surface consistently
+    oriented. FLAME's neck rim is several times the length of its mouth's,
+    however the head is posed. None when the surface has no simple
+    boundary."""
     directed = {(a, b) for face in faces for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0]))}
     following: dict[int, int] = {}
     for a, b in directed:
@@ -496,9 +498,12 @@ def _neck_loop(
         loops.append(loop)
     if not loops:
         return None
-    lowest = min(loops, key=lambda loop: sum(vertices[index][1] for index in loop) / len(loop))
+    def rim(loop: list[int]) -> float:
+        return sum(math.dist(vertices[a], vertices[b]) for a, b in zip(loop, loop[1:] + loop[:1]))
+
+    neck = max(loops, key=rim)
     # The boundary runs against the surface's faces; the cap runs the other way.
-    return lowest[::-1]
+    return neck[::-1]
 
 
 def _minor_island_faces(faces: list[tuple[int, int, int]]) -> list[bool]:
