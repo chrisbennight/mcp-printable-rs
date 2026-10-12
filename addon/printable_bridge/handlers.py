@@ -297,6 +297,9 @@ def _only_keys(params: dict[str, Any], allowed: set[str]) -> None:
 FLAME_VARIANT = "printable_flame_variant"
 FLAME_UV_LAYER = "FLAME"
 FLAME_COLOUR_NODE = "FLAME colour map"
+MAX_COLOUR_MAP_BYTES = 64 * 1024 * 1024
+MAX_COLOUR_MAP_PIXELS = 8192
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _points(params: dict[str, Any], name: str) -> list[tuple[float, float, float]]:
@@ -342,6 +345,23 @@ def _corner_uvs(params: dict[str, Any], name: str, corners: int) -> list[float] 
             raise HandlerError(f"{name} must contain finite two-component coordinates")
         flat.extend((float(uv[0]), float(uv[1])))
     return flat
+
+
+def _check_colour_map(path: Path) -> None:
+    """Refuse a staged colour map that is too large or not a PNG of a
+    sensible size, judged from its header before anything decodes it."""
+    if path.stat().st_size > MAX_COLOUR_MAP_BYTES:
+        raise HandlerError("the colour map is larger than 64 MiB")
+    with path.open("rb") as image:
+        header = image.read(24)
+    if len(header) < 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
+        raise HandlerError("the colour map is not a PNG image")
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    if not (1 <= width <= MAX_COLOUR_MAP_PIXELS and 1 <= height <= MAX_COLOUR_MAP_PIXELS):
+        raise HandlerError(
+            f"a colour map must be at most {MAX_COLOUR_MAP_PIXELS} pixels on each side"
+        )
 
 
 def _triangles(
@@ -1260,7 +1280,19 @@ class BlenderHandlers:
         """Load a workspace PNG and pack it into the scene, so the head keeps
         its colour without the workspace file."""
         request = self._workspace.validate(path, ".png")
-        with self._workspace.stage_input(request) as source:
+        # The copy is checked one megabyte at a time, so an oversized file is
+        # refused before it fills the staging area.
+        chunks = 0
+
+        def within_budget() -> None:
+            nonlocal chunks
+            chunks += 1
+            if chunks > MAX_COLOUR_MAP_BYTES // (1024 * 1024) + 2:
+                raise HandlerError("the colour map is larger than 64 MiB")
+
+        with self._workspace.stage_input(request, check_budget=within_budget) as source:
+            # The staged copy is private, so what is checked is what Blender loads.
+            _check_colour_map(source)
             try:
                 image = self._bpy.data.images.load(str(source), check_existing=False)
             except RuntimeError as error:
@@ -1319,22 +1351,21 @@ class BlenderHandlers:
             image = self._load_colour_map(texture, name)
             # The slots say what the head shows; a slot linked to the object
             # can hide the mesh's own material.
-            slot = next(
+            index = next(
                 (
-                    slot
-                    for slot in obj.material_slots
+                    index
+                    for index, slot in enumerate(obj.material_slots)
                     if slot.material is not None
                     and slot.material.node_tree is not None
                     and slot.material.node_tree.nodes.get(FLAME_COLOUR_NODE) is not None
                 ),
                 None,
             )
-            if slot is None:
+            if index is None:
                 obj.data.materials.append(self._colour_material(name, image))
-                # Show the colour on every face, whatever slot it used before.
                 index = len(obj.data.materials) - 1
-                obj.data.polygons.foreach_set("material_index", [index] * len(obj.data.polygons))
             else:
+                slot = obj.material_slots[index]
                 material = slot.material
                 if material.users > 1:
                     # Another object or mesh shares the material; the new map
@@ -1349,6 +1380,8 @@ class BlenderHandlers:
                     self._bpy.data.images.remove(replaced)
                     # Blender suffixed the new name while the old one existed.
                     image.name = f"{name} colour map"
+            # Show the colour on every face, whatever slot it used before.
+            obj.data.polygons.foreach_set("material_index", [index] * len(obj.data.polygons))
         obj.data.vertices.foreach_set(
             "co", [coordinate for point in vertices for coordinate in point]
         )

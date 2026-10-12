@@ -4711,10 +4711,19 @@ class FlameHeadHandlerTests(unittest.TestCase):
 
     UVS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
-    def write_map(self, name: str, contents: bytes) -> None:
+    def write_map(self, name: str, tag: bytes, width: int = 4, height: int = 4) -> None:
+        """A file with a PNG header of the given size followed by `tag`."""
+        header = (
+            b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+            + width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes(9)
+        )
         path = Path(self.directory.name) / "workspace" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(contents)
+        path.write_bytes(header + tag)
+
+    @staticmethod
+    def tag(image: FakeImage) -> bytes:
+        return image.contents[33:]
 
     def test_head_gets_texture_coordinates_and_a_packed_colour_map(self) -> None:
         self.write_map("maps/colour.png", b"colour map")
@@ -4722,7 +4731,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
         mesh = self.objects["Head"].data
         self.assertEqual(mesh.uv_layers["FLAME"].uv, [value for uv in self.UVS for value in uv])
         [image] = self.images
-        self.assertEqual((image.contents, image.packed, image.name), (b"colour map", True, "Head colour map"))
+        self.assertEqual((self.tag(image), image.packed, image.name), (b"colour map", True, "Head colour map"))
         [material] = mesh.materials
         self.assertTrue(material.use_nodes)
         node = material.node_tree.nodes.get("FLAME colour map")
@@ -4736,12 +4745,20 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertEqual(mesh.materials, [])
 
     def test_colour_map_problems_create_nothing(self) -> None:
+        workspace = Path(self.directory.name) / "workspace"
+        (workspace / "fake.png").write_bytes(b"not a png at all, just some bytes")
+        self.write_map("wide.png", b"wide", width=9000, height=10)
+        with (workspace / "huge.png").open("wb") as huge:
+            huge.truncate(64 * 1024 * 1024 + 1)
         for overrides, error, message in [
             ({"texture": "colour.png"}, HandlerError, "needs the head's texture coordinates"),
             ({"uv": self.UVS[:5]}, HandlerError, "every triangle corner"),
             ({"uv": self.UVS[:5] + [[0.0, float("inf")]]}, HandlerError, "finite two-component"),
             ({"uv": self.UVS, "texture": "missing.png"}, WorkspaceError, "unavailable"),
             ({"uv": self.UVS, "texture": "colour.jpg"}, WorkspaceError, ""),
+            ({"uv": self.UVS, "texture": "fake.png"}, HandlerError, "not a PNG image"),
+            ({"uv": self.UVS, "texture": "wide.png"}, HandlerError, "8192 pixels"),
+            ({"uv": self.UVS, "texture": "huge.png"}, HandlerError, "larger than 64 MiB"),
         ]:
             with self.subTest(message), self.assertRaisesRegex(error, message):
                 self.create(**overrides)
@@ -4758,9 +4775,9 @@ class FlameHeadHandlerTests(unittest.TestCase):
              "texture": "second.png"},
         )
         [material] = self.objects["Head"].data.materials
-        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents, b"second")
+        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
         # The replaced map is no longer used, so it is removed from memory.
-        self.assertEqual([image.contents for image in self.removed_images], [b"first"])
+        self.assertEqual([self.tag(image) for image in self.removed_images], [b"first"])
         self.assertEqual(self.images[-1].name, "Head colour map")
 
     def test_update_adds_a_colour_map_to_a_head_with_texture_coordinates(self) -> None:
@@ -4772,7 +4789,7 @@ class FlameHeadHandlerTests(unittest.TestCase):
              "texture": "colour.png"},
         )
         [material] = self.objects["Head"].data.materials
-        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents, b"colour")
+        self.assertEqual(material.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"colour")
 
     def test_update_shows_the_colour_on_every_face_beside_other_materials(self) -> None:
         self.write_map("colour.png", b"colour")
@@ -4803,10 +4820,10 @@ class FlameHeadHandlerTests(unittest.TestCase):
         head.overrides[0] = FakeMaterial("Clay override")
         self.update_texture("second.png")
         # The hidden mesh material is untouched; a visible colour material is added.
-        self.assertEqual(hidden.node_tree.nodes.get("FLAME colour map").image.contents, b"first")
+        self.assertEqual(hidden.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"first")
         self.assertEqual(head.data.polygons.material_index, [1, 1])
         added = head.material_slots[1].material
-        self.assertEqual(added.node_tree.nodes.get("FLAME colour map").image.contents, b"second")
+        self.assertEqual(added.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
 
     def test_update_gives_a_shared_colour_material_its_own_copy(self) -> None:
         self.write_map("first.png", b"first")
@@ -4818,10 +4835,29 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.update_texture("second.png")
         own = head.material_slots[0].material
         self.assertIsNot(own, shared)
-        self.assertEqual(own.node_tree.nodes.get("FLAME colour map").image.contents, b"second")
+        self.assertEqual(own.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"second")
         # The other user keeps its map, which is still in use.
-        self.assertEqual(shared.node_tree.nodes.get("FLAME colour map").image.contents, b"first")
+        self.assertEqual(shared.node_tree.nodes.get("FLAME colour map").image.contents[33:], b"first")
         self.assertEqual(self.removed_images, [])
+
+    def test_update_shows_the_new_colour_even_when_faces_used_another_colour_slot(self) -> None:
+        self.write_map("first.png", b"first")
+        self.write_map("second.png", b"second")
+        self.write_map("third.png", b"third")
+        self.create(uv=self.UVS, texture="first.png")
+        head = self.objects["Head"]
+        self.update_texture("second.png")
+        # A second colour material in slot 1 that the faces use.
+        extra = FakeMaterial("Other colour")
+        node = extra.node_tree.nodes.new("ShaderNodeTexImage")
+        node.name = "FLAME colour map"
+        head.data.materials.append(extra)
+        head.data.polygons.foreach_set("material_index", [1, 1])
+        self.update_texture("third.png")
+        index = head.data.polygons.material_index[0]
+        self.assertEqual(head.data.polygons.material_index, [index, index])
+        shown = head.material_slots[index].material.node_tree.nodes.get("FLAME colour map")
+        self.assertEqual(self.tag(shown.image), b"third")
 
     def test_update_refuses_a_colour_map_without_texture_coordinates(self) -> None:
         self.write_map("colour.png", b"colour")
