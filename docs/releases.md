@@ -31,7 +31,8 @@ versions. Grype retains the corrected matches and their VEX reason under
 `ignoredMatches` in each scan report. The severity and known-exploited
 vulnerability policy continues to apply to every remaining match.
 
-Server, Blender, CAD and slicer images receive `sha-<commit>` tags in GHCR.
+Server, Blender, CAD, slicer and photo reconstruction images receive
+`sha-<commit>` tags in GHCR.
 The publisher checks that downloaded images match the tested image IDs, then
 publishes the image-set record with their registry digests. The `release-image`
 Actions artifact contains the record's immutable reference. Failed publication
@@ -49,7 +50,9 @@ registry setting; preserve it when adding packages.
 
 ## Installation and updates
 
-The record identifies a matching server, Blender, CAD and slicer set.
+The record identifies a matching server, Blender, CAD, slicer and photo
+reconstruction set. The reconstruction image is the one CI tests: it carries
+CPU-only PyTorch and runs without a GPU.
 Installations pin its digest and resolve the component references from its
 labels. A downstream deployment repository reviews image updates through its
 own pull requests and deploys after merge. No private deployment configuration

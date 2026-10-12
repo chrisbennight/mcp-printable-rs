@@ -376,8 +376,16 @@ keypoints.
 
 ### Run the worker
 
-Build the worker image from a source checkout, and add the service in your own
-Compose override, next to the FLAME model mount:
+Each release publishes the worker as
+`ghcr.io/chrisbennight/mcp-printable-recon:sha-<commit>`, and the image-set
+record names it in its `org.printable.recon.image` and
+`org.printable.recon.digest` labels. The published image is the build CI
+tests: it carries CPU-only PyTorch and runs without a GPU. To use it, replace
+`build` in the service below with that pinned image reference and drop the GPU
+reservation.
+
+To build the worker from a source checkout instead, add the service in your
+own Compose override, next to the FLAME model mount:
 
 ```yaml
 services:
