@@ -90,6 +90,98 @@ pub(super) struct HeadCreateParams {
     /// Needs a model converted with its texture layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     texture: Option<String>,
+    /// How the head looks in Blender. Every field is optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appearance: Option<HeadAppearance>,
+}
+
+/// How a head looks in Blender. Heads are shaded smooth; the materials
+/// apply when the head has a colour map.
+#[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HeadAppearance {
+    /// Subdivision levels, applied as a modifier so the mesh keeps FLAME's
+    /// vertices, 0 to 2 (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subdivision: Option<u8>,
+    /// Close the neck opening with one face that adds no vertices (default
+    /// true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    close_neck: Option<bool>,
+    /// Skin roughness, 0 to 1 (default 0.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    skin_roughness: Option<f64>,
+    /// Weight of light scattering beneath the skin, 0 to 1 (default 0.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    skin_subsurface: Option<f64>,
+    /// How far light scatters beneath the skin, in millimetres, 0 to 100
+    /// (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subsurface_scale_mm: Option<f64>,
+    /// Eyeball roughness, 0 to 1 (default 0.05). The eyeballs are the parts
+    /// of the mesh separate from the head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_roughness: Option<f64>,
+    /// Show a displacement map as bump detail, so the Blender head matches
+    /// a printed bust. Needs `texture`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bump: Option<HeadBump>,
+}
+
+/// A greyscale PNG displacement map in FLAME's texture layout, such as one
+/// estimated from photographs, shown as bump.
+#[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HeadBump {
+    /// Workspace path of the PNG.
+    path: String,
+    /// Millimetres between the map's lowest and highest values, 0 to 100:
+    /// the map's `scale_mm`.
+    scale_mm: f64,
+    /// Exaggerate or soften the detail, 0 to 10 (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    strength: Option<f64>,
+}
+
+impl HeadAppearance {
+    fn validate(&self) -> Result<(), ToolError> {
+        if let Some(subdivision) = self.subdivision {
+            in_range("appearance.subdivision", subdivision, &(0..=2))?;
+        }
+        for (name, value, range) in [
+            (
+                "appearance.skin_roughness",
+                self.skin_roughness,
+                &(0.0..=1.0),
+            ),
+            (
+                "appearance.skin_subsurface",
+                self.skin_subsurface,
+                &(0.0..=1.0),
+            ),
+            (
+                "appearance.subsurface_scale_mm",
+                self.subsurface_scale_mm,
+                &(0.0..=100.0),
+            ),
+            ("appearance.eye_roughness", self.eye_roughness, &(0.0..=1.0)),
+            (
+                "appearance.bump.scale_mm",
+                self.bump.as_ref().map(|bump| bump.scale_mm),
+                &(0.0..=100.0),
+            ),
+            (
+                "appearance.bump.strength",
+                self.bump.as_ref().and_then(|bump| bump.strength),
+                &(0.0..=10.0),
+            ),
+        ] {
+            if let Some(value) = value {
+                in_range(name, value, range)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -243,6 +335,8 @@ struct CreateCommand<'a> {
     uv: Option<Vec<[f32; 2]>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     texture: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    appearance: Option<&'a HeadAppearance>,
 }
 
 #[derive(serde::Serialize)]
@@ -268,6 +362,17 @@ pub(super) async fn create(
 ) -> Result<Value, ToolError> {
     if let Some(texture) = &params.texture {
         check_colour_map(&workspace, texture).await?;
+    }
+    if let Some(appearance) = &params.appearance {
+        appearance.validate()?;
+        if let Some(bump) = &appearance.bump {
+            if params.texture.is_none() {
+                return Err(ToolError::Validation(
+                    "appearance.bump needs a texture".into(),
+                ));
+            }
+            check_colour_map(&workspace, &bump.path).await?;
+        }
     }
     let (model, head) = evaluate(
         settings,
@@ -296,6 +401,7 @@ pub(super) async fn create(
         faces: model.faces(),
         uv,
         texture: params.texture.as_deref(),
+        appearance: params.appearance.as_ref(),
     };
     let result = blender_command(blender, "create_flame_head", &command).await?;
     Ok(annotate(result, &model, &head))

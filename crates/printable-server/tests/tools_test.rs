@@ -5328,6 +5328,80 @@ async fn head_create_sends_texture_coordinates_and_a_colour_map() {
 }
 
 #[tokio::test]
+async fn head_create_passes_its_appearance_to_blender() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::new(8, 8)
+        .save(root.path().join("colour.png"))
+        .unwrap();
+    image::GrayImage::new(8, 8)
+        .save(root.path().join("detail.png"))
+        .unwrap();
+    let (fake, captured) = recording_addon().await;
+    let (_models, textured) = tetrahedron_library(true);
+    let server = head_server_in(&fake, textured, root.path());
+    let appearance = json!({
+        "subdivision": 2, "close_neck": false, "skin_roughness": 0.4, "skin_subsurface": 0.2,
+        "subsurface_scale_mm": 1.5, "eye_roughness": 0.1,
+        "bump": {"path": "detail.png", "scale_mm": 6.6, "strength": 1.5}
+    });
+    let result = server
+        .invoke_tool(head_call(json!({"action": "create", "params": {
+            "name": "Styled", "texture": "colour.png", "appearance": appearance
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let calls = captured.lock().unwrap();
+    assert_eq!(calls[0].1["appearance"], appearance);
+}
+
+#[tokio::test]
+async fn head_appearance_is_checked_before_blender_is_asked() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::new(8, 8)
+        .save(root.path().join("colour.png"))
+        .unwrap();
+    std::fs::write(root.path().join("fake.png"), b"not a png").unwrap();
+    let fake =
+        FakeAddon::spawn(|_, _| panic!("an invalid appearance must not reach Blender")).await;
+    let (_models, textured) = tetrahedron_library(true);
+    let server = head_server_in(&fake, textured, root.path());
+    for (params, message) in [
+        (
+            json!({"appearance": {"subdivision": 3}}),
+            "appearance.subdivision",
+        ),
+        (
+            json!({"appearance": {"skin_roughness": 2.0}}),
+            "appearance.skin_roughness",
+        ),
+        (json!({"appearance": {"glow": true}}), "glow"),
+        (
+            json!({"appearance": {"bump": {"path": "colour.png", "scale_mm": 1.0}}}),
+            "appearance.bump needs a texture",
+        ),
+        (
+            json!({"texture": "colour.png", "appearance": {"bump": {"path": "fake.png", "scale_mm": 1.0}}}),
+            "not a PNG",
+        ),
+        (
+            json!({"texture": "colour.png", "appearance": {"bump": {"path": "colour.png", "scale_mm": -1.0}}}),
+            "appearance.bump.scale_mm",
+        ),
+    ] {
+        let result = server
+            .invoke_tool(head_call(json!({"action": "create", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        assert!(
+            format!("{result:?}").contains(message),
+            "{params}: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn head_colour_maps_are_checked_before_blender_is_asked() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::new(8, 8)

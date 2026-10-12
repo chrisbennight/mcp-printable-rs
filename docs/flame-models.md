@@ -200,6 +200,49 @@ material reads the `FLAME` layer by name, so another active UV layer does not
 move the colour. The colour stays in Blender: `export` and `prepare_print`
 write geometry only.
 
+### Head appearance in Blender
+
+New heads are shaded smooth. By default a subdivision modifier smooths them
+further, and the neck opening, the opening with the longest rim, is closed
+with a single face. The face uses the
+existing vertices, so `update` still applies. Each face also gets a
+`printable_eye` attribute: 1 on the eyeballs, which are the parts of the mesh
+separate from the head, and 0 elsewhere. The head's material uses it to give
+the skin and the eyes different finishes. Without a colour map the material
+is a plain neutral colour; a colour map added later by `update` replaces it in
+the same slot and keeps the finish the head was created with.
+
+`create` accepts an optional `appearance` object:
+
+| Field | Default | Range |
+| --- | --- | --- |
+| `subdivision` | 1 | 0 to 2 levels |
+| `close_neck` | true | |
+| `skin_roughness` | 0.5 | 0 to 1 |
+| `skin_subsurface` | 0.1 | 0 to 1, the weight of light scattering beneath the skin |
+| `subsurface_scale_mm` | 1 | 0 to 100 |
+| `eye_roughness` | 0.05 | 0 to 1 |
+| `bump` | none | a displacement map shown as bump detail; needs `texture` |
+
+`bump` takes the `path` of a greyscale PNG displacement map in FLAME's texture
+layout, its `scale_mm`, and an optional `strength` from 0 to 10 (default 1).
+Use the map and `scale_mm` from `reconstruct`, so the Blender head shows the
+same detail as a bust printed with that map:
+
+```json
+{"action": "create", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "texture": "photos/colour.png",
+  "appearance": {"bump": {"path": "photos/detail.png", "scale_mm": 6.64}},
+  "name": "Subject"
+}}
+```
+
+The `portrait` profile of the product render tools lights heads with a large,
+dim key light and a broad fill. In software renders of a head coloured from a
+photograph, it kept pale skin from washing out where `studio_neutral` did not.
+
 ### Export a head
 
 `export` takes the same `variant`, `identity`, `expression` and `pose` as
