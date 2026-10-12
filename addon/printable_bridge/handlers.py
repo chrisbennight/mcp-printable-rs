@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 import hashlib
+import json
 import math
 from pathlib import Path
 import time
@@ -63,6 +64,26 @@ PRODUCT_PRESENTATION_PROFILES = {
             ("key", (1.6, -1.8, 2.2), 1000.0, 1.8),
             ("fill", (-1.5, -0.3, 1.2), 350.0, 2.2),
             ("rim", (0.4, 1.8, 2.0), 650.0, 1.3),
+        ),
+    },
+    # Softer, dimmer light for heads and textured skin: a large, low key
+    # and a broad fill keep pale skin from washing out.
+    "portrait": {
+        "camera_type": "PERSP",
+        "lens_mm": 85.0,
+        "view_transform": "Khronos PBR Neutral",
+        "world_color_srgb": (0.05, 0.05, 0.055),
+        "world_strength": 0.4,
+        "ground": {
+            "base_color_srgb": (0.08, 0.08, 0.08),
+            "metallic": 0.0,
+            "roughness": 0.8,
+        },
+        "default_shading": "smooth_by_angle",
+        "lights": (
+            ("key", (1.0, -2.4, 1.2), 220.0, 3.0),
+            ("fill", (-2.0, -1.4, 0.6), 130.0, 3.0),
+            ("rim", (0.2, 2.0, 2.0), 160.0, 1.2),
         ),
     },
     "studio_dark": {
@@ -298,6 +319,31 @@ def _only_keys(params: dict[str, Any], allowed: set[str]) -> None:
 FLAME_VARIANT = "printable_flame_variant"
 FLAME_UV_LAYER = "FLAME"
 FLAME_COLOUR_NODE = "FLAME colour map"
+FLAME_DETAIL_NODE = "FLAME detail map"
+# Every head material reads the eye attribute through this node; one without
+# the colour node is a plain head material, which a colour map replaces.
+FLAME_EYE_NODE = "FLAME eye finish"
+# A face attribute that is 1 on the eyeballs and 0 elsewhere. The head
+# material reads it to give the eyes their own finish.
+FLAME_EYE_ATTRIBUTE = "printable_eye"
+FLAME_SMOOTHING_MODIFIER = "Printable smoothing"
+# The head's material settings, kept on the object so that a colour map added
+# by a later update gets the finish the head was created with.
+FLAME_APPEARANCE = "printable_head_appearance"
+HEAD_MATERIAL_SETTINGS = ("skin_roughness", "skin_subsurface", "subsurface_scale_mm", "eye_roughness")
+# How a head looks in Blender when the caller does not say. Subsurface
+# scale is in scene units, which are millimetres.
+HEAD_APPEARANCE_DEFAULTS = {
+    "subdivision": 1,
+    "close_neck": True,
+    "skin_roughness": 0.5,
+    "skin_subsurface": 0.1,
+    "subsurface_scale_mm": 1.0,
+    "eye_roughness": 0.05,
+}
+MAX_HEAD_SUBDIVISION = 2
+# A head without a colour map shows this linear RGBA colour, a neutral clay.
+HEAD_PLAIN_COLOUR = (0.8, 0.8, 0.8, 1.0)
 # Colour maps are staged in the bridge's 16 MiB run directory before loading.
 MAX_COLOUR_MAP_BYTES = 12 * 1024 * 1024
 MAX_COLOUR_MAP_PIXELS = 4096
@@ -349,23 +395,137 @@ def _corner_uvs(params: dict[str, Any], name: str, corners: int) -> list[float] 
     return flat
 
 
-def _check_colour_map(path: Path) -> tuple[int, int]:
-    """Refuse a staged colour map that is too large or not a PNG of a
-    sensible size, judged from its header before anything decodes it, and
-    return the width and height the header declares."""
+def _check_colour_map(path: Path, what: str = "colour map") -> tuple[int, int]:
+    """Refuse a staged map that is too large or not a PNG of a sensible
+    size, judged from its header before anything decodes it, and return the
+    width and height the header declares."""
     if path.stat().st_size > MAX_COLOUR_MAP_BYTES:
-        raise HandlerError("the colour map is larger than 12 MiB")
+        raise HandlerError(f"the {what} is larger than 12 MiB")
     with path.open("rb") as image:
         header = image.read(24)
     if len(header) < 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
-        raise HandlerError("the colour map is not a PNG image")
+        raise HandlerError(f"the {what} is not a PNG image")
     width = int.from_bytes(header[16:20], "big")
     height = int.from_bytes(header[20:24], "big")
     if not (1 <= width <= MAX_COLOUR_MAP_PIXELS and 1 <= height <= MAX_COLOUR_MAP_PIXELS):
         raise HandlerError(
-            f"a colour map must be at most {MAX_COLOUR_MAP_PIXELS} pixels on each side"
+            f"a {what} must be at most {MAX_COLOUR_MAP_PIXELS} pixels on each side"
         )
     return width, height
+
+
+def _head_appearance(value: Any) -> dict[str, Any]:
+    """The caller's head appearance with defaults for what it omits."""
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise HandlerError("appearance must be an object")
+    _only_keys(value, {*HEAD_APPEARANCE_DEFAULTS, "bump"})
+    appearance = dict(HEAD_APPEARANCE_DEFAULTS)
+    subdivision = value.get("subdivision", appearance["subdivision"])
+    if (isinstance(subdivision, bool) or not isinstance(subdivision, int)
+            or not 0 <= subdivision <= MAX_HEAD_SUBDIVISION):
+        raise HandlerError(f"appearance.subdivision must be an integer from 0 to {MAX_HEAD_SUBDIVISION}")
+    appearance["subdivision"] = subdivision
+    close_neck = value.get("close_neck", appearance["close_neck"])
+    if not isinstance(close_neck, bool):
+        raise HandlerError("appearance.close_neck must be true or false")
+    appearance["close_neck"] = close_neck
+    for name in ("skin_roughness", "skin_subsurface", "eye_roughness"):
+        appearance[name] = _bounded_float(value, name, appearance[name], 0.0, 1.0)
+    appearance["subsurface_scale_mm"] = _bounded_float(
+        value, "subsurface_scale_mm", appearance["subsurface_scale_mm"], 0.0, 100.0
+    )
+    bump = value.get("bump")
+    if bump is not None:
+        if not isinstance(bump, dict):
+            raise HandlerError("appearance.bump must be an object")
+        _only_keys(bump, {"path", "scale_mm", "strength"})
+        appearance["bump"] = {
+            "path": _string(bump, "path"),
+            "scale_mm": _bounded_float(bump, "scale_mm", 1.0, 0.0, 100.0),
+            "strength": _bounded_float(bump, "strength", 1.0, 0.0, 10.0),
+        }
+    return appearance
+
+
+def _stored_appearance(obj: Any) -> dict[str, Any]:
+    """The material settings a head was created with, or the defaults for a
+    head that records none or records them unreadably."""
+    appearance = dict(HEAD_APPEARANCE_DEFAULTS)
+    try:
+        stored = json.loads(obj.get(FLAME_APPEARANCE) or "{}")
+    except (TypeError, ValueError):
+        return appearance
+    if isinstance(stored, dict):
+        for setting in HEAD_MATERIAL_SETTINGS:
+            value = stored.get(setting)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                appearance[setting] = float(value)
+    return appearance
+
+
+def _neck_loop(
+    vertices: list[tuple[float, float, float]], faces: list[tuple[int, int, int]]
+) -> list[int] | None:
+    """The neck: the boundary loop of the head surface with the longest rim,
+    ordered to close it with a face that keeps the surface consistently
+    oriented. FLAME's neck rim is several times the length of its mouth's,
+    however the head is posed. None when the surface has no simple
+    boundary."""
+    directed = {(a, b) for face in faces for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0]))}
+    following: dict[int, int] = {}
+    for a, b in directed:
+        if (b, a) not in directed:
+            if a in following:
+                return None
+            following[a] = b
+    loops = []
+    visited: set[int] = set()
+    for start in sorted(following):
+        if start in visited:
+            continue
+        loop = []
+        current = start
+        while current not in visited:
+            visited.add(current)
+            loop.append(current)
+            current = following.get(current, -1)
+            if current < 0:
+                return None
+        if current != start or len(loop) < 3:
+            return None
+        loops.append(loop)
+    if not loops:
+        return None
+    def rim(loop: list[int]) -> float:
+        return sum(math.dist(vertices[a], vertices[b]) for a, b in zip(loop, loop[1:] + loop[:1]))
+
+    neck = max(loops, key=rim)
+    # The boundary runs against the surface's faces; the cap runs the other way.
+    return neck[::-1]
+
+
+def _minor_island_faces(faces: list[tuple[int, int, int]]) -> list[bool]:
+    """For each face, whether it lies outside the largest connected part of
+    the mesh. FLAME's eyeballs are separate parts beside the head."""
+    parent: dict[int, int] = {}
+
+    def root(index: int) -> int:
+        parent.setdefault(index, index)
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for a, b, c in faces:
+        for x, y in ((a, b), (b, c)):
+            rx, ry = root(x), root(y)
+            if rx != ry:
+                parent[rx] = ry
+    sizes = Counter(root(face[0]) for face in faces)
+    largest = max(sizes, key=lambda key: (sizes[key], -key))
+    return [root(face[0]) != largest for face in faces]
 
 
 def _triangles(
@@ -1254,27 +1414,58 @@ class BlenderHandlers:
         return self._object_summary(obj)
 
     def _create_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
-        _only_keys(params, {"name", "variant", "vertices", "faces", "uv", "texture"})
+        _only_keys(params, {"name", "variant", "vertices", "faces", "uv", "texture", "appearance"})
         name = _string(params, "name")
         variant = _string(params, "variant")
         vertices = _points(params, "vertices")
         faces = _triangles(params, "faces", len(vertices))
         uvs = _corner_uvs(params, "uv", 3 * len(faces))
         texture = params.get("texture")
+        appearance = _head_appearance(params.get("appearance"))
+        bump = appearance.get("bump")
         if texture is not None and uvs is None:
             raise HandlerError("a colour map needs the head's texture coordinates")
+        if bump is not None and texture is None:
+            raise HandlerError("appearance.bump needs a colour map")
         if self._bpy.data.objects.get(name) is not None:
             raise HandlerError(f"object already exists: {name}")
         image = self._load_colour_map(texture, name) if texture is not None else None
+        detail = None
+        if bump is not None:
+            try:
+                detail = self._load_colour_map(bump["path"], name, "detail map")
+            except BaseException:
+                self._bpy.data.images.remove(image)
+                raise
+            # Heights, not colours: Blender must not convert them from sRGB.
+            detail.colorspace_settings.name = "Non-Color"
+        cap = _neck_loop(vertices, faces) if appearance["close_neck"] else None
         mesh = self._bpy.data.meshes.new(name)
-        mesh.from_pydata(vertices, [], faces)
+        mesh.from_pydata(vertices, [], faces + ([tuple(cap)] if cap else []))
         if uvs is not None:
-            # Each triangle's loops follow its corners in order.
+            if cap:
+                # The cap takes each rim vertex's coordinates from a triangle
+                # that uses it, so the colour runs on across the opening.
+                corner_uv: dict[int, tuple[float, float]] = {}
+                for index, face in enumerate(faces):
+                    for corner, vertex in enumerate(face):
+                        at = 2 * (3 * index + corner)
+                        corner_uv.setdefault(vertex, (uvs[at], uvs[at + 1]))
+                uvs = uvs + [value for vertex in cap for value in corner_uv[vertex]]
+            # Each face's loops follow its corners in order.
             mesh.uv_layers.new(name=FLAME_UV_LAYER).data.foreach_set("uv", uvs)
-        if image is not None:
-            mesh.materials.append(self._colour_material(name, image))
+        eyes = _minor_island_faces(faces) + ([False] if cap else [])
+        eye_attribute = mesh.attributes.new(name=FLAME_EYE_ATTRIBUTE, type="FLOAT", domain="FACE")
+        eye_attribute.data.foreach_set("value", [1.0 if eye else 0.0 for eye in eyes])
+        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+        mesh.materials.append(self._colour_material(name, image, appearance, detail))
         mesh.update()
         obj = self._bpy.data.objects.new(name, mesh)
+        if appearance["subdivision"]:
+            # A modifier keeps FLAME's vertices in the mesh, so updates still apply.
+            smoothing = obj.modifiers.new(name=FLAME_SMOOTHING_MODIFIER, type="SUBSURF")
+            smoothing.levels = appearance["subdivision"]
+            smoothing.render_levels = appearance["subdivision"]
         # FLAME's frame has y up and the face along +z. Stand the head upright
         # in Blender's z-up frame, facing -y like the front view and the printed
         # bust. The mesh keeps FLAME's frame, so updates leave this alone.
@@ -1282,9 +1473,12 @@ class BlenderHandlers:
         self._bpy.context.scene.collection.objects.link(obj)
         # Updates are accepted only for the variant that produced the mesh.
         obj[FLAME_VARIANT] = variant
+        obj[FLAME_APPEARANCE] = json.dumps(
+            {setting: appearance[setting] for setting in HEAD_MATERIAL_SETTINGS}
+        )
         return self._object_summary(obj)
 
-    def _load_colour_map(self, path: Any, name: str) -> Any:
+    def _load_colour_map(self, path: Any, name: str, what: str = "colour map") -> Any:
         """Load a workspace PNG and pack it into the scene, so the head keeps
         its colour without the workspace file."""
         request = self._workspace.validate(path, ".png")
@@ -1296,28 +1490,38 @@ class BlenderHandlers:
             nonlocal chunks
             chunks += 1
             if chunks > MAX_COLOUR_MAP_BYTES // (1024 * 1024) + 2:
-                raise HandlerError("the colour map is larger than 12 MiB")
+                raise HandlerError(f"the {what} is larger than 12 MiB")
 
         with self._workspace.stage_input(request, check_budget=within_budget) as source:
             # The staged copy is private, so what is checked is what Blender loads.
-            width, height = _check_colour_map(source)
+            width, height = _check_colour_map(source, what)
             try:
                 image = self._bpy.data.images.load(str(source), check_existing=False)
             except RuntimeError as error:
-                raise HandlerError(f"the colour map could not be loaded: {error}") from error
+                raise HandlerError(f"the {what} could not be loaded: {error}") from error
             # Loading reads only the file's name; reading the size decodes the
             # pixels, and Blender reports 0 by 0 when they cannot be decoded.
             if tuple(image.size) != (width, height):
                 self._bpy.data.images.remove(image)
-                raise HandlerError("the colour map's pixels could not be decoded")
+                raise HandlerError(f"the {what}'s pixels could not be decoded")
             image.pack()
-        image.name = f"{name} colour map"
+        image.name = f"{name} {what}"
         return image
 
-    def _colour_material(self, name: str, image: Any) -> Any:
-        """A material whose base colour is the image, read through the head's
-        texture coordinates."""
-        material = self._bpy.data.materials.new(f"{name} colour")
+    def _colour_material(
+        self,
+        name: str,
+        image: Any,
+        appearance: dict[str, Any] | None = None,
+        detail: Any = None,
+    ) -> Any:
+        """The head's material. Its base colour is the image, read through
+        the head's texture coordinates, or a plain neutral colour without
+        one. Skin and eyes take their roughness and subsurface scattering
+        from the appearance, chosen per face by the eye attribute, and a
+        detail map, when given, adds bump."""
+        appearance = appearance or HEAD_APPEARANCE_DEFAULTS
+        material = self._bpy.data.materials.new(f"{name} colour" if image is not None else f"{name} skin")
         # Blender 5 always uses nodes and deprecates the switch.
         if not material.use_nodes:
             material.use_nodes = True
@@ -1325,16 +1529,50 @@ class BlenderHandlers:
         shader = tree.nodes.get("Principled BSDF")
         if shader is None:
             shader = tree.nodes.new("ShaderNodeBsdfPrincipled")
-        node = tree.nodes.new("ShaderNodeTexImage")
-        node.name = FLAME_COLOUR_NODE
-        node.image = image
-        node.location = (-400.0, 300.0)
-        # Read through the FLAME layer by name, whichever layer is active.
-        coordinates = tree.nodes.new("ShaderNodeUVMap")
-        coordinates.uv_map = FLAME_UV_LAYER
-        coordinates.location = (-650.0, 300.0)
-        tree.links.new(coordinates.outputs["UV"], node.inputs["Vector"])
-        tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+        if image is None:
+            shader.inputs["Base Color"].default_value = HEAD_PLAIN_COLOUR
+        else:
+            node = tree.nodes.new("ShaderNodeTexImage")
+            node.name = FLAME_COLOUR_NODE
+            node.image = image
+            node.location = (-400.0, 300.0)
+            # Read through the FLAME layer by name, whichever layer is active.
+            coordinates = tree.nodes.new("ShaderNodeUVMap")
+            coordinates.uv_map = FLAME_UV_LAYER
+            coordinates.location = (-650.0, 300.0)
+            tree.links.new(coordinates.outputs["UV"], node.inputs["Vector"])
+            tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+        eye = tree.nodes.new("ShaderNodeAttribute")
+        eye.name = FLAME_EYE_NODE
+        eye.attribute_name = FLAME_EYE_ATTRIBUTE
+        eye.location = (-650.0, -100.0)
+        for index, (socket, skin, eyes) in enumerate((
+            ("Roughness", appearance["skin_roughness"], appearance["eye_roughness"]),
+            ("Subsurface Weight", appearance["skin_subsurface"], 0.0),
+        )):
+            blend = tree.nodes.new("ShaderNodeMapRange")
+            blend.location = (-400.0, -100.0 - 250.0 * index)
+            blend.inputs["To Min"].default_value = skin
+            blend.inputs["To Max"].default_value = eyes
+            tree.links.new(eye.outputs["Fac"], blend.inputs["Value"])
+            tree.links.new(blend.outputs["Result"], shader.inputs[socket])
+        shader.inputs["Subsurface Scale"].default_value = appearance["subsurface_scale_mm"]
+        if detail is not None and image is not None:
+            heights = tree.nodes.new("ShaderNodeTexImage")
+            heights.name = FLAME_DETAIL_NODE
+            heights.image = detail
+            heights.location = (-400.0, -650.0)
+            tree.links.new(coordinates.outputs["UV"], heights.inputs["Vector"])
+            bump = tree.nodes.new("ShaderNodeBump")
+            bump.location = (-150.0, -650.0)
+            # A map value of 1 stands scale_mm above a value of 0, in scene
+            # millimetres; strength exaggerates or softens it.
+            bump.inputs["Distance"].default_value = (
+                appearance["bump"]["scale_mm"] * appearance["bump"]["strength"]
+            )
+            bump.inputs["Strength"].default_value = 1.0
+            tree.links.new(heights.outputs["Color"], bump.inputs["Height"])
+            tree.links.new(bump.outputs["Normal"], shader.inputs["Normal"])
         return material
 
     def _update_flame_head(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1384,8 +1622,28 @@ class BlenderHandlers:
                 key=lambda index: (shown[index], -index),
                 default=None,
             )
-            if index is None:
-                obj.data.materials.append(self._colour_material(name, image))
+            plain = max(
+                (
+                    index
+                    for index, slot in enumerate(obj.material_slots)
+                    if slot.material is not None
+                    and slot.material.node_tree is not None
+                    and slot.material.node_tree.nodes.get(FLAME_EYE_NODE) is not None
+                ),
+                key=lambda index: (shown[index], -index),
+                default=None,
+            )
+            if index is None and plain is not None:
+                # The head's plain material gives way to a coloured one with
+                # the same finish, in the same slot.
+                obj.material_slots[plain].material = self._colour_material(
+                    name, image, _stored_appearance(obj)
+                )
+                index = plain
+            elif index is None:
+                obj.data.materials.append(
+                    self._colour_material(name, image, _stored_appearance(obj))
+                )
                 index = len(obj.data.materials) - 1
             else:
                 slot = obj.material_slots[index]
@@ -2121,7 +2379,7 @@ class BlenderHandlers:
             or profile_name not in PRODUCT_PRESENTATION_PROFILES
         ):
             raise HandlerError(
-                "presentation profile must be engineering, studio_neutral, or studio_dark"
+                "presentation profile must be engineering, studio_neutral, studio_dark, or portrait"
             )
         raw_view = raw_presentation.get("view", {})
         if not isinstance(raw_view, dict):

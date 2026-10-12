@@ -402,6 +402,7 @@ def textured_head_smoke(host: str, port: int) -> None:
         "faces": [[0, 1, 2], [0, 2, 3]],
         "uv": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         "texture": "smoke/render.png",
+        "appearance": {"close_neck": False},
     })
     # Replacing the colour map frees the image it replaces.
     command(host, port, "update_flame_head", {
@@ -438,6 +439,7 @@ def textured_head_smoke(host: str, port: int) -> None:
     }
     if observed.get("result") != expected:
         raise RuntimeError(f"textured head smoke observed {observed.get('result')}")
+    head_appearance_smoke(host, port)
     # A PNG whose header is sound but whose pixels cannot be decoded.
     command(host, port, "execute_code", {"code": (
         "from pathlib import Path\n"
@@ -473,6 +475,58 @@ def textured_head_smoke(host: str, port: int) -> None:
         raise RuntimeError(
             f"an undecodable colour map left images {sorted(set(after) - set(before))} and objects {objects}"
         )
+
+
+def head_appearance_smoke(host: str, port: int) -> None:
+    """A box open at the bottom with a separate small part, as FLAME's head
+    and eyeballs are, created with a colour map and a detail map."""
+    box = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0],
+           [0.0, 10.0, 0.0], [10.0, 10.0, 0.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0]]
+    walls = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+             [4, 5, 6], [4, 6, 7]]
+    eye = [[20.0, 5.0, 5.0], [21.0, 5.0, 5.0], [20.0, 6.0, 5.0]]
+    faces = walls + [[8, 9, 10]]
+    command(host, port, "create_flame_head", {
+        "name": "AppearanceHeadProbe",
+        "variant": "smoke",
+        "vertices": box + eye,
+        "faces": faces,
+        "uv": [[0.25, 0.25]] * (3 * len(faces)),
+        "texture": "smoke/render.png",
+        "appearance": {"subdivision": 2, "skin_roughness": 0.6, "eye_roughness": 0.1,
+                       "bump": {"path": "smoke/render.png", "scale_mm": 2.0}},
+    })
+    observed = command(host, port, "execute_code", {"code": (
+        "obj = bpy.data.objects['AppearanceHeadProbe']\n"
+        "mesh = obj.data\n"
+        "eyes = [0.0] * len(mesh.polygons)\n"
+        "mesh.attributes['printable_eye'].data.foreach_get('value', eyes)\n"
+        "material = mesh.materials[0]\n"
+        "shader = next(n for n in material.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')\n"
+        "detail = material.node_tree.nodes['FLAME detail map'].image\n"
+        "result = {'vertices': len(mesh.vertices),\n"
+        "          'cap': sorted(mesh.polygons[-1].vertices),\n"
+        "          'eyes': eyes,\n"
+        "          'smooth': all(polygon.use_smooth for polygon in mesh.polygons),\n"
+        "          'modifiers': [(m.type, m.levels, m.render_levels) for m in obj.modifiers],\n"
+        "          'linked': sorted({link.to_socket.name for link in material.node_tree.links if link.to_node == shader}),\n"
+        "          'detail': detail.colorspace_settings.name}\n"
+        "for image in (detail, material.node_tree.nodes['FLAME colour map'].image):\n"
+        "    bpy.data.images.remove(image)\n"
+        "bpy.data.objects.remove(obj)\n"
+    )})
+    expected = {
+        "vertices": 11,
+        # The open bottom of the box, at the lowest height, is closed.
+        "cap": [0, 1, 2, 3],
+        "eyes": [0.0] * len(walls) + [1.0, 0.0],
+        "smooth": True,
+        "modifiers": [["SUBSURF", 2, 2]],
+        "linked": ["Base Color", "Normal", "Roughness", "Subsurface Weight"],
+        "detail": "Non-Color",
+    }
+    if observed.get("result") != expected:
+        raise RuntimeError(f"head appearance smoke observed {observed.get('result')}")
 
 
 def capability_smoke(host: str, port: int) -> None:

@@ -163,8 +163,8 @@ device, graphics backend when Blender exposes it, applied sample count,
 dimensions, artifact path, `image/png` media type, and exact artifact size.
 
 `render_product` accepts a confined PNG path, one or more selected source
-object names, and a typed `engineering`, `studio_neutral`, or `studio_dark`
-presentation. It renders complete evaluated instances of those source objects
+object names, and a typed `engineering`, `studio_neutral`, `studio_dark`, or
+`portrait` presentation. It renders complete evaluated instances of those source objects
 in a disposable scene, frames their world-space bounds with a fixed 15%
 margin, and reports effective camera, lighting, color management, ground,
 materials, shading, and instance count. Existing materials are preserved;

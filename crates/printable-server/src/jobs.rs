@@ -2981,7 +2981,8 @@ fn validate_job_product_response(
                 ground.len() == 1 && ground.get("enabled").and_then(Value::as_bool) == Some(false)
             }
             crate::tools::ProductPresentationProfile::StudioNeutral
-            | crate::tools::ProductPresentationProfile::StudioDark => {
+            | crate::tools::ProductPresentationProfile::StudioDark
+            | crate::tools::ProductPresentationProfile::Portrait => {
                 ground.get("enabled").and_then(Value::as_bool) == Some(true)
                     && ground
                         .get("z")
