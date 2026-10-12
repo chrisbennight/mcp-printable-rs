@@ -452,7 +452,7 @@ colour comes from the photographs themselves:
 1. SMIRK fits a head and an orthographic camera to each photograph. The server
    poses FLAME to match each fit.
 2. Each point of the head takes the colour under it in each photograph where it
-   faces the camera, is not hidden by nearer surface, and is not within 2% of
+   faces the camera, is not hidden by nearer surface, and is not within about 2% of
    the crop of the head's outline. The fitted outline never matches the real
    one exactly, and the background lies just beyond it.
 3. Photographs are blended by how squarely they see each point.

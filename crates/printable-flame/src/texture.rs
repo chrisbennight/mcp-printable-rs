@@ -422,7 +422,8 @@ fn accumulate(
     let depth = DepthBuffer::render(faces, &projected, photo.width, photo.height);
     let normals = vertex_normals(faces, view.vertices);
     let tolerance = projection.scale * DEPTH_TOLERANCE_M;
-    let margin = OUTLINE_MARGIN * CROP_PIXELS / projection.crop_step;
+    // One pixel more, because probes are read at the nearest pixel centre.
+    let margin = OUTLINE_MARGIN * CROP_PIXELS / projection.crop_step + 1.0;
     for (index, &face) in texels.face.iter().enumerate() {
         if face == NO_FACE {
             continue;
@@ -458,13 +459,17 @@ fn accumulate(
         if point_depth < nearest - tolerance {
             continue;
         }
-        let near_outline = [[margin, 0.0], [-margin, 0.0], [0.0, margin], [0.0, -margin]]
-            .iter()
-            .any(|[dx, dy]| {
-                depth
-                    .at([pixel[0] + dx, pixel[1] + dy])
-                    .is_none_or(|depth| depth == f32::NEG_INFINITY)
-            });
+        // Eight probes around a circle of the margin's radius; the octagon
+        // they span reaches within 8% of the circle in every direction.
+        let near_outline = (0..8).any(|step| {
+            let angle = f64::from(step) * std::f64::consts::FRAC_PI_4;
+            depth
+                .at([
+                    pixel[0] + margin * angle.cos(),
+                    pixel[1] + margin * angle.sin(),
+                ])
+                .is_none_or(|depth| depth == f32::NEG_INFINITY)
+        });
         if near_outline {
             continue;
         }
@@ -811,6 +816,53 @@ mod tests {
         // Front square: red.
         assert!(colour[at(0.75)][0] > 200.0 * weight[at(0.75)]);
         assert!(weight[at(0.75)] > 0.0);
+    }
+
+    #[test]
+    fn the_outline_band_holds_along_diagonal_edges() {
+        // A square turned 45 degrees: its edges run diagonally in the photograph.
+        let vertices = vec![
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+        ];
+        let faces = vec![[0, 1, 2], [0, 2, 3]];
+        let coords = vertices
+            .iter()
+            .map(|[x, y, _]| [(x + 1.0) / 2.0, (y + 1.0) / 2.0])
+            .collect();
+        let layout = layout(coords, &faces);
+        let rgb = gradient();
+        let view = View {
+            photo: Photo {
+                width: 224,
+                height: 224,
+                rgb: &rgb,
+            },
+            vertices: &vertices,
+            projection: PROJECTION,
+        };
+        let size = 512;
+        let texels = TexelMap::new(&faces, &layout, size);
+        let mut weight = vec![0.0; size * size];
+        let mut colour = vec![[0.0; 3]; size * size];
+        accumulate(&faces, &texels, &view, &mut weight, &mut colour).unwrap();
+        // The margin is 2% of the 224 pixel crop at 56 pixels per metre, so
+        // 0.08 m. A point 0.07 m inside the edge x + y = 1 is within it.
+        let texel = |distance: f64| {
+            let along = 0.5 - distance / std::f64::consts::SQRT_2;
+            let u = (along + 1.0) / 2.0;
+            let row = ((1.0 - u) * size as f64) as usize;
+            let column = (u * size as f64) as usize;
+            row * size + column
+        };
+        assert_eq!(
+            weight[texel(0.07)],
+            0.0,
+            "inside the band along a diagonal edge"
+        );
+        assert!(weight[texel(0.2)] > 0.0);
     }
 
     #[test]

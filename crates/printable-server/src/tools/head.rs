@@ -516,7 +516,7 @@ pub(super) async fn reconstruct(
         ".png",
         request.overwrite,
     )?;
-    let _colour_permit = match &request.texture_path {
+    let colour_permit = match &request.texture_path {
         Some(_) => Some(client.colour_map_permit()?),
         None => None,
     };
@@ -583,6 +583,9 @@ pub(super) async fn reconstruct(
         let views = field("views");
         let digests = field("image_sha256");
         let texture = blocking(move || {
+            // Held by the work itself, so a cancelled request cannot let
+            // another map start while this one is still being made.
+            let _permit = colour_permit;
             let views: Vec<ReconView> = serde_json::from_value(views).map_err(|_| {
                 ToolError::Validation(
                     "the reconstruction worker did not describe its view of each photograph"
