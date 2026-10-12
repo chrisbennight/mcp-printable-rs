@@ -2708,6 +2708,16 @@ async fn workflow_scene_preconditions_and_stale_metadata_reach_mcp() {
             .expect("tool response");
         assert_eq!(result.is_error, Some(stale));
         let structured = result.structured_content.expect("structured state");
+        let schema = serde_json::Value::Object(
+            printable_server::tools::output::schema("edit")
+                .as_ref()
+                .clone(),
+        );
+        assert!(
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .is_valid(&structured)
+        );
         if stale {
             assert_eq!(structured["error"]["code"], "stale_scene_state");
             assert_eq!(structured["error"]["scene_state"]["revision"], 1);
@@ -2717,6 +2727,56 @@ async fn workflow_scene_preconditions_and_stale_metadata_reach_mcp() {
     }
     assert_eq!(*revision.lock().expect("revision"), 2);
     assert_eq!(fake.connection_count(), 3);
+}
+
+#[tokio::test]
+async fn delivered_mutation_failures_validate_without_automatic_replay() {
+    for code in ["addon", "timeout"] {
+        let fake = FakeAddon::spawn(move |command, _| {
+            assert_eq!(command, "execute_code");
+            if code == "timeout" {
+                ResponseSpec::Hang
+            } else {
+                ResponseSpec::Error {
+                    message: "inspect scene state before another edit".into(),
+                    traceback: None,
+                    addon_version: None,
+                }
+            }
+        })
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let server = PrintableServer::new(
+            workspace(Some(tmp.path())),
+            Arc::new(client(&fake.host(), fake.port())),
+            Arc::new(settings(&fake.host(), fake.port())),
+        );
+        let result = server
+            .invoke_tool(
+                CallToolRequestParams::new("blender_execute").with_arguments(
+                    json!({"code": "result = None", "timeout_seconds": 0.1})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["error"]["code"], code);
+        let schema = Value::Object(
+            printable_server::tools::output::schema("blender_execute")
+                .as_ref()
+                .clone(),
+        );
+        assert!(
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .is_valid(&payload)
+        );
+        assert_eq!(fake.commands(), ["execute_code"]);
+    }
 }
 
 #[tokio::test]
