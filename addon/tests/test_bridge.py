@@ -4888,6 +4888,32 @@ class FlameHeadHandlerTests(unittest.TestCase):
         self.assertIn((ranges[1].outputs["Result"], ("Principled BSDF", "Subsurface Weight")), material.links)
         self.assertEqual(nodes.get("Principled BSDF").inputs["Subsurface Scale"].default_value, 2.0)
 
+    def test_a_colour_map_added_later_keeps_the_finish_given_at_creation(self) -> None:
+        self.create(uv=self.UVS, appearance={"close_neck": False, "skin_roughness": 0.8, "eye_roughness": 0.2})
+        self.assertEqual(self.objects["Head"].data.materials, [])
+        self.write_map("maps/colour.png", b"colour map")
+        self.handlers.dispatch(
+            "update_flame_head",
+            {"object": "Head", "variant": "flame2023_open", "vertices": self.VERTICES,
+             "texture": "maps/colour.png"},
+        )
+        [material] = self.objects["Head"].data.materials
+        ranges = [node for node in material.node_tree.nodes.values()
+                  if getattr(node, "kind", "") == "ShaderNodeMapRange"]
+        self.assertEqual(
+            [(node.inputs["To Min"].default_value, node.inputs["To Max"].default_value) for node in ranges],
+            [(0.8, 0.2), (0.1, 0.0)],
+        )
+
+    def test_a_head_without_recorded_settings_gets_the_default_finish(self) -> None:
+        from printable_bridge.handlers import HEAD_APPEARANCE_DEFAULTS, _stored_appearance
+
+        for stored in (None, "not json", '{"skin_roughness": "rough"}', "[]"):
+            head = FakeHeadObject("Old", FakeHeadMesh())
+            if stored is not None:
+                head["printable_head_appearance"] = stored
+            self.assertEqual(_stored_appearance(head), HEAD_APPEARANCE_DEFAULTS, stored)
+
     def test_a_detail_map_adds_bump_at_its_scale(self) -> None:
         self.write_map("maps/colour.png", b"colour map")
         self.write_map("maps/detail.png", b"detail map")

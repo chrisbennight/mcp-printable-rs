@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 import hashlib
+import json
 import math
 from pathlib import Path
 import time
@@ -323,6 +324,10 @@ FLAME_DETAIL_NODE = "FLAME detail map"
 # material reads it to give the eyes their own finish.
 FLAME_EYE_ATTRIBUTE = "printable_eye"
 FLAME_SMOOTHING_MODIFIER = "Printable smoothing"
+# The head's material settings, kept on the object so that a colour map added
+# by a later update gets the finish the head was created with.
+FLAME_APPEARANCE = "printable_head_appearance"
+HEAD_MATERIAL_SETTINGS = ("skin_roughness", "skin_subsurface", "subsurface_scale_mm", "eye_roughness")
 # How a head looks in Blender when the caller does not say. Subsurface
 # scale is in scene units, which are millimetres.
 HEAD_APPEARANCE_DEFAULTS = {
@@ -436,6 +441,22 @@ def _head_appearance(value: Any) -> dict[str, Any]:
             "scale_mm": _bounded_float(bump, "scale_mm", 1.0, 0.0, 100.0),
             "strength": _bounded_float(bump, "strength", 1.0, 0.0, 10.0),
         }
+    return appearance
+
+
+def _stored_appearance(obj: Any) -> dict[str, Any]:
+    """The material settings a head was created with, or the defaults for a
+    head that records none or records them unreadably."""
+    appearance = dict(HEAD_APPEARANCE_DEFAULTS)
+    try:
+        stored = json.loads(obj.get(FLAME_APPEARANCE) or "{}")
+    except (TypeError, ValueError):
+        return appearance
+    if isinstance(stored, dict):
+        for setting in HEAD_MATERIAL_SETTINGS:
+            value = stored.get(setting)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                appearance[setting] = float(value)
     return appearance
 
 
@@ -1443,6 +1464,9 @@ class BlenderHandlers:
         self._bpy.context.scene.collection.objects.link(obj)
         # Updates are accepted only for the variant that produced the mesh.
         obj[FLAME_VARIANT] = variant
+        obj[FLAME_APPEARANCE] = json.dumps(
+            {setting: appearance[setting] for setting in HEAD_MATERIAL_SETTINGS}
+        )
         return self._object_summary(obj)
 
     def _load_colour_map(self, path: Any, name: str, what: str = "colour map") -> Any:
@@ -1585,7 +1609,9 @@ class BlenderHandlers:
                 default=None,
             )
             if index is None:
-                obj.data.materials.append(self._colour_material(name, image))
+                obj.data.materials.append(
+                    self._colour_material(name, image, _stored_appearance(obj))
+                )
                 index = len(obj.data.materials) - 1
             else:
                 slot = obj.material_slots[index]
