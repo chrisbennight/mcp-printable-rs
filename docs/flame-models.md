@@ -395,8 +395,62 @@ openings have no texture coordinates, so the detail fades to nothing across
 them. The displaced surface is rebuilt in step 4 like any other, so the bust
 is still one valid solid even where the detail folds the surface.
 
-The `bust` report adds `displacement`, the deepest depression and the
-highest raise applied, in millimetres at the finished size.
+### Filter detail for printing
+
+A map estimated from a photograph mixes fine detail, such as wrinkles and
+creases, with broader shape. At bust scale the broad part prints as lumps,
+while the fine part can be shallower than a layer. These optional
+`displacement` fields shape the detail before it is applied, in this order:
+
+| Field | Range | Effect |
+| --- | --- | --- |
+| `high_pass_mm` | 1 to 100 | Removes features wider than about this many millimetres on the life-size head, keeping finer detail. |
+| `clip_percentile` | 50 to 100 | Limits the detail to this percentile of its magnitude, taken over the detail on the head's surface that remains after `high_pass_mm`, so a few extreme values do not dominate. |
+| `gain` | 0 to 10, default 1 | Multiplies the detail. |
+| `relief_mm` | 0.01 to 10 | Scales the detail so that its 95th percentile on the head's surface is this many millimetres on the finished bust, whatever its height. The detail is sampled at every triangle's corners and centre and weighted by the triangle's area. Not with `gain`. |
+
+Texels whose magnitude is below 0.5% of the largest on the head's surface are not
+detail.
+Filtering changes only the detail and sets the other texels to exactly zero,
+so their rounding noise is never scaled up as detail. Blurs are taken over the
+head's surface, the texels inside a triangle of the texture layout, so the
+gaps between the layout's pieces do not pull nearby detail toward zero. The
+filter width is converted to texels using the model's own surface: the
+median, over the texels that carry detail, of how many millimetres one texel
+of their triangle covers.
+The high-pass blur is three successive box blurs, which approximate a
+Gaussian blur and cost the same whatever the width; a width narrower than a
+texel removes nothing. `relief_mm` leaves a map unscaled when its detail is
+shallower than a thousandth of a millimetre at life size.
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "path": "busts/detail.stl",
+  "displacement": {"path": "photos/detail.png", "offset_mm": -3.07, "scale_mm": 6.64,
+                   "high_pass_mm": 8, "clip_percentile": 99, "relief_mm": 0.25}
+}}
+```
+
+The `bust` report adds `displacement`:
+
+- `lowest_mm` and `highest_mm`, the deepest depression and the highest raise
+  applied, in millimetres at the finished size;
+- `percentiles_mm`, the 1st, 5th, 50th, 95th and 99th percentiles of the
+  applied distance over the vertices where the map carries detail;
+- `relief_scale`, the factor `relief_mm` multiplied the map by, or 1;
+- `filter`, the millimetres per texel used and the filter settings applied.
+
+On a 100 mm bust of the FLAME 2020 generic head with a map reconstructed from
+one photograph, the unfiltered detail ran from -0.61 to +0.70 mm between
+its 5th and 95th percentiles, and rendered as broad lumps on the cheeks and
+chin. With `high_pass_mm` 8 and `clip_percentile` 99, that span was -0.12 to
++0.19 mm and the lumps were gone while forehead and cheek creases remained.
+With `relief_mm` 0.15, 0.25 and 0.40 added, the applied 95th percentile was
+0.154, 0.256 and 0.410 mm. Each request
+took about 8 seconds, including a 1024-pixel map filtered with `high_pass_mm`
+100.
 
 A 100 mm bust from a photograph reconstructed with `reconstruct` was one
 watertight, manifold solid with no self-intersections and 432,000 triangles.

@@ -1014,6 +1014,110 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
 }
 
 #[tokio::test]
+async fn strict_http_client_can_consume_actionable_tool_failures() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.workspace_root = Some(workspace.path().to_path_buf());
+    let server = start_with_settings(settings).await;
+    let mcp = format!("{}/mcp", server.base);
+    let http = reqwest::Client::new();
+    let response = post(
+        &http,
+        &mcp,
+        None,
+        &json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": protocol_version(), "capabilities": {},
+                "clientInfo": {"name": "strict-contract-client", "version": "1"}}
+        }),
+    )
+    .await;
+    let session = response.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    rpc_result(response).await;
+    post(
+        &http,
+        &mcp,
+        Some(&session),
+        &json!({
+            "jsonrpc": "2.0", "method": "notifications/initialized"
+        }),
+    )
+    .await;
+    let catalog = rpc_result(
+        post(
+            &http,
+            &mcp,
+            Some(&session),
+            &json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+            }),
+        )
+        .await,
+    )
+    .await;
+    for (name, arguments, code) in [
+        (
+            "job",
+            json!({"action": "get", "params": {"job_id": "missing-job"}}),
+            "job_not_found",
+        ),
+        ("job", json!({"action": "get", "params": {}}), "validation"),
+        (
+            "artifact",
+            json!({"action": "stat", "params": {"path": "missing.stl"}}),
+            "not_found",
+        ),
+        (
+            "print",
+            json!({"action": "start", "params": {"print_id": 1}}),
+            "validation",
+        ),
+    ] {
+        let schema = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap()["outputSchema"]
+            .clone();
+        let result = rpc_result(
+            post(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(result["isError"], true, "{name}: {result}");
+        let payload = &result["structuredContent"];
+        assert!(
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .is_valid(payload),
+            "{name}: {payload}"
+        );
+        assert_eq!(payload["error"]["code"], code, "{name}: {payload}");
+        assert!(
+            payload["error"]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, *payload);
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn published_artifacts_stream_as_immutable_raw_bytes_with_one_use_authority() {
     exercise_file_handoff(None).await;
 }

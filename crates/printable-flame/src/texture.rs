@@ -135,36 +135,28 @@ pub struct Labels<'a> {
 }
 
 impl Labels<'_> {
-    /// Whether `accepts` holds at a photograph pixel position and one label
-    /// pixel to each side of it. Pixels at the edge of a labelled region mix
-    /// what lies on either side, such as strands of hair over skin.
+    /// Whether `accepts` holds for every label within one photograph pixel,
+    /// and at least one label pixel, of a photograph pixel position, corners
+    /// included. A sample there blends the photograph's pixels within one
+    /// pixel of it, and pixels at the edge of a labelled region mix what lies
+    /// on either side, such as strands of hair over skin.
     fn agree(&self, pixel: [f64; 2], accepts: impl Fn(u8) -> bool) -> bool {
-        let reach = 1.0 / self.step;
-        [
-            [0.0, 0.0],
-            [reach, 0.0],
-            [-reach, 0.0],
-            [0.0, reach],
-            [0.0, -reach],
-        ]
-        .iter()
-        .all(|offset| {
-            self.at([pixel[0] + offset[0], pixel[1] + offset[1]])
-                .is_some_and(&accepts)
-        })
-    }
-
-    /// The label at a photograph pixel position, or `None` outside the square.
-    fn at(&self, pixel: [f64; 2]) -> Option<u8> {
-        let column = ((pixel[0] - self.left) * self.step).round();
-        let row = ((pixel[1] - self.top) * self.step).round();
+        let reach = (1.0 / self.step).max(1.0);
+        let span = |position: f64, origin: f64| {
+            [-reach, reach].map(|offset| ((position + offset - origin) * self.step).round())
+        };
+        let ([left, right], [top, bottom]) = (span(pixel[0], self.left), span(pixel[1], self.top));
         let side = self.side as f64;
-        if !(0.0..side).contains(&column) || !(0.0..side).contains(&row) {
-            return None;
+        if left < 0.0 || top < 0.0 || right >= side || bottom >= side {
+            return false;
         }
-        self.data
-            .get(row as usize * self.side + column as usize)
-            .copied()
+        (top as usize..=bottom as usize).all(|row| {
+            (left as usize..=right as usize).all(|column| {
+                self.data
+                    .get(row * self.side + column)
+                    .is_some_and(|&label| accepts(label))
+            })
+        })
     }
 }
 
@@ -425,12 +417,21 @@ fn finish(
     kinds: &[FaceKind],
     scalp: ScalpColour,
 ) -> Result<ColourMap, TextureError> {
+    let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
+    let painted = matches!(scalp, ScalpColour::Hair(_));
     let mut on_surface = 0usize;
     let mut seen = 0usize;
-    for (index, face) in texels.face.iter().enumerate() {
-        if *face != NO_FACE {
+    for (index, &face) in texels.face.iter().enumerate() {
+        if face != NO_FACE {
             on_surface += 1;
-            if weight[index] > 0.0 {
+            // Painted hair shows a photograph's colour only where it saw
+            // bare scalp.
+            let shown = if painted && on_scalp(face) {
+                skin.weight[index]
+            } else {
+                weight[index]
+            };
+            if shown > 0.0 {
                 seen += 1;
             }
         }
@@ -447,16 +448,24 @@ fn finish(
         .map(|&vertex| vertex as usize + 1)
         .max()
         .unwrap_or(0);
-    let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
-    // Skin and eyes are filled from what the photographs showed of them.
-    // A scalp taken as photographed shows hair, so it seeds the skin fill
-    // only with what was photographed there as skin, and keeps a fill of
-    // its own built from everything it showed.
+    let on_eye = |face: u32| kinds[face as usize] == FaceKind::Eye;
+    // Skin is filled only from what the photographs showed as skin. Eyes
+    // are left out, and a scalp taken as photographed shows hair, so it
+    // seeds the skin fill only with what was photographed there as skin.
+    // Such a scalp, and eyes that were seen, keep fills of their own built
+    // from everything they showed.
     let photographed_scalp = scalp == ScalpColour::Photo;
     let mut skin_weight = weight.to_vec();
     let mut skin_colour = colour.to_vec();
+    let mut eye_weight = vec![0.0f32; weight.len()];
     for (index, &face) in texels.face.iter().enumerate() {
-        if face != NO_FACE && photographed_scalp && on_scalp(face) {
+        if face == NO_FACE {
+            continue;
+        }
+        if on_eye(face) {
+            eye_weight[index] = weight[index];
+            skin_weight[index] = 0.0;
+        } else if photographed_scalp && on_scalp(face) {
             let seen = skin.weight[index];
             skin_weight[index] = seen;
             if seen > 0.0 {
@@ -467,6 +476,10 @@ fn finish(
     let fill = surface_fill(faces, vertex_count, texels, &skin_weight, &skin_colour);
     let scalp_fill =
         photographed_scalp.then(|| surface_fill(faces, vertex_count, texels, weight, colour));
+    let eye_fill = eye_weight
+        .iter()
+        .any(|&weight| weight > 0.0)
+        .then(|| surface_fill(faces, vertex_count, texels, &eye_weight, colour));
     let paint = match scalp {
         ScalpColour::Hair(hair) => Some(hair.map(f32::from)),
         ScalpColour::Photo | ScalpColour::Skin => None,
@@ -482,8 +495,9 @@ fn finish(
         let corners = faces[face as usize];
         let [wa, wb] = texels.barycentric[index];
         let shares = [wa, wb, 1.0 - wa - wb];
-        let source = match &scalp_fill {
-            Some(scalp_fill) if on_scalp(face) => scalp_fill,
+        let source = match (&scalp_fill, &eye_fill) {
+            (Some(scalp_fill), _) if on_scalp(face) => scalp_fill,
+            (_, Some(eye_fill)) if on_eye(face) => eye_fill,
             _ => &fill,
         };
         let mut filled = [0.0f32; 3];
@@ -494,11 +508,16 @@ fn finish(
         }
         let mut keep = (weight[index] / FULL_WEIGHT).min(1.0);
         // A painted scalp shows its paint wherever no photograph saw bare
-        // scalp, and the photographed colour in full wherever one did.
+        // scalp, and in full the colour of the pixels labelled skin wherever
+        // one did. A photograph without labels cannot show bare scalp.
         if let Some(paint) = paint.filter(|_| on_scalp(face)) {
-            filled = paint;
-            if weight[index] > 0.0 {
+            let bare = skin.weight[index];
+            if bare > 0.0 {
+                colour[index] = skin.colour[index].map(|channel| channel / bare);
                 keep = 1.0;
+            } else {
+                filled = paint;
+                keep = 0.0;
             }
         }
         for channel in 0..3 {
@@ -1678,6 +1697,94 @@ mod tests {
     }
 
     #[test]
+    fn unseen_skin_is_not_filled_from_the_eyes() {
+        // A seen eye on the left and, apart from it, skin the photograph
+        // shows only as background on the right.
+        let (mut vertices, mut faces, mut coords) = square(0.0, [-1.0, 0.0], [0.0, 0.5], false);
+        let (skin_vertices, skin_faces, skin_coords) = square(0.0, [0.0, 1.0], [0.5, 1.0], false);
+        vertices.extend(skin_vertices);
+        faces.extend(skin_faces.iter().map(|face| face.map(|vertex| vertex + 4)));
+        coords.extend(skin_coords);
+        let rgb: Vec<u8> = (0..224 * 224)
+            .flat_map(|index| {
+                if index % 224 < 112 {
+                    [0, 0, 200]
+                } else {
+                    [200, 0, 0]
+                }
+            })
+            .collect();
+        let labels: Vec<u8> = (0..224 * 224)
+            .map(|index| {
+                if index % 224 < 112 {
+                    LABEL_OTHER
+                } else {
+                    LABEL_BACKGROUND
+                }
+            })
+            .collect();
+        let layout = layout(coords, &faces);
+        let kinds = [FaceKind::Eye, FaceKind::Eye, FaceKind::Skin, FaceKind::Skin];
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 32, &kinds, KEEP).unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &labels,
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
+            })
+            .unwrap();
+        let map = builder.finish().unwrap();
+        assert_eq!(texel(&map, 0.25), [0, 0, 200]);
+        assert_eq!(texel(&map, 0.75), [128, 128, 128]);
+    }
+
+    #[test]
+    fn a_photograph_without_labels_cannot_show_bare_scalp() {
+        let (vertices, faces, coords) = square(0.0, [-1.0, 1.0], [0.0, 1.0], false);
+        let rgb: Vec<u8> = (0..224 * 224).flat_map(|_| [200, 0, 0]).collect();
+        let layout = layout(coords, &faces);
+        let paint = [10, 200, 30];
+        let mut builder = ColourMapBuilder::new(
+            &faces,
+            &layout,
+            32,
+            &[FaceKind::Scalp; 2],
+            Colouring {
+                scalp: ScalpColour::Hair(paint),
+                lighting: Lighting::Keep,
+            },
+        )
+        .unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: None,
+            })
+            .unwrap();
+        let map = builder.finish().unwrap();
+        // The paint covers everything the photograph saw.
+        assert_eq!(map.seen, 0.0);
+        assert_eq!(texel(&map, 0.5), paint);
+    }
+
+    #[test]
     fn bare_scalp_seen_at_an_angle_keeps_its_colour_under_painted_hair() {
         // A square turned 60 degrees from the camera, all scalp, seen as skin:
         // each texel's weight is far below a full view.
@@ -1964,6 +2071,36 @@ mod tests {
             assert!((value - wanted).abs() < 1e-9, "{solved:?}");
         }
         assert_eq!(solve4([[1.0; 4]; 4], [1.0; 4]), None);
+    }
+
+    #[test]
+    fn a_label_at_the_corner_of_a_sample_is_checked() {
+        // Labels one to one with the photograph: skin, with hair at one
+        // pixel that a sample between it and its diagonal neighbour blends.
+        let mut data = vec![LABEL_FACE_SKIN; 200 * 200];
+        data[101 * 200 + 101] = LABEL_HAIR;
+        let labels = Labels {
+            side: 200,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 1.0,
+        };
+        let skin = |label| label == LABEL_FACE_SKIN;
+        assert!(!labels.agree([100.49, 100.49], skin));
+        assert!(labels.agree([50.5, 50.5], skin));
+        // Labels finer than the photograph are checked across a whole
+        // photograph pixel.
+        let fine = Labels {
+            side: 200,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 4.0,
+        };
+        // Label pixel 101 lies at photograph pixel 25.25.
+        assert!(!fine.agree([25.1, 25.1], skin));
+        assert!(fine.agree([10.5, 10.5], skin));
     }
 
     #[test]
