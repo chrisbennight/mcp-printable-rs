@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use manifold_csg::{Manifold, MeshGL64, MeshGL64Options};
 use serde::{Deserialize, Serialize};
 
+use crate::print_check::{self, PrintChecks, SurfaceFinding};
 use crate::{GeometryError, TriangleMesh, remesh};
 
 /// Smoothing treats every edge as smooth. The kernel emits zero-area
@@ -95,6 +96,9 @@ pub struct BustRequest {
     /// Fine surface detail raised along the normal of the smoothed surface.
     #[serde(default)]
     pub displacement: Option<Displacement>,
+    /// Check the finished bust for overhangs and thin parts.
+    #[serde(default)]
+    pub checks: Option<PrintChecks>,
 }
 
 /// A displacement map over the head's texture coordinates.
@@ -114,6 +118,10 @@ pub struct Displacement {
     /// deep on the finished bust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relief_mm: Option<f64>,
+    /// Where `relief_mm` would raise detail beyond the limit for detail,
+    /// reduce the relief to the limit instead of refusing the request.
+    #[serde(default)]
+    pub limit_relief: bool,
 }
 
 impl Displacement {
@@ -139,6 +147,11 @@ pub struct Plinth {
     /// neck section it supports.
     #[serde(default)]
     pub diameter_mm: Option<f64>,
+    /// The bottom edge is cut back this far at 45 degrees, so that the first
+    /// layers, which spread as they are pressed onto the build plate, stay
+    /// within the plinth's outline. Zero for a square edge.
+    #[serde(default)]
+    pub chamfer_mm: f64,
 }
 
 /// Hollowing for resin printing.
@@ -154,6 +167,7 @@ pub struct Hollow {
 pub struct PlinthReport {
     pub height_mm: f64,
     pub diameter_mm: f64,
+    pub chamfer_mm: f64,
 }
 
 /// The cavity that was removed.
@@ -188,6 +202,8 @@ pub struct BustReport {
     pub estimated_deviation_p999_mm: Option<f64>,
     /// Whether a lowest opening was found and the head trimmed above it.
     pub trimmed_at_neck: bool,
+    /// The bust's size as a fraction of the life-size head.
+    pub life_size_fraction: f64,
     /// Separate shells of negligible volume that were discarded.
     pub discarded_fragments: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +212,15 @@ pub struct BustReport {
     pub hollow: Option<HollowReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displacement: Option<DisplacementReport>,
+    /// Surface facing down more steeply than the checked angle, measured
+    /// before any plinth was added. The faces resting on the base are left
+    /// out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overhang: Option<SurfaceFinding>,
+    /// Surface where the finished solid is thinner than the checked size,
+    /// measured straight in from each face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thin: Option<SurfaceFinding>,
 }
 
 /// The detail that was applied, in millimetres at the finished size: the
@@ -210,6 +235,9 @@ pub struct DisplacementReport {
     pub percentiles_mm: Option<DetailPercentiles>,
     /// Factor the map was multiplied by to reach `relief_mm`; 1 without it.
     pub relief_scale: f64,
+    /// Whether the relief was reduced to keep detail within its limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relief_limited: bool,
 }
 
 /// Percentiles of applied detail, in millimetres at the finished size.
@@ -300,7 +328,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         )?),
         None => None,
     };
-    let displacement = relieved.as_ref().map(|(map, _)| map);
+    let displacement = relieved.as_ref().map(|(map, _, _)| map);
     let smooth = parts
         .iter()
         .map(|part| {
@@ -411,9 +439,33 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     // Edges were sized before the height correction; retries need that size.
     let refined_edge = edge;
     edge *= correction;
+    // The request vertices that survive the trim, where they sit on the
+    // finished bust before any plinth raises it. They name the parts of the
+    // head where checks find something.
+    let offset = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let mut head: Vec<(u32, [f64; 3])> = match request.checks {
+        Some(_) => request
+            .vertices
+            .iter()
+            .enumerate()
+            .filter(|(_, vertex)| kept_height(vertex))
+            .map(|(index, vertex)| {
+                let placed = place(*vertex);
+                let point = [0, 1, 2].map(|axis| (placed[axis] - offset[axis]) * correction);
+                (index as u32, point)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     // Measured on the bust alone: the plinth is exact to the circle tolerance
-    // and a cavity's coarser facets are hidden inside.
-    let estimated_deviation_p999_mm = estimated_deviation_p999(&mesh_from(&solid));
+    // and a cavity's coarser facets are hidden inside. Overhangs are found
+    // before the plinth, whose chamfer is meant to slope.
+    let surface = mesh_from(&solid);
+    let estimated_deviation_p999_mm = estimated_deviation_p999(&surface);
+    let mut overhang = request
+        .checks
+        .map(|checks| print_check::overhang(&surface, checks.overhang_degrees, &head));
+    drop(surface);
     let (solid, plinth) = match request.plinth {
         Some(plinth) if cut.is_some() => {
             let (solid, report) = add_plinth(solid, plinth)?;
@@ -426,6 +478,14 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         }
         None => (solid, None),
     };
+    // A plinth raises the bust.
+    let raise = plinth.map_or(0.0, |plinth| plinth.height_mm);
+    for (_, point) in &mut head {
+        point[2] += raise;
+    }
+    for region in overhang.iter_mut().flat_map(|found| &mut found.regions) {
+        region.centre_mm[2] += raise;
+    }
     let (solid, hollow) = match request.hollow {
         Some(hollow) => {
             let budget = request.max_triangles.saturating_sub(solid.num_tri());
@@ -447,6 +507,12 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             edge: refined_edge,
         });
     }
+    // Measured on the finished solid, so a hollow bust's walls count, but
+    // not on the plinth.
+    let thin = match request.checks.and_then(|checks| checks.min_feature_mm) {
+        Some(min_mm) => Some(print_check::thin(&mesh, min_mm, raise, &head)?),
+        None => None,
+    };
     let report = BustReport {
         triangles: mesh.triangles.len(),
         size_mm: size,
@@ -455,26 +521,31 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         edge_length_mm: edge,
         estimated_deviation_p999_mm,
         trimmed_at_neck: cut.is_some(),
+        life_size_fraction: scale * correction,
         discarded_fragments: fragments,
         plinth,
         hollow,
-        displacement: relieved
-            .map(|(_, relief_scale)| detail_report(&mut distances, correction, relief_scale)),
+        displacement: relieved.map(|(_, relief_scale, limited)| {
+            detail_report(&mut distances, correction, (relief_scale, limited))
+        }),
+        overhang,
+        thin,
     };
     Ok(Prepared::Done(mesh, Box::new(report)))
 }
 
-/// The map to apply and the factor it was scaled by: with `relief_mm`, the
-/// map is scaled so that its 95th-percentile magnitude over samples that
-/// carry detail reaches that depth once the head is scaled by `scale`.
+/// The map to apply, the factor it was scaled by and whether that factor was
+/// limited: with `relief_mm`, the map is scaled so that its 95th-percentile
+/// magnitude over samples that carry detail reaches that depth once the head
+/// is scaled by `scale`.
 fn with_relief(
     map: &Displacement,
     (vertices, triangles): (&[[f64; 3]], &[[u32; 3]]),
     scale: f64,
     head_height: f64,
-) -> Result<(Displacement, f64), GeometryError> {
+) -> Result<(Displacement, f64, bool), GeometryError> {
     let Some(relief) = map.relief_mm else {
-        return Ok((map.clone(), 1.0));
+        return Ok((map.clone(), 1.0, false));
     };
     // The reference is the map as the head samples it: at every triangle's
     // corners and centre, interpolated as the bust interpolates it, and
@@ -515,20 +586,25 @@ fn with_relief(
         .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
     else {
         // A map without detail has nothing to scale.
-        return Ok((map.clone(), 1.0));
+        return Ok((map.clone(), 1.0, false));
     };
-    let factor = relief / (reference * scale);
-    if largest * factor > MAX_DISPLACEMENT_FRACTION * head_height {
-        return Err(GeometryError::InvalidOptions(format!(
-            "relief_mm would raise detail beyond {:.0}% of the head's height",
-            MAX_DISPLACEMENT_FRACTION * 100.0
-        )));
+    let mut factor = relief / (reference * scale);
+    let limit = MAX_DISPLACEMENT_FRACTION * head_height;
+    let limited = largest * factor > limit;
+    if limited {
+        if !map.limit_relief {
+            return Err(GeometryError::InvalidOptions(format!(
+                "relief_mm would raise detail beyond {:.0}% of the head's height",
+                MAX_DISPLACEMENT_FRACTION * 100.0
+            )));
+        }
+        factor = limit / largest;
     }
     let mut scaled = map.clone();
     for value in &mut scaled.values {
         *value = (f64::from(*value) * factor) as f32;
     }
-    Ok((scaled, factor))
+    Ok((scaled, factor, limited))
 }
 
 /// The applied range and, over the vertices that carry detail, its
@@ -536,7 +612,7 @@ fn with_relief(
 fn detail_report(
     distances: &mut Vec<f64>,
     correction: f64,
-    relief_scale: f64,
+    (relief_scale, relief_limited): (f64, bool),
 ) -> DisplacementReport {
     let lowest = distances.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = distances.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -558,6 +634,7 @@ fn detail_report(
         highest_mm: highest * correction,
         percentiles_mm,
         relief_scale,
+        relief_limited,
     }
 }
 
@@ -608,13 +685,21 @@ fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport)
         )));
     }
     let radius = diameter / 2.0;
-    let base = Manifold::cylinder(
-        plinth.height_mm,
-        radius,
-        radius,
-        circle_segments(radius),
-        false,
-    )
+    let chamfer = plinth.chamfer_mm;
+    if chamfer >= radius {
+        return Err(GeometryError::InvalidOptions(format!(
+            "a {chamfer} mm chamfer does not fit a plinth {diameter:.1} mm across"
+        )));
+    }
+    let segments = circle_segments(radius);
+    let base = if chamfer > 0.0 {
+        let foot = Manifold::cylinder(chamfer, radius - chamfer, radius, segments, false);
+        let body = Manifold::cylinder(plinth.height_mm - chamfer, radius, radius, segments, false)
+            .translate(0.0, 0.0, chamfer);
+        foot.union(&body)
+    } else {
+        Manifold::cylinder(plinth.height_mm, radius, radius, segments, false)
+    }
     .translate(centre[0], centre[1], 0.0);
     let raised = bust.translate(0.0, 0.0, plinth.height_mm);
     drop(bust);
@@ -627,6 +712,7 @@ fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport)
         PlinthReport {
             height_mm: plinth.height_mm,
             diameter_mm: diameter,
+            chamfer_mm: chamfer,
         },
     ))
 }
@@ -806,6 +892,26 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
             .is_some_and(|diameter| !(diameter.is_finite() && diameter > 0.0))
         {
             return invalid("plinth diameter must be a positive number of millimetres");
+        }
+        if !(plinth.chamfer_mm.is_finite()
+            && plinth.chamfer_mm >= 0.0
+            && plinth.chamfer_mm < plinth.height_mm)
+        {
+            return invalid(
+                "a plinth chamfer must be zero or more and less than the plinth's height",
+            );
+        }
+    }
+    if let Some(checks) = request.checks {
+        if !(checks.overhang_degrees.is_finite() && (0.0..=90.0).contains(&checks.overhang_degrees))
+        {
+            return invalid("the overhang angle must be 0 to 90 degrees");
+        }
+        if checks
+            .min_feature_mm
+            .is_some_and(|size| !(size.is_finite() && size > 0.0))
+        {
+            return invalid("the smallest feature size must be a positive number of millimetres");
         }
     }
     if let Some(hollow) = request.hollow
@@ -1481,6 +1587,7 @@ mod tests {
             plinth: None,
             hollow: None,
             displacement: None,
+            checks: None,
         }
     }
 
@@ -1531,6 +1638,7 @@ mod tests {
             values,
             triangle_uvs,
             relief_mm: None,
+            limit_relief: false,
         });
         request
     }
@@ -1562,6 +1670,7 @@ mod tests {
             values: vec![0.25; 4],
             triangle_uvs: vec![[[0.5, 0.5]; 3]; part.triangles.len()],
             relief_mm: None,
+            limit_relief: false,
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
         let (raised, distances) = displaced(&solid, &map, 2.0);
@@ -1589,6 +1698,7 @@ mod tests {
                 .map(|index| [[0.2, 0.2], [0.4, 0.2], [0.2 + 0.01 * index as f32, 0.6]])
                 .collect(),
             relief_mm: None,
+            limit_relief: false,
         };
         let solid = part_solid(head, |vertex| vertex, Some(&map)).unwrap();
         let mesh = solid.to_meshgl64();
@@ -1685,6 +1795,17 @@ mod tests {
             prepare_bust(&relieved),
             Err(GeometryError::InvalidOptions(text)) if text.contains("relief_mm")
         ));
+        // Allowed to limit it, the relief stops at 5% of the head's height,
+        // here 40 mm before scaling.
+        relieved.displacement.as_mut().unwrap().limit_relief = true;
+        let (mesh, report) = prepare_bust(&relieved).unwrap();
+        let applied = report.displacement.expect("displacement report");
+        assert!(applied.relief_limited, "{applied:?}");
+        let largest = applied.lowest_mm.abs().max(applied.highest_mm);
+        let limit = MAX_DISPLACEMENT_FRACTION * 40.0 * report.life_size_fraction;
+        assert!(largest <= limit * 1.01, "{largest} {limit}");
+        assert!(validated(&mesh).solid_geometry);
+        relieved.displacement.as_mut().unwrap().limit_relief = false;
         relieved.displacement.as_mut().unwrap().relief_mm = Some(-1.0);
         assert!(matches!(
             prepare_bust(&relieved),
@@ -1753,6 +1874,7 @@ mod tests {
         with_plinth.plinth = Some(Plinth {
             height_mm: 8.0,
             diameter_mm: None,
+            chamfer_mm: 0.0,
         });
         let (mesh, report) = prepare_bust(&with_plinth).unwrap();
         let plinth = report.plinth.expect("plinth report");
@@ -1766,6 +1888,7 @@ mod tests {
         with_plinth.plinth = Some(Plinth {
             height_mm: 8.0,
             diameter_mm: Some(10.0),
+            chamfer_mm: 0.0,
         });
         assert!(matches!(
             prepare_bust(&with_plinth),
@@ -1779,10 +1902,132 @@ mod tests {
         tight.plinth = Some(Plinth {
             height_mm: 8.0,
             diameter_mm: Some(400.0),
+            chamfer_mm: 0.0,
         });
         let (mesh, report) = prepare_bust(&tight).unwrap();
         assert!(mesh.triangles.len() <= 12_000, "{report:?}");
         assert!(validated(&mesh).solid_geometry);
+    }
+
+    #[test]
+    fn a_chamfered_plinth_stands_on_a_smaller_footprint() {
+        let mut chamfered = request(2.0, 1_000_000);
+        chamfered.plinth = Some(Plinth {
+            height_mm: 8.0,
+            diameter_mm: Some(60.0),
+            chamfer_mm: 2.0,
+        });
+        let (mesh, report) = prepare_bust(&chamfered).unwrap();
+        assert_eq!(report.plinth.expect("plinth report").chamfer_mm, 2.0);
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+        // The plate holds a disc 2 mm narrower all round.
+        let footprint = std::f64::consts::PI * 28.0 * 28.0;
+        let bed = validation.overhang.bed_contact.area_mm2;
+        assert!(
+            (bed - footprint).abs() < 0.01 * footprint,
+            "{bed} {footprint}"
+        );
+
+        for chamfer in [8.0, -1.0, f64::NAN] {
+            chamfered.plinth = Some(Plinth {
+                height_mm: 8.0,
+                diameter_mm: Some(60.0),
+                chamfer_mm: chamfer,
+            });
+            assert!(matches!(
+                prepare_bust(&chamfered),
+                Err(GeometryError::InvalidOptions(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn checks_find_the_overhanging_part_and_name_it_by_a_nearby_vertex() {
+        // The part, stretched to 25 mm long, juts out of the box's face 25 to
+        // 35 mm up, so its underside overhangs. The box's eight vertices come
+        // first, then the part's.
+        let mut checked = request(1.0, 1_000_000);
+        for vertex in &mut checked.vertices[8..] {
+            if vertex[2] > 40.0 {
+                vertex[2] += 15.0;
+            }
+        }
+        checked.plinth = Some(Plinth {
+            height_mm: 5.0,
+            diameter_mm: None,
+            chamfer_mm: 1.0,
+        });
+        checked.checks = Some(PrintChecks {
+            overhang_degrees: 45.0,
+            min_feature_mm: None,
+        });
+        let (_, report) = prepare_bust(&checked).unwrap();
+        // The head is 39.6 mm tall above the cut. Smoothing bows the box's
+        // top upward, so the 45 mm above the plinth hold a little less of it.
+        let fraction = report.life_size_fraction;
+        assert!(
+            (0.7 * 45.0..45.0).contains(&(fraction * 39.6)),
+            "{fraction}"
+        );
+        let overhang = report.overhang.expect("overhang report");
+        assert!(overhang.area_mm2 > 0.0);
+        let on_part = |region: &crate::SurfaceRegion| region.nearest_vertex >= 8;
+        let part = overhang
+            .regions
+            .iter()
+            .find(|region| on_part(region))
+            .expect("an overhang on the part");
+        // On the finished bust, raised by the plinth, near the part's
+        // underside, 25 mm up before scaling and 0.4 mm above the cut.
+        let height = (part.centre_mm[2] - 5.0) / fraction;
+        assert!((20.0..30.0).contains(&height), "{part:?}");
+        assert!(report.thin.is_none());
+
+        checked.checks = Some(PrintChecks {
+            overhang_degrees: 90.0,
+            min_feature_mm: None,
+        });
+        let (_, report) = prepare_bust(&checked).unwrap();
+        assert_eq!(report.overhang.expect("overhang report").area_mm2, 0.0);
+        checked.checks = Some(PrintChecks {
+            overhang_degrees: 91.0,
+            min_feature_mm: None,
+        });
+        assert!(matches!(
+            prepare_bust(&checked),
+            Err(GeometryError::InvalidOptions(_))
+        ));
+    }
+
+    #[test]
+    fn walls_thinner_than_the_smallest_feature_are_reported() {
+        let mut hollow = request(2.0, 1_000_000);
+        hollow.hollow = Some(Hollow {
+            wall_mm: 3.0,
+            drain_diameter_mm: 3.0,
+        });
+        hollow.checks = Some(PrintChecks {
+            overhang_degrees: 45.0,
+            min_feature_mm: Some(4.0),
+        });
+        let (mesh, report) = prepare_bust(&hollow).unwrap();
+        // The outer surface and the cavity are 3 mm apart almost everywhere.
+        let surface = validated(&mesh).surface_area_mm2;
+        let thin = report.thin.expect("thin report");
+        assert!(thin.area_mm2 > 0.5 * surface, "{} {surface}", thin.area_mm2);
+        hollow.checks = Some(PrintChecks {
+            overhang_degrees: 45.0,
+            min_feature_mm: Some(2.0),
+        });
+        let thin = prepare_bust(&hollow).unwrap().1.thin.expect("thin report");
+        assert!(
+            thin.area_mm2 < 0.01 * surface,
+            "{} {surface}",
+            thin.area_mm2
+        );
     }
 
     #[test]
