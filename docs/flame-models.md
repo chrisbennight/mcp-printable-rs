@@ -108,12 +108,14 @@ Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
 any file that was skipped, with the reason.
 
-The `head` workflow has four actions, and a fifth when photo reconstruction is
+The `head` workflow has five actions, and a sixth when photo reconstruction is
 available:
 
 - `models` lists the mounted variants and their basis sizes.
 - `create` adds a head mesh to the Blender scene.
 - `update` re-evaluates an existing head in place, keeping its triangles.
+- `export` writes the head to the workspace as an OBJ file without using
+  Blender.
 - `prepare_print` writes a bust STL to the workspace without using Blender.
 - `reconstruct` estimates a head from photographs; see
   [Reconstruct a head from photographs](#reconstruct-a-head-from-photographs).
@@ -142,6 +144,31 @@ objects created from another variant, and heads whose vertex count has changed.
 An update replaces every vertex position, so other edits to the mesh are lost.
 Heads in Edit Mode are refused, because Blender would overwrite the update when
 the head leaves Edit Mode.
+
+### Export a head
+
+`export` takes the same `variant`, `identity`, `expression` and `pose` as
+`create` and writes the head to a workspace path ending in `.obj`:
+
+```json
+{"action": "export", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "path": "heads/subject.obj"
+}}
+```
+
+The file is a Wavefront OBJ of FLAME's own mesh, including the eyeballs, in
+millimetres and in the same frame as `create`. When the model was converted
+with `--texture`, each triangle corner also carries FLAME's texture
+coordinates, so images laid out for FLAME, such as the displacement map from
+`reconstruct`, line up with it in other software. `overwrite` replaces an
+existing file. The response reports the artifact, the vertex and triangle
+counts, whether texture coordinates were written, and the posed joint
+locations.
+
+For the FLAME 2020 generic model converted with `--texture`, the file holds
+5,023 vertices, 5,118 texture coordinates and 9,976 triangles, about 0.6 MB.
 
 ## Prepare a bust for printing
 
@@ -390,7 +417,8 @@ that they list the tools again.
 ```
 
 The response gives `variant`, `identity`, `expression` and `pose.jaw` in the
-form `create` and `prepare_print` accept, so they can be passed straight on.
+form `create`, `export` and `prepare_print` accept, so they can be passed
+straight on.
 `identity_agreement` gives each photograph's cosine similarity to the fused
 identity; a photograph well below the others probably shows someone else or
 an unusable view. `clamped_coefficients` counts values limited to ±5.

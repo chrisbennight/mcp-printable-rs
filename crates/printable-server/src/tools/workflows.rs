@@ -132,6 +132,7 @@ workflow!(HeadRequest {
     Create(HeadCreateParams) => "printable_flame_create",
     Update(HeadUpdateParams) => "printable_flame_update",
     PreparePrint(HeadPreparePrintParams) => "printable_flame_prepare_print",
+    Export(HeadExportParams) => "printable_flame_export",
     Reconstruct(crate::recon::ReconRequest) => "printable_flame_reconstruct",
 });
 
@@ -356,11 +357,11 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
         })
 }
 
-const HEAD_DESCRIPTION: &str = "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.";
+const HEAD_DESCRIPTION: &str = "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; export writes the head to a workspace OBJ file, with texture coordinates when the model has them; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.";
 
 static HEAD_WITH_RECONSTRUCTION: ToolDef = ToolDef {
     name: HEAD,
-    description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing; reconstruct estimates true-scale identity from 1 to 8 workspace photographs of one person, plus the expression, jaw rotation and a surface displacement map from the first, for use with create and prepare_print. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
+    description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations; update re-evaluates an existing head in place; export writes the head to a workspace OBJ file, with texture coordinates when the model has them; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default for fine-nozzle FDM printing; reconstruct estimates true-scale identity from 1 to 8 workspace photographs of one person, plus the expression, jaw rotation and a surface displacement map from the first, for use with create, export and prepare_print. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
     schema: workflow_schema_of::<HeadRequest>,
     annotations: write_annotations,
 };
@@ -629,11 +630,13 @@ mod tests {
             ("create", "printable_flame_create"),
             ("update", "printable_flame_update"),
             ("prepare_print", "printable_flame_prepare_print"),
+            ("export", "printable_flame_export"),
             ("reconstruct", "printable_flame_reconstruct"),
         ] {
             let params = match action {
                 "update" => json!({"object": "Head"}),
                 "prepare_print" => json!({"path": "bust.stl"}),
+                "export" => json!({"path": "head.obj"}),
                 "reconstruct" => json!({"images": ["face.jpg"], "displacement_path": "detail.png"}),
                 _ => json!({}),
             };

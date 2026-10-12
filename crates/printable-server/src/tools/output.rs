@@ -235,6 +235,14 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "joints": {"type": "object"}
                 }}
             }},
+            {"required": ["artifact", "units", "variant", "vertices", "triangles", "texture_coordinates", "head"], "properties": {
+                "artifact": artifact(), "units": {"const": "millimetres"},
+                "variant": {"type": "string"},
+                "vertices": {"type": "integer", "minimum": 1},
+                "triangles": {"type": "integer", "minimum": 1},
+                "texture_coordinates": {"type": "boolean"},
+                "head": {"type": "object"}
+            }},
             {"required": ["artifact", "units", "variant", "bust", "validation"], "properties": {
                 "artifact": artifact(), "units": {"const": "millimetres"},
                 "variant": {"type": "string"}, "bust": {"type": "object"},
