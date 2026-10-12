@@ -611,6 +611,8 @@ pub(crate) enum ProductPresentationProfile {
     Engineering,
     StudioNeutral,
     StudioDark,
+    /// Softer, lower-contrast lighting suited to heads and textured skin.
+    Portrait,
 }
 
 impl ProductPresentationProfile {
@@ -619,13 +621,14 @@ impl ProductPresentationProfile {
             Self::Engineering => "engineering",
             Self::StudioNeutral => "studio_neutral",
             Self::StudioDark => "studio_dark",
+            Self::Portrait => "portrait",
         }
     }
 
     fn camera_type(self) -> &'static str {
         match self {
             Self::Engineering => "orthographic",
-            Self::StudioNeutral | Self::StudioDark => "perspective",
+            Self::StudioNeutral | Self::StudioDark | Self::Portrait => "perspective",
         }
     }
 
@@ -633,13 +636,13 @@ impl ProductPresentationProfile {
         match self {
             Self::Engineering => None,
             Self::StudioNeutral => Some(70.0),
-            Self::StudioDark => Some(85.0),
+            Self::StudioDark | Self::Portrait => Some(85.0),
         }
     }
 
     fn view_transform(self) -> &'static str {
         match self {
-            Self::Engineering | Self::StudioNeutral => "Khronos PBR Neutral",
+            Self::Engineering | Self::StudioNeutral | Self::Portrait => "Khronos PBR Neutral",
             Self::StudioDark => "AgX",
         }
     }
@@ -649,6 +652,7 @@ impl ProductPresentationProfile {
             Self::Engineering => ([0.18, 0.18, 0.18], 0.8),
             Self::StudioNeutral => ([0.055, 0.055, 0.055], 0.65),
             Self::StudioDark => ([0.008, 0.015, 0.028], 0.45),
+            Self::Portrait => ([0.05, 0.05, 0.055], 0.4),
         }
     }
 
@@ -657,13 +661,16 @@ impl ProductPresentationProfile {
             Self::Engineering => None,
             Self::StudioNeutral => Some(([0.18, 0.18, 0.18], 0.0, 0.72)),
             Self::StudioDark => Some(([0.012, 0.022, 0.038], 0.0, 0.58)),
+            Self::Portrait => Some(([0.08, 0.08, 0.08], 0.0, 0.8)),
         }
     }
 
     pub(crate) fn default_shading(self) -> ProductSurfaceShading {
         match self {
             Self::Engineering => ProductSurfaceShading::Preserve,
-            Self::StudioNeutral | Self::StudioDark => ProductSurfaceShading::SmoothByAngle,
+            Self::StudioNeutral | Self::StudioDark | Self::Portrait => {
+                ProductSurfaceShading::SmoothByAngle
+            }
         }
     }
 }
@@ -2994,7 +3001,9 @@ fn validate_product_render_response(
                     .and_then(Value::as_f64)
                     .is_some_and(|value| value.is_finite() && value > 0.0)
         }
-        ProductPresentationProfile::StudioNeutral | ProductPresentationProfile::StudioDark => {
+        ProductPresentationProfile::StudioNeutral
+        | ProductPresentationProfile::StudioDark
+        | ProductPresentationProfile::Portrait => {
             camera.get("lens_mm").and_then(Value::as_f64) == expected.profile.lens_mm()
                 && camera.get("ortho_scale") == Some(&Value::Null)
                 && camera
@@ -3738,7 +3747,9 @@ fn validate_product_view_presentation(
                     .and_then(Value::as_f64)
                     .is_some_and(|value| value.is_finite() && value > 0.0)
         }
-        ProductPresentationProfile::StudioNeutral | ProductPresentationProfile::StudioDark => {
+        ProductPresentationProfile::StudioNeutral
+        | ProductPresentationProfile::StudioDark
+        | ProductPresentationProfile::Portrait => {
             camera.get("lens_mm").and_then(Value::as_f64) == expected.profile.lens_mm()
                 && camera.get("ortho_scale") == Some(&Value::Null)
                 && camera
@@ -6281,6 +6292,21 @@ mod visual_contract_tests {
         for (view, label, direction) in expected {
             assert_eq!(view.label_and_direction(), (label, direction));
         }
+    }
+
+    #[test]
+    fn portrait_is_a_grounded_perspective_profile() {
+        let portrait: ProductPresentation = serde_json::from_value(json!({
+            "profile": "portrait"
+        }))
+        .expect("portrait presentation");
+        let profile = portrait.profile;
+        assert_eq!(profile.name(), "portrait");
+        assert_eq!(profile.camera_type(), "perspective");
+        assert_eq!(profile.lens_mm(), Some(85.0));
+        assert_eq!(profile.view_transform(), "Khronos PBR Neutral");
+        assert!(profile.ground_material().is_some());
+        assert!(validate_multiview_presentation(&portrait, [[0.0, 0.0, -1.0]]).is_err());
     }
 
     #[test]

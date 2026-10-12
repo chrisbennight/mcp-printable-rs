@@ -1061,6 +1061,7 @@ async fn smoke_product_presentations(
         (105, 106, "engineering", "orthographic"),
         (107, 108, "studio_neutral", "perspective"),
         (109, 110, "studio_dark", "perspective"),
+        (1105, 1106, "portrait", "perspective"),
     ] {
         let path = format!("smoke/enclosure-{profile}.png");
         let rendered = call_tool(

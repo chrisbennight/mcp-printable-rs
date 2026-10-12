@@ -13,9 +13,10 @@ and always writes a confined PNG workspace artifact.
 | `engineering` | orthographic | neutral, no ground | broad key and fill | `preserve` |
 | `studio_neutral` | 70 mm perspective | neutral seamless ground | soft key, fill, and rim | `smooth_by_angle` |
 | `studio_dark` | 85 mm perspective | dark navy seamless ground | key, fill, and rim | `smooth_by_angle` |
+| `portrait` | 85 mm perspective | dark grey seamless ground | large, dim key, broad fill and rim, for heads and textured skin | `smooth_by_angle` |
 
-Engineering and neutral use Khronos PBR Neutral color management. Dark uses
-AgX. The view azimuth orbits from +X toward +Y, and elevation is measured above
+Engineering, neutral and portrait use Khronos PBR Neutral color management.
+Dark uses AgX. The view azimuth orbits from +X toward +Y, and elevation is measured above
 the XY plane. Engineering accepts elevations from -89 through 89 degrees.
 Grounded studio profiles accept 0 through 89 degrees so an opaque ground can
 never hide the selected product. Camera, lights, world, optional ground,
