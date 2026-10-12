@@ -83,36 +83,28 @@ pub struct Labels<'a> {
 }
 
 impl Labels<'_> {
-    /// Whether `accepts` holds at a photograph pixel position and one label
-    /// pixel to each side of it. Pixels at the edge of a labelled region mix
-    /// what lies on either side, such as strands of hair over skin.
+    /// Whether `accepts` holds for every label within one photograph pixel,
+    /// and at least one label pixel, of a photograph pixel position, corners
+    /// included. A sample there blends the photograph's pixels within one
+    /// pixel of it, and pixels at the edge of a labelled region mix what lies
+    /// on either side, such as strands of hair over skin.
     fn agree(&self, pixel: [f64; 2], accepts: impl Fn(u8) -> bool) -> bool {
-        let reach = 1.0 / self.step;
-        [
-            [0.0, 0.0],
-            [reach, 0.0],
-            [-reach, 0.0],
-            [0.0, reach],
-            [0.0, -reach],
-        ]
-        .iter()
-        .all(|offset| {
-            self.at([pixel[0] + offset[0], pixel[1] + offset[1]])
-                .is_some_and(&accepts)
-        })
-    }
-
-    /// The label at a photograph pixel position, or `None` outside the square.
-    fn at(&self, pixel: [f64; 2]) -> Option<u8> {
-        let column = ((pixel[0] - self.left) * self.step).round();
-        let row = ((pixel[1] - self.top) * self.step).round();
+        let reach = (1.0 / self.step).max(1.0);
+        let span = |position: f64, origin: f64| {
+            [-reach, reach].map(|offset| ((position + offset - origin) * self.step).round())
+        };
+        let ([left, right], [top, bottom]) = (span(pixel[0], self.left), span(pixel[1], self.top));
         let side = self.side as f64;
-        if !(0.0..side).contains(&column) || !(0.0..side).contains(&row) {
-            return None;
+        if left < 0.0 || top < 0.0 || right >= side || bottom >= side {
+            return false;
         }
-        self.data
-            .get(row as usize * self.side + column as usize)
-            .copied()
+        (top as usize..=bottom as usize).all(|row| {
+            (left as usize..=right as usize).all(|column| {
+                self.data
+                    .get(row * self.side + column)
+                    .is_some_and(|&label| accepts(label))
+            })
+        })
     }
 }
 
@@ -357,12 +349,21 @@ fn finish(
     kinds: &[FaceKind],
     scalp: ScalpColour,
 ) -> Result<ColourMap, TextureError> {
+    let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
+    let painted = matches!(scalp, ScalpColour::Hair(_));
     let mut on_surface = 0usize;
     let mut seen = 0usize;
-    for (index, face) in texels.face.iter().enumerate() {
-        if *face != NO_FACE {
+    for (index, &face) in texels.face.iter().enumerate() {
+        if face != NO_FACE {
             on_surface += 1;
-            if weight[index] > 0.0 {
+            // Painted hair shows a photograph's colour only where it saw
+            // bare scalp.
+            let shown = if painted && on_scalp(face) {
+                skin.weight[index]
+            } else {
+                weight[index]
+            };
+            if shown > 0.0 {
                 seen += 1;
             }
         }
@@ -379,7 +380,6 @@ fn finish(
         .map(|&vertex| vertex as usize + 1)
         .max()
         .unwrap_or(0);
-    let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
     let on_eye = |face: u32| kinds[face as usize] == FaceKind::Eye;
     // Skin is filled only from what the photographs showed as skin. Eyes
     // are left out, and a scalp taken as photographed shows hair, so it
@@ -1509,7 +1509,8 @@ mod tests {
             })
             .unwrap();
         let map = builder.finish().unwrap();
-        assert!(map.seen > 0.5, "the photograph saw the scalp: {}", map.seen);
+        // The paint covers everything the photograph saw.
+        assert_eq!(map.seen, 0.0);
         assert_eq!(texel(&map, 0.5), paint);
     }
 
@@ -1639,6 +1640,36 @@ mod tests {
             !labels.agree([0.0, 80.0], skin),
             "the square's edge is not trusted"
         );
+    }
+
+    #[test]
+    fn a_label_at_the_corner_of_a_sample_is_checked() {
+        // Labels one to one with the photograph: skin, with hair at one
+        // pixel that a sample between it and its diagonal neighbour blends.
+        let mut data = vec![LABEL_FACE_SKIN; 200 * 200];
+        data[101 * 200 + 101] = LABEL_HAIR;
+        let labels = Labels {
+            side: 200,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 1.0,
+        };
+        let skin = |label| label == LABEL_FACE_SKIN;
+        assert!(!labels.agree([100.49, 100.49], skin));
+        assert!(labels.agree([50.5, 50.5], skin));
+        // Labels finer than the photograph are checked across a whole
+        // photograph pixel.
+        let fine = Labels {
+            side: 200,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 4.0,
+        };
+        // Label pixel 101 lies at photograph pixel 25.25.
+        assert!(!fine.agree([25.1, 25.1], skin));
+        assert!(fine.agree([10.5, 10.5], skin));
     }
 
     #[test]
