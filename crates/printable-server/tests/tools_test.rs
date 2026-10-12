@@ -6191,8 +6191,12 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
         task.abort();
     }
 
-    // A model without a texture layout, or one path for both maps, is
-    // refused before the worker is asked.
+    // A model without a texture layout, one path for both maps, or a
+    // photograph over the size limit is refused before the worker is asked.
+    std::fs::File::create(root.path().join("huge.png"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
     let (endpoint, seen, task) = fake_recon_worker(true).await;
     for (library, params, message) in [
         (
@@ -6209,6 +6213,11 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
             flame2020_library_with_uv(true),
             json!({"images": ["face.png"], "displacement_path": "d.png", "texture_path": "./d.png"}),
             "name the same file",
+        ),
+        (
+            flame2020_library_with_uv(true),
+            json!({"images": ["huge.png"], "displacement_path": "d.png", "texture_path": "c.png"}),
+            "snapshot limit",
         ),
     ] {
         let server = recon_server_with(root.path(), &endpoint, library).await;

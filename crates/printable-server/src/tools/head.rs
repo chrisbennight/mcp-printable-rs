@@ -612,16 +612,11 @@ pub(super) async fn reconstruct(
     Ok(response)
 }
 
-/// A photograph's bytes, within the size the reconstruction worker accepts.
+/// A photograph's bytes, copied through a bounded snapshot so that an
+/// oversized file is refused without being held in memory.
 fn read_photo(workspace: &Workspace, image: &str) -> Result<Vec<u8>, ToolError> {
-    let (meta, bytes) = workspace.read_generated_bytes(image)?;
-    if meta.size_bytes > crate::recon::MAX_IMAGE_BYTES {
-        return Err(ToolError::Validation(format!(
-            "{image} is larger than {} bytes",
-            crate::recon::MAX_IMAGE_BYTES
-        )));
-    }
-    Ok(bytes)
+    let snapshot = workspace.snapshot_artifact_bounded(image, crate::recon::MAX_IMAGE_BYTES)?;
+    Ok(std::fs::read(snapshot.path())?)
 }
 
 /// Side of the colour map in texels.
