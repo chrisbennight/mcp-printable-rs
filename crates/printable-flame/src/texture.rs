@@ -1767,7 +1767,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&[FaceKind::Scalp; 2], ScalpColour::Photo),
+            (&[FaceKind::Scalp; 2], KEEP),
             &mut weight,
             &mut colour,
             (&mut vec![false; size * size], &mut skin),
