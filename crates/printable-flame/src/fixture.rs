@@ -30,6 +30,8 @@ pub struct Fixture {
     /// Texture coordinates flattened as `[coordinate][u, v]` and, per face,
     /// coordinate indices; written as `uv_coords` and `uv_faces` when present.
     pub uv: Option<(Vec<f32>, Vec<u32>)>,
+    /// Named vertex regions, each written as `region.<name>`.
+    pub regions: Vec<(String, Vec<u32>)>,
 }
 
 impl Default for Fixture {
@@ -71,6 +73,7 @@ impl Default for Fixture {
             metadata,
             omit: Vec::new(),
             uv: None,
+            regions: Vec::new(),
         }
     }
 }
@@ -140,27 +143,41 @@ impl Fixture {
                     .collect(),
             ),
         ];
-        let mut tensors = tensors.to_vec();
+        let mut tensors: Vec<(String, Dtype, Vec<usize>, Vec<u8>)> = tensors
+            .into_iter()
+            .map(|(name, dtype, shape, data)| (name.to_owned(), dtype, shape, data))
+            .collect();
         if let Some((coords, faces)) = &self.uv {
             tensors.push((
-                "uv_coords",
+                "uv_coords".into(),
                 Dtype::F32,
                 vec![coords.len() / 2, 2],
                 floats(coords),
             ));
             tensors.push((
-                "uv_faces",
+                "uv_faces".into(),
                 Dtype::U32,
                 vec![faces.len() / 3, 3],
                 faces.iter().flat_map(|value| value.to_le_bytes()).collect(),
             ));
         }
+        for (name, indices) in &self.regions {
+            tensors.push((
+                format!("region.{name}"),
+                Dtype::U32,
+                vec![indices.len()],
+                indices
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect(),
+            ));
+        }
         let views: Vec<(&str, TensorView<'_>)> = tensors
             .iter()
-            .filter(|(name, ..)| !self.omit.contains(name))
+            .filter(|(name, ..)| !self.omit.contains(&name.as_str()))
             .map(|(name, dtype, shape, data)| {
                 (
-                    *name,
+                    name.as_str(),
                     TensorView::new(*dtype, shape.clone(), data)
                         .expect("fixture tensor matches its shape"),
                 )

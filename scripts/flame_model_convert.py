@@ -206,14 +206,40 @@ class _RestrictedUnpickler(pickle.Unpickler):
             raise ModelError(f"refusing {shown}: it is not part of a FLAME model") from None
 
 
+def _opcodes(data: bytes):
+    """Yield each opcode's name and argument, as pickletools.genops does.
+
+    Protocol 0 strings are read as raw lines rather than decoded: Python 2
+    wrote binary array data into them as escaped bytes, which genops refuses
+    to decode as ASCII. No opcode is executed.
+    """
+    stream = io.BytesIO(data)
+    while True:
+        code = stream.read(1)
+        opcode = pickletools.code2op.get(code.decode("latin1"))
+        if opcode is None:
+            raise ValueError("unknown or missing pickle opcode")
+        if opcode.arg is None:
+            argument = None
+        elif opcode.arg is pickletools.stringnl:
+            argument = stream.readline()
+            if not argument.endswith(b"\n"):
+                raise ValueError("protocol 0 string has no terminating newline")
+        else:
+            argument = opcode.arg.reader(stream)
+        yield opcode.name, argument
+        if opcode.name == "STOP":
+            return
+
+
 def load_source(data: bytes) -> dict:
     """Decode a FLAME model pickle into stand-in objects without running foreign code."""
     try:
         # The C unpickler sizes its memo table from the largest explicit index,
         # so a few bytes could demand an arbitrarily large allocation. Decoding
         # the opcodes first builds no objects.
-        for opcode, argument, _ in pickletools.genops(data):
-            if opcode.name in MEMO_STORES and argument > MAX_MEMO_INDEX:
+        for name, argument in _opcodes(data):
+            if name in MEMO_STORES and argument > MAX_MEMO_INDEX:
                 raise ModelError("source declares a memo index far beyond any FLAME model")
         model = _RestrictedUnpickler(io.BytesIO(data), encoding="latin1").load()
     except ModelError:
@@ -485,6 +511,38 @@ def texture_layout(path: Path, faces: int):
     }
 
 
+# FLAME_masks.pkl is about 210 KB and names 14 regions.
+MAX_MASKS_BYTES = 4 << 20
+MAX_REGIONS = 64
+REGION_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+REGION_PREFIX = "region."
+INTEGER_CODES = {"i8", "i4", "i2", "i1", "u8", "u4", "u2", "u1"}
+
+
+def regions(data: bytes, vertices: int):
+    """FLAME's named vertex regions from FLAME_masks.pkl, as tensors of
+    sorted vertex indices named region.<name>."""
+    try:
+        masks = load_source(data)
+    except ModelError as error:
+        raise ModelError(f"masks: {error}") from None
+    if not 0 < len(masks) <= MAX_REGIONS:
+        raise ModelError(f"masks must name between 1 and {MAX_REGIONS} regions")
+    tensors = {}
+    for name, value in masks.items():
+        if not isinstance(name, str) or not REGION_NAME.fullmatch(name):
+            raise ModelError("mask names must be lowercase letters, digits and '_', starting with a letter")
+        if (not isinstance(value, _Array) or len(value.shape) != 1
+                or not isinstance(value.dtype, _DType) or value.dtype.code not in INTEGER_CODES):
+            raise ModelError(f"mask {name} is not a list of vertex indices")
+        # The published lips mask lists some vertices twice; a region is a set.
+        indices = sorted(set(value.values()))
+        if not indices or not 0 <= indices[0] <= indices[-1] < vertices:
+            raise ModelError(f"mask {name} is empty or names a vertex outside the model")
+        tensors[REGION_PREFIX + name] = ("U32", (len(indices),), _payload(array.array("I", indices)))
+    return tensors
+
+
 def write_safetensors(path: Path, tensors, metadata) -> str:
     """Atomically write tensors as safetensors and return the file's SHA-256."""
     header = {"__metadata__": metadata}
@@ -518,11 +576,12 @@ def write_safetensors(path: Path, tensors, metadata) -> str:
     return digest.hexdigest()
 
 
-def read_bounded(path: Path) -> bytes:
+def read_bounded(path: Path, limit: int | None = None, what: str = "source") -> bytes:
+    limit = MAX_SOURCE_BYTES if limit is None else limit
     with path.open("rb") as handle:
-        data = handle.read(MAX_SOURCE_BYTES + 1)
-    if len(data) > MAX_SOURCE_BYTES:
-        raise ModelError(f"source exceeds {MAX_SOURCE_BYTES >> 20} MiB")
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ModelError(f"{what} exceeds {limit >> 20} MiB")
     return data
 
 
@@ -538,16 +597,24 @@ def main(argv=None) -> int:
     parser.add_argument("--texture", type=Path,
                         help="FLAME_texture.npz from the FLAME texture space, to add the UV layout "
                              "that surface detail is applied through")
+    parser.add_argument("--masks", type=Path,
+                        help="FLAME_masks.pkl from the FLAME vertex masks, to add named regions such as "
+                             "the scalp, face, ears and eyeballs")
     args = parser.parse_args(argv)
     try:
         tensors, metadata = convert(read_bounded(args.source), args.variant, args.expression_components)
         if args.texture is not None:
             tensors.update(texture_layout(args.texture, tensors["faces"][1][0]))
+        if args.masks is not None:
+            data = read_bounded(args.masks, MAX_MASKS_BYTES, "masks file")
+            tensors.update(regions(data, tensors["v_template"][1][0]))
         digest = write_safetensors(args.destination, tensors, metadata)
     except (ModelError, OSError) as error:
         print(f"flame_model_convert: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"destination": str(args.destination), "sha256": digest, **metadata}, sort_keys=True))
+    names = sorted(name.removeprefix(REGION_PREFIX) for name in tensors if name.startswith(REGION_PREFIX))
+    print(json.dumps({"destination": str(args.destination), "sha256": digest, "regions": names, **metadata},
+                     sort_keys=True))
     return 0
 
 
