@@ -18,7 +18,7 @@ use crate::error::ToolError;
 /// Photographs accepted in one request.
 pub const MAX_IMAGES: usize = 8;
 /// Largest photograph copied out of the workspace.
-const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// Largest JSON response read from the Python process.
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 /// Largest displacement map committed to the workspace.
@@ -80,6 +80,15 @@ impl ReconRequest {
         }
         Ok(())
     }
+}
+
+/// SHA-256 of a photograph's bytes, as lowercase hexadecimal.
+pub(crate) fn photo_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Where the reconstruction runtime and its operator-supplied files live.
@@ -244,6 +253,13 @@ impl ReconWorker {
             MAX_MAP_BYTES,
         )?;
         result["displacement"]["artifact"] = json!(artifact);
+        // Callers that read the photographs themselves can confirm they saw
+        // the same bytes.
+        let digests = snapshots
+            .iter()
+            .map(|snapshot| std::fs::read(snapshot.path()).map(|bytes| photo_digest(&bytes)))
+            .collect::<Result<Vec<_>, _>>()?;
+        result["image_sha256"] = json!(digests);
         Ok(result)
     }
 
@@ -377,6 +393,14 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
         assert_eq!(result["device"], "cpu");
         assert_eq!(result["displacement"]["artifact"]["path"], "detail/map.png");
         assert!(root.path().join("workspace/detail/map.png").is_file());
+        // The digests identify the bytes the runtime was given.
+        let digests: Vec<String> = ["face.jpg", "side.png"]
+            .iter()
+            .map(|name| {
+                photo_digest(&std::fs::read(root.path().join("workspace").join(name)).unwrap())
+            })
+            .collect();
+        assert_eq!(result["image_sha256"], json!(digests));
         // An existing map is kept unless overwrite is requested.
         let repeat = worker
             .reconstruct(request(&["face.jpg"], "detail/map.png"))

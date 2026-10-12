@@ -462,7 +462,10 @@ colour comes from the photographs themselves:
    the layout is cut apart.
 
 The response adds `texture` with the artifact, its size and `seen`, the share
-of the head's surface that some photograph saw directly. The map shows what the
+of the head's surface that some photograph saw directly. The server reads the
+photographs before the worker does and compares their SHA-256 digests with the
+ones the worker fitted, so a photograph replaced during the reconstruction
+stops the colour map instead of misplacing it. The map shows what the
 photographs show: lighting is not removed, hair falls on the scalp where the
 photographs show it, and clothing falls on the neck where the neck is covered
 in a photograph. It is for viewing and rendering. Printed files carry no colour.

@@ -519,6 +519,13 @@ pub(super) async fn reconstruct(
     let textured_model = match &request.texture_path {
         Some(path) => {
             validate_scad_destination(&workspace, path, ".png", request.overwrite)?;
+            if workspace.resolve(path, false)?
+                == workspace.resolve(&request.displacement_path, false)?
+            {
+                return Err(ToolError::Validation(
+                    "texture_path and displacement_path name the same file".into(),
+                ));
+            }
             let model = Arc::clone(
                 library(settings)?
                     .select(Some(&variant))
@@ -530,6 +537,25 @@ pub(super) async fn reconstruct(
                 )));
             }
             Some(model)
+        }
+        None => None,
+    };
+    // The colour map projects the bytes read here; the worker reports the
+    // digest of the bytes it fitted, so a photograph replaced in between is
+    // caught rather than misregistered.
+    let photos = match textured_model {
+        Some(_) => {
+            let workspace = Arc::clone(&workspace);
+            let images = request.images.clone();
+            Some(
+                blocking(move || {
+                    images
+                        .iter()
+                        .map(|image| read_photo(&workspace, image))
+                        .collect::<Result<Vec<_>, ToolError>>()
+                })
+                .await?,
+            )
         }
         None => None,
     };
@@ -545,24 +571,57 @@ pub(super) async fn reconstruct(
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
     });
-    if let (Some(model), Some(path)) = (textured_model, request.texture_path.clone()) {
-        let views: Vec<ReconView> = serde_json::from_value(field("views")).map_err(|_| {
-            ToolError::Validation(
-                "the reconstruction worker did not describe its view of each photograph".into(),
-            )
-        })?;
+    if let (Some(model), Some(photos), Some(path)) =
+        (textured_model, photos, request.texture_path.clone())
+    {
         let images = request.images.clone();
         let overwrite = request.overwrite;
-        let texture = blocking(move || colour_map(&workspace, &model, &images, &views, &path, overwrite))
-            .await
-            .map_err(|error| {
-                ToolError::Validation(format!(
-                    "the reconstruction finished and wrote the displacement map, but the colour map was not made: {error}"
-                ))
+        let views = field("views");
+        let digests = field("image_sha256");
+        let texture = blocking(move || {
+            let views: Vec<ReconView> = serde_json::from_value(views).map_err(|_| {
+                ToolError::Validation(
+                    "the reconstruction worker did not describe its view of each photograph"
+                        .into(),
+                )
             })?;
+            let fitted: Vec<String> = serde_json::from_value(digests).map_err(|_| {
+                ToolError::Validation(
+                    "the reconstruction worker did not identify the photographs it used".into(),
+                )
+            })?;
+            let read: Vec<String> = photos
+                .iter()
+                .map(|bytes| crate::recon::photo_digest(bytes))
+                .collect();
+            if fitted != read {
+                return Err(ToolError::Validation(
+                    "a photograph changed while it was being reconstructed".into(),
+                ));
+            }
+            colour_map(&workspace, &model, &images, &photos, &views, &path, overwrite)
+        })
+        .await
+        .map_err(|error| {
+            ToolError::Validation(format!(
+                "the reconstruction finished and wrote the displacement map, but the colour map was not made: {error}"
+            ))
+        })?;
         response["texture"] = texture;
     }
     Ok(response)
+}
+
+/// A photograph's bytes, within the size the reconstruction worker accepts.
+fn read_photo(workspace: &Workspace, image: &str) -> Result<Vec<u8>, ToolError> {
+    let (meta, bytes) = workspace.read_generated_bytes(image)?;
+    if meta.size_bytes > crate::recon::MAX_IMAGE_BYTES {
+        return Err(ToolError::Validation(format!(
+            "{image} is larger than {} bytes",
+            crate::recon::MAX_IMAGE_BYTES
+        )));
+    }
+    Ok(bytes)
 }
 
 /// Side of the colour map in texels.
@@ -596,6 +655,7 @@ fn colour_map(
     workspace: &Workspace,
     model: &FlameModel,
     images: &[String],
+    photos: &[Vec<u8>],
     views: &[ReconView],
     path: &str,
     overwrite: bool,
@@ -608,11 +668,10 @@ fn colour_map(
     let layout = model
         .uv_layout()
         .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
-    let mut photos = Vec::with_capacity(views.len());
+    let mut decoded = Vec::with_capacity(views.len());
     let mut heads = Vec::with_capacity(views.len());
-    for (image, view) in images.iter().zip(views) {
-        let (_, bytes) = workspace.read_generated_bytes(image)?;
-        let photo = decode_photo(&bytes)
+    for ((image, bytes), view) in images.iter().zip(photos).zip(views) {
+        let photo = decode_photo(bytes)
             .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
         if [photo.width() as usize, photo.height() as usize] != view.image_size {
             return Err(ToolError::Validation(format!(
@@ -631,10 +690,10 @@ fn colour_map(
                 translation: [0.0; 3],
             })
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
-        photos.push(photo);
+        decoded.push(photo);
         heads.push(head);
     }
-    let texture_views: Vec<texture::View<'_>> = photos
+    let texture_views: Vec<texture::View<'_>> = decoded
         .iter()
         .zip(&heads)
         .zip(views)
