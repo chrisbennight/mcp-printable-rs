@@ -1,11 +1,15 @@
 Printable photo reconstruction worker
 
-This image includes MediaPipe's face landmarker model, face_landmarker.task,
-downloaded unmodified from
-https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-It is published by Google under the Apache License, Version 2.0. The license
-text and MediaPipe's NOTICE are installed with the mediapipe Python package in
-this image, under
+This image includes two MediaPipe models, each downloaded unmodified:
+
+- the face landmarker, face_landmarker.task, from
+  https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+- the multiclass selfie segmenter, selfie_multiclass_256x256.tflite, from
+  https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite
+
+Both are published by Google under the Apache License, Version 2.0. The
+license text and MediaPipe's NOTICE are installed with the mediapipe Python
+package in this image, under
 /opt/recon/lib/python3*/site-packages/mediapipe-*.dist-info/licenses/.
 
 OpenCV is built from the opencv-python 5.0.0.93 source distribution with only

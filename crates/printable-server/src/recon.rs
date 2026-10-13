@@ -19,8 +19,9 @@ use crate::error::ToolError;
 pub const MAX_IMAGES: usize = 8;
 /// Largest photograph copied out of the workspace.
 pub(crate) const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
-/// Largest JSON response read from the Python process.
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+/// Largest JSON response read from the Python process. Each photograph's
+/// pixel labels travel in it as a small PNG.
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// Largest displacement map committed to the workspace.
 const MAX_MAP_BYTES: u64 = 16 * 1024 * 1024;
 const IMAGE_SUFFIXES: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
@@ -42,6 +43,28 @@ pub struct ReconRequest {
     /// converted with its texture layout. Not made when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture_path: Option<String>,
+    /// How the colour map colours the scalp (default `hair`): `hair` paints
+    /// it the hair colour wherever the photographs do not show bare scalp,
+    /// `skin` colours it as skin, and `photo` takes whatever the
+    /// photographs show, hair included. `hair` and `skin` need a model
+    /// converted with FLAME's masks to know where the scalp is. Needs
+    /// `texture_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scalp: Option<ScalpChoice>,
+    /// sRGB colour, each component 0 to 255, to paint the scalp with instead
+    /// of the hair colour found in the photographs. Needs `scalp` `hair`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hair_colour: Option<[u8; 3]>,
+}
+
+/// How a colour map colours the scalp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalpChoice {
+    #[default]
+    Hair,
+    Skin,
+    Photo,
 }
 
 impl ReconRequest {
@@ -77,6 +100,13 @@ impl ReconRequest {
                     "texture_path and displacement_path must differ".into(),
                 ));
             }
+        } else if self.scalp.is_some() || self.hair_colour.is_some() {
+            return Err(ToolError::Validation(
+                "scalp and hair_colour need texture_path".into(),
+            ));
+        }
+        if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
+            return Err(ToolError::Validation("hair_colour needs scalp hair".into()));
         }
         Ok(())
     }
@@ -109,6 +139,9 @@ pub struct ReconConfig {
     pub script: PathBuf,
     pub checkpoints: PathBuf,
     pub landmarker: PathBuf,
+    /// MediaPipe's multiclass selfie segmenter, which labels hair, skin and
+    /// clothing for the colour map.
+    pub segmenter: PathBuf,
     pub device: String,
     pub timeout: Duration,
 }
@@ -144,12 +177,14 @@ impl ReconWorker {
         let check: Check = serde_json::from_slice(&output.stdout).map_err(|_| {
             reconstruction_error("protocol", "the checkpoint check returned no answer")
         })?;
+        let mut missing = check.missing;
         if !self.config.landmarker.is_file() {
-            let mut missing = check.missing;
             missing.push("face landmarker model".into());
-            return Ok(missing);
         }
-        Ok(check.missing)
+        if !self.config.segmenter.is_file() {
+            missing.push("person segmenter model".into());
+        }
+        Ok(missing)
     }
 
     pub async fn reconstruct(&self, request: ReconRequest) -> Result<Value, ToolError> {
@@ -185,6 +220,7 @@ impl ReconWorker {
             "images": snapshots.iter().map(|snapshot| snapshot.path()).collect::<Vec<_>>(),
             "checkpoints": self.config.checkpoints,
             "landmarker": self.config.landmarker,
+            "segmenter": self.config.segmenter,
             "displacement": map,
             "device": self.config.device,
             "seed": 0,
@@ -366,6 +402,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
         std::fs::create_dir(&runtime).unwrap();
         std::fs::write(runtime.join("reconstruct.py"), FAKE_RUNTIME).unwrap();
         std::fs::write(runtime.join("face_landmarker.task"), b"model").unwrap();
+        std::fs::write(runtime.join("segmenter.tflite"), b"model").unwrap();
         let workspace_root = root.path().join("workspace");
         std::fs::create_dir(&workspace_root).unwrap();
         for name in [
@@ -385,6 +422,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
                 script: runtime.join("reconstruct.py"),
                 checkpoints: runtime.clone(),
                 landmarker: runtime.join("face_landmarker.task"),
+                segmenter: runtime.join("segmenter.tflite"),
                 device: "cpu".into(),
                 timeout,
             },
@@ -458,6 +496,8 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             displacement_path: displacement.into(),
             overwrite: false,
             texture_path: None,
+            scalp: None,
+            hair_colour: None,
         }
     }
 
@@ -479,6 +519,37 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
         assert!(with_texture("colour.png").validate().is_ok());
         assert!(with_texture("colour.jpg").validate().is_err());
         assert!(with_texture("map.png").validate().is_err());
+        let coloured =
+            |scalp: Option<ScalpChoice>, hair: Option<[u8; 3]>, texture: bool| ReconRequest {
+                scalp,
+                hair_colour: hair,
+                texture_path: texture.then(|| "colour.png".into()),
+                ..request(&["a.jpg"], "map.png")
+            };
+        assert!(
+            coloured(Some(ScalpChoice::Skin), None, true)
+                .validate()
+                .is_ok()
+        );
+        assert!(coloured(None, Some([1, 2, 3]), true).validate().is_ok());
+        assert!(
+            coloured(Some(ScalpChoice::Hair), Some([1, 2, 3]), true)
+                .validate()
+                .is_ok()
+        );
+        for (scalp, hair, texture, message) in [
+            (Some(ScalpChoice::Photo), None, false, "need texture_path"),
+            (None, Some([1, 2, 3]), false, "need texture_path"),
+            (
+                Some(ScalpChoice::Skin),
+                Some([1, 2, 3]),
+                true,
+                "needs scalp hair",
+            ),
+        ] {
+            let error = coloured(scalp, hair, texture).validate().unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 }
 

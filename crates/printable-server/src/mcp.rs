@@ -14,9 +14,9 @@ use rmcp::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, CustomRequest,
         CustomResult, Implementation, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-        Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+        Resource, ResourceContents, ServerCapabilities, ServerInfo, SubscriptionFilter, Tool,
     },
-    service::{NotificationContext, Peer, RequestContext},
+    service::{NotificationContext, Peer, RequestContext, SubscriptionContext},
 };
 use serde_json::{Map, Value};
 
@@ -42,6 +42,14 @@ use crate::{
 
 const SERVER_INSTRUCTIONS: &str = "Printable provides workflow tools for Blender, OpenSCAD, and CadQuery modeling, native observation, manufacturing evidence, rendering, and confined artifacts. Combined tools select an action and typed params. Use inspect for bounded state, blender_execute for general Python, and view for visual feedback. Checkpoint before risky edits; use expected_scene to reject stale state. Never retry a mutation after an uncertain timeout: wait for healthy status, then inspect or restore. Use immutable checkpoints and job for long rendering; poll compact progress and request detail only for full evidence. Uploads and file publication belong to artifact. Paths are workspace-relative; large data belongs in artifacts. Images do not certify dimensions, wall thickness, or motion clearance. Read printable://modeling/blender-v1, printable://design/product-v1, and printable://render/product-v1 for task-specific guidance. Use skill.list and skill.get for bundled client-run skills; inspect-printer-camera delegates visual assessment of snapshots and keeps control with the parent; image-to-mold guides calibrated relief depth maps, mold geometry, validation and requested slicing.";
 
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+    ProtocolVersion::V_2026_07_28,
+];
+
 /// The MCP request handler. The backend handles are `Arc`-shared so the server
 /// stays `Clone` (the transport builds one per session); the underlying
 /// `Workspace` and `BlenderClient` are not themselves `Clone`.
@@ -57,7 +65,7 @@ pub struct PrintableServer {
     jobs: Arc<JobRegistry>,
     published_files: Arc<PublishedFiles>,
     incoming_files: Arc<IncomingFiles>,
-    /// Initialized sessions, told when the advertised tools change.
+    /// Initialized legacy sessions, told when the advertised tools change.
     sessions: Arc<std::sync::Mutex<Vec<Peer<RoleServer>>>>,
 }
 
@@ -107,7 +115,12 @@ impl PrintableServer {
     /// worker is ready. Until `cancel` fires, tell every initialized session
     /// when that changes, so clients list the tools again.
     pub(crate) fn announce_tool_changes(&self, cancel: tokio_util::sync::CancellationToken) {
-        let Some(recon) = &self.settings.recon else {
+        let Some(recon) = self
+            .settings
+            .recon
+            .as_ref()
+            .filter(|_| self.tool_list_can_change())
+        else {
             return;
         };
         let mut changes = recon.subscribe();
@@ -182,6 +195,15 @@ impl PrintableServer {
                     .as_ref()
                     .is_some_and(|recon| recon.is_ready()),
         }
+    }
+
+    fn tool_list_can_change(&self) -> bool {
+        self.settings.recon.is_some()
+            && self
+                .settings
+                .flame
+                .as_ref()
+                .is_some_and(|library| library.reconstruction_variant().is_some())
     }
 
     /// Resolve a tool name and dispatch. An unknown name is a JSON-RPC
@@ -473,9 +495,13 @@ fn aggregate_readiness(
 }
 
 impl ServerHandler for PrintableServer {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::V_2024_11_05;
+        info.protocol_version = ProtocolVersion::V_2026_07_28;
         let capabilities = ServerCapabilities::builder().enable_tools();
         let mut capabilities = if resources::RESOURCES.is_empty() {
             capabilities.build()
@@ -483,7 +509,7 @@ impl ServerHandler for PrintableServer {
             capabilities.enable_resources().build()
         };
         // Only reconstruction readiness changes the tools after startup.
-        if self.settings.recon.is_some()
+        if self.tool_list_can_change()
             && let Some(tools) = capabilities.tools.as_mut()
         {
             tools.list_changed = Some(true);
@@ -500,12 +526,57 @@ impl ServerHandler for PrintableServer {
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if !self.tool_list_can_change()
+            || context
+                .peer
+                .peer_info()
+                .is_some_and(|info| info.protocol_version >= ProtocolVersion::V_2026_07_28)
+        {
+            return;
+        }
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         sessions.retain(|peer| !peer.is_transport_closed());
         sessions.push(context.peer);
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        let supported = if self.tool_list_can_change() {
+            SubscriptionFilter::builder().tools_list_changed().build()
+        } else {
+            SubscriptionFilter::new()
+        };
+        Some(requested.intersection(&supported))
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        // The SDK has acknowledged the filter before handing us this context.
+        let Some(recon) = self
+            .settings
+            .recon
+            .as_ref()
+            .filter(|_| context.accepted().tools_list_changed == Some(true))
+        else {
+            context.cancelled().await;
+            return Ok(());
+        };
+        let mut changes = recon.subscribe();
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => break,
+                changed = changes.changed() => if changed.is_err() { break },
+            }
+            tokio::select! {
+                _ = context.cancelled() => break,
+                sent = context.sink().notify_tool_list_changed() => if sent.is_err() { break },
+            }
+        }
+        Ok(())
     }
 
     async fn list_tools(

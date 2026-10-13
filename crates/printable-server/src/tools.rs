@@ -63,9 +63,9 @@ static WORKSPACE_OPS: LazyLock<Arc<Semaphore>> =
 // images, tiles, and an output canvas. Serialize those operations
 // process-wide instead of multiplying their allocation across MCP sessions.
 static VISUAL_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
-// Validation retains one STL and assembly analysis retains two while expanding
-// vertices, topology, BVHs, and Manifold state. Serialize those operations so
-// concurrent sessions queue instead of multiplying their allocation.
+// Validation expands mesh state in the server; assembly snapshots are streamed
+// into private files and expanded only in the isolated child. Serialize geometry
+// operations so concurrent sessions do not multiply memory and scratch usage.
 static GEOMETRY_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 pub(crate) const PREVIEW_INLINE_MAX_BYTES: u64 = 1024 * 1024;
 // Bounds pass through f32 mesh storage, world transforms, and bisect interpolation.
@@ -4703,15 +4703,13 @@ async fn analyze_assembly_artifacts(
     geometry_blocking(move || {
         let fixed_snapshot = workspace.snapshot_artifact(&params.fixed_path)?;
         let fixed_artifact = fixed_snapshot.meta().clone();
-        let fixed_bytes = std::fs::read(fixed_snapshot.path())?;
         let moving_snapshot = workspace.snapshot_artifact(&params.moving_path)?;
         let moving_artifact = moving_snapshot.meta().clone();
-        let moving_bytes = std::fs::read(moving_snapshot.path())?;
-        let report = run_geometry_worker(
+        let report = run_geometry_worker_files(
             &worker_bin,
             worker_memory_bytes,
-            &fixed_bytes,
-            &moving_bytes,
+            fixed_snapshot.path(),
+            moving_snapshot.path(),
             options,
         )?;
         Ok::<_, ToolError>(json!({
@@ -4747,23 +4745,6 @@ pub(crate) fn geometry_worker_path_from_override(
         )
     })?;
     Ok(directory.join("printable-geometry-worker"))
-}
-
-pub(crate) fn run_geometry_worker(
-    worker_bin: &std::path::Path,
-    memory_bytes: u64,
-    fixed: &[u8],
-    moving: &[u8],
-    options: AssemblyOptions,
-) -> Result<Value, ToolError> {
-    let staging = tempfile::Builder::new()
-        .prefix("printable-assembly-")
-        .tempdir()?;
-    let fixed_path = staging.path().join("fixed.stl");
-    let moving_path = staging.path().join("moving.stl");
-    std::fs::write(&fixed_path, fixed)?;
-    std::fs::write(&moving_path, moving)?;
-    run_geometry_worker_files(worker_bin, memory_bytes, &fixed_path, &moving_path, options)
 }
 
 pub(crate) fn run_geometry_worker_files(

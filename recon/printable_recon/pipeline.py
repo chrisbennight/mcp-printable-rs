@@ -12,7 +12,9 @@ exaggerated detail.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import base64
+import io
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy
@@ -46,7 +48,9 @@ class Reconstruction:
 
 
 class Reconstructor:
-    def __init__(self, directory: Path, landmarker: Path, device: str = "cpu") -> None:
+    def __init__(
+        self, directory: Path, landmarker: Path, device: str = "cpu", segmenter: Path | None = None
+    ) -> None:
         missing = missing_files(directory)
         if missing:
             raise checkpoints.CheckpointError(f"checkpoint files are missing: {', '.join(missing)}")
@@ -73,9 +77,12 @@ class Reconstructor:
             module.to(self.device).eval()
         self.face_eye_mask = _mask(directory / FILES["face_eye_mask"])
         self.landmarker = faces.Landmarker(landmarker)
+        self.segmenter = faces.Segmenter(segmenter) if segmenter is not None else None
 
     def close(self) -> None:
         self.landmarker.close()
+        if self.segmenter is not None:
+            self.segmenter.close()
 
     @torch.inference_mode()
     def run(self, images: list[Path]) -> Reconstruction:
@@ -85,7 +92,10 @@ class Reconstructor:
         for path in images:
             pixels = faces.decode(path)
             try:
-                found.append(faces.crops(pixels, self.landmarker(pixels)))
+                face = faces.crops(pixels, self.landmarker(pixels))
+                if self.segmenter is not None:
+                    face = replace(face, segmentation=self.segmenter(pixels, face.landmarks))
+                found.append(face)
             except faces.FaceError as error:
                 raise faces.FaceError(f"{path.name}: {error}") from error
         return self.reconstruct(found)
@@ -153,7 +163,7 @@ def _view(smirk: dict[str, torch.Tensor], index: int, face: faces.Face) -> dict:
     def value(name: str) -> list[float]:
         return smirk[name][index].tolist()
 
-    return {
+    view = {
         "shape": value("shape"),
         "expression": value("expression"),
         "jaw": value("jaw"),
@@ -161,6 +171,24 @@ def _view(smirk: dict[str, torch.Tensor], index: int, face: faces.Face) -> dict:
         "camera": value("camera"),
         "crop": {"left": face.smirk_crop.left, "top": face.smirk_crop.top, "step": face.smirk_crop.step},
         "image_size": list(face.image_size),
+    }
+    if face.segmentation is not None:
+        view["segmentation"] = _segmentation(face.segmentation)
+    return view
+
+
+def _segmentation(segmentation: faces.Segmentation) -> dict:
+    """The labels as a base64 greyscale PNG, where they lie in the image and
+    the hair colour found."""
+    buffer = io.BytesIO()
+    Image.fromarray(segmentation.labels).save(buffer, format="PNG", optimize=True)
+    crop = segmentation.crop
+    return {
+        "labels_png": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        "classes": list(faces.SEGMENT_CLASSES),
+        "crop": {"left": crop.left, "top": crop.top, "step": crop.step},
+        "hair_rgb": list(segmentation.hair_rgb) if segmentation.hair_rgb is not None else None,
+        "hair_pixels": segmentation.hair_pixels,
     }
 
 
