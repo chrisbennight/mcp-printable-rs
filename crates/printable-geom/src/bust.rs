@@ -79,7 +79,7 @@ const NECK_DIRECTION_SHARE: f64 = 0.08;
 const MAX_LEAN_DEGREES: f64 = 30.0;
 /// A part beside the head, such as an eyeball, is joined to it by a hidden
 /// stem this share of its radius thick, reaching this share of its radius
-/// from its centre toward the head's.
+/// from its centre toward the head's, but no further than the head's centre.
 const STEM_RADIUS_SHARE: f64 = 0.35;
 const STEM_LENGTH_SHARE: f64 = 2.5;
 /// The head keeps at least this share of the height above any plinth.
@@ -605,7 +605,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     refined.status().map_err(|error| {
         GeometryError::Kernel(format!("the refined bust is not a valid solid: {error}"))
     })?;
-    let refined = join_parts(refined, &parts, place)?;
+    let refined = join_parts(refined, &parts, place, base)?;
     // Thin gaps can leave specks of almost no volume as separate shells. They
     // cannot print, so drop them; anything larger means the parts did not join.
     let pieces = refined.decompose();
@@ -779,12 +779,15 @@ impl BodyKind {
 /// stem from its centre toward the head's. An eyeball sits in a pocket of
 /// the head's surface and touches it only where the eyelids overlap it, a
 /// joint thinner than the rebuild can keep on a small bust; the stem holds
-/// it from behind, inside the head, where the eyeball hides it. The head is
-/// the part with the neck opening, or the first part without one.
+/// it from behind, inside the head, where the eyeball hides it. A stem ends
+/// at the head's centre at the latest, and nothing of it below the `base`
+/// plane is kept, so it never shows outside. The head is the part with the
+/// neck opening, or the first part without one.
 fn join_parts(
     solid: Manifold,
     parts: &[ClosedPart],
     place: impl Fn([f64; 3]) -> [f64; 3],
+    base: Option<f64>,
 ) -> Result<Manifold, GeometryError> {
     if parts.len() < 2 {
         return Ok(solid);
@@ -823,7 +826,7 @@ fn join_parts(
             (radius > 0.0 && norm(towards) > 0.0).then(|| {
                 let thickness = STEM_RADIUS_SHARE * radius;
                 let stem = Manifold::cylinder(
-                    STEM_LENGTH_SHARE * radius,
+                    (STEM_LENGTH_SHARE * radius).min(norm(towards)),
                     thickness,
                     thickness,
                     circle_segments(thickness),
@@ -836,7 +839,12 @@ fn join_parts(
     if stems.is_empty() {
         return Ok(solid);
     }
-    let joined = solid.union(&Manifold::batch_union(&stems));
+    let stems = Manifold::batch_union(&stems);
+    let stems = match base {
+        Some(height) => stems.trim_by_plane([0.0, 0.0, 1.0], height),
+        None => stems,
+    };
+    let joined = solid.union(&stems);
     joined
         .status()
         .map_err(|error| GeometryError::Kernel(format!("joining the parts failed: {error}")))?;
@@ -3345,6 +3353,28 @@ mod tests {
     }
 
     #[test]
+    fn a_stem_stays_inside_the_head() {
+        // The small cube moved to the middle of the box, sealed inside it,
+        // with its centre near the box's own: its stem must not reach out.
+        let (alone, _) = {
+            let mut box_only = request(2.0, 1_000_000);
+            box_only.vertices.truncate(8);
+            box_only.triangles.truncate(10);
+            prepare_bust(&box_only).unwrap()
+        };
+        let mut sealed = request(2.0, 1_000_000);
+        for vertex in &mut sealed.vertices[8..] {
+            vertex[1] -= 10.0;
+            vertex[2] -= 24.0;
+        }
+        let (mesh, report) = prepare_bust(&sealed).unwrap();
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        let footprint = |mesh: &TriangleMesh| validated(mesh).overhang.bed_contact.area_mm2;
+        let (with, without) = (footprint(&mesh), footprint(&alone));
+        assert!((with - without).abs() < 0.02 * without, "{with} {without}");
+    }
+
+    #[test]
     fn a_part_apart_from_the_head_is_joined_by_a_stem() {
         // The open box and, 5 mm beyond its +x face, a separate cube.
         let (mut vertices, mut triangles) = open_box_with_part();
@@ -3367,7 +3397,7 @@ mod tests {
             .reduce(|a, b| a.union(&b))
             .unwrap();
         assert_eq!(solid.decompose().len(), 2);
-        let joined = join_parts(solid, &parts, |vertex| vertex).unwrap();
+        let joined = join_parts(solid, &parts, |vertex| vertex, None).unwrap();
         assert_eq!(joined.decompose().len(), 1);
     }
 
