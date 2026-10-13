@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from publish_images import publish_images, tested_images, publish_update_tag
+from publish_images import publish_images, tested_images, publish_update_tag, verify_attestation
 from release_identity import ReleaseIdentity
 from release_record import ROLES
 from release_security import ScanEvaluation
@@ -14,6 +14,33 @@ from release_security import ScanEvaluation
 class PublishImagesTests(unittest.TestCase):
     def setUp(self):
         self.images = {role: "sha256:" + str(index) * 64 for index, role in enumerate(ROLES)}
+
+    def evidence(self, directory):
+        (directory / "tested-images.json").write_text(json.dumps(
+            {"schema": 1, "revision": "a" * 40, "images": self.images}))
+        for role in ROLES:
+            (directory / role).mkdir()
+            (directory / role / "sbom.spdx.json").write_text(json.dumps({"spdxVersion": "SPDX-2.3"}))
+
+    def test_attestation_verification_constrains_release_identity(self):
+        identity = ReleaseIdentity()
+        with patch("publish_images.subprocess.run") as run:
+            verify_attestation("record@sha256:" + "f" * 64, "a" * 40, identity)
+            arguments = run.call_args.args[0]
+            self.assertIn("--bundle-from-oci", arguments)
+            self.assertIn("--deny-self-hosted-runners", arguments)
+            for flag, value in (("--repo", "chrisbennight/mcp-printable-rs"),
+                                ("--signer-workflow", "chrisbennight/mcp-printable-rs/.github/workflows/ci.yml"),
+                                ("--source-ref", "refs/heads/main"), ("--source-digest", "a" * 40),
+                                ("--predicate-type", "https://slsa.dev/provenance/v1")):
+                self.assertEqual(arguments[arguments.index(flag) + 1], value)
+            run.assert_called_once()
+
+    def test_invalid_attestation_revision_has_no_external_effect(self):
+        with patch("publish_images.subprocess.run") as run:
+            with self.assertRaises(ValueError):
+                verify_attestation("record", "main", ReleaseIdentity())
+            run.assert_not_called()
 
     def test_invalid_revision_has_no_external_effect(self):
         with patch("publish_images.inspect_image") as inspect:
@@ -50,16 +77,19 @@ class PublishImagesTests(unittest.TestCase):
                 patch("publish_images.verify", return_value=[]), \
                 patch("publish_images.publish", return_value="release") as record, \
                 patch("publish_images.publish_update_tag") as update:
-            self.assertEqual(publish_images("a" * 40, self.images, Path(directory)), "release")
+            self.evidence(Path(directory))
+            candidate = publish_images("a" * 40, self.images, Path(directory))
+            self.assertEqual(set(candidate["images"]), set(ROLES))
+            self.assertEqual(candidate["revision"], "a" * 40)
             for role, image in self.images.items():
-                evidence = json.loads((Path(directory) / (role + ".json")).read_text())
+                evidence = json.loads((Path(directory) / "scans" / (role + ".json")).read_text())
                 self.assertEqual(evidence["image_id"], image)
                 self.assertEqual(evidence["revision"], "a" * 40)
                 self.assertEqual(evidence["role"], role)
             self.assertTrue(all(event[0] == "scan" for event in events[:4]))
             self.assertEqual([event[2] for event in events if event[:2] == ["docker", "tag"]], list(self.images.values()))
-            record.assert_called_once()
-            update.assert_called_once()
+            record.assert_not_called()
+            update.assert_not_called()
 
     def test_update_tag_moves_only_when_current_application_inputs_match(self):
         import shutil
@@ -115,12 +145,35 @@ class PublishImagesTests(unittest.TestCase):
                 patch("publish_images.emit_evaluation", return_value=False), \
                 patch("publish_images.subprocess.run") as run, \
                 patch("publish_images.publish") as record:
+            self.evidence(Path(directory))
             with self.assertRaises(ValueError):
                 publish_images("a" * 40, self.images, Path(directory))
             run.assert_not_called()
             record.assert_not_called()
             self.assertEqual(scan.call_count, len(self.images))
             for role, image in self.images.items():
-                evidence = json.loads((Path(directory) / (role + ".json")).read_text())
+                evidence = json.loads((Path(directory) / "scans" / (role + ".json")).read_text())
                 self.assertEqual(evidence["image_id"], image)
                 self.assertEqual(evidence["report"], {})
+
+    def test_missing_or_invalid_sbom_prevents_scans_and_pushes(self):
+        for change in ("missing", "invalid", "transfer"):
+            with self.subTest(change=change), TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.evidence(root)
+                path = root / "cad/sbom.spdx.json"
+                if change == "missing":
+                    path.unlink()
+                elif change == "invalid":
+                    path.write_text("{}")
+                else:
+                    transfer = root / "tested-images.json"
+                    payload = json.loads(transfer.read_text())
+                    payload["revision"] = "b" * 40
+                    transfer.write_text(json.dumps(payload))
+                with patch("publish_images.tested_images", return_value=self.images), \
+                        patch("publish_images.load_policy") as policy, patch("publish_images.subprocess.run") as run:
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        publish_images("a" * 40, self.images, root)
+                    policy.assert_not_called()
+                    run.assert_not_called()

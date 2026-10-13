@@ -14,6 +14,8 @@ ARG SLICER_DIGEST
 ARG RECON_IMAGE
 ARG RECON_DIGEST
 
+COPY evidence /evidence
+
 LABEL org.opencontainers.image.title="Printable compatible image set" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.server.image="${SERVER_IMAGE}" \

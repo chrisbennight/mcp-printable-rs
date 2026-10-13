@@ -10,8 +10,15 @@ ARG SOURCE_REVISION=unknown
 FROM rust:1.97-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f AS build
 WORKDIR /app
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake g++ git \
+ && apt-get install -y --no-install-recommends cmake g++ git curl xz-utils \
  && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output /tmp/cargo-auditable.tar.xz \
+      https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.7/cargo-auditable-x86_64-unknown-linux-gnu.tar.xz \
+ && echo '4c8d3b08c3c34e9f2333367224dbbfb4aab68067698b43de59fe19aded3416dd  /tmp/cargo-auditable.tar.xz' | sha256sum --check --strict \
+ && tar -xJf /tmp/cargo-auditable.tar.xz --strip-components=1 -C /usr/local/bin \
+      cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable \
+ && rm /tmp/cargo-auditable.tar.xz
 
 # Where crates come from. Cargo reads no environment variable for a mirror, so
 # unlike pip or npm it cannot simply be told: the redirect has to be a config
@@ -38,7 +45,7 @@ RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
-RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
+RUN cargo auditable build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
 
 # CI exports the MCP smoke driver from the same Trixie build environment as
@@ -63,6 +70,7 @@ RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisb
  && rm -rf /opt/orca/resources/web \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
+COPY release/notices/orca /opt/orca/licenses
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
 ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
