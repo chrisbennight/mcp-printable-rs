@@ -135,21 +135,64 @@ workflow!(HeadRequest {
     PreparePrint(Box<HeadPreparePrintParams>) => "printable_flame_prepare_print",
     Export(HeadExportParams) => "printable_flame_export",
     Reconstruct(crate::recon::ReconRequest) => "printable_flame_reconstruct",
+    // Boxed: it holds both a reconstruction and a print request.
+    PhotoToBust(Box<HeadPhotoToBustParams>) => "printable_flame_photo_to_bust",
 });
 
-/// The `head` input schema without the `reconstruct` action, for servers
-/// whose reconstruction worker is absent or not ready.
+/// Actions that need the reconstruction worker.
+const RECONSTRUCTION_ACTIONS: [&str; 2] = ["reconstruct", "photo_to_bust"];
+
+/// The `head` input schema without the actions that need the reconstruction
+/// worker, for servers whose worker is absent or not ready.
 fn head_schema() -> Arc<JsonObject> {
     let mut schema = (*workflow_schema_of::<HeadRequest>()).clone();
     for key in ["oneOf", "anyOf"] {
         if let Some(Value::Array(variants)) = schema.get_mut(key) {
             variants.retain(|variant| {
                 let action = &variant["properties"]["action"];
-                action["const"] != "reconstruct" && action["enum"] != json!(["reconstruct"])
+                !RECONSTRUCTION_ACTIONS
+                    .iter()
+                    .any(|name| action["const"] == *name || action["enum"] == json!([name]))
             });
         }
     }
+    // Drop the definitions that only the removed actions used.
+    if let Some(Value::Object(definitions)) = schema.remove("$defs") {
+        let mut reachable = std::collections::HashSet::new();
+        let mut pending = definition_refs(&Value::Object(schema.clone()));
+        while let Some(name) = pending.pop() {
+            if let Some(definition) = definitions.get(&name)
+                && reachable.insert(name)
+            {
+                pending.extend(definition_refs(definition));
+            }
+        }
+        let kept: JsonObject = definitions
+            .into_iter()
+            .filter(|(name, _)| reachable.contains(name))
+            .collect();
+        schema.insert("$defs".into(), Value::Object(kept));
+    }
     Arc::new(schema)
+}
+
+/// The names of the `$defs` entries a schema refers to.
+fn definition_refs(value: &Value) -> Vec<String> {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .flat_map(|(key, value)| match (key.as_str(), value) {
+                ("$ref", Value::String(target)) => target
+                    .strip_prefix("#/$defs/")
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect(),
+                _ => definition_refs(value),
+            })
+            .collect(),
+        Value::Array(items) => items.iter().flat_map(definition_refs).collect(),
+        _ => Vec::new(),
+    }
 }
 
 workflow!(EditRequest {
@@ -362,7 +405,7 @@ const HEAD_DESCRIPTION: &str = "Generate parametric human heads from mounted FLA
 
 static HEAD_WITH_RECONSTRUCTION: ToolDef = ToolDef {
     name: HEAD,
-    description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations, optionally coloured by a PNG colour map; update re-evaluates an existing head in place; export writes the head to a workspace OBJ file, with texture coordinates when the model has them; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default, finer on busts under 100 mm, for fine-nozzle FDM printing; an optional printer block sets the plinth and detail defaults for FDM or resin and reports overhangs, thin parts and detail too shallow to print, mouth closes or recesses an open mouth, eyes drills the pupils and engraves the irises along each eye's gaze, and body extends the neck or adds shoulders; expression_scale softens the expression in every action that evaluates a head; reconstruct estimates true-scale identity from 1 to 8 workspace photographs of one person, plus the expression, jaw rotation and a surface displacement map from the first and, optionally, a colour map projected from all of them, for use with create, export and prepare_print. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
+    description: "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations, optionally coloured by a PNG colour map; update re-evaluates an existing head in place; export writes the head to a workspace OBJ file, with texture coordinates when the model has them; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default, finer on busts under 100 mm, for fine-nozzle FDM printing; an optional printer block sets the plinth and detail defaults for FDM or resin and reports overhangs, thin parts and detail too shallow to print, mouth closes or recesses an open mouth, eyes drills the pupils and engraves the irises along each eye's gaze, and body extends the neck or adds shoulders; expression_scale softens the expression in every action that evaluates a head; reconstruct estimates true-scale identity from 1 to 8 workspace photographs of one person, plus the expression, jaw rotation and a surface displacement map from the first and, optionally, a colour map projected from all of them, for use with create, export and prepare_print; photo_to_bust runs reconstruct and prepare_print together, and optionally create, passing the reconstruction's coefficients, pose and surface detail on. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.",
     schema: workflow_schema_of::<HeadRequest>,
     annotations: write_annotations,
 };
@@ -620,7 +663,9 @@ mod tests {
             serde_json::to_string(&*(tool.schema)()).unwrap()
         };
         assert!(!head_schema(false).contains("reconstruct"));
+        assert!(!head_schema(false).contains("photo_to_bust"));
         assert!(head_schema(true).contains("reconstruct"));
+        assert!(head_schema(true).contains("photo_to_bust"));
         assert!(head_schema(false).contains("prepare_print"));
     }
 
@@ -633,12 +678,17 @@ mod tests {
             ("prepare_print", "printable_flame_prepare_print"),
             ("export", "printable_flame_export"),
             ("reconstruct", "printable_flame_reconstruct"),
+            ("photo_to_bust", "printable_flame_photo_to_bust"),
         ] {
             let params = match action {
                 "update" => json!({"object": "Head"}),
                 "prepare_print" => json!({"path": "bust.stl"}),
                 "export" => json!({"path": "head.obj"}),
                 "reconstruct" => json!({"images": ["face.jpg"], "displacement_path": "detail.png"}),
+                "photo_to_bust" => json!({
+                    "reconstruct": {"images": ["face.jpg"], "displacement_path": "detail.png"},
+                    "print": {"path": "bust.stl"}
+                }),
                 _ => json!({}),
             };
             let call = resolve(HEAD, json!({"action": action, "params": params})).unwrap();

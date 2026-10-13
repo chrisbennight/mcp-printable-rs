@@ -833,6 +833,43 @@ To raise this detail on a printed bust, pass the map's `artifact.path`,
 `offset_mm` and `scale_mm` as `prepare_print`'s `displacement`, with the same
 coefficients and variant. See [Surface detail](#surface-detail).
 
+### From photographs to a bust in one step
+
+`photo_to_bust` runs `reconstruct` and `prepare_print` together, and
+optionally `create`, passing the reconstruction's variant, coefficients,
+jaw, any suggested neck rotation and surface detail on:
+
+```json
+{"action": "photo_to_bust", "params": {
+  "reconstruct": {
+    "images": ["photos/front.jpg", "photos/left.jpg", "photos/right.jpg"],
+    "displacement_path": "photos/detail.png",
+    "texture_path": "photos/colour.png"
+  },
+  "print": {"path": "busts/photo.stl", "printer": {"process": "fdm"}},
+  "detail": {"relief_mm": 0.3},
+  "blender": {"name": "Photographed"}
+}}
+```
+
+`reconstruct` takes every `reconstruct` option. `print` takes every
+`prepare_print` option except those the reconstruction supplies: `variant`,
+`identity`, `expression`, `pose.jaw` and `displacement`, and `pose.neck` when
+`neck_tilt` or `neck_turn` suggests one. Giving any of them is refused rather
+than silently replaced. `detail` takes the `displacement` options other than
+the map itself, and `"apply": false` leaves the detail off. `blender` takes
+the `create` options, under the same rule, and the head is coloured with the
+colour map when the reconstruction makes one.
+
+Every option that can be checked without the reconstruction is checked
+before it starts, so a mistake in `print` costs no reconstruction. A failure
+after the reconstruction, which only the head itself can cause, reports the
+reconstruction's result with the error, so `prepare_print` or `create` can
+use it without reconstructing again. The response holds `reconstruct`,
+`print` and, when asked for, `blender`, each as its own action returns it.
+With the same options, the bust is the one the separate calls make, byte for
+byte.
+
 ### Colour map
 
 With `texture_path`, `reconstruct` also writes a square RGB PNG colour map in
