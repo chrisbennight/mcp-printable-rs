@@ -3,8 +3,10 @@
 Identity comes from MICA. Each photograph's ArcFace embedding is normalised,
 the embeddings are averaged and normalised again, and MICA's mapping network
 turns the result into 300 shape coefficients at true head scale. Expression,
-jaw rotation and surface detail come from the primary photograph: SMIRK gives
-the expression and jaw, and DECA gives the UV displacement map. DECA's detail
+jaw rotation and surface detail come from the primary photograph, the first
+unless the request names another or asks for the most frontal, the one whose
+head SMIRK finds turned least from the camera: SMIRK gives the expression and
+jaw, and DECA gives the UV displacement map. DECA's detail
 decoder is conditioned on DECA's own estimate of the expression and jaw, the
 input it was trained with; SMIRK's coefficients are larger and give
 exaggerated detail.
@@ -29,6 +31,8 @@ from .files import FILES, missing_files
 # this magnitude.
 COEFFICIENT_LIMIT = 5.0
 METRES_TO_MILLIMETRES = 1000.0
+# Asks for the photograph whose head is turned least from the camera.
+MOST_FRONTAL = "most_frontal"
 
 
 
@@ -41,6 +45,8 @@ class Reconstruction:
     displacement_mm: numpy.ndarray
     identity_agreement: list[float]
     clamped_coefficients: int
+    # Index of the photograph that gave the expression, jaw and detail.
+    primary_image: int = 0
     faces: list[dict] = field(default_factory=list)
     # SMIRK's own fit to each photograph: the head and orthographic camera
     # that place FLAME's surface over the face, for projecting colour.
@@ -85,7 +91,7 @@ class Reconstructor:
             self.segmenter.close()
 
     @torch.inference_mode()
-    def run(self, images: list[Path]) -> Reconstruction:
+    def run(self, images: list[Path], primary: int | str = 0) -> Reconstruction:
         if not images:
             raise faces.FaceError("at least one image is required")
         found: list[faces.Face] = []
@@ -98,20 +104,20 @@ class Reconstructor:
                 found.append(face)
             except faces.FaceError as error:
                 raise faces.FaceError(f"{path.name}: {error}") from error
-        return self.reconstruct(found)
+        return self.reconstruct(found, primary)
 
     @torch.inference_mode()
-    def reconstruct(self, found: list[faces.Face]) -> Reconstruction:
+    def reconstruct(self, found: list[faces.Face], primary: int | str = 0) -> Reconstruction:
         arcface = _tensor(numpy.stack([face.arcface for face in found]), self.device) * 2.0 - 1.0
         embeddings = functional.normalize(self.arcface(arcface), dim=1)
         fused = functional.normalize(embeddings.mean(dim=0, keepdim=True), dim=1)
         agreement = (embeddings @ fused.T).flatten().tolist()
         identity = self.mapping(fused)[0]
 
-        primary = found[0]
         smirk = self.smirk(_tensor(numpy.stack([face.smirk for face in found]), self.device))
-        expression, jaw = smirk["expression"][:1], smirk["jaw"][:1]
-        crop = _tensor(primary.deca[None], self.device)
+        index = primary_index(primary, smirk["head_rotation"])
+        expression, jaw = smirk["expression"][index : index + 1], smirk["jaw"][index : index + 1]
+        crop = _tensor(found[index].deca[None], self.device)
         deca_jaw, deca_expression = self.deca.coarse_expression(crop)
         uv = self.deca.displacement(deca_jaw, deca_expression, self.deca.detail_code(crop))
         # DECA restricts learned detail to the face. Its renderer also adds a
@@ -125,13 +131,26 @@ class Reconstructor:
             identity=identity,
             expression=expression_values,
             jaw=jaw[0].tolist(),
-            head_rotation=smirk["head_rotation"][0].tolist(),
+            head_rotation=smirk["head_rotation"][index].tolist(),
             displacement_mm=displacement.astype(numpy.float32),
             identity_agreement=agreement,
             clamped_coefficients=clamped_identity + clamped_expression,
+            primary_image=index,
             faces=[{"landmark_extent_px": _extent(face.landmarks)} for face in found],
             views=[_view(smirk, index, face) for index, face in enumerate(found)],
         )
+
+
+def primary_index(primary: int | str, head_rotation: torch.Tensor) -> int:
+    """The index of the primary photograph: the one given, or for
+    MOST_FRONTAL the one whose axis-angle head rotation is smallest, the
+    first among equals."""
+    count = head_rotation.shape[0]
+    if primary == MOST_FRONTAL:
+        return int(torch.linalg.vector_norm(head_rotation, dim=1).argmin())
+    if isinstance(primary, bool) or not isinstance(primary, int) or not 0 <= primary < count:
+        raise ValueError(f"the primary photograph must be an index below {count} or {MOST_FRONTAL!r}")
+    return primary
 
 
 def write_displacement(map_mm: numpy.ndarray, path: Path) -> dict:
