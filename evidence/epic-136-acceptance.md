@@ -4,11 +4,10 @@ The goal of [epic 136](https://github.com/chrisbennight/mcp-printable-rs/issues/
 is better performance, reliability, and agent efficiency while preserving native
 modeling, inspection, assembly, retained jobs, immutable artifacts, and recovery.
 
-This is **draft acceptance evidence**. Final integrated source gates, matching
-hosted images, and normal current, older, and retained release verification remain
-pending. Epic completion is not asserted. The
-[JSON record](epic-136-acceptance.json) retains detailed metrics, identities,
-failure dispositions, raw-evidence hashes, and unavailable measurements.
+This is **draft acceptance evidence**. Final source checks, matching-image
+functional checks, and public release qualification remain pending. The
+[JSON record](epic-136-acceptance.json) retains measurement conditions, outcomes,
+source identities, limitations, and links to the child evidence.
 
 ## Admission and assembly
 
@@ -66,23 +65,16 @@ times do not establish population success rates or a causal latency improvement.
 
 ## Source and functional qualification
 
-- Baseline: `2e46398fb11bd99cc58dac256b82848e46b6eb0a`.
-- Measured candidate: `70414e47a9bbea9018888192665e03b2118cba6c`.
-- Current source tree: `6580123e9a073d06a0c11d53997f6a3107323bd0`, incorporating main `25ef4fb57e3fb68ffe88ebb0e62dae35cdccfdcd`.
-- Reviewed release source: [PR 147](https://github.com/chrisbennight/mcp-printable-rs/pull/147), `ab48013e4b6e333e9890841d2a0c7d0e0f13aa93`.
+- Agent-trial baseline: `2e46398fb11bd99cc58dac256b82848e46b6eb0a`.
+- Agent-trial candidate: `70414e47a9bbea9018888192665e03b2118cba6c`.
 
-Local format, clippy, and workspace checks passed for this source: 671 passed,
-eight ignored Rust tests. Final documentation and hosted source/image checks
-remain pending. Successful Python checks are reused only for unchanged tracked inputs.
-Measurements used Linux/arm64 development binaries in Docker without a GPU.
-Later optional head/bust changes were not exercised by the agent task; historical
-binary identities and timings are not relabeled as later release measurements.
-
-Initial agent setup and release inventory failures remain disclosed in the JSON
-and child records. Initial CAD and assembly cleanup assertions failed; unchanged
-reruns passed, with causes unconfirmed. The assembly fixture was isolated with
-its body and assertions preserved. Focused Rust success can differ from workspace
-checks through Cargo feature unification and does not explain a workspace failure.
+Admission, assembly, and shutdown retain the source identities in their child
+records. Measurements used Linux/arm64 development binaries in Docker without
+a GPU. Later optional head/bust changes were not exercised by the agent task;
+historical identities and timings are not relabeled as final-release measurements.
+Only completed agent trials are summarized. Setup and harness failures are
+excluded from completed-trial counts. Some cleanup checks initially failed and
+passed unchanged reruns; their causes remain unconfirmed.
 
 Required source gates are cargo fmt, clippy with warnings denied, locked workspace
 tests, addon and script unit tests, and docgate. Source regressions cover strict
@@ -97,11 +89,27 @@ damaged-metadata/disk-pressure recovery. Hosted matching-image qualification is
 still required. Software and fake-backed lifecycle tests do not establish NVIDIA
 performance, physical manufacturing fitness, or real printer stop behavior.
 
+## Optional measurement runs
+
+The repeated admission and native tessellation measurements are opt-in.
+Functional saturation, native geometry, cancellation ownership, and shutdown
+regressions remain in ordinary tests. On Linux with the contributor toolchain
+and Python 3, run the optional measurements explicitly:
+
+```sh
+cargo test -p printable-server --all-features --locked --test admission_memory_test \
+  increasing_concurrency_records_isolated_server_peak_memory -- --ignored --exact --nocapture
+cargo test -p printable-server --all-features --locked --test assembly_analysis_test \
+  increasing_tessellation_preserves_real_worker_measurements -- --ignored --exact --nocapture
+```
+
+These commands measure the checked-out source. The child reports describe the
+historical experiments; reproducing their baseline comparisons requires those
+recorded sources. Fresh results need their own source and environment description.
+
 ## Pending release acceptance
 
-Use the documented [release verifier](../docs/releases.md#independent-verification)
-for normal current and older evidence-capable public records and an independently
-retained copy. All five matching image subjects, source/workflow origin, inventories,
-scans, notices, materials, and hashes must agree. Public access and actual image,
-release, and final CI identities remain pending; historical signatures must not
-be manufactured.
+Follow the [release guidance](../docs/releases.md) to qualify a public image set
+with its dependency inventories and attestations. Retain the actual source,
+tested and published image identities, functional check results, and public
+access result. Final source, image, and release qualification remain pending.

@@ -34,22 +34,69 @@ vulnerability policy continues to apply to every remaining match.
 Server, Blender, CAD, slicer and photo reconstruction images receive
 `sha-<commit>` tags in GHCR.
 The publisher checks that downloaded images match the tested image IDs, then
-signs provenance and an SPDX 2.3 SBOM for each final registry digest, then
-publishes the image-set record with their registry digests and evidence. The `release-image`
+publishes the image-set record with their registry digests. The `release-image`
 Actions artifact contains the record's immutable reference. Failed publication
 can leave individual images in the registry; deployments consume the completed
 record, not an arbitrary component tag.
 
 The record also has a `main` tag for update discovery. It advances only after
-the completed record and all component signatures verify for the expected
-workflow, source revision and `main` ref. Deployment repositories must pin a
+publication succeeds for current `main`. Deployment repositories must pin a
 digest, such as `main@sha256:...`; moving the discovery tag does not update an
 installed digest. Rerunning an older commit does not move this tag backwards.
 
-Publication uses the workflow's built-in `GITHUB_TOKEN` with `packages: write`
-and `attestations: write`, plus short-lived OIDC signing with `id-token: write`.
+Publication uses the workflow's built-in `GITHUB_TOKEN` with `packages: write`.
 Test jobs have read-only repository permissions. Public package access is a
 registry setting; preserve it when adding packages.
+
+## SBOMs and attestations
+
+The container job runs pinned Syft against each tested image ID and retains its
+unmodified SPDX 2.3 document. Rust executables carry cargo-auditable dependency
+metadata. The [component supplement](../release/components.json) records declared
+inputs that scanners can miss, such as bundled native programs, fonts and model
+assets. It identifies exact source and recipe locations; it does not establish
+binary linkage or exhaustive file ownership. Operator-supplied models and private
+configuration are outside the distributed inventory.
+
+GitHub signs standard build-provenance and SBOM attestations for each published
+component digest. The publisher verifies their repository, workflow, source
+revision and main-branch origin using the official GitHub CLI before completing
+the release record. The record carries SBOMs, the supplement, notices, scan
+reports, policy inputs and attestation bundles under `/evidence`. Its own build
+provenance protects that payload. Scanner limitations and declared inputs remain
+visible; these materials do not claim an exhaustive reconstructed inventory.
+
+For an immutable record or component reference, use the
+[GitHub verification guidance](https://cli.github.com/manual/gh_attestation_verify):
+
+```sh
+gh attestation verify "oci://$IMAGE_REFERENCE" --bundle-from-oci \
+  --repo chrisbennight/mcp-printable-rs \
+  --signer-workflow chrisbennight/mcp-printable-rs/.github/workflows/ci.yml \
+  --source-ref refs/heads/main --source-digest "$SOURCE_REVISION" \
+  --deny-self-hosted-runners
+```
+
+For a component's SBOM attestation, add
+`--predicate-type https://spdx.dev/Document/v2.3`. Set `IMAGE_REFERENCE` to a
+digest-pinned public reference and `SOURCE_REVISION` to its full release commit.
+Use the same command for an older supported release. Releases predating this
+capability do not acquire attestations retroactively.
+
+To inspect a verified record without starting it, create a stopped container
+and copy its files:
+
+```sh
+docker create --name printable-release-inspect "$IMAGE_REFERENCE" /unused
+docker cp printable-release-inspect:/evidence ./release-evidence
+docker rm printable-release-inspect
+```
+
+Keep the immutable record, its component images and associated OCI attestations
+available for as long as the release is offered. Retain required corresponding
+source separately under [the license guidance](../THIRD_PARTY_NOTICES.md); source
+locators and SBOMs do not replace that obligation. Short-lived Actions artifacts
+are diagnostic copies, not the supported consumer access path.
 
 ## Installation and updates
 
@@ -69,170 +116,6 @@ diagnostic, not a release requirement.
 Keep release source, dependency inventories, notices and corresponding source
 available as described in [the license guidance](../THIRD_PARTY_NOTICES.md).
 See [installation](installation.md) for runtime configuration and rollback.
-
-## Signed evidence and retention
-
-Each completed record contains `/evidence/index.json`, the exact component
-references and tested image IDs, per-image SPDX and Syft inventories, Grype
-reports, the policy and vendor fixes used, the KEV identifiers used for evaluation,
-installed Debian and Python source and license information, notices, build inputs,
-and component signature bundles. The index hashes every retained file. The record's
-own provenance signature and an attestation of its evidence index hash are attached
-to its immutable OCI digest; they are outside the record to avoid a circular digest.
-The index attestation binds independently retained files to that signed record.
-Component provenance and SBOM bundles are also attached to their OCI digests
-and retained in the record.
-
-Successful evidence is a layer of the existing release-record image, so it remains
-available independently of the short-lived Actions artifacts. Preserve the
-`sha-<commit>` record tags, component images and signature attachments for as long
-as those releases are distributed or supported. Registry deletion still removes
-registry evidence; keep an independent copy when long-term availability matters.
-Candidate evidence is retained for 14 days in Actions, including failures; scan
-reports are separately retained for two days. Failed candidates do not advance
-`main`.
-
-Cargo builds use the checksum-verified cargo-auditable 0.7.7 binary. Each distributed
-Rust binary retains its dependency graph after stripping. The collector matches
-the runtime graph to Cargo's source and license metadata and the locked crate
-checksums. `Cargo.lock` is retained as a build input, rather than treated as an
-installed-package inventory. The actual patched Manifold and Clipper2 sources
-and native build options are retained separately. Stable Cargo metadata can
-overestimate dependencies, including packages selected together in a workspace
-build and build-time procedural macros; this is
-dependency metadata, not a measurement of every linked symbol.
-
-Syft 1.54.1 scans the final squashed image. Removed packages and repository tooling
-are excluded. The collector independently reads installed Debian status and Python
-distribution metadata and requires those packages to appear in the SBOM. Debian
-binary and source versions, including distribution patches, have exact Debian
-Snapshot locators. Python source distributions have registry-provided checksums;
-wheel-only native distributions use reviewed, version-specific upstream commits
-and retained source archives. A changed wheel-only version requires a new reviewed
-locator. Native libraries inside wheels retain installed distribution ownership,
-exact file hashes and source records. Blender's bundled native libraries and
-Python extensions without distribution metadata have individual identities,
-available upstream versions, licenses and checksum-bound source locators from
-its dependency build specifications. Reviewed file hashes bind each identity to
-the pinned binary archive. Orca's copied libraries are matched to the exact Ubuntu
-binary packages; their retained source descriptors identify the matching upstream
-source and distribution patches. SPDX relationships connect the components and
-files to their distribution owner. Source archives, notices and dependency build
-specifications remain available alongside the inventory; scanner output alone
-cannot recover every statically linked upstream component or determine its legal
-obligations.
-
-The source-built OpenCV extension has a build record captured after CMake
-installation. It binds the exact `cv2/python-3/cv2.abi3.so` path, size and hash to
-the verified source archive, source revision, Dockerfile hash and actual configured
-CMake settings. Collection compares that record with the tested image and retains
-it in the signed evidence. A missing or changed extension, an additional native
-output or inconsistent build identity stops publication. Its output hash is
-measured for each build; it is not an upstream binary pin or a reproducibility
-claim.
-
-The SPDX documents and materials also record Blender's upstream dependency
-declarations and Orca's external dependency specifications and vendored source
-trees as declared build material. These records retain available versions,
-licenses, source checksums, source notices and build references, with
-`BUILD_DEPENDENCY_OF` relationships. They cover available source material for
-dependencies that may be embedded in the application binaries. They do not assert
-that every optional or platform-specific upstream declaration is linked into the
-Linux binaries. An upstream version absent from vendored metadata stays absent;
-the exact containing source archive and subtree identify that material. The
-collector distinguishes these declarations from components verified against
-installed native files. Full binary linkage and a legal license assessment remain
-outside what this evidence can prove.
-
-Orca's wxWidgets build specification names a mutable branch. Its declared source
-record preserves that reference and an immutable commit observed during inventory
-review, together with the limit that the original compiled commit is unconfirmed.
-Printable's provenance authenticates the pinned runtime artifact and this
-workflow's source revision; it does not authenticate unavailable upstream build
-history.
-
-The collector explicitly adds the downloaded Blender, OrcaSlicer, VirtualGL and
-OpenCV bundles, the face landmarker and multiclass selfie segmenter models and
-embedded Fira font, with source
-locators and applicable notices. It hashes the whole regular-file filesystem and
-records links separately. Every native executable and library must have a Debian,
-Python, first-party or individually identified native component owner. The Blender
-bridge, supervisor and launcher have commit-bound source and MIT license records;
-their installed files must match the checked-out sources and retained license.
-Missing source locators, required
-notices, binary metadata, package coverage or asset hashes stop publication.
-An approved bundle directory never identifies an added library. Updating a bundle
-requires reviewing its actual native files, source build specifications, available
-versions and notices in `release/components.json`; hashes identify distributed
-bytes and do not replace upstream versions. Unknown native files require
-investigation and an explicit inventory owner;
-do not suppress the check or describe unidentified components as fully identified.
-These checks preserve distribution evidence and make remaining scanner limits
-visible. They do not certify license compliance or byte-for-byte reproducibility.
-
-## Independent verification
-
-Install Docker and GitHub CLI 2.102.0 or newer. The default online command below
-discovers signature bundles in OCI. GitHub CLI checks for configured authentication
-in this mode even for public releases. Use your approved account or existing
-authenticated client environment. See the [attestation verification manual](https://cli.github.com/manual/gh_attestation_verify).
-Follow the registry's access
-and authentication requirements and verify that the release packages are available
-to your account. Do not put credential values in commands or saved evidence.
-Obtain the expected full source
-commit independently from the maintained repository. Use the immutable record
-reference from the `release-image` artifact or a trusted deployment change:
-
-```sh
-record='ghcr.io/chrisbennight/mcp-printable-release:sha-<12-character-commit>@sha256:<digest>'
-revision='<full-40-character-commit>'
-python3 scripts/verify_release_evidence.py "$record" "$revision" \
-  --retain release-evidence \
-  --record-bundle-output release-record-bundles.jsonl
-```
-
-The helper verifies the record's OCI signatures before reading its payload, then
-checks the evidence hashes, tested-image handoff, retained scan policy and all
-five provenance and SBOM signature bundles. It requires the maintained source
-repository, `.github/workflows/ci.yml`, `refs/heads/main`, the expected source
-commit and a GitHub-hosted runner. It also compares each retained SPDX document
-to its verified signed predicate. It never starts the image containers.
-An inventory, tag or self-declared source field is not a substitute for those
-signature and identity checks.
-
-The optional `--record-bundle-output` saves both the record provenance and signed
-evidence index bundles returned by successful OCI verification. It writes a new
-file only after the complete release passes verification. Keep that file outside
-the retained evidence directory: adding it inside would change the indexed files.
-The release stores these bundles in OCI, so the GitHub API-based
-`gh attestation download` command does not retrieve them.
-
-For independent storage, also obtain Sigstore roots through a separately trusted
-GitHub CLI installation:
-
-```sh
-gh attestation trusted-root > trusted_root.jsonl
-```
-
-Keep the saved record bundles alongside the retained evidence directory and pin
-the trusted-root file through your own trust policy. Do not automatically trust
-a root supplied by an unverified release. Verification of retained evidence uses
-the saved bundles and does not depend on Actions artifact retention. This explicit
-bundle mode [does not require GitHub CLI login](https://github.com/cli/cli/issues/11803#issuecomment-3334813452);
-the independently trusted root and registry access requirements still apply.
-Retained verification still reads OCI manifests from the registry; it is not
-an offline verification mode:
-
-```sh
-python3 scripts/verify_release_evidence.py "$record" "$revision" \
-  --evidence-directory release-evidence \
-  --record-bundle release-record-bundles.jsonl \
-  --trusted-root trusted_root.jsonl
-```
-
-The images' registry digests and the record digest remain the installation pins.
-Successful signature verification authenticates release evidence; it does not
-replace runtime tests, GPU validation or the installation's own security policy.
 
 ## Local development
 

@@ -264,7 +264,7 @@ jobs:
           printf '%s  %s\n' "$SYFT_CHECKSUM" "${RUNNER_TEMP}/syft.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "$RUNNER_TEMP" syft
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - name: Inventory tested images and retain exact source and notice materials
+      - name: Generate standard SBOMs for tested images
         if: steps.scope.outputs.images == 'true'
         run: python3 scripts/release_evidence.py "$GITHUB_SHA" target/release/image-ids.json target/release/evidence
       - name: Save tested images
@@ -368,26 +368,17 @@ jobs:
           role: recon
           name: ${{ steps.components.outputs.recon_name }}
           digest: ${{ steps.components.outputs.recon_digest }}
-      - name: Verify signatures and publish the durable evidence record
+      - name: Verify attestations and publish the release record
         id: record
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/publish_images.py record-evidence "$GITHUB_SHA" target/release/evidence/candidate.json
+        run: python3 scripts/publish_images.py record-release "$GITHUB_SHA" target/release/evidence/candidate.json
       - name: Sign the completed evidence record
         id: record_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.record.outputs.name }}
           subject-digest: ${{ steps.record.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-      - name: Sign the evidence index for independent retained verification
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ steps.record.outputs.name }}
-          subject-digest: ${{ steps.record.outputs.digest }}
-          predicate-type: https://github.com/chrisbennight/mcp-printable-rs/attestations/release-evidence/v1
-          predicate-path: target/release/record-evidence.json
           push-to-registry: true
           create-storage-record: false
       - name: Verify the published evidence and advance update discovery

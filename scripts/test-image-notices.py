@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify required notices survive container packaging without changing their bytes."""
+"""Verify first-party and font notices survive container packaging."""
 
 import argparse
 import hashlib
@@ -41,22 +41,6 @@ def main():
         ], check=True, capture_output=True, text=True)
         if result.stdout.split()[0] != expected:
             raise SystemExit("Packaged notice differs from its source")
-    for source, destinations in (
-        ("/usr/share/doc/virtualgl-3.1.5/LICENSE.txt",
-         ("/usr/share/doc/virtualgl/copyright", "/opt/VirtualGL/licenses/LICENSE.txt")),
-        ("/usr/share/doc/virtualgl-3.1.5/LICENSE-FLTK.txt",
-         ("/opt/VirtualGL/licenses/LICENSE-FLTK.txt",)),
-        ("/usr/share/doc/virtualgl-3.1.5/LGPL.txt",
-         ("/opt/VirtualGL/licenses/COPYING-LGPL.txt",)),
-    ):
-        result = subprocess.run([
-            "docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges", "--pids-limit", "32",
-            "--entrypoint", "/usr/bin/sha256sum", args.blender_image, source, *destinations,
-        ], check=True, capture_output=True, text=True)
-        hashes = [line.split()[0] for line in result.stdout.splitlines()]
-        if len(hashes) != 1 + len(destinations) or any(value != hashes[0] for value in hashes[1:]):
-            raise SystemExit("Packaged VirtualGL notice differs from its installed vendor source")
     print("IMAGE_NOTICES_OK")
 
 

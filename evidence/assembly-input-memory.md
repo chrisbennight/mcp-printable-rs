@@ -13,7 +13,8 @@ tests need no Blender, GPU, printer, or deployed service.
 
 ```sh
 cargo test -p printable-server --test assembly_memory_test --locked -- --nocapture
-cargo test -p printable-server --test assembly_analysis_test --locked -- --nocapture
+cargo test -p printable-server --test assembly_analysis_test --locked \
+  increasing_tessellation_preserves_real_worker_measurements -- --exact --ignored --nocapture
 cargo test -p printable-server --test tools_test --locked assembly_
 ```
 

@@ -110,6 +110,7 @@ fn analysis_request() -> CallToolRequestParams {
 }
 
 #[test]
+#[ignore = "opt-in repeated Linux geometry measurements; functional geometry checks run separately"]
 fn increasing_tessellation_preserves_real_worker_measurements() {
     let Ok(subdivisions) = std::env::var("PRINTABLE_TEST_ASSEMBLY_SUBDIVISIONS") else {
         let executable = std::env::current_exe().unwrap();
@@ -123,6 +124,7 @@ fn increasing_tessellation_preserves_real_worker_measurements() {
                         .args([
                             "--exact",
                             "increasing_tessellation_preserves_real_worker_measurements",
+                            "--ignored",
                             "--nocapture",
                         ])
                         .env(

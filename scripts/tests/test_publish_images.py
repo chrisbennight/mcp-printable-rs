@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from publish_images import publish_images, tested_images, publish_update_tag
+from publish_images import publish_images, tested_images, publish_update_tag, verify_attestation
 from release_identity import ReleaseIdentity
 from release_record import ROLES
 from release_security import ScanEvaluation
@@ -20,13 +20,27 @@ class PublishImagesTests(unittest.TestCase):
             {"schema": 1, "revision": "a" * 40, "images": self.images}))
         for role in ROLES:
             (directory / role).mkdir()
-            (directory / role / "materials.json").write_text(json.dumps(
-                {"revision": "a" * 40, "role": role, "tested_image_id": self.images[role],
-                 "unowned_native_files": [], "debian": [{"name": "fixture"}]}))
-            (directory / role / "sbom.spdx.json").write_text("{}")
-        from release_evidence import file_index
-        (directory / "inventory-index.json").write_text(json.dumps(
-            {"schema": 1, "revision": "a" * 40, "images": self.images, "files": file_index(directory)}))
+            (directory / role / "sbom.spdx.json").write_text(json.dumps({"spdxVersion": "SPDX-2.3"}))
+
+    def test_attestation_verification_constrains_release_identity(self):
+        identity = ReleaseIdentity()
+        with patch("publish_images.subprocess.run") as run:
+            verify_attestation("record@sha256:" + "f" * 64, "a" * 40, identity)
+            arguments = run.call_args.args[0]
+            self.assertIn("--bundle-from-oci", arguments)
+            self.assertIn("--deny-self-hosted-runners", arguments)
+            for flag, value in (("--repo", "chrisbennight/mcp-printable-rs"),
+                                ("--signer-workflow", "chrisbennight/mcp-printable-rs/.github/workflows/ci.yml"),
+                                ("--source-ref", "refs/heads/main"), ("--source-digest", "a" * 40),
+                                ("--predicate-type", "https://slsa.dev/provenance/v1")):
+                self.assertEqual(arguments[arguments.index(flag) + 1], value)
+            run.assert_called_once()
+
+    def test_invalid_attestation_revision_has_no_external_effect(self):
+        with patch("publish_images.subprocess.run") as run:
+            with self.assertRaises(ValueError):
+                verify_attestation("record", "main", ReleaseIdentity())
+            run.assert_not_called()
 
     def test_invalid_revision_has_no_external_effect(self):
         with patch("publish_images.inspect_image") as inspect:
@@ -142,18 +156,24 @@ class PublishImagesTests(unittest.TestCase):
                 self.assertEqual(evidence["image_id"], image)
                 self.assertEqual(evidence["report"], {})
 
-    def test_missing_or_mismatched_inventory_prevents_scans_and_pushes(self):
-        for change in ("revision", "tested_image_id", "unowned_native_files", "debian"):
+    def test_missing_or_invalid_sbom_prevents_scans_and_pushes(self):
+        for change in ("missing", "invalid", "transfer"):
             with self.subTest(change=change), TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.evidence(root)
-                path = root / "cad/materials.json"
-                payload = json.loads(path.read_text())
-                payload[change] = "mismatch"
-                path.write_text(json.dumps(payload))
+                path = root / "cad/sbom.spdx.json"
+                if change == "missing":
+                    path.unlink()
+                elif change == "invalid":
+                    path.write_text("{}")
+                else:
+                    transfer = root / "tested-images.json"
+                    payload = json.loads(transfer.read_text())
+                    payload["revision"] = "b" * 40
+                    transfer.write_text(json.dumps(payload))
                 with patch("publish_images.tested_images", return_value=self.images), \
                         patch("publish_images.load_policy") as policy, patch("publish_images.subprocess.run") as run:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
                         publish_images("a" * 40, self.images, root)
                     policy.assert_not_called()
                     run.assert_not_called()
