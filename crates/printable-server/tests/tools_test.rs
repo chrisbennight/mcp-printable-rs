@@ -6762,7 +6762,7 @@ async fn head_reconstruct_suggests_a_neck_pose_from_the_head_rotation() {
     // The fake worker reports the head turned 0.1 radians about y.
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
-    let (endpoint, _seen, task) = fake_recon_worker(true).await;
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
     let server = recon_server(root.path(), &endpoint).await;
     let run = |extra: Value| {
         let mut params =
@@ -6808,6 +6808,15 @@ async fn head_reconstruct_suggests_a_neck_pose_from_the_head_rotation() {
     let refused = run(json!({"neck_tilt": 2.0})).await.unwrap();
     assert_eq!(refused.is_error, Some(true), "{refused:?}");
     assert!(format!("{refused:?}").contains("neck_tilt"), "{refused:?}");
+    // The server applies the shares; the worker is never sent them.
+    let sent = seen.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert!(
+        sent.iter()
+            .all(|body| body.get("neck_tilt").is_none() && body.get("neck_turn").is_none()),
+        "{sent:?}"
+    );
+    drop(sent);
     task.abort();
 }
 

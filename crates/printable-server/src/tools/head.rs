@@ -887,17 +887,66 @@ fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
         ),
         axis_angle_matrix([0.0, 0.0, tilt * roll]),
     );
-    let trace = kept[0][0] + kept[1][1] + kept[2][2];
-    let angle = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
-    if angle < 1e-12 {
+    // Through a unit quaternion with a non-negative scalar part, which is
+    // stable at every angle and gives an angle of at most pi.
+    let [w, x, y, z] = matrix_quaternion(kept);
+    let [w, x, y, z] = if w < 0.0 {
+        [-w, -x, -y, -z]
+    } else {
+        [w, x, y, z]
+    };
+    let length = (x * x + y * y + z * z).sqrt();
+    if length < 1e-12 {
         return [0.0; 3];
     }
-    let scale = angle / (2.0 * angle.sin());
-    [
-        (kept[2][1] - kept[1][2]) * scale,
-        (kept[0][2] - kept[2][0]) * scale,
-        (kept[1][0] - kept[0][1]) * scale,
-    ]
+    let angle = 2.0 * length.atan2(w);
+    [x, y, z].map(|value| value / length * angle)
+}
+
+/// The unit quaternion, scalar first, of a rotation matrix, by Shepperd's
+/// method: from whichever of its four parts is largest, so that no division
+/// is by a small number.
+fn matrix_quaternion(m: [[f64; 3]; 3]) -> [f64; 4] {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let quaternion = if trace > m[0][0].max(m[1][1]).max(m[2][2]) {
+        let s = (1.0 + trace).sqrt() * 2.0;
+        [
+            s / 4.0,
+            (m[2][1] - m[1][2]) / s,
+            (m[0][2] - m[2][0]) / s,
+            (m[1][0] - m[0][1]) / s,
+        ]
+    } else if m[0][0] >= m[1][1] && m[0][0] >= m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[2][1] - m[1][2]) / s,
+            s / 4.0,
+            (m[0][1] + m[1][0]) / s,
+            (m[0][2] + m[2][0]) / s,
+        ]
+    } else if m[1][1] >= m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[0][2] - m[2][0]) / s,
+            (m[0][1] + m[1][0]) / s,
+            s / 4.0,
+            (m[1][2] + m[2][1]) / s,
+        ]
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        [
+            (m[1][0] - m[0][1]) / s,
+            (m[0][2] + m[2][0]) / s,
+            (m[1][2] + m[2][1]) / s,
+            s / 4.0,
+        ]
+    };
+    let norm = quaternion
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    quaternion.map(|value| value / norm)
 }
 
 /// The rotation matrix of an axis-angle vector.
@@ -1840,6 +1889,16 @@ mod tests {
         let neck = suggested_neck(rotation, 1.0, 1.0);
         assert!(close(neck, rotation), "{neck:?}");
         assert_eq!(suggested_neck(rotation, 0.0, 0.0), [0.0; 3]);
+    }
+
+    #[test]
+    fn a_half_turn_stays_within_pi() {
+        let half = f64::from(std::f32::consts::PI);
+        let neck = suggested_neck([0.0, 0.0, half], 1.0, 1.0);
+        let length = neck.iter().map(|value| value * value).sum::<f64>().sqrt();
+        assert!(length <= std::f64::consts::PI, "{neck:?}");
+        assert!((length - std::f64::consts::PI).abs() < 1e-6, "{neck:?}");
+        assert!(neck[0].abs() < 1e-6 && neck[1].abs() < 1e-6, "{neck:?}");
     }
 
     #[test]
