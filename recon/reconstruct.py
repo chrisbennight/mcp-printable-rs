@@ -6,7 +6,8 @@ Usage: reconstruct.py <request.json>
 
 The request names the input images, the checkpoint directory, the face
 landmarker model, optionally the person segmenter model, the displacement map
-to write and the device. One JSON
+to write, the device and optionally the primary photograph: an index into the
+images or "most_frontal". One JSON
 object is printed: {"result": ...} or {"error": {"code", "message"}}.
 """
 
@@ -44,6 +45,11 @@ def main(argv: list[str]) -> int:
         segmenter = Path(request["segmenter"]) if request.get("segmenter") else None
         device = request.get("device", "auto")
         seed = int(request.get("seed", 0))
+        primary = request.get("primary", 0)
+        if primary != "most_frontal" and (
+            isinstance(primary, bool) or not isinstance(primary, int) or not 0 <= primary < len(images)
+        ):
+            raise ValueError("primary must be an index into the images or most_frontal")
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail("validation", f"the request is invalid: {error}")
 
@@ -56,7 +62,7 @@ def main(argv: list[str]) -> int:
     try:
         reconstructor = pipeline.Reconstructor(directory, landmarker, device, segmenter)
         try:
-            result = reconstructor.run(images)
+            result = reconstructor.run(images, primary)
         finally:
             reconstructor.close()
         displacement = pipeline.write_displacement(result.displacement_mm, output)
@@ -73,6 +79,7 @@ def main(argv: list[str]) -> int:
                     "expression": result.expression,
                     "jaw": result.jaw,
                     "head_rotation": result.head_rotation,
+                    "primary_image": result.primary_image,
                     "identity_agreement": result.identity_agreement,
                     "clamped_coefficients": result.clamped_coefficients,
                     "faces": result.faces,
