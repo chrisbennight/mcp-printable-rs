@@ -5,7 +5,9 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks};
+use printable_geom::{
+    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
+};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -19,6 +21,8 @@ const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
 /// on a 100 mm bust, below what a 0.2 mm nozzle reproduces.
 const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
 const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
+/// Busts under 100 mm default to facets this share of their height.
+const EDGE_LENGTH_SHARE: f64 = 0.004;
 const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
@@ -42,6 +46,10 @@ const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
 const PUPIL_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.2..=10.0;
 const IRIS_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
 const EYE_DETAIL_DEPTH_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+const NECK_EXTENSION_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+const SHOULDER_WIDTH_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
+const SHOULDER_DEPTH_MM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+const SHOULDER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
 /// Carved eye detail is at least this many layers deep.
 const EYE_DETAIL_LAYERS: f64 = 2.0;
 const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
@@ -302,6 +310,29 @@ pub(super) struct HeadPreparePrintParams {
     /// less than two layers with a `printer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eye_detail_depth_mm: Option<f64>,
+    /// What stands below the head, within `height_mm` above any plinth:
+    /// `neck` (the default) ends at the neck's cut, `extended_neck` continues
+    /// the neck down along its own lean, and `shoulders` adds a block of
+    /// chest and shoulders. The head keeps at least half the height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<BodyShape>,
+    /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neck_extension_mm: Option<f64>,
+    /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
+    /// head's width, and at least 1.3 times the neck's. Shoulders too small to
+    /// hold the neck are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_width_mm: Option<f64>,
+    /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
+    /// head's depth, and at least 1.3 times the neck's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_depth_mm: Option<f64>,
+    /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_height_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -311,7 +342,8 @@ pub(super) struct HeadPreparePrintParams {
     /// (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     height_mm: Option<f64>,
-    /// Target facet edge length, 0.1 to 5 mm (default 0.4). Shorter edges
+    /// Target facet edge length, 0.1 to 5 mm. Defaults to 0.4, or to 0.4% of
+    /// `height_mm` on busts under 100 mm and no less than 0.1. Shorter edges
     /// follow the smooth surface more closely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
@@ -326,7 +358,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
     /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and never less than the neck section. Requires a plinth.
+    /// extent and reaches at least 1 mm beyond the bust's base. Requires a
+    /// plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
     /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
@@ -368,6 +401,21 @@ pub(super) enum MouthShape {
     Closed,
     /// With the surface closing the mouth set back into the head.
     Recessed,
+}
+
+/// What stands below the head of a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BodyShape {
+    /// The neck as cut.
+    #[default]
+    Neck,
+    /// The neck continued down along its own lean.
+    ExtendedNeck,
+    /// A block of chest and shoulders.
+    Shoulders,
 }
 
 /// How the eyes of a bust are carved.
@@ -734,9 +782,13 @@ pub(super) async fn prepare_print(
         params.height_mm.unwrap_or(DEFAULT_PRINT_HEIGHT_MM),
         &PRINT_HEIGHT_MM,
     )?;
+    // A small bust keeps the same detail relative to its size: thin parts
+    // such as the ears stay several facets thick.
+    let default_edge =
+        (EDGE_LENGTH_SHARE * height_mm).clamp(*EDGE_LENGTH_MM.start(), DEFAULT_EDGE_LENGTH_MM);
     let edge_length_mm = in_range(
         "edge_length_mm",
-        params.edge_length_mm.unwrap_or(DEFAULT_EDGE_LENGTH_MM),
+        params.edge_length_mm.unwrap_or(default_edge),
         &EDGE_LENGTH_MM,
     )?;
     let max_triangles = in_range(
@@ -874,6 +926,64 @@ pub(super) async fn prepare_print(
             in_range(name, value, range)?;
         }
     }
+    let shoulder_sizes = [
+        params.shoulder_width_mm,
+        params.shoulder_depth_mm,
+        params.shoulder_height_mm,
+    ];
+    let body_shape = params.body.unwrap_or_default();
+    if body_shape != BodyShape::ExtendedNeck && params.neck_extension_mm.is_some() {
+        return Err(ToolError::Validation(
+            "neck_extension_mm needs body extended_neck".into(),
+        ));
+    }
+    if body_shape != BodyShape::Shoulders && shoulder_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "shoulder_width_mm, shoulder_depth_mm and shoulder_height_mm need body shoulders"
+                .into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "neck_extension_mm",
+            params.neck_extension_mm,
+            &NECK_EXTENSION_MM,
+        ),
+        (
+            "shoulder_width_mm",
+            params.shoulder_width_mm,
+            &SHOULDER_WIDTH_MM,
+        ),
+        (
+            "shoulder_depth_mm",
+            params.shoulder_depth_mm,
+            &SHOULDER_DEPTH_MM,
+        ),
+        (
+            "shoulder_height_mm",
+            params.shoulder_height_mm,
+            &SHOULDER_HEIGHT_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let body = match body_shape {
+        BodyShape::Neck => None,
+        BodyShape::ExtendedNeck => Some(Body {
+            kind: BodyKind::ExtendedNeck,
+            height_mm: params.neck_extension_mm,
+            width_mm: None,
+            depth_mm: None,
+        }),
+        BodyShape::Shoulders => Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: params.shoulder_height_mm,
+            width_mm: params.shoulder_width_mm,
+            depth_mm: params.shoulder_depth_mm,
+        }),
+    };
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -971,6 +1081,7 @@ pub(super) async fn prepare_print(
             min_feature_mm: printer.minimum_wall_mm,
         }),
         eyes,
+        body,
         mouth_recess_mm,
     };
     let variant = model.info().variant.clone();
@@ -1472,9 +1583,16 @@ pub(super) async fn reconstruct(
             scalp: request.scalp.unwrap_or_default(),
             hair_colour: request.hair_colour,
             lighting: request.lighting.unwrap_or_default(),
+            size: request
+                .texture_size
+                .map_or(COLOUR_MAP_TEXELS, |size| size as usize),
+            eyes: request.eyes.unwrap_or_default(),
+            iris_colour: request.iris_colour,
+            sclera_colour: request.sclera_colour,
         };
         let views = field("views");
         let digests = field("image_sha256");
+        let identity = field("identity");
         let texture = blocking(move || {
             // Held by the work itself, so a cancelled request cannot let
             // another map start while this one is still being made.
@@ -1490,6 +1608,9 @@ pub(super) async fn reconstruct(
                     "the reconstruction worker did not identify the photographs it used".into(),
                 )
             })?;
+            let identity: Vec<f32> = serde_json::from_value(identity).map_err(|_| {
+                ToolError::Validation("the reconstruction worker returned no identity".into())
+            })?;
             let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
             if fitted.iter().collect::<Vec<_>>() != read {
                 return Err(ToolError::Validation(
@@ -1503,6 +1624,7 @@ pub(super) async fn reconstruct(
                     images: &images,
                     photos: &photos,
                     views: &views,
+                    identity: &identity,
                     path: &path,
                     overwrite,
                     colouring,
@@ -1528,8 +1650,13 @@ fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, Strin
     Ok((snapshot, digest))
 }
 
-/// Side of the colour map in texels.
+/// Side of the colour map in texels unless the caller chooses another.
 const COLOUR_MAP_TEXELS: usize = 1024;
+/// Painted eyes: life-size iris and pupil diameters in metres, the model's
+/// units, and the default colour of the white.
+const PAINTED_IRIS_M: f32 = 0.0115;
+const PAINTED_PUPIL_M: f32 = 0.004;
+const DEFAULT_SCLERA_RGB: [u8; 3] = [240, 236, 230];
 /// Largest photograph decoded for the colour map, in pixels.
 const MAX_PHOTO_PIXELS: u64 = 50_000_000;
 
@@ -1580,6 +1707,10 @@ struct Colouring {
     scalp: crate::recon::ScalpChoice,
     hair_colour: Option<[u8; 3]>,
     lighting: crate::recon::LightingChoice,
+    size: usize,
+    eyes: crate::recon::EyeChoice,
+    iris_colour: Option<[u8; 3]>,
+    sclera_colour: Option<[u8; 3]>,
 }
 
 /// Decode a view's labels: a square greyscale PNG whose values name the
@@ -1683,6 +1814,9 @@ struct ColourMapRequest<'a> {
     images: &'a [String],
     photos: &'a [(Snapshot, String)],
     views: &'a [ReconView],
+    /// The identity the reconstruction returns, which shapes the head that
+    /// `create` makes from it.
+    identity: &'a [f32],
     path: &'a str,
     overwrite: bool,
     colouring: Colouring,
@@ -1698,6 +1832,7 @@ fn colour_map(
         images,
         photos,
         views,
+        identity,
         path,
         overwrite,
         colouring,
@@ -1756,7 +1891,7 @@ fn colour_map(
     let mut builder = texture::ColourMapBuilder::new(
         model.faces(),
         layout,
-        COLOUR_MAP_TEXELS,
+        colouring.size,
         &kinds,
         texture::Colouring {
             scalp,
@@ -1767,6 +1902,30 @@ fn colour_map(
         },
     )
     .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let knows_eyes = kinds.contains(&texture::FaceKind::Eye);
+    if colouring.eyes == crate::recon::EyeChoice::Painted && knows_eyes {
+        // The eyes are painted on the returned head at rest, the head that
+        // `create` makes, where each looks along +z.
+        let rest = model
+            .evaluate(&FlameParams {
+                identity: identity.to_vec(),
+                expression: Vec::new(),
+                pose: Pose::default(),
+                translation: [0.0; 3],
+            })
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        builder
+            .paint_eyes(
+                &rest.vertices,
+                texture::PaintedEyes {
+                    iris: colouring.iris_colour,
+                    sclera: colouring.sclera_colour.unwrap_or(DEFAULT_SCLERA_RGB),
+                    iris_diameter: PAINTED_IRIS_M,
+                    pupil_diameter: PAINTED_PUPIL_M,
+                },
+            )
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+    }
     let mut segmented = 0usize;
     // One photograph at a time: each is read, decoded, projected and dropped
     // before the next.
@@ -1844,6 +2003,24 @@ fn colour_map(
     if let Some(note) = note {
         scalp_report["note"] = json!(note);
     }
+    let mut eye_report = json!({"requested": colouring.eyes});
+    match map.iris {
+        Some((iris, source)) => {
+            eye_report["applied"] = json!("painted");
+            eye_report["iris_colour"] = json!(iris);
+            eye_report["iris_source"] = json!(match source {
+                texture::IrisSource::Given => "given",
+                texture::IrisSource::Measured => "measured",
+                texture::IrisSource::Default => "default",
+            });
+        }
+        None => {
+            eye_report["applied"] = json!("photo");
+            if colouring.eyes == crate::recon::EyeChoice::Painted {
+                eye_report["note"] = json!("the model has no separate eyeballs to paint");
+            }
+        }
+    }
     Ok(json!({
         "artifact": artifact,
         "width": side,
@@ -1851,6 +2028,7 @@ fn colour_map(
         "seen": map.seen,
         "skin_only": segmented == views.len(),
         "scalp": scalp_report,
+        "eyes": eye_report,
         "lighting": {
             "requested": colouring.lighting,
             // Each photograph's shading in linear light, as ambient plus
