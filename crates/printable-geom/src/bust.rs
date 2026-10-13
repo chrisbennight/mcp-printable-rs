@@ -719,8 +719,10 @@ fn carve_eyes(
         smallest_radius = smallest_radius.min(radius);
         let fits = pupil / 2.0 < MAX_PUPIL_SHARE * radius
             && depth < MAX_DEPTH_SHARE * radius
-            && ring.is_none_or(|(iris, width, _)| {
-                iris / 2.0 < MAX_IRIS_SHARE * radius && iris / 2.0 - width > pupil / 2.0
+            && ring.is_none_or(|(iris, width, ring_depth)| {
+                iris / 2.0 < MAX_IRIS_SHARE * radius
+                    && iris / 2.0 - width > pupil / 2.0
+                    && ring_depth < MAX_DEPTH_SHARE * radius
             });
         if !fits {
             return Err(GeometryError::InvalidOptions(format!(
@@ -2747,6 +2749,22 @@ mod tests {
         });
         let eyes = prepare_bust(&shallow).unwrap().1.eyes.expect("eye report");
         assert_eq!((eyes.depth_mm, eyes.ring_depth_mm), (0.1, Some(0.4)));
+    }
+
+    #[test]
+    fn a_ring_deeper_than_the_eye_allows_is_refused() {
+        // A shallow pupil, but a printer minimum deeper than half the stand-in
+        // eye's radius of about 7.7 mm.
+        let mut deep = with_an_eye(request(1.0, 1_000_000));
+        deep.eyes = Some(EyeCarving {
+            depth_mm: Some(0.1),
+            shallowest_mm: Some(4.0),
+            ..carving(true)
+        });
+        assert!(matches!(
+            prepare_bust(&deep),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("does not fit")
+        ));
     }
 
     #[test]
