@@ -7721,6 +7721,13 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
             json!({"print": {"path": "x.stl"}, "blender": {"expression_scale": 2.0}}),
             "expression_scale",
         ),
+        (
+            json!({"print": {
+                "path": "x.stl", "height_mm": 100.0, "body": "extended_neck",
+                "neck_extension_mm": 60.0
+            }}),
+            "less than 50%",
+        ),
     ] {
         let mut params = params;
         params["reconstruct"] = reconstruct.clone();
@@ -7737,6 +7744,26 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         );
     }
     assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // What only the head can refuse comes after the reconstruction, from the
+    // geometry worker with its own code, and carries the reconstruction's
+    // result so that it can be used again.
+    let refused = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct,
+            "print": {"path": "thin.stl", "height_mm": 50.0, "edge_length_mm": 2.0,
+                "hollow_wall_mm": 20.0},
+            "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    let text = format!("{refused:?}");
+    assert!(text.contains("geometry worker failed"), "{text}");
+    assert!(
+        text.contains("result follows") && text.contains("identity"),
+        "{text}"
+    );
     task.abort();
 }
 

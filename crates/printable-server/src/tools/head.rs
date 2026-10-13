@@ -910,10 +910,18 @@ pub(super) async fn photo_to_bust(
     // cannot satisfy says so and returns the reconstruction's result, which
     // `prepare_print` and `create` can use. Typed errors, such as Blender's,
     // keep their code, scene state and any unknown outcome unchanged.
-    let after = |step: &str, error: ToolError| match error {
-        ToolError::Validation(message) => ToolError::Validation(format!(
+    let with_result = |step: &str, message: &str| {
+        format!(
             "the reconstruction finished, but {step} failed: {message}. The reconstruction's result follows, for prepare_print and create: {reconstructed}"
-        )),
+        )
+    };
+    let after = |step: &str, error: ToolError| match error {
+        ToolError::Validation(message) => ToolError::Validation(with_result(step, &message)),
+        // The geometry worker's failures keep their code.
+        ToolError::GeometryWorker { code, message } => ToolError::GeometryWorker {
+            code,
+            message: with_result(step, &message),
+        },
         other => other,
     };
     let coefficients = |name: &str| -> Result<Vec<f32>, ToolError> {
@@ -1218,6 +1226,9 @@ async fn print_bust(
     if mouth == MouthShape::Closed {
         pose.jaw = [0.0; 3];
     }
+    // The head must keep its share of the height beside any body.
+    printable_geom::head_height_mm(height_mm, plinth, body)
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
     let worker_bin = geometry_worker_path(settings)?;
     if stage == PrintStage::Check {
         checked_scale_and_pose(params.expression_scale, pose)?;
