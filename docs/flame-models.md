@@ -342,8 +342,8 @@ reported as an error and not written.
 | `eye_detail_depth_mm` | 2 mm at life size, scaled | 0.05 to 5 |
 | `body` | `neck` | `neck`, `extended_neck` or `shoulders`; see [Body](#body) |
 | `neck_extension_mm` | 15% of the head's height | 2 to 200 |
-| `shoulder_width_mm` | 1.6 times the head's width | 10 to 500 |
-| `shoulder_depth_mm` | 0.9 times the head's depth | 5 to 300 |
+| `shoulder_width_mm` | 1.6 times the head's width, and at least 1.3 times the neck's | 10 to 500 |
+| `shoulder_depth_mm` | 0.9 times the head's depth, and at least 1.3 times the neck's | 5 to 300 |
 | `shoulder_height_mm` | 35% of the head's height | 2 to 200 |
 | `overwrite` | false | |
 
