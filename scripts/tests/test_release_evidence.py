@@ -17,7 +17,7 @@ import zlib
 from release_build_materials import BINARIES, auditable_dependencies, collect
 from release_evidence import (archive_members, canonical_path, collect_role, debian_packages,
                               declared_build_materials, download_source, file_index, identify_bundled_native, identify_first_party,
-                              python_source, read_member, write_json)
+                              python_source, read_member, verify_component_inputs, write_json)
 from release_evidence_record import seal
 from release_identity import ReleaseIdentity
 from release_record import ROLES
@@ -198,7 +198,8 @@ class ImageInventoryTests(unittest.TestCase):
         root = Path(directory)
         (root / "release").mkdir()
         write_json(root / "release/components.json", {"components": components or []})
-        (root / "Dockerfile").write_text("")
+        (root / "Dockerfile").write_text("\n".join(component["asset_sha256"] for component in components or []
+                                                  if component.get("asset_sha256")))
         write_json(root / "release/python-sources.json", {})
         (root / "crates/printable-imaging/assets").mkdir(parents=True)
         (root / "crates/printable-imaging/assets/FiraSans-Regular.ttf").write_bytes(b"font")
@@ -276,6 +277,44 @@ class ImageInventoryTests(unittest.TestCase):
             self.run_collector(directory, lambda files: files.update({"opt/example/AppRun": b"launcher",
                 "opt/example/LICENSE": b"notice", "opt/example/libunknown.so": b"\x7fELFunknown"}), [component])
 
+    def test_selfie_segmenter_has_exact_asset_identity_and_missing_or_changed_bytes_fail(self):
+        repository = Path(__file__).resolve().parents[2]
+        manifest = json.loads((repository / "release/components.json").read_text())
+        component = next(item for item in manifest["components"]
+                         if item["name"] == "MediaPipe multiclass selfie segmenter model")
+        expected = "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0"
+        self.assertEqual(component["asset_sha256"], expected)
+        self.assertEqual(component["source_sha256"], expected)
+        self.assertEqual(component["version"], "float32/1")
+        self.assertEqual(component["roles"], ["recon"])
+        self.assertEqual(component["license"], "Apache-2.0")
+        self.assertEqual(component["source_url"],
+            "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite")
+        verify_component_inputs(component)
+        fixture_bytes = b"selfie model fixture"
+        fixture_checksum = hashlib.sha256(fixture_bytes).hexdigest()
+        fixture_component = component | {"roles": ["server"], "asset_sha256": fixture_checksum,
+                                         "source_sha256": fixture_checksum}
+        installed = component["paths"][0]
+        for change in (None, "missing", "changed", "notice"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                def modify(files):
+                    files.update({installed: fixture_bytes, "opt/recon/package/LICENSE": b"Apache notice",
+                                  "usr/share/doc/printable/NOTICE-recon": b"model notice"})
+                    if change == "missing": files.pop(installed)
+                    elif change == "changed": files[installed] = b"altered model"
+                    elif change == "notice": files.pop("usr/share/doc/printable/NOTICE-recon")
+                if change:
+                    with self.assertRaisesRegex(ValueError, "component.*absent|checksum mismatch"):
+                        self.run_collector(directory, modify, [fixture_component])
+                else:
+                    output = self.run_collector(directory, modify, [fixture_component])
+                    spdx = json.loads((output / "server/sbom.spdx.json").read_text())
+                    model = next(item for item in spdx["packages"] if item["name"] == component["name"])
+                    self.assertEqual(model["versionInfo"], component["version"])
+                    self.assertEqual(model["licenseDeclared"], component["license"])
+                    self.assertEqual(model["checksums"], [{"algorithm": "SHA256", "checksumValue": fixture_checksum}])
+
     def test_missing_native_sources_and_changed_binary_fail(self):
         for change in (lambda files: files.pop("usr/share/doc/printable/build/native-sources.tar.gz"),
                        lambda files: files.update({"usr/local/bin/printable-server": b"\x7fELFchanged"})):
@@ -299,6 +338,8 @@ class BundledComponentTests(unittest.TestCase):
             notice_root = root / "notices"
             notice_root.mkdir()
             (notice_root / "licenses.md").write_text('## Fonts\n| [Font](https://example.org/font) | [SIL](https://spdx.org/licenses/OFL-1.1.html) |\n'
+                '| [Noto Fonts](https://fonts.google.com/noto) | [SIL Open Font License 1.1](https://spdx.org/licenses/OFL-1.1.html) | `Copyright 2018 The Noto Project Authors (github.com/googlei18n/noto-fonts)`|\n'
+                '| [Composite Font](https://example.org/composite) | [Custom License](https://example.org/license) + [Bitstream](https://spdx.org/licenses/Bitstream-Vera.html) | Font copyright |\n'
                 '## [MIT](https://spdx.org/licenses/MIT.html)\n| [Vendor](https://example.org/vendor) | 1.2.3 | Copyright vendor |\n')
             component["build_inventory"]["license_inventory"] = "licenses.md"
             document = {}
@@ -313,9 +354,21 @@ class BundledComponentTests(unittest.TestCase):
             self.assertEqual(vendor["source_notices"], ["extern/vendor/LICENSE"])
             declarations = next(item["declared_components"] for item in records if "declared_components" in item)
             self.assertNotIn("declared_version", declarations[0])
+            noto = next(item for item in declarations if item["name"] == "Noto Fonts")
+            self.assertEqual(noto["homepage"], "https://fonts.google.com/noto")
+            self.assertEqual(noto["license"], "OFL-1.1")
+            self.assertEqual(noto["copyright"], "`Copyright 2018 The Noto Project Authors (github.com/googlei18n/noto-fonts)`")
+            self.assertNotIn("declared_version", noto)
+            composite = next(item for item in declarations if item["name"] == "Composite Font")
+            self.assertEqual(composite["license"], "NOASSERTION")
+            self.assertIn("Custom License", composite["available_license"])
             self.assertNotIn("native_files", records[0])
             self.assertIn("not independently confirmed", records[0]["binary_linkage"])
             self.assertTrue(any(item["relationshipType"] == "BUILD_DEPENDENCY_OF" for item in document["relationships"]))
+            license_inventory = notice_root / "licenses.md"
+            license_inventory.write_text(license_inventory.read_text() + "| [Unreadable component](https://example.org/source) |\n")
+            with self.assertRaisesRegex(ValueError, "unsupported component row"):
+                declared_build_materials(component, source, root, {}, notice_root)
             component["build_inventory"]["sha256"] = "d" * 64
             with self.assertRaisesRegex(ValueError, "build specification"):
                 declared_build_materials(component, source, root, {})

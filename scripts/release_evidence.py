@@ -317,10 +317,18 @@ def declared_build_materials(component, source, sources, document, notice_root=N
                         license_url = heading[1]
                         identifier = re.fullmatch(r"https://spdx.org/licenses/(.+)\.html", license_url)
                         license_value = identifier[1] if identifier else "NOASSERTION"
-                    row = re.match(r"^\| \[(.+?)\]\((.+)\)[¹²³]? \| ([^|]+) \|(?: (.*?) \|)?$", line)
+                    row = re.match(r"^\|\s+\[(.+?)\]\((.+?)\)[¹²³]?\s+\|\s+([^|]+?)\s*\|(?:\s*(.*?)\s*\|)?$", line)
+                    if line.startswith("| [") and row is None:
+                        raise ValueError("declared Blender distribution license inventory has an unsupported component row")
                     if row:
-                        record = {"name": row[1], "homepage": row[2], "license": license_value,
-                                  "license_url": license_url, "copyright": row[4] or "NOASSERTION"}
+                        row_license, row_url = license_value, license_url
+                        if fonts:
+                            row_license, row_url = "NOASSERTION", ""
+                            identifier = re.fullmatch(r"\[[^\]]+\]\((https://spdx.org/licenses/([^)]+)\.html)\)", row[3])
+                            if identifier:
+                                row_url, row_license = identifier[1], identifier[2]
+                        record = {"name": row[1], "homepage": row[2], "license": row_license,
+                                  "license_url": row_url, "copyright": row[4] or "NOASSERTION"}
                         record["available_license" if fonts else "declared_version"] = row[3].strip()
                         licensing.append(record)
                 if not licensing:

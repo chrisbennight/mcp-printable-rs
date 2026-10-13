@@ -143,7 +143,8 @@ workflow's source revision; it does not authenticate unavailable upstream build
 history.
 
 The collector explicitly adds the downloaded Blender, OrcaSlicer, VirtualGL and
-OpenCV bundles, the face landmarker model and embedded Fira font, with source
+OpenCV bundles, the face landmarker and multiclass selfie segmenter models and
+embedded Fira font, with source
 locators and applicable notices. It hashes the whole regular-file filesystem and
 records links separately. Every native executable and library must have a Debian,
 Python, first-party or individually identified native component owner. The Blender

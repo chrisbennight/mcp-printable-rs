@@ -1308,6 +1308,25 @@
       "source_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
       "asset_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
       "description": "Unmodified distributable model asset; operator-supplied checkpoints are outside the image."
+    },
+    {
+      "name": "MediaPipe multiclass selfie segmenter model",
+      "version": "float32/1",
+      "roles": [
+        "recon"
+      ],
+      "paths": [
+        "opt/printable/recon/selfie_multiclass_256x256.tflite"
+      ],
+      "notice_prefix": "opt/recon/",
+      "required_notices": [
+        "usr/share/doc/printable/NOTICE-recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite",
+      "source_sha256": "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0",
+      "asset_sha256": "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0",
+      "description": "Unmodified distributable model asset; operator-supplied checkpoints are outside the image."
     }
   ],
   "first_party_components": [
