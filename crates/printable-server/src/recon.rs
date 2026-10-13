@@ -62,6 +62,16 @@ pub struct ReconRequest {
     /// Needs `texture_path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lighting: Option<LightingChoice>,
+    /// Share, 0 to 1 (default 0), of the head's tilt in the first
+    /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
+    /// so a bust can keep the subject's natural tilt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_tilt: Option<f64>,
+    /// Share, 0 to 1 (default 0), of the head's turn in the first
+    /// photograph, its yaw, to keep in a suggested `pose.neck`. A turn
+    /// reflects where the camera stood as much as the subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_turn: Option<f64>,
 }
 
 /// What a colour map does with the photographs' lighting.
@@ -123,6 +133,13 @@ impl ReconRequest {
         }
         if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
             return Err(ToolError::Validation("hair_colour needs scalp hair".into()));
+        }
+        for (name, share) in [("neck_tilt", self.neck_tilt), ("neck_turn", self.neck_turn)] {
+            if share.is_some_and(|share| !(0.0..=1.0).contains(&share)) {
+                return Err(ToolError::Validation(format!(
+                    "{name} must be between 0 and 1"
+                )));
+            }
         }
         Ok(())
     }
@@ -515,6 +532,8 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             scalp: None,
             hair_colour: None,
             lighting: None,
+            neck_tilt: None,
+            neck_turn: None,
         }
     }
 

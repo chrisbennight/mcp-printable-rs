@@ -866,6 +866,72 @@ pub(super) async fn prepare_print(
     .await
 }
 
+/// A neck rotation that keeps a share of the head's rotation in a
+/// photograph. The rotation is split into a turn about y, then a pitch about
+/// x, then a roll about z; the turn is scaled by `turn` and the pitch and
+/// roll by `tilt`, and they are put back together as an axis-angle vector.
+fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
+    let matrix = axis_angle_matrix(rotation);
+    let pitch = (-matrix[1][2]).clamp(-1.0, 1.0).asin();
+    let yaw = matrix[0][2].atan2(matrix[2][2]);
+    let roll = matrix[1][0].atan2(matrix[1][1]);
+    let multiply = |a: [[f64; 3]; 3], b: [[f64; 3]; 3]| {
+        std::array::from_fn(|row| {
+            std::array::from_fn(|column| (0..3).map(|k| a[row][k] * b[k][column]).sum())
+        })
+    };
+    let kept = multiply(
+        multiply(
+            axis_angle_matrix([0.0, turn * yaw, 0.0]),
+            axis_angle_matrix([tilt * pitch, 0.0, 0.0]),
+        ),
+        axis_angle_matrix([0.0, 0.0, tilt * roll]),
+    );
+    let trace = kept[0][0] + kept[1][1] + kept[2][2];
+    let angle = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+    if angle < 1e-12 {
+        return [0.0; 3];
+    }
+    let scale = angle / (2.0 * angle.sin());
+    [
+        (kept[2][1] - kept[1][2]) * scale,
+        (kept[0][2] - kept[2][0]) * scale,
+        (kept[1][0] - kept[0][1]) * scale,
+    ]
+}
+
+/// The rotation matrix of an axis-angle vector.
+fn axis_angle_matrix(rotation: [f64; 3]) -> [[f64; 3]; 3] {
+    let angle = rotation
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    if angle < 1e-12 {
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    }
+    let [x, y, z] = rotation.map(|value| value / angle);
+    let (sin, cos) = angle.sin_cos();
+    let versine = 1.0 - cos;
+    [
+        [
+            versine * x * x + cos,
+            versine * x * y - sin * z,
+            versine * x * z + sin * y,
+        ],
+        [
+            versine * x * y + sin * z,
+            versine * y * y + cos,
+            versine * y * z - sin * x,
+        ],
+        [
+            versine * x * z - sin * y,
+            versine * y * z + sin * x,
+            versine * z * z + cos,
+        ],
+    ]
+}
+
 /// Replace the vertex index of each region a print check found with the name
 /// of the smallest model region that holds that vertex, or else that holds
 /// the nearest vertex in any region. Unnamed when the model has no regions.
@@ -1046,6 +1112,16 @@ pub(super) async fn reconstruct(
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
     });
+    let (tilt, turn) = (
+        request.neck_tilt.unwrap_or(0.0),
+        request.neck_turn.unwrap_or(0.0),
+    );
+    if tilt > 0.0 || turn > 0.0 {
+        let rotation: Option<[f64; 3]> = serde_json::from_value(field("head_rotation")).ok();
+        if let Some(rotation) = rotation {
+            response["pose"]["neck"] = json!(suggested_neck(rotation, tilt, turn));
+        }
+    }
     if let (Some(model), Some(photos), Some(path)) =
         (textured_model, photos, request.texture_path.clone())
     {
@@ -1748,4 +1824,40 @@ fn annotate(mut result: Value, model: &FlameModel, head: &PosedHead) -> Value {
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9)
+    }
+
+    #[test]
+    fn the_whole_rotation_is_kept_with_full_shares() {
+        let rotation = [0.2, 0.1, 0.05];
+        let neck = suggested_neck(rotation, 1.0, 1.0);
+        assert!(close(neck, rotation), "{neck:?}");
+        assert_eq!(suggested_neck(rotation, 0.0, 0.0), [0.0; 3]);
+    }
+
+    #[test]
+    fn turn_and_tilt_are_kept_separately() {
+        // A pure turn is dropped by the tilt and halved by a half turn.
+        assert!(close(suggested_neck([0.0, 0.3, 0.0], 1.0, 0.0), [0.0; 3]));
+        assert!(close(
+            suggested_neck([0.0, 0.3, 0.0], 0.0, 0.5),
+            [0.0, 0.15, 0.0]
+        ));
+        // A pure roll or pitch follows the tilt alone.
+        assert!(close(
+            suggested_neck([0.0, 0.0, 0.2], 0.5, 1.0),
+            [0.0, 0.0, 0.1]
+        ));
+        assert!(close(
+            suggested_neck([0.2, 0.0, 0.0], 0.5, 0.0),
+            [0.1, 0.0, 0.0]
+        ));
+    }
 }
