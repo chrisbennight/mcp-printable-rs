@@ -582,6 +582,11 @@ they meet. This needs a model converted with `--masks`. The response adds
 `note` when the model has no mouth opening to recess, and, when a
 displacement map was given, `detail_faded_over`: `lips`, or null when the
 model has no such region. Faded detail does not count toward `relief_mm`.
+The limit that keeps relief from raising detail beyond 5% of the head's
+height counts, at full value, every map value a triangle with an unfaded
+corner, or a cap, could read. It never undercounts, but a strong value at
+the edge of a faded region can limit the relief more than the detail
+applied needs.
 
 On the FLAME 2020 generic model with a head reconstructed from one
 photograph, whose jaw was open by 0.09 radians, the largest vertical gap
@@ -608,12 +613,13 @@ with a `printer` no shallower than two layers, and a tenth of the iris wide,
 whether the iris is given or the default. Depths are
 measured at the edge of each cut, so a shallow pupil still shows its full
 width. By default each is its life size scaled with the
-bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. With a
-`printer`, the pupil is at least two nozzle widths across, or two
-`minimum_wall_mm` for resin, the ring at least one wide, at least one such
-width of iris is left between the ring and the pupil, and the detail is at
-least two layers deep. Detail wider than the eyeball allows is refused, with
-the eyeball's size in the message.
+bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. A
+default iris is widened where needed to leave at least the ring's width of
+iris between the ring and the pupil. With a `printer`, the pupil is at least
+two nozzle widths across, or two `minimum_wall_mm` for resin, the ring at
+least one wide, one more such width of iris is left between the ring and the
+pupil, and the detail is at least two layers deep. Detail wider than the
+eyeball allows is refused, with the eyeball's size in the message.
 
 The eyeballs are the parts of the model separate from the head. Each eye's
 gaze leaves it through the vertex furthest forward when the head is at rest,
@@ -624,7 +630,9 @@ so that surface is the one carved. Only the eyeball is cut, so the eyelids keep 
 shape, but where an eyelid covers part of the ring, the ring continues under
 the lid's edge and can leave the edge thinner; the `thin` report of a
 `printer` shows such places. Where the head's surface covers a cut entirely,
-it is filled back in rather than left as a sealed void.
+it is filled back in rather than left as a sealed void. A carving that would
+cut a piece away from the bust is refused; specks are dropped and counted in
+`discarded_fragments`.
 
 The `bust` report adds `eyes` with the style, the sizes used, the smallest
 eyeball's diameter and `removed_mm3`, the volume carved away, with a `note`
@@ -633,10 +641,10 @@ when nothing was removed.
 On a 100 mm FDM bust of the FLAME 2020 generic head reconstructed from one
 photograph, the defaults gave a pupil 1.4 mm across and 0.7 mm deep and an
 iris 4.0 mm across with a ring 0.4 mm wide and 0.4 mm deep, in eyeballs
-8.5 mm across. Renders showed the ring and pupil centred in each eye. The
-`thin` report grew from 2.4 to 7.6 mm², most of it near the eyeballs where
-the ring passes under the eyelids. A 150 mm bust without a printer took
-13.5 seconds; each bust was one valid solid.
+8.5 mm across. Renders showed the whole ring and the pupil centred in each
+eye. The `thin` report grew from 2.2 to 9.2 mm², most of it near the
+eyeballs where the ring passes under the eyelids. A 150 mm bust without a
+printer took 13.4 seconds; each bust was one valid solid.
 
 ### Body
 
@@ -797,6 +805,13 @@ straight on.
 identity; a photograph well below the others probably shows someone else or
 an unusable view. `clamped_coefficients` counts values limited to ±5.
 
+`head_rotation` is the head's rotation in the first photograph. To keep some
+of it on a bust, `neck_tilt` and `neck_turn`, each 0 to 1 and 0 by default,
+add a suggested `pose.neck` to the response. The rotation is split into a
+turn about the vertical axis, then a pitch and a roll; `neck_turn` scales the
+turn, which reflects where the camera stood as much as the subject, and
+`neck_tilt` scales the pitch and roll. `pose` can then be passed on whole.
+
 Photographs should show the face clearly, roughly front-on, in focus and
 without heavy occlusion. Several views improve identity; the first photograph
 alone sets the expression and detail.
@@ -862,9 +877,38 @@ photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
 stops the colour map instead of misplacing it. The server makes one colour map
 at a time, reading one photograph at a time, so a request that asks for one
-while another is being made is refused as busy. Lighting is not removed: the
-map keeps the photographs' light and shade. It is for viewing and rendering.
-Printed files carry no colour.
+while another is being made is refused as busy. The map is for viewing and
+rendering. Printed files carry no colour.
+
+`lighting` chooses what becomes of the photographs' light and shade:
+
+| Value | Effect |
+| --- | --- |
+| `remove` (default) | Each photograph's smooth shading is estimated over the skin and divided out, so a renderer's own lights are not added to the light already in the photograph. |
+| `keep` | The map keeps the light and shade as photographed. |
+
+The shading is fitted in linear light, separately for each colour channel, as
+an ambient term plus one direction applied to the fitted head's surface
+normals. Only samples on the head's skin that the photograph's segmentation
+labels skin are fitted, so a photograph without segmentation, or with fewer
+than 200 such samples, keeps its lighting. Dividing by the shading would
+amplify noise in deep shadow, so the shading is never taken as less than a
+quarter of its average. Skin luminance above the skin's 97th percentile is
+brought down to it, which limits specular highlights; eyes and the scalp may
+be brighter than skin and are not limited. Finally, each channel's mean over
+the fitted skin, in linear light, keeps its photographed value, which keeps
+the subject's skin tone; colours the correction pushes past white are
+clipped, which lowers that mean slightly.
+
+`texture.lighting.shading` reports, for each photograph, an estimate of its
+light: for each colour channel an ambient term and a direction, in linear
+light, on the map's colour scale, so that ambient + direction · normal is
+the light that photograph cast on the head's surface. Directions are in the
+head's own frame, FLAME's frame with y up and the face toward +z, whatever
+the head's rotation in each photograph. A renderer can use it
+to relight the head consistently with the photograph. It is an estimate,
+not an exact inverse of the finished map, which blends photographs and fills
+surface seen at an angle. It is null where the lighting was kept.
 
 From one front-on photograph of a person with long dark hair, the
 reconstruction took about 30 seconds on a busy four-core CPU and the map under
@@ -876,6 +920,12 @@ skin-coloured ears and neck, the scalp in the hair colour found, and the
 photograph's centre parting as bare scalp. Renders of the textured head
 matched the photograph's eyes, brows, nose and mouth, and the filled back of
 the head showed no seams.
+
+On the same photograph, removing the lighting reduced the difference in
+brightness between the forehead, the cheeks and the jaw from 44 to 18 levels
+of 255. The forehead, the brightest of them, came down from 220 to 208, and
+the average colour of those patches changed by less than one level in each
+channel.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the
