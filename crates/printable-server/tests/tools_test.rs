@@ -6521,6 +6521,26 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
             "mouth_recess_mm",
         ),
         (
+            json!({"path": "head.stl", "pupil_diameter_mm": 1.0}),
+            "need eyes pupil or iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "iris_diameter_mm": 3.0}),
+            "iris_diameter_mm needs eyes iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "pupil_diameter_mm": 20.0}),
+            "pupil_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "iris_and_pupil", "eye_detail_depth_mm": 0.0}),
+            "eye_detail_depth_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil"}),
+            "no separate eyeballs",
+        ),
+        (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),
             "must exceed plinth_height_mm",
         ),

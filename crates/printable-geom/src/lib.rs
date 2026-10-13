@@ -31,8 +31,8 @@ mod remesh;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
 pub use bust::{
-    BustReport, BustRequest, DetailPercentiles, Displacement, DisplacementReport, Hollow,
-    HollowReport, Plinth, PlinthReport, bust_stl, prepare_bust,
+    BustReport, BustRequest, DetailPercentiles, Displacement, DisplacementReport, EyeAxis,
+    EyeCarving, EyeReport, Hollow, HollowReport, Plinth, PlinthReport, bust_stl, prepare_bust,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 
