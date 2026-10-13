@@ -1284,6 +1284,7 @@ pub(super) async fn reconstruct(
         };
         let views = field("views");
         let digests = field("image_sha256");
+        let identity = field("identity");
         let texture = blocking(move || {
             // Held by the work itself, so a cancelled request cannot let
             // another map start while this one is still being made.
@@ -1299,6 +1300,9 @@ pub(super) async fn reconstruct(
                     "the reconstruction worker did not identify the photographs it used".into(),
                 )
             })?;
+            let identity: Vec<f32> = serde_json::from_value(identity).map_err(|_| {
+                ToolError::Validation("the reconstruction worker returned no identity".into())
+            })?;
             let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
             if fitted.iter().collect::<Vec<_>>() != read {
                 return Err(ToolError::Validation(
@@ -1312,6 +1316,7 @@ pub(super) async fn reconstruct(
                     images: &images,
                     photos: &photos,
                     views: &views,
+                    identity: &identity,
                     path: &path,
                     overwrite,
                     colouring,
@@ -1501,6 +1506,9 @@ struct ColourMapRequest<'a> {
     images: &'a [String],
     photos: &'a [(Snapshot, String)],
     views: &'a [ReconView],
+    /// The identity the reconstruction returns, which shapes the head that
+    /// `create` makes from it.
+    identity: &'a [f32],
     path: &'a str,
     overwrite: bool,
     colouring: Colouring,
@@ -1516,6 +1524,7 @@ fn colour_map(
         images,
         photos,
         views,
+        identity,
         path,
         overwrite,
         colouring,
@@ -1587,14 +1596,11 @@ fn colour_map(
     .map_err(|error| ToolError::Validation(error.to_string()))?;
     let knows_eyes = kinds.contains(&texture::FaceKind::Eye);
     if colouring.eyes == crate::recon::EyeChoice::Painted && knows_eyes {
-        // The eyes are painted on the fitted head at rest, where each looks
-        // along +z.
-        let first = views.first().ok_or_else(|| {
-            ToolError::Validation("the reconstruction worker described no photographs".into())
-        })?;
+        // The eyes are painted on the returned head at rest, the head that
+        // `create` makes, where each looks along +z.
         let rest = model
             .evaluate(&FlameParams {
-                identity: first.shape.clone(),
+                identity: identity.to_vec(),
                 expression: Vec::new(),
                 pose: Pose::default(),
                 translation: [0.0; 3],
