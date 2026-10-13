@@ -61,9 +61,9 @@ configuration are outside the distributed inventory.
 GitHub signs standard build-provenance and SBOM attestations for each published
 component digest. The publisher verifies their repository, workflow, source
 revision and main-branch origin using the official GitHub CLI before completing
-the release record. The record carries SBOMs, the supplement, notices, scan
-reports, policy inputs and attestation bundles under `/evidence`. Its own build
-provenance protects that payload. Scanner limitations and declared inputs remain
+the release record. The record carries SBOMs, the supplement, repository notice
+copies, scan reports, policy inputs and attestation bundles under `/evidence`.
+Its own build provenance protects that payload. Scanner limitations and declared inputs remain
 visible; these materials do not claim an exhaustive reconstructed inventory.
 
 For an immutable record or component reference, use the
@@ -91,6 +91,23 @@ docker create --name printable-release-inspect "$IMAGE_REFERENCE" /unused
 docker cp printable-release-inspect:/evidence ./release-evidence
 docker rm printable-release-inspect
 ```
+
+Installed third-party notices remain in the component images identified by the
+record. The supplement lists notice locations for known bundles; operating-system
+and Python packages also retain their installed documentation and license metadata.
+Verify the component's digest-pinned reference with the command above, then copy
+the relevant notice using a stopped container. For example, OpenCV's notice is
+available from the reconstruction image:
+
+```sh
+docker create --name printable-notice-inspect "$COMPONENT_REFERENCE" /unused
+docker cp printable-notice-inspect:/opt/opencv-python/LICENSE-OpenCV ./LICENSE-OpenCV
+docker rm printable-notice-inspect
+```
+
+`COMPONENT_REFERENCE` must be the verified reconstruction reference from the
+release record. Extracting `/evidence` alone does not collect every dependency's
+notice text.
 
 Keep the immutable record, its component images and associated OCI attestations
 available for as long as the release is offered. Retain required corresponding
