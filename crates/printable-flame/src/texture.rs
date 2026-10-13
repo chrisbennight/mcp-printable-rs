@@ -951,8 +951,8 @@ fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
     let gains: [f32; 3] = std::array::from_fn(|channel| {
         (mean(&|at| linear[at][channel]) / mean(&|at| limited[at][channel]).max(1e-9)) as f32
     });
-    // Report the shading that, multiplied by the map's colour, gives back the
-    // photograph's, so a caller can relight the map consistently.
+    // Report the shading scaled to the corrected colours: multiplied by them,
+    // it gives back this photograph's, so a caller can relight the map.
     for (channel, gain) in gains.into_iter().enumerate() {
         shading.ambient[channel] /= gain;
         shading.direction[channel] = shading.direction[channel].map(|value| value / gain);

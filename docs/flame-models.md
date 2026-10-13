@@ -755,11 +755,17 @@ quarter of its average. Skin luminance above the skin's 97th percentile is
 brought down to it, which limits specular highlights; eyes and the scalp may
 be brighter than skin and are not limited. Finally, each channel's mean over
 the fitted skin, in linear light, keeps its photographed value, which keeps
-the subject's skin tone. `texture.lighting.shading` reports, for each photograph, the shading removed:
-for each colour channel an ambient term and a direction, in linear light,
-such that the map's colour times ambient + direction · normal gives back the
-photograph's colour, away from the highlight and shadow limits. It is null
-where the lighting was kept.
+the subject's skin tone; colours the correction pushes past white are
+clipped, which lowers that mean slightly.
+
+`texture.lighting.shading` reports, for each photograph, the shading removed
+from it: for each colour channel an ambient term and a direction, in linear
+light, scaled to the map's colours. Where only that photograph colours the
+map, the map's colour times ambient + direction · normal gives back the
+photograph's colour, away from the highlight and shadow limits. Where
+several photographs overlap, the map blends their colours and each shading
+describes only its own photograph's light. It is null where the lighting was
+kept.
 
 From one front-on photograph of a person with long dark hair, the
 reconstruction took about 30 seconds on a busy four-core CPU and the map under
