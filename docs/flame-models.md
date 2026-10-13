@@ -855,17 +855,21 @@ jaw, any suggested neck rotation and surface detail on:
 `reconstruct` takes every `reconstruct` option. `print` takes every
 `prepare_print` option except those the reconstruction supplies: `variant`,
 `identity`, `expression`, `pose.jaw` and `displacement`, and `pose.neck` when
-`neck_tilt` or `neck_turn` suggests one. Giving any of them is refused rather
-than silently replaced. `detail` takes the `displacement` options other than
+`neck_tilt` or `neck_turn` suggests one. Naming any of them is refused,
+whatever its value, rather than silently replaced. `detail` takes the `displacement` options other than
 the map itself, and `"apply": false` leaves the detail off. `blender` takes
 the `create` options, under the same rule, and the head is coloured with the
 colour map when the reconstruction makes one.
 
 Every option that can be checked without the reconstruction is checked
-before it starts, so a mistake in `print` costs no reconstruction. A failure
-after the reconstruction, which only the head itself can cause, reports the
-reconstruction's result with the error, so `prepare_print` or `create` can
-use it without reconstructing again. The response holds `reconstruct`,
+before it starts, including the expression scale and joint rotations of
+`print` and `blender`, so such a mistake costs no reconstruction. A request
+the reconstructed head cannot satisfy reports the reconstruction's result
+with the error, so `prepare_print` or `create` can use it without
+reconstructing again. Errors from Blender, such as a stale `expected_scene`
+or a command whose outcome is unknown, come back exactly as `create` returns
+them, with their code and scene state; the reconstruction's maps and the bust
+are written by then. The response holds `reconstruct`,
 `print` and, when asked for, `blender`, each as its own action returns it.
 With the same options, the bust is the one the separate calls make, byte for
 byte.

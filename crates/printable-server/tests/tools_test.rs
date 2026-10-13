@@ -7695,6 +7695,32 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
             json!({"print": {"path": "x.stl"}, "blender": {"texture": "t.png"}}),
             "blender.texture",
         ),
+        // Fields are refused when given, whatever their value.
+        (
+            json!({"print": {"path": "x.stl", "pose": {"jaw": [0.0, 0.0, 0.0]}}}),
+            "print.pose.jaw",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "identity": []}}),
+            "print.identity",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"pose": {"jaw": [0.0, 0.0, 0.0]}}}),
+            "blender.pose.jaw",
+        ),
+        // Head options that need no reconstruction are checked before it.
+        (
+            json!({"print": {"path": "x.stl", "expression_scale": 2.0}}),
+            "expression_scale",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "pose": {"left_eye": [4.0, 0.0, 0.0]}}}),
+            "left_eye",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"expression_scale": 2.0}}),
+            "expression_scale",
+        ),
     ] {
         let mut params = params;
         params["reconstruct"] = reconstruct.clone();
@@ -7760,6 +7786,64 @@ async fn photo_to_bust_can_also_create_the_head_in_blender() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].1["name"], "Photographed");
     assert!(calls[0].1.get("texture").is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_keeps_blenders_own_errors() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+    });
+    let generation = "00000000-0000-4000-8000-000000000001";
+    // Blender's scene has moved on since the caller looked.
+    let fake = FakeAddon::spawn(move |_, _| {
+        ResponseSpec::RawWithId(json!({
+            "status": "error", "error": "scene changed", "error_code": "stale_scene_state",
+            "scene_state": {"generation": generation, "revision": 7},
+            "bridge_instance_id": generation,
+            "addon_version": printable_blender::BRIDGE_PROTOCOL_VERSION,
+        }))
+    })
+    .await;
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let mut cfg = settings(&fake.host(), fake.port());
+    cfg.flame = Some(library);
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    recon.refresh().await;
+    cfg.recon = Some(recon);
+    let server = PrintableServer::new(
+        workspace(Some(root.path())),
+        Arc::new(client(&fake.host(), fake.port())),
+        Arc::new(cfg),
+    );
+    let result = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": {"images": ["face.jpg"], "displacement_path": "detail.png"},
+            "print": {"path": "bust.stl", "height_mm": 50.0, "edge_length_mm": 2.0},
+            "detail": {"apply": false},
+            "blender": {"expected_scene": {"generation": generation, "revision": 3}}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    // The same typed error create gives, with the scene state to recover from.
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(
+        structured["error"]["code"], "stale_scene_state",
+        "{structured}"
+    );
+    assert_eq!(
+        structured["error"]["scene_state"]["revision"], 7,
+        "{structured}"
+    );
+    // The bust was written before Blender was asked.
+    assert!(root.path().join("bust.stl").is_file());
     task.abort();
 }
 

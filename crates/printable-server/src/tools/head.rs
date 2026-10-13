@@ -823,27 +823,39 @@ pub(super) struct PhotoDetailParams {
     relief_mm: Option<f64>,
 }
 
-/// Refuse what a reconstruction supplies, so that nothing a caller gives is
-/// silently replaced.
-fn refuse_reconstructed(
-    request: &str,
-    (variant, identity, expression): (bool, &[f32], &[f32]),
-    pose: HeadPose,
-    suggests_neck: bool,
-) -> Result<(), ToolError> {
-    let given = [
-        ("variant", variant),
-        ("identity", !identity.is_empty()),
-        ("expression", !expression.is_empty()),
-        ("pose.jaw", pose.jaw != [0.0; 3]),
-        ("pose.neck", suggests_neck && pose.neck != [0.0; 3]),
-    ];
-    match given.iter().find(|(_, given)| *given) {
-        Some((name, _)) => Err(ToolError::Validation(format!(
-            "{request}.{name} comes from the reconstruction; leave it out"
-        ))),
-        None => Ok(()),
+/// Refuse every field of a `photo_to_bust` request that the reconstruction
+/// supplies, whatever value it is given, so that nothing a caller names is
+/// silently replaced. Looks at the request before it is parsed, where a
+/// field given its default value is still present.
+pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
+    let share = |name: &str| arguments["reconstruct"][name].as_f64().unwrap_or(0.0);
+    let suggests_neck = share("neck_tilt") > 0.0 || share("neck_turn") > 0.0;
+    for (request, own) in [("print", "displacement"), ("blender", "texture")] {
+        let Some(given) = arguments.get(request).and_then(Value::as_object) else {
+            continue;
+        };
+        let pose = given.get("pose").and_then(Value::as_object);
+        let named = ["variant", "identity", "expression", own]
+            .into_iter()
+            .find(|field| given.contains_key(*field))
+            .or_else(|| {
+                pose.and_then(|pose| {
+                    (pose.contains_key("jaw").then_some("pose.jaw"))
+                        .or((suggests_neck && pose.contains_key("neck")).then_some("pose.neck"))
+                })
+            });
+        if let Some(field) = named {
+            let advice = if field == "displacement" {
+                "give its options in detail"
+            } else {
+                "leave it out"
+            };
+            return Err(ToolError::Validation(format!(
+                "{request}.{field} comes from the reconstruction; {advice}"
+            )));
+        }
     }
+    Ok(())
 }
 
 /// Run `reconstruct` and `prepare_print` together, and optionally `create`,
@@ -863,31 +875,9 @@ pub(super) async fn photo_to_bust(
         blender: blender_head,
     } = params;
     let mut print = *print;
-    let suggests_neck =
-        request.neck_tilt.unwrap_or(0.0) > 0.0 || request.neck_turn.unwrap_or(0.0) > 0.0;
-    refuse_reconstructed(
-        "print",
-        (print.variant.is_some(), &print.identity, &print.expression),
-        print.pose,
-        suggests_neck,
-    )?;
-    if print.displacement.is_some() {
-        return Err(ToolError::Validation(
-            "print.displacement comes from the reconstruction; give its options in detail".into(),
-        ));
-    }
+    // The fields the reconstruction supplies were refused before parsing.
     if let Some(head) = &blender_head {
-        refuse_reconstructed(
-            "blender",
-            (head.variant.is_some(), &head.identity, &head.expression),
-            head.pose,
-            suggests_neck,
-        )?;
-        if head.texture.is_some() {
-            return Err(ToolError::Validation(
-                "blender.texture comes from the reconstruction; leave it out".into(),
-            ));
-        }
+        checked_scale_and_pose(head.expression_scale, head.pose)?;
         if let Some(appearance) = &head.appearance {
             appearance.validate()?;
         }
@@ -916,12 +906,15 @@ pub(super) async fn photo_to_bust(
     print_bust(Arc::clone(&workspace), settings, checked, PrintStage::Check).await?;
 
     let reconstructed = reconstruct(Arc::clone(&workspace), settings, request).await?;
-    // Past here the reconstruction's outputs exist, so a failure says so and
-    // returns its result, which `prepare_print` and `create` can use.
-    let after = |step: &str, error: ToolError| {
-        ToolError::Validation(format!(
-            "the reconstruction finished, but {step} failed: {error}. The reconstruction's result follows, for prepare_print and create: {reconstructed}"
-        ))
+    // Past here the reconstruction's outputs exist. A request the head
+    // cannot satisfy says so and returns the reconstruction's result, which
+    // `prepare_print` and `create` can use. Typed errors, such as Blender's,
+    // keep their code, scene state and any unknown outcome unchanged.
+    let after = |step: &str, error: ToolError| match error {
+        ToolError::Validation(message) => ToolError::Validation(format!(
+            "the reconstruction finished, but {step} failed: {message}. The reconstruction's result follows, for prepare_print and create: {reconstructed}"
+        )),
+        other => other,
     };
     let coefficients = |name: &str| -> Result<Vec<f32>, ToolError> {
         serde_json::from_value(reconstructed[name].clone())
@@ -1227,6 +1220,7 @@ async fn print_bust(
     }
     let worker_bin = geometry_worker_path(settings)?;
     if stage == PrintStage::Check {
+        checked_scale_and_pose(params.expression_scale, pose)?;
         return Ok(Value::Null);
     }
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
@@ -2464,6 +2458,27 @@ fn library(settings: &Settings) -> Result<&crate::flame::FlameLibrary, ToolError
         .ok_or_else(|| ToolError::Validation("no FLAME head models are mounted".into()))
 }
 
+/// The expression scale and the pose with the jaw softened by it, once both
+/// are checked. They need no model, so they can be checked early.
+fn checked_scale_and_pose(
+    expression_scale: Option<f64>,
+    pose: HeadPose,
+) -> Result<(f32, Pose), ToolError> {
+    let scale = in_range(
+        "expression_scale",
+        expression_scale.unwrap_or(1.0),
+        &EXPRESSION_SCALE,
+    )? as f32;
+    let pose = Pose {
+        global: check_rotation("global", pose.global)?,
+        neck: check_rotation("neck", pose.neck)?,
+        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
+        left_eye: check_rotation("left_eye", pose.left_eye)?,
+        right_eye: check_rotation("right_eye", pose.right_eye)?,
+    };
+    Ok((scale, pose))
+}
+
 /// Validate every input before evaluating, so nothing reaches Blender unless
 /// the whole request is acceptable.
 async fn evaluate(
@@ -2479,19 +2494,8 @@ async fn evaluate(
     );
     check_coefficients("identity", &identity)?;
     check_coefficients("expression", &expression)?;
-    let scale = in_range(
-        "expression_scale",
-        expression_scale.unwrap_or(1.0),
-        &EXPRESSION_SCALE,
-    )? as f32;
+    let (scale, pose) = checked_scale_and_pose(expression_scale, pose)?;
     let expression = expression.iter().map(|value| value * scale).collect();
-    let pose = Pose {
-        global: check_rotation("global", pose.global)?,
-        neck: check_rotation("neck", pose.neck)?,
-        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
-        left_eye: check_rotation("left_eye", pose.left_eye)?,
-        right_eye: check_rotation("right_eye", pose.right_eye)?,
-    };
     let params = FlameParams {
         identity,
         expression,

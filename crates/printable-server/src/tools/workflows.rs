@@ -304,7 +304,13 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
     match name {
         "inspect" => de::<InspectRequest>(arguments)?.resolve(),
         "edit" => de::<EditRequest>(arguments)?.resolve(),
-        HEAD => de::<HeadRequest>(arguments)?.resolve(),
+        HEAD => {
+            // Which fields a request names is lost once it is parsed.
+            if arguments["action"] == "photo_to_bust" {
+                head::refuse_reconstructed(&arguments["params"])?;
+            }
+            de::<HeadRequest>(arguments)?.resolve()
+        }
         "scene" => de::<SceneRequest>(arguments)?.resolve(),
         "scad_build" => de::<ScadRequest>(arguments)?.resolve(),
         "cad_build" => ResolvedCall::new(
