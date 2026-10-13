@@ -5,7 +5,9 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks};
+use printable_geom::{
+    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
+};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -42,6 +44,10 @@ const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
 const PUPIL_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.2..=10.0;
 const IRIS_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
 const EYE_DETAIL_DEPTH_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+const NECK_EXTENSION_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+const SHOULDER_WIDTH_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
+const SHOULDER_DEPTH_MM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+const SHOULDER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
 /// Carved eye detail is at least this many layers deep.
 const EYE_DETAIL_LAYERS: f64 = 2.0;
 const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
@@ -301,6 +307,28 @@ pub(super) struct HeadPreparePrintParams {
     /// bust, and to no less than two layers with a `printer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eye_detail_depth_mm: Option<f64>,
+    /// What stands below the head, within `height_mm` above any plinth:
+    /// `neck` (the default) ends at the neck's cut, `extended_neck` continues
+    /// the neck down along its own lean, and `shoulders` adds a block of
+    /// chest and shoulders. The head keeps at least half the height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<BodyShape>,
+    /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neck_extension_mm: Option<f64>,
+    /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
+    /// head's width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_width_mm: Option<f64>,
+    /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
+    /// head's depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_depth_mm: Option<f64>,
+    /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_height_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -325,7 +353,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
     /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and never less than the neck section. Requires a plinth.
+    /// extent and reaches at least 1 mm beyond the bust's base. Requires a
+    /// plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
     /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
@@ -367,6 +396,21 @@ pub(super) enum MouthShape {
     Closed,
     /// With the surface closing the mouth set back into the head.
     Recessed,
+}
+
+/// What stands below the head of a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BodyShape {
+    /// The neck as cut.
+    #[default]
+    Neck,
+    /// The neck continued down along its own lean.
+    ExtendedNeck,
+    /// A block of chest and shoulders.
+    Shoulders,
 }
 
 /// How the eyes of a bust are carved.
@@ -873,6 +917,64 @@ pub(super) async fn prepare_print(
             in_range(name, value, range)?;
         }
     }
+    let shoulder_sizes = [
+        params.shoulder_width_mm,
+        params.shoulder_depth_mm,
+        params.shoulder_height_mm,
+    ];
+    let body_shape = params.body.unwrap_or_default();
+    if body_shape != BodyShape::ExtendedNeck && params.neck_extension_mm.is_some() {
+        return Err(ToolError::Validation(
+            "neck_extension_mm needs body extended_neck".into(),
+        ));
+    }
+    if body_shape != BodyShape::Shoulders && shoulder_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "shoulder_width_mm, shoulder_depth_mm and shoulder_height_mm need body shoulders"
+                .into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "neck_extension_mm",
+            params.neck_extension_mm,
+            &NECK_EXTENSION_MM,
+        ),
+        (
+            "shoulder_width_mm",
+            params.shoulder_width_mm,
+            &SHOULDER_WIDTH_MM,
+        ),
+        (
+            "shoulder_depth_mm",
+            params.shoulder_depth_mm,
+            &SHOULDER_DEPTH_MM,
+        ),
+        (
+            "shoulder_height_mm",
+            params.shoulder_height_mm,
+            &SHOULDER_HEIGHT_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let body = match body_shape {
+        BodyShape::Neck => None,
+        BodyShape::ExtendedNeck => Some(Body {
+            kind: BodyKind::ExtendedNeck,
+            height_mm: params.neck_extension_mm,
+            width_mm: None,
+            depth_mm: None,
+        }),
+        BodyShape::Shoulders => Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: params.shoulder_height_mm,
+            width_mm: params.shoulder_width_mm,
+            depth_mm: params.shoulder_depth_mm,
+        }),
+    };
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -970,6 +1072,7 @@ pub(super) async fn prepare_print(
             min_feature_mm: printer.minimum_wall_mm,
         }),
         eyes,
+        body,
         mouth_recess_mm,
     };
     let variant = model.info().variant.clone();

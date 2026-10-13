@@ -295,9 +295,11 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    surface inward where they meet it.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
-6. A cylindrical plinth is added under the base when requested, and by
+6. Optionally, a body is added below the head: a longer neck or a block of
+   chest and shoulders.
+7. A cylindrical plinth is added under the base when requested, and by
    default for an FDM `printer`. Its bottom edge can be chamfered.
-7. Optionally, the bust is hollowed for resin printing. Everything deeper than
+8. Optionally, the bust is hollowed for resin printing. Everything deeper than
    the wall thickness is removed, and one or two drain holes open from the
    base into the lowest part of the cavity. A pocket that no drain hole
    reaches is left solid, so no liquid resin is sealed inside.
@@ -325,7 +327,7 @@ reported as an error and not written.
 | `edge_length_mm` | 0.4 | 0.1 to 5 |
 | `max_triangles` | 750,000 | 10,000 to 3,000,000 |
 | `plinth_height_mm` | none; 8% of `height_mm` for an FDM `printer` | 2 to 100, counted within `height_mm`, or 0 for none |
-| `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
+| `plinth_diameter_mm` | 70% of the bust's widest extent, and at least 1 mm beyond its base | 10 to 500 |
 | `plinth_chamfer_mm` | 0; 0.5 for an FDM `printer` | 0 to 5, less than the plinth's height |
 | `hollow_wall_mm` | none (solid) | 1 to 20 |
 | `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
@@ -338,6 +340,11 @@ reported as an error and not written.
 | `pupil_diameter_mm` | 4 mm at life size, scaled | 0.2 to 10 |
 | `iris_diameter_mm` | 11.5 mm at life size, scaled | 0.5 to 20 |
 | `eye_detail_depth_mm` | 2 mm at life size, scaled | 0.05 to 5 |
+| `body` | `neck` | `neck`, `extended_neck` or `shoulders`; see [Body](#body) |
+| `neck_extension_mm` | 15% of the head's height | 2 to 200 |
+| `shoulder_width_mm` | 1.6 times the head's width | 10 to 500 |
+| `shoulder_depth_mm` | 0.9 times the head's depth | 5 to 300 |
+| `shoulder_height_mm` | 35% of the head's height | 2 to 200 |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -621,6 +628,36 @@ iris 4.0 mm across with a ring 0.4 mm wide and 0.4 mm deep, in eyeballs
 `thin` report grew from 2.4 to 7.6 mm², most of it near the eyeballs where
 the ring passes under the eyelids. A 150 mm bust without a printer took
 13.5 seconds; each bust was one valid solid.
+
+### Body
+
+FLAME ends at the neck, so a bust is a head on a short cut neck. `body` adds
+what stands below it, within `height_mm` above any plinth:
+
+- `neck`, the default, ends at the neck's cut.
+- `extended_neck` continues the neck down by `neck_extension_mm`.
+- `shoulders` adds a block of chest and shoulders.
+
+The head keeps at least half the height above the plinth; its scale is
+reduced to make room for the body. The neck is continued by stretching its
+lowest band, two edges tall, down to the build plate, so the body begins
+with the neck's own section and surface, with no step or seam. An extended
+neck follows the neck's lean, measured between its base and 8% of the head's
+height above it and limited to 30 degrees from vertical. The shoulders are
+centred under the neck's base: a block whose top slopes from inside the neck
+out to an elliptical shoulder line, 60% of the block's height above its
+base, and whose sides fall straight to the base. A plinth goes under the
+body.
+
+The `bust` report adds `body` with the kind, its height, the shoulders' width
+and depth, and the neck's lean in degrees.
+
+On the FLAME 2020 generic head reconstructed from one photograph, 100 mm
+busts with an extended neck and with shoulders, with and without an FDM
+plinth and carved eyes, were each one valid solid and took 4 to 6 seconds.
+The neck leaned forward by the 30-degree limit, and renders showed the
+extended neck continuing that lean and the shoulders standing square under
+the neck.
 
 ## Reconstruct a head from photographs
 
