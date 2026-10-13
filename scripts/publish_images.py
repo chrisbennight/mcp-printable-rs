@@ -8,6 +8,7 @@ import re
 import subprocess
 import shutil
 from tempfile import TemporaryDirectory
+from urllib.parse import urlsplit
 
 from release_identity import ReleaseIdentity
 from release_record import ROLES, publish
@@ -38,19 +39,13 @@ def publish_images(revision, expected, evidence_directory=Path("target/release/e
     images = tested_images(revision)
     if images != expected:
         raise ValueError("loaded images differ from the tested image IDs")
-    from release_evidence import verify_inventory_transfer
-    verify_inventory_transfer(evidence_directory, revision, images)
     transfer = json.loads((evidence_directory / "tested-images.json").read_text())
     if transfer != {"schema": 1, "revision": revision, "images": images}:
         raise ValueError("image inventories differ from the tested image IDs")
     for role in ROLES:
-        material = json.loads((evidence_directory / role / "materials.json").read_text())
-        if (material.get("revision") != revision or material.get("tested_image_id") != images[role]
-                or material.get("role") != role or material.get("unowned_native_files") != []
-                or not isinstance(material.get("debian"), list) or not material["debian"]):
-            raise ValueError("required image inventory is missing or does not match the candidate")
-        if not (evidence_directory / role / "sbom.spdx.json").is_file():
-            raise ValueError("required image SBOM is absent")
+        sbom = json.loads((evidence_directory / role / "sbom.spdx.json").read_text())
+        if sbom.get("spdxVersion") != "SPDX-2.3":
+            raise ValueError("required image SBOM is not an SPDX document")
     policy = load_policy()
     verify_grype_version(policy["scanner_version"])
     kev = load_kev_ids() if policy["fail_on_kev"] else set()
@@ -92,6 +87,21 @@ def publish_images(revision, expected, evidence_directory=Path("target/release/e
     return candidate
 
 
+def verify_attestation(reference, revision, identity, predicate_type="https://slsa.dev/provenance/v1"):
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("source revision must be a full Git commit")
+    source = urlsplit(identity.source)
+    if source.hostname != "github.com":
+        raise ValueError("GitHub attestations require a GitHub source repository")
+    repository = source.path.strip("/")
+    subprocess.run([
+        "gh", "attestation", "verify", "oci://" + reference, "--bundle-from-oci",
+        "--repo", repository, "--signer-workflow", repository + "/.github/workflows/ci.yml",
+        "--source-ref", "refs/heads/main", "--source-digest", revision,
+        "--deny-self-hosted-runners", "--predicate-type", predicate_type,
+    ], check=True)
+
+
 def publish_update_tag(revision, reference, identity):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("source revision must be a full Git commit")
@@ -120,7 +130,7 @@ def publish_update_tag(revision, reference, identity):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("record", "push", "record-evidence", "complete"))
+    parser.add_argument("operation", choices=("record", "push", "record-release", "complete"))
     parser.add_argument("revision")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--evidence-directory", type=Path, default=Path("target/release/evidence"))
@@ -136,27 +146,28 @@ def main():
             for role, reference in candidate["images"].items():
                 output.write(role + "_name=" + reference.split(":sha-", 1)[0] + "\n")
                 output.write(role + "_digest=" + reference.split("@", 1)[1] + "\n")
-    elif args.operation == "record-evidence":
-        from release_evidence_record import seal
+    elif args.operation == "record-release":
         candidate = json.loads(args.manifest.read_text())
         if candidate["revision"] != args.revision:
             raise ValueError("evidence source revision differs from publication")
-        seal(candidate, args.evidence_directory)
-        from release_build_materials import sha256
-        Path("target/release/record-evidence.json").write_text(json.dumps(
-            {"schema": 1, "revision": args.revision,
-             "evidence_index_sha256": sha256(args.evidence_directory / "index.json"),
-             "images": candidate["images"]}, sort_keys=True) + "\n")
-        reference = publish(candidate, ReleaseIdentity.from_environment(), args.evidence_directory)
+        identity = ReleaseIdentity.from_environment()
+        from release_record import validate
+        validate(candidate, identity)
+        for reference in candidate["images"].values():
+            verify_attestation(reference, args.revision, identity)
+            verify_attestation(reference, args.revision, identity, "https://spdx.dev/Document/v2.3")
+        reference = publish(candidate, identity, args.evidence_directory)
         Path("release-image.txt").write_text(reference + "\n")
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
             output.write("name=" + reference.split(":sha-", 1)[0] + "\n")
             output.write("digest=" + reference.split("@", 1)[1] + "\n")
     else:
-        from verify_release_evidence import verify_remote
         reference = args.manifest.read_text().strip()
-        verify_remote(reference, args.revision, args.evidence_directory)
-        publish_update_tag(args.revision, reference, ReleaseIdentity.from_environment())
+        identity = ReleaseIdentity.from_environment()
+        if identity.reference_pattern("pair").fullmatch(reference) is None:
+            raise ValueError("release record has an unexpected reference")
+        verify_attestation(reference, args.revision, identity)
+        publish_update_tag(args.revision, reference, identity)
         Path("release-image.txt").write_text(reference + "\n")
 
 

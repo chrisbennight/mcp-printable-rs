@@ -73,11 +73,6 @@ RUN apt-get update \
        xauth \
        xvfb \
        /tmp/virtualgl.deb \
-    && mkdir -p /usr/share/doc/virtualgl /opt/VirtualGL/licenses \
-    && cp /usr/share/doc/virtualgl-3.1.5/LICENSE.txt /usr/share/doc/virtualgl/copyright \
-    && cp /usr/share/doc/virtualgl-3.1.5/LICENSE.txt /opt/VirtualGL/licenses/LICENSE.txt \
-    && cp /usr/share/doc/virtualgl-3.1.5/LICENSE-FLTK.txt /opt/VirtualGL/licenses/LICENSE-FLTK.txt \
-    && cp /usr/share/doc/virtualgl-3.1.5/LGPL.txt /opt/VirtualGL/licenses/COPYING-LGPL.txt \
     && rm /tmp/virtualgl.deb \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 printable \
