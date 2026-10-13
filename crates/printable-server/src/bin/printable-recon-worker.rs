@@ -43,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     tracing_subscriber::fmt().with_target(false).init();
+    let shutdown = printable_server::shutdown::signal().context("register shutdown signals")?;
     let root = PathBuf::from(
         std::env::var("PRINTABLE_WORKSPACE_ROOT")
             .context("PRINTABLE_WORKSPACE_ROOT is required")?,
@@ -90,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(worker);
     let listener = tokio::net::TcpListener::bind(address).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }
