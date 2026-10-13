@@ -7034,6 +7034,69 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_suggests_a_neck_pose_from_the_head_rotation() {
+    // The fake worker reports the head turned 0.1 radians about y.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let run = |extra: Value| {
+        let mut params =
+            json!({"images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "reconstruct", "params": params}),
+        ))
+    };
+    let neck = |value: &Value| -> Vec<f64> {
+        value["pose"]["neck"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|axis| axis.as_f64().unwrap())
+            .collect()
+    };
+    let plain = run(json!({})).await.unwrap().structured_content.unwrap();
+    assert!(plain["pose"].get("neck").is_none(), "{plain}");
+    // The turn is kept only when asked for; a tilt alone drops it.
+    let turned = run(json!({"neck_turn": 1.0}))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let suggested = neck(&turned);
+    assert!(
+        (suggested[1] - 0.1).abs() < 1e-9 && suggested[0].abs() < 1e-9,
+        "{turned}"
+    );
+    let tilted = run(json!({"neck_tilt": 1.0}))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        neck(&tilted).iter().all(|axis| axis.abs() < 1e-9),
+        "{tilted}"
+    );
+    let refused = run(json!({"neck_tilt": 2.0})).await.unwrap();
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    assert!(format!("{refused:?}").contains("neck_tilt"), "{refused:?}");
+    // The server applies the shares; the worker is never sent them.
+    let sent = seen.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert!(
+        sent.iter()
+            .all(|body| body.get("neck_tilt").is_none() && body.get("neck_turn").is_none()),
+        "{sent:?}"
+    );
+    drop(sent);
+    task.abort();
+}
+
+#[tokio::test]
 async fn head_reconstruct_colours_skin_from_skin_and_the_scalp_as_asked() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
@@ -7260,8 +7323,16 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
         (Some(1024), Some(1024))
     );
     assert!(texture["seen"].as_f64().unwrap() > 0.1, "{value}");
+    // Lighting is removed by default, and the shading found is reported for
+    // the one photograph.
+    assert_eq!(texture["lighting"]["requested"], "remove", "{value}");
+    assert_eq!(
+        texture["lighting"]["shading"].as_array().map(Vec::len),
+        Some(1),
+        "{value}"
+    );
     // A single-coloured photograph colours the whole map, including what it
-    // cannot see.
+    // cannot see, and has no shading to remove.
     let map = image::open(root.path().join("colour.png"))
         .unwrap()
         .into_rgb8();

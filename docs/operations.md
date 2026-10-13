@@ -40,6 +40,50 @@ output directories, including `state.json`, `report.json`, and `failure.json`;
 after a worker restart, unfinished state is reported as interrupted. Stop the
 CAD worker with the other services before backup.
 
+## Stop services
+
+The server and CAD, reconstruction, and slicer workers handle both SIGTERM
+(the usual container-stop signal) and SIGINT. They stop accepting new HTTP
+connections and drain accepted HTTP requests. A synchronous CAD build or
+reconstruction request can finish during this drain. The MCP server also
+cancels its transport sessions and background readiness checks; this does not
+prove that a Blender mutation already delivered to the separate bridge was
+undone. Inspect that scene after restart before deciding whether to retry.
+
+Background CAD builds and slicing return admission records before execution
+finishes. They are not held open by an HTTP request, so an idle HTTP drain can
+end while they are still running. Runtime teardown stops their owned native
+children; their retained state can remain unfinished. After restart,
+`cad_build.status` and `slice.status` report this state as `interrupted` rather
+than replaying the operation or treating process exit as successful work.
+Completed reports and artifacts remain available. Check retained outputs before
+submitting work again, using a new output directory for a deliberate revision.
+
+Choose the container grace period to cover the synchronous work you intend to
+drain. The application does not add a separate fixed shutdown deadline. For
+example, with the same Compose project and configuration used at startup:
+
+```sh
+docker compose stop --timeout 60
+```
+
+The timeout is an operator-selected example, not a completion guarantee.
+Configure `stop_grace_period` in a local Compose override when a different
+default is needed. Cancel or wait for background jobs before planned
+maintenance. Save the live Blender checkpoint first and stop its separate
+services as well before backing up shared storage.
+
+If the grace period expires, Docker can force termination with SIGKILL.
+SIGKILL cannot run application cleanup, and killing only a service process on
+the host does not guarantee its native children stop. Use the enclosing
+container's lifecycle controls and confirm all affected containers have
+stopped before touching shared files. Record the requested signal, configured
+grace period, observed exit status or forced termination, original work
+handles, and post-restart state in operational evidence. Exit status zero means
+the service shut down gracefully; only the retained work result establishes
+whether an operation completed. An unfinished record by itself does not
+identify the stop signal or certify that no partial output exists.
+
 ## Back up
 
 Save a Blender checkpoint before stopping if the live scene matters. Drain or
@@ -127,6 +171,21 @@ delete command against a running workspace or delete a volume to fix disk
 pressure. Restart and verify readiness and representative downloads afterward.
 
 ## Verification evidence and limits
+
+The Linux [shutdown regression tests](../crates/printable-server/tests/shutdown_test.rs)
+launch the real entrypoints with disposable workspaces and fake native engines.
+They cover idle SIGTERM and SIGINT, accepted synchronous request drain, closed
+new connections, completed CAD state after restart, and interrupted CAD/slicer
+state after normal or forced stops without automatic replay. Forced host-process
+tests explicitly clean up their identified fake children; they do not prove
+Docker's container-wide process cleanup or real GPU work completion. These
+tests are excluded on non-Linux hosts.
+
+The [Docker shutdown evidence](../evidence/service-shutdown.md) records isolated
+baseline and candidate container stops, accepted CAD request drain, background
+interruption, forced termination, and retained results after restart. The
+Linux/arm64 experiment uses fake engines and development binaries; it does not
+establish Linux/amd64 release-image or NVIDIA workload performance.
 
 The [job regression tests](../crates/printable-server/src/jobs.rs) cover isolated
 recovery without live-scene replacement, next-frame restart, cancellation,

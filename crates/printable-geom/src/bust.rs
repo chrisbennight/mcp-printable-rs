@@ -13,6 +13,9 @@
 use std::collections::{HashMap, HashSet};
 
 use manifold_csg::{Manifold, MeshGL64, MeshGL64Options};
+use parry3d_f64::math::Vector;
+use parry3d_f64::query::{Ray, RayCast};
+use parry3d_f64::shape::TriMesh;
 use serde::{Deserialize, Serialize};
 
 use crate::print_check::{self, PrintChecks, SurfaceFinding};
@@ -650,14 +653,15 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         let placed = place(point);
         [0, 1, 2].map(|axis| (placed[axis] - offset[axis]) * correction)
     };
-    let (solid, eyes) = match &request.eyes {
+    let (solid, eyes, fragments) = match &request.eyes {
         Some(carving) => {
             let placing = (offset, correction, scale * correction);
             let eyes = (&eyeballs[..], &parts[..]);
-            let (solid, report) = carve_eyes(solid, carving, eyes, place, to_final, placing, edge)?;
-            (solid, Some(report))
+            let (solid, report, specks) =
+                carve_eyes(solid, carving, eyes, place, to_final, placing, edge)?;
+            (solid, Some(report), fragments + specks)
         }
-        None => (solid, None),
+        None => (solid, None, fragments),
     };
     let body_height = available - bust_height;
     let (solid, body) = match request.body {
@@ -1049,6 +1053,7 @@ fn split_at_height(mesh: &TriangleMesh, height: f64) -> TriangleMesh {
 /// Drill each eye's pupil and engrave its iris ring along its gaze. Only the
 /// eyeball, enlarged by an edge so that the cut passes cleanly through its
 /// rebuilt surface, is cut, so the eyelids around it keep their shape.
+/// Returns the carved bust, the eye report and the specks dropped.
 fn carve_eyes(
     solid: Manifold,
     carving: &EyeCarving,
@@ -1057,7 +1062,7 @@ fn carve_eyes(
     to_final: impl Fn([f64; 3]) -> [f64; 3],
     (offset, correction, fraction): ([f64; 3], f64, f64),
     edge: f64,
-) -> Result<(Manifold, EyeReport), GeometryError> {
+) -> Result<(Manifold, EyeReport, usize), GeometryError> {
     let smallest = carving.smallest_mm.unwrap_or(0.0);
     let shallowest = carving.shallowest_mm.unwrap_or(0.0);
     let pupil = carving
@@ -1067,12 +1072,13 @@ fn carve_eyes(
         .depth_mm
         .unwrap_or((LIFE_PUPIL_DEPTH_MM * fraction).max(shallowest));
     // The ring is a tenth of the iris wide and at least the narrowest
-    // feature; a default iris is wide enough to leave one narrowest feature
-    // of iris between the ring and the pupil, whichever bound sets the width.
+    // feature. A default iris leaves at least the ring's width and one
+    // narrowest feature of iris between the ring and the pupil, whichever
+    // bound sets the width, so some iris shows even without a printer.
     let ring = carving.iris_ring.then(|| {
         let iris = carving.iris_diameter_mm.unwrap_or(
             (LIFE_IRIS_MM * fraction)
-                .max((pupil + 2.0 * smallest) / (1.0 - 2.0 * RING_WIDTH_SHARE))
+                .max((pupil + 2.0 * smallest) / (1.0 - 4.0 * RING_WIDTH_SHARE))
                 .max(pupil + 4.0 * smallest),
         );
         let width = (RING_WIDTH_SHARE * iris).max(smallest);
@@ -1096,33 +1102,38 @@ fn carve_eyes(
             .refine_to_length(edge / correction)
             .translate(-offset[0], -offset[1], -offset[2])
             .scale(correction, correction, correction);
-        let radius = mesh_from(&eyeball)
+        let surface = mesh_from(&eyeball);
+        let radius = surface
             .vertices
             .iter()
             .map(|vertex| dot(sub(*vertex, centre), gaze))
             .fold(0.0, f64::max);
         smallest_radius = smallest_radius.min(radius);
+        // Depths are measured at the edge of each cut, where the eyeball's
+        // surface is lowest, so that the cut shows its full width.
+        let rim = rim_heights(&surface, centre, gaze, radius)?;
         let fits = pupil / 2.0 < MAX_PUPIL_SHARE * radius
             && depth < MAX_DEPTH_SHARE * radius
-            && ring.is_none_or(|(iris, width, _)| {
-                iris / 2.0 < MAX_IRIS_SHARE * radius && iris / 2.0 - width > pupil / 2.0
+            && ring.is_none_or(|(iris, width, ring_depth)| {
+                iris / 2.0 < MAX_IRIS_SHARE * radius
+                    && iris / 2.0 - width > pupil / 2.0
+                    && ring_depth < MAX_DEPTH_SHARE * radius
             });
-        if !fits {
+        let pupil_rim = rim(pupil / 2.0);
+        let ring_rim = ring.map(|(iris, _, _)| rim(iris / 2.0));
+        let (true, Some(pupil_rim), None | Some(Some(_))) = (fits, pupil_rim, ring_rim) else {
             return Err(GeometryError::InvalidOptions(format!(
                 "the eye detail does not fit eyes {:.1} mm across; choose a taller bust or smaller eye detail",
                 2.0 * radius
             )));
-        }
+        };
         let grow = 1.0 + edge / radius;
         let eyeball = eyeball
             .translate(-centre[0], -centre[1], -centre[2])
             .scale(grow, grow, grow)
             .translate(centre[0], centre[1], centre[2]);
         let at = |height: f64| [0, 1, 2].map(|axis| centre[axis] + gaze[axis] * height);
-        // Depths are measured at the edge of each cut, where the eyeball's
-        // surface is lowest, so that the cut shows its full width.
-        let rim = |half: f64| (radius * radius - half * half).sqrt();
-        let start = rim(pupil / 2.0) - depth;
+        let start = pupil_rim - depth;
         let mut tool = along(
             Manifold::cylinder(
                 2.0 * radius - start,
@@ -1134,9 +1145,9 @@ fn carve_eyes(
             at(start),
             gaze,
         );
-        if let Some((iris, width, ring_depth)) = ring {
+        if let (Some((iris, width, ring_depth)), Some(Some(ring_rim))) = (ring, ring_rim) {
             let outer = iris / 2.0;
-            let start = rim(outer) - ring_depth;
+            let start = ring_rim - ring_depth;
             let height = 2.0 * radius - start;
             let segments = circle_segments(outer);
             let band = Manifold::cylinder(height, outer, outer, segments, false).difference(
@@ -1153,17 +1164,7 @@ fn carve_eyes(
     carved
         .status()
         .map_err(|error| GeometryError::Kernel(format!("carving the eyes failed: {error}")))?;
-    // Where the head's surface covers a cut entirely, as an eyelid can, the
-    // cut is a sealed void inside the solid. Voids are filled back in.
-    let mut kept: Vec<Manifold> = carved
-        .decompose()
-        .into_iter()
-        .filter(|piece| piece.volume() > 0.0)
-        .collect();
-    let carved = match kept.len() {
-        1 => kept.pop().expect("one piece is kept"),
-        _ => Manifold::batch_union(&kept),
-    };
+    let (carved, specks) = one_carved_solid(carved)?;
     let removed_mm3 = before - carved.volume();
     Ok((
         carved,
@@ -1176,7 +1177,30 @@ fn carve_eyes(
             eyeball_diameter_mm: 2.0 * smallest_radius,
             removed_mm3,
         },
+        specks,
     ))
+}
+
+/// The one solid a carving leaves, and the number of specks dropped. Where
+/// the head's surface covers a cut entirely, as an eyelid can, the cut is a
+/// sealed void inside the solid; voids are filled back in. As after
+/// refining, specks are dropped, and anything more is refused.
+fn one_carved_solid(carved: Manifold) -> Result<(Manifold, usize), GeometryError> {
+    let pieces = carved.decompose();
+    drop(carved);
+    let total: f64 = pieces.iter().map(Manifold::volume).sum();
+    let solids = pieces.iter().filter(|piece| piece.volume() > 0.0).count();
+    let mut kept: Vec<Manifold> = pieces
+        .into_iter()
+        .filter(|piece| piece.volume() > FRAGMENT_VOLUME_FRACTION * total)
+        .collect();
+    if kept.len() != 1 {
+        return Err(GeometryError::InvalidOptions(format!(
+            "carving the eyes leaves {} separate solids; choose smaller or shallower eye detail",
+            kept.len()
+        )));
+    }
+    Ok((kept.pop().expect("one piece is kept"), solids - 1))
 }
 
 /// For each eye, the part whose centre is nearest the eye's: its eyeball.
@@ -1203,16 +1227,66 @@ fn eyeball_parts(parts: &[ClosedPart], carving: &EyeCarving) -> Result<Vec<usize
         .collect()
 }
 
-/// Turn a solid built along +z so that +z points along `direction`, and move
-/// its origin to `base`.
-fn along(solid: Manifold, base: [f64; 3], direction: [f64; 3]) -> Manifold {
+/// For a circle of a given radius around the gaze, how far the eyeball's
+/// surface reaches along the gaze from its centre at the circle's lowest
+/// point, found by casting rays back along the gaze from in front of the
+/// eyeball. `None` where the circle passes beyond the eyeball.
+fn rim_heights(
+    surface: &TriangleMesh,
+    centre: [f64; 3],
+    gaze: [f64; 3],
+    radius: f64,
+) -> Result<impl Fn(f64) -> Option<f64>, GeometryError> {
+    let shape = TriMesh::new(
+        surface
+            .vertices
+            .iter()
+            .map(|vertex| Vector::from_array(*vertex))
+            .collect(),
+        surface.triangles.clone(),
+    )
+    .map_err(|error| GeometryError::Kernel(format!("an eyeball surface is invalid: {error}")))?;
+    let (across, up) = perpendiculars(gaze);
+    let front = 2.0 * radius;
+    let back = Vector::from_array(gaze.map(|value| -value));
+    Ok(move |half: f64| {
+        // Several samples on each side of the cutter's polygon, which has
+        // its corners on the circle.
+        let count = 4 * circle_segments(half);
+        (0..count)
+            .map(|step| {
+                let (sin, cos) =
+                    (std::f64::consts::TAU * f64::from(step) / f64::from(count)).sin_cos();
+                let origin = [0, 1, 2].map(|axis| {
+                    centre[axis] + gaze[axis] * front + (across[axis] * cos + up[axis] * sin) * half
+                });
+                shape
+                    .cast_local_ray(
+                        &Ray::new(Vector::from_array(origin), back),
+                        2.0 * front,
+                        true,
+                    )
+                    .map(|distance| front - distance)
+            })
+            .try_fold(f64::INFINITY, |lowest, height| Some(lowest.min(height?)))
+    })
+}
+
+/// Two unit directions square to `direction` and to each other.
+fn perpendiculars(direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     let helper = if direction[0].abs() < 0.9 {
         [1.0, 0.0, 0.0]
     } else {
         [0.0, 1.0, 0.0]
     };
     let across = normalize(cross(helper, direction));
-    let up = cross(direction, across);
+    (across, cross(direction, across))
+}
+
+/// Turn a solid built along +z so that +z points along `direction`, and move
+/// its origin to `base`.
+fn along(solid: Manifold, base: [f64; 3], direction: [f64; 3]) -> Manifold {
+    let (across, up) = perpendiculars(direction);
     solid.transform(&[
         across[0],
         across[1],
@@ -3081,6 +3155,34 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_starts_from_the_eyeballs_own_surface() {
+        // The same eyeball and gaze, its centre given 5 mm or 14 mm behind its
+        // front. A sphere through the front about either centre would put the
+        // pupil's rim at a different height, but the surface is the same, so
+        // the cut must be too.
+        let removed = |centre: f64| {
+            let mut shallow = with_an_eye(request(1.0, 1_000_000));
+            shallow.eyes = Some(EyeCarving {
+                eyes: vec![EyeAxis {
+                    centre: [20.0, 30.0, centre],
+                    front: [20.0, 30.0, centre + 5.0],
+                }],
+                pupil_diameter_mm: Some(4.0),
+                depth_mm: Some(0.05),
+                ..carving(false)
+            });
+            prepare_bust(&shallow)
+                .unwrap()
+                .1
+                .eyes
+                .expect("eye report")
+                .removed_mm3
+        };
+        let (near, far) = (removed(59.0), removed(50.0));
+        assert!((near - far).abs() < 0.05 * near, "{near} {far}");
+    }
+
+    #[test]
     fn detail_does_not_move_a_carved_eye() {
         let removed = |map: bool| {
             let mut carved = with_an_eye(request(1.0, 1_000_000));
@@ -3108,6 +3210,56 @@ mod tests {
         });
         let eyes = prepare_bust(&wide).unwrap().1.eyes.expect("eye report");
         assert_eq!(eyes.ring_width_mm, Some(0.8));
+    }
+
+    #[test]
+    fn a_carving_leaves_one_solid() {
+        let cube =
+            |size: f64, at: f64| Manifold::cube(size, size, size, false).translate(at, 0.0, 0.0);
+        // A speck beside the bust is dropped and counted.
+        let (solid, specks) = one_carved_solid(cube(10.0, 0.0).union(&cube(0.01, 20.0))).unwrap();
+        assert_eq!(specks, 1);
+        assert!((solid.volume() - 1000.0).abs() < 1e-6);
+        // A sealed void is filled back in and is not a speck.
+        let hollow = cube(10.0, 0.0).difference(&cube(2.0, 4.0).translate(0.0, 4.0, 4.0));
+        let (solid, specks) = one_carved_solid(hollow).unwrap();
+        assert_eq!(specks, 0);
+        assert!((solid.volume() - 1000.0).abs() < 1e-6);
+        // A piece cut away whole is refused.
+        assert!(matches!(
+            one_carved_solid(cube(10.0, 0.0).union(&cube(5.0, 20.0))),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("2 separate solids")
+        ));
+    }
+
+    #[test]
+    fn a_default_iris_shows_beside_an_enlarged_pupil() {
+        // No printer minimum and no iris diameter, with a pupil wide enough
+        // that it, not the life-size iris, sets the iris: some iris must
+        // show between the ring and the pupil. The stand-in eye is widened
+        // to 18 mm and its centre set further back so that such a pupil fits.
+        let mut enlarged = with_an_eye(request(1.0, 1_000_000));
+        for vertex in &mut enlarged.vertices[8..] {
+            vertex[0] = 20.0 + (vertex[0] - 20.0) * 1.8;
+            vertex[1] = 30.0 + (vertex[1] - 30.0) * 1.8;
+        }
+        enlarged.eyes = Some(EyeCarving {
+            eyes: vec![EyeAxis {
+                centre: [20.0, 30.0, 50.0],
+                front: [20.0, 30.0, 55.0],
+            }],
+            pupil_diameter_mm: Some(10.0),
+            iris_diameter_mm: None,
+            ..carving(true)
+        });
+        let report = prepare_bust(&enlarged).unwrap().1;
+        let eyes = report.eyes.expect("eye report");
+        let (iris, width) = (eyes.iris_diameter_mm.unwrap(), eyes.ring_width_mm.unwrap());
+        assert!(
+            10.0 / 0.8 > LIFE_IRIS_MM * report.life_size_fraction,
+            "{report:?}"
+        );
+        assert!(iris / 2.0 - width - 5.0 >= width - 1e-9, "{eyes:?}");
     }
 
     #[test]
@@ -3146,6 +3298,22 @@ mod tests {
         });
         let eyes = prepare_bust(&shallow).unwrap().1.eyes.expect("eye report");
         assert_eq!((eyes.depth_mm, eyes.ring_depth_mm), (0.1, Some(0.4)));
+    }
+
+    #[test]
+    fn a_ring_deeper_than_the_eye_allows_is_refused() {
+        // A shallow pupil, but a printer minimum deeper than half the stand-in
+        // eye's radius of about 7.7 mm.
+        let mut deep = with_an_eye(request(1.0, 1_000_000));
+        deep.eyes = Some(EyeCarving {
+            depth_mm: Some(0.1),
+            shallowest_mm: Some(4.0),
+            ..carving(true)
+        });
+        assert!(matches!(
+            prepare_bust(&deep),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("does not fit")
+        ));
     }
 
     #[test]
