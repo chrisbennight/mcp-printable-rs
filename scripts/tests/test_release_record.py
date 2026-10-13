@@ -1,5 +1,7 @@
 """Release metadata requires matching roles and immutable references."""
 import copy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from release_record import ROLES, publish, validate
@@ -19,9 +21,10 @@ class ReleaseRecordTests(unittest.TestCase):
         for replacement in ("ubuntu:latest", self.record["images"]["cad"],
                             self.record["images"]["blender"].replace("sha-aaa", "sha-bbb"),
                             self.record["images"]["blender"].replace("chrisbennight", "other")):
-            with self.subTest(replacement=replacement), patch("release_record.subprocess.run") as run:
+            with self.subTest(replacement=replacement), TemporaryDirectory() as directory, \
+                    patch("release_record.subprocess.run") as run:
                 record = copy.deepcopy(self.record)
                 record["images"]["blender"] = replacement
                 with self.assertRaises(ValueError):
-                    publish(record, self.identity)
+                    publish(record, self.identity, Path(directory) / "missing-evidence")
                 run.assert_not_called()

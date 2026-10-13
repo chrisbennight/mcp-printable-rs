@@ -1,0 +1,221 @@
+{
+  "schema": 1,
+  "scope": "declared",
+  "limitations": "Known direct bundles, assets and build inputs declared by the repository. This supplement is separate from unmodified Syft SPDX output. It does not reconstruct embedded or statically linked dependencies, prove runtime linkage or upstream build history, establish complete corresponding source, or certify license compliance. Repository recipe and notice paths are bound to the release source revision during collection.",
+  "notice_paths": [
+    "LICENSE",
+    "crates/printable-imaging/assets/LICENSE-Fira-OFL.txt",
+    "recon/NOTICE",
+    "release/notices/orca/LICENSE-OrcaSlicer.txt",
+    "release/notices/orca/copyright-expat.txt",
+    "release/notices/orca/copyright-libmspack.txt",
+    "release/notices/orca/copyright-xz-utils.txt",
+    "release/notices/orca/copyright-zlib.txt"
+  ],
+  "components": [
+    {
+      "name": "Blender",
+      "version": "5.2.0",
+      "roles": [
+        "blender"
+      ],
+      "license": "GPL-3.0-or-later",
+      "source_url": "https://download.blender.org/source/blender-5.2.0.tar.xz",
+      "binary_url": "https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz",
+      "binary_sha256": "96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48",
+      "source_sha256": "a5f99fc5fabf5062e661ca55d70987ae8f08d33324ac4865f133bbed7498d7bf",
+      "recipe_paths": [
+        "blender/Dockerfile"
+      ],
+      "notice_locations": [
+        "/opt/blender/license/"
+      ]
+    },
+    {
+      "name": "OrcaSlicer",
+      "version": "local-2.4.2-6915edb",
+      "roles": [
+        "slicer"
+      ],
+      "license": "AGPL-3.0-only",
+      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/6915edbfae3746da236b22630ff75a2fa304b796.tar.gz",
+      "source_commit": "6915edbfae3746da236b22630ff75a2fa304b796",
+      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-6915edb/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-6915edb.AppImage",
+      "binary_sha256": "eb46a67b37063cc5ccbe00c058b45cf5cd71e4c0c15e66a96ca2c0c89ca1da13",
+      "source_sha256": "e6276f3004df8ee446d74f17a5925f86a55999ddd7c49ec7a2e1df2032cfe00d",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/opt/orca/licenses/LICENSE-OrcaSlicer.txt",
+        "/opt/orca/licenses/copyright-expat.txt",
+        "/opt/orca/licenses/copyright-libmspack.txt",
+        "/opt/orca/licenses/copyright-xz-utils.txt",
+        "/opt/orca/licenses/copyright-zlib.txt"
+      ],
+      "packaging": "The Dockerfile removes the optional web resources from the headless bundle."
+    },
+    {
+      "name": "VirtualGL",
+      "version": "3.1.5",
+      "roles": [
+        "blender"
+      ],
+      "license": "wxWindows",
+      "source_url": "https://github.com/VirtualGL/virtualgl/archive/d045fcf1777e7b47913ea363d14f71b1fb26b2b9.tar.gz",
+      "source_commit": "d045fcf1777e7b47913ea363d14f71b1fb26b2b9",
+      "binary_url": "https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb",
+      "binary_sha256": "df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e",
+      "recipe_paths": [
+        "blender/Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/virtualgl-3.1.5/LICENSE.txt",
+        "/usr/share/doc/virtualgl-3.1.5/LICENSE-FLTK.txt",
+        "/usr/share/doc/virtualgl-3.1.5/LGPL.txt"
+      ]
+    },
+    {
+      "name": "OpenCV",
+      "version": "5.0.0.93",
+      "roles": [
+        "recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz",
+      "source_sha256": "b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/opt/opencv-python/LICENSE-OpenCV"
+      ],
+      "build_configuration": "Source build of core, imgproc and Python modules; settings are declared in the Dockerfile."
+    },
+    {
+      "name": "MediaPipe face landmarker model",
+      "version": "float16/1",
+      "roles": [
+        "recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "source_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "installed_asset": "/opt/printable/recon/face_landmarker.task",
+      "notice_locations": [
+        "/usr/share/doc/printable/NOTICE-recon"
+      ]
+    },
+    {
+      "name": "MediaPipe multiclass selfie segmenter model",
+      "version": "float32/1",
+      "roles": [
+        "recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite",
+      "source_sha256": "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "installed_asset": "/opt/printable/recon/selfie_multiclass_256x256.tflite",
+      "notice_locations": [
+        "/usr/share/doc/printable/NOTICE-recon"
+      ]
+    },
+    {
+      "name": "Manifold",
+      "version": "3.5.2",
+      "roles": [
+        "server",
+        "cad",
+        "slicer",
+        "recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/elalish/manifold/archive/11235e6b8ebea2dbed8aec4285685aafd3d95667.tar.gz",
+      "source_commit": "11235e6b8ebea2dbed8aec4285685aafd3d95667",
+      "declared_ref": "v3.5.2",
+      "recipe_paths": [
+        "Cargo.lock",
+        "crates/printable-geom/Cargo.toml",
+        "Dockerfile"
+      ],
+      "binding_source_url": "https://static.crates.io/crates/manifold-csg-sys/manifold-csg-sys-3.5.104.crate",
+      "binding_source_sha256": "9e64dddec38e7f930b9a311adc289519aa2ad864c823082f9de3428d6fac6cb5",
+      "binding_recipe_paths": [
+        "build.rs",
+        "build/fetch.rs",
+        "build/patch.rs"
+      ],
+      "notice_urls": [
+        "https://github.com/elalish/manifold/blob/11235e6b8ebea2dbed8aec4285685aafd3d95667/LICENSE"
+      ],
+      "description": "Declared input of the locked Rust binding. The tag resolution is a source locator, not evidence of the commit compiled into an image. The binding archive defines optional carry-patch handling."
+    },
+    {
+      "name": "Clipper2",
+      "version": "46f639177fe418f9689e8ddb74f08a870c71f5b4",
+      "roles": [
+        "server",
+        "cad",
+        "slicer",
+        "recon"
+      ],
+      "license": "BSL-1.0",
+      "source_url": "https://github.com/AngusJohnson/Clipper2/archive/46f639177fe418f9689e8ddb74f08a870c71f5b4.tar.gz",
+      "source_commit": "46f639177fe418f9689e8ddb74f08a870c71f5b4",
+      "recipe_paths": [
+        "Cargo.lock",
+        "crates/printable-geom/Cargo.toml",
+        "Dockerfile"
+      ],
+      "upstream_recipe_url": "https://github.com/elalish/manifold/blob/11235e6b8ebea2dbed8aec4285685aafd3d95667/cmake/manifoldDeps.cmake",
+      "patch_url": "https://github.com/elalish/manifold/blob/11235e6b8ebea2dbed8aec4285685aafd3d95667/cmake/patches/0001-clipper2-no-iostream.patch",
+      "notice_urls": [
+        "https://github.com/AngusJohnson/Clipper2/blob/46f639177fe418f9689e8ddb74f08a870c71f5b4/LICENSE"
+      ],
+      "description": "Declared cross-section dependency and carry-patch in the Manifold recipe; runtime linkage is not independently inferred."
+    },
+    {
+      "name": "Rust standard library",
+      "version": "1.97.1",
+      "roles": [
+        "server",
+        "cad",
+        "slicer",
+        "recon"
+      ],
+      "license": "Apache-2.0 OR MIT",
+      "source_url": "https://github.com/rust-lang/rust/tree/1.97.1/library",
+      "recipe_paths": [
+        "rust-toolchain.toml",
+        "Dockerfile"
+      ],
+      "notice_urls": [
+        "https://github.com/rust-lang/rust/blob/1.97.1/LICENSE-APACHE",
+        "https://github.com/rust-lang/rust/blob/1.97.1/LICENSE-MIT",
+        "https://github.com/rust-lang/rust/blob/1.97.1/COPYRIGHT"
+      ]
+    },
+    {
+      "name": "Fira Sans Regular",
+      "version": "repository asset",
+      "roles": [
+        "server"
+      ],
+      "license": "OFL-1.1",
+      "source_path": "crates/printable-imaging/assets/FiraSans-Regular.ttf",
+      "source_sha256": "a389cef71891df1232370fcebd7cfde5f74e741967070399adc91fd069b2094b",
+      "recipe_paths": [
+        "crates/printable-imaging/src/lib.rs"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/LICENSE-Fira-OFL.txt"
+      ]
+    }
+  ]
+}

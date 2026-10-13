@@ -7181,8 +7181,16 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
         (Some(1024), Some(1024))
     );
     assert!(texture["seen"].as_f64().unwrap() > 0.1, "{value}");
+    // Lighting is removed by default, and the shading found is reported for
+    // the one photograph.
+    assert_eq!(texture["lighting"]["requested"], "remove", "{value}");
+    assert_eq!(
+        texture["lighting"]["shading"].as_array().map(Vec::len),
+        Some(1),
+        "{value}"
+    );
     // A single-coloured photograph colours the whole map, including what it
-    // cannot see.
+    // cannot see, and has no shading to remove.
     let map = image::open(root.path().join("colour.png"))
         .unwrap()
         .into_rgb8();

@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     tracing_subscriber::fmt().with_target(false).init();
+    let shutdown = printable_server::shutdown::signal().context("register shutdown signals")?;
     let root = PathBuf::from(
         std::env::var("PRINTABLE_WORKSPACE_ROOT")
             .context("PRINTABLE_WORKSPACE_ROOT is required")?,
@@ -78,7 +79,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/slice", post(dispatch))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(worker);
-    axum::serve(tokio::net::TcpListener::bind(address).await?, app).await?;
+    axum::serve(tokio::net::TcpListener::bind(address).await?, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }
 

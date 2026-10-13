@@ -4,6 +4,9 @@
 import json
 import re
 import subprocess
+from pathlib import Path
+import shutil
+from tempfile import TemporaryDirectory
 
 ROLES = ("server", "blender", "cad", "slicer", "recon")
 
@@ -26,8 +29,10 @@ def validate(candidate, identity):
     return candidate
 
 
-def publish(candidate, identity):
+def publish(candidate, identity, evidence_directory=None):
     validate(candidate, identity)
+    if evidence_directory is None:
+        raise ValueError("a release record requires its SBOM and scan evidence")
     revision = candidate["revision"]
     tag = identity.repository("pair") + ":sha-" + revision[:12]
     command = ["docker", "buildx", "build", "--platform", "linux/amd64",
@@ -37,7 +42,13 @@ def publish(candidate, identity):
         image, image_digest = candidate["images"][role].split("@")
         command += ["--build-arg", role.upper() + "_IMAGE=" + image,
                     "--build-arg", role.upper() + "_DIGEST=" + image_digest]
-    subprocess.run(command + ["--tag", tag, "release"], check=True)
+    # Only the prepared evidence enters this scratch-image context.
+    with TemporaryDirectory(prefix="printable-release-record-") as directory:
+        context = Path(directory)
+        shutil.copyfile("release/Dockerfile", context / "Dockerfile")
+        shutil.copytree(evidence_directory, context / "evidence")
+        command[command.index("--file") + 1] = str(context / "Dockerfile")
+        subprocess.run(command + ["--tag", tag, str(context)], check=True)
     result = subprocess.check_output(["scripts/registry-manifest-digest", tag], text=True).strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", result):
         raise ValueError("registry returned an invalid release-record digest")

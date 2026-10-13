@@ -1,0 +1,39 @@
+name: Attest tested runtime image
+description: Sign an immutable tested image and retain its provenance and SPDX bundles.
+inputs:
+  role:
+    description: Runtime role
+    required: true
+  name:
+    description: Fully qualified OCI repository without a tag
+    required: true
+  digest:
+    description: Published sha256 manifest digest
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: provenance
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-name: ${{ inputs.name }}
+        subject-digest: ${{ inputs.digest }}
+        push-to-registry: true
+        create-storage-record: false
+    - id: sbom
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-name: ${{ inputs.name }}
+        subject-digest: ${{ inputs.digest }}
+        sbom-path: target/release/evidence/${{ inputs.role }}/sbom.spdx.json
+        push-to-registry: true
+        create-storage-record: false
+    - shell: bash
+      env:
+        ROLE: ${{ inputs.role }}
+        PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        SBOM_BUNDLE: ${{ steps.sbom.outputs.bundle-path }}
+      run: |
+        case "$ROLE" in server|blender|cad|slicer|recon) ;; *) exit 1 ;; esac
+        cp "$PROVENANCE_BUNDLE" "target/release/evidence/$ROLE/provenance.sigstore.json"
+        cp "$SBOM_BUNDLE" "target/release/evidence/$ROLE/sbom.sigstore.json"
