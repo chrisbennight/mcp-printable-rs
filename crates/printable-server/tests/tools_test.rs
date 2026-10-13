@@ -7740,7 +7740,7 @@ async fn head_reconstruct_reports_and_pictures_the_fit() {
 
     // Without labels the measures are null, and outputs that would overwrite
     // one another are refused before the worker is asked.
-    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    let (endpoint, _seen, task) = fake_recon_worker(true).await;
     let server = recon_server_with(root.path(), &endpoint, library).await;
     let plain = server
         .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
@@ -7751,6 +7751,31 @@ async fn head_reconstruct_reports_and_pictures_the_fit() {
         .structured_content
         .unwrap();
     assert_eq!(plain["fit"][0]["head_on_person"], Value::Null, "{plain}");
+    task.abort();
+
+    // A worker that describes no views gets no picture.
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    let (endpoint, seen, task) =
+        fake_recon_worker_with(true, json!({"image_sha256": [digest], "views": []})).await;
+    let server = recon_server_with(root.path(), &endpoint, flame2020_library()).await;
+    let refused = server
+        .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+            "images": ["face.png"], "displacement_path": "d4.png", "fit_path": "blank.png"
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        format!("{refused:?}").contains("different number of photographs"),
+        "{refused:?}"
+    );
+    assert!(!root.path().join("blank.png").exists());
     for (fit_path, message) in [
         ("d3.png", "must differ"),
         ("./d3.png", "same file"),

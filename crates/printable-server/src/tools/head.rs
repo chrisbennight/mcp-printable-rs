@@ -1701,7 +1701,7 @@ fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, Strin
 }
 
 /// The worker's view of each photograph, once its digests confirm that it
-/// fitted the bytes the server read.
+/// fitted the bytes the server read and it describes every photograph.
 fn fitted_views(
     views: Value,
     digests: Value,
@@ -1721,6 +1721,11 @@ fn fitted_views(
     if fitted.iter().collect::<Vec<_>>() != read {
         return Err(ToolError::Validation(
             "a photograph changed while it was being reconstructed".into(),
+        ));
+    }
+    if views.len() != photos.len() {
+        return Err(ToolError::Validation(
+            "the reconstruction worker described a different number of photographs".into(),
         ));
     }
     Ok(views)
