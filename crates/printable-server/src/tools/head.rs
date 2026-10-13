@@ -321,11 +321,12 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     neck_extension_mm: Option<f64>,
     /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
-    /// head's width.
+    /// head's width, and at least 1.3 times the neck's. Shoulders too small to
+    /// hold the neck are refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shoulder_width_mm: Option<f64>,
     /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
-    /// head's depth.
+    /// head's depth, and at least 1.3 times the neck's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shoulder_depth_mm: Option<f64>,
     /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
