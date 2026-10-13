@@ -5,7 +5,7 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, Hollow, Plinth, PrintChecks};
+use printable_geom::{BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -39,6 +39,11 @@ const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
 const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
 const EXPRESSION_SCALE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
+const PUPIL_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.2..=10.0;
+const IRIS_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
+const EYE_DETAIL_DEPTH_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+/// Carved eye detail is at least this many layers deep.
+const EYE_DETAIL_LAYERS: f64 = 2.0;
 const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
 /// The model region over which detail fades out on a closed or recessed
 /// mouth, so that the lips are not raised into a ridge where they meet.
@@ -275,6 +280,27 @@ pub(super) struct HeadPreparePrintParams {
     /// 10 mm (default 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mouth_recess_mm: Option<f64>,
+    /// How the eyes are carved, centred on each eye's gaze: `plain` (the
+    /// default) leaves them smooth, `pupil` drills the pupil, and
+    /// `iris_and_pupil` also engraves a ring at the edge of the iris.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyes: Option<EyeStyle>,
+    /// Pupil diameter on the finished bust, 0.2 to 10 mm. Defaults to 4 mm at
+    /// life size scaled with the bust, and to no less than two nozzle widths
+    /// with an FDM `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pupil_diameter_mm: Option<f64>,
+    /// Iris diameter on the finished bust, 0.5 to 20 mm, for
+    /// `iris_and_pupil`. Defaults to 11.5 mm at life size scaled with the
+    /// bust, and wide enough to leave the printer's narrowest feature between
+    /// the ring and the pupil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iris_diameter_mm: Option<f64>,
+    /// How deep the pupil is drilled on the finished bust, 0.05 to 5 mm; the
+    /// ring is half as deep. Defaults to 2 mm at life size scaled with the
+    /// bust, and to no less than two layers with a `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_detail_depth_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -341,6 +367,21 @@ pub(super) enum MouthShape {
     Closed,
     /// With the surface closing the mouth set back into the head.
     Recessed,
+}
+
+/// How the eyes of a bust are carved.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum EyeStyle {
+    /// Smooth, as modelled.
+    #[default]
+    Plain,
+    /// A drilled pupil.
+    Pupil,
+    /// A drilled pupil within an engraved iris ring.
+    IrisAndPupil,
 }
 
 /// How the bust will be printed.
@@ -795,6 +836,43 @@ pub(super) async fn prepare_print(
             }
         }
     }
+    let eye_style = params.eyes.unwrap_or_default();
+    let eye_sizes = [
+        params.pupil_diameter_mm,
+        params.iris_diameter_mm,
+        params.eye_detail_depth_mm,
+    ];
+    if eye_style == EyeStyle::Plain && eye_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "pupil_diameter_mm, iris_diameter_mm and eye_detail_depth_mm need eyes pupil or iris_and_pupil".into(),
+        ));
+    }
+    if eye_style == EyeStyle::Pupil && params.iris_diameter_mm.is_some() {
+        return Err(ToolError::Validation(
+            "iris_diameter_mm needs eyes iris_and_pupil".into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "pupil_diameter_mm",
+            params.pupil_diameter_mm,
+            &PUPIL_DIAMETER_MM,
+        ),
+        (
+            "iris_diameter_mm",
+            params.iris_diameter_mm,
+            &IRIS_DIAMETER_MM,
+        ),
+        (
+            "eye_detail_depth_mm",
+            params.eye_detail_depth_mm,
+            &EYE_DETAIL_DEPTH_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -822,6 +900,19 @@ pub(super) async fn prepare_print(
         pose,
     )
     .await?;
+    let eyes = match eye_style {
+        EyeStyle::Plain => None,
+        EyeStyle::Pupil | EyeStyle::IrisAndPupil => Some(EyeCarving {
+            eyes: eye_axes(&model, &head).await?,
+            iris_ring: eye_style == EyeStyle::IrisAndPupil,
+            pupil_diameter_mm: params.pupil_diameter_mm,
+            iris_diameter_mm: params.iris_diameter_mm,
+            depth_mm: params.eye_detail_depth_mm,
+            smallest_mm: printer
+                .and_then(|printer| printer.nozzle_diameter_mm.or(printer.minimum_wall_mm)),
+            shallowest_mm: printer.map(|printer| EYE_DETAIL_LAYERS * printer.layer_height_mm),
+        }),
+    };
     // A closed or recessed mouth takes no detail on the lips, when the model
     // knows where they are.
     let faded = match mouth {
@@ -878,6 +969,7 @@ pub(super) async fn prepare_print(
             overhang_degrees: printer.maximum_overhang_degrees,
             min_feature_mm: printer.minimum_wall_mm,
         }),
+        eyes,
         mouth_recess_mm,
     };
     let variant = model.info().variant.clone();
@@ -929,6 +1021,13 @@ pub(super) async fn prepare_print(
             applied["filter"] = filter;
         }
         name_regions(&model, &head_vertices, &mut report);
+        if let Some(carved) = report.get_mut("eyes") {
+            carved["style"] = json!(eye_style);
+            if carved["removed_mm3"].as_f64().is_some_and(|removed| removed <= 0.0) {
+                carved["note"] =
+                    json!("the head's surface covers the eyes where they would be carved; nothing was removed");
+            }
+        }
         let mut response = json!({
             "artifact": artifact,
             "units": "millimetres",
@@ -944,6 +1043,89 @@ pub(super) async fn prepare_print(
             response["mouth"] = mouth;
         }
         Ok::<_, ToolError>(response)
+    })
+    .await
+}
+
+/// Each eyeball's centre and the point where its gaze leaves it, in
+/// millimetres. The eyeballs are the parts separate from the head, and the
+/// gaze leaves each through its vertex furthest forward when the head is at
+/// rest, which the eye's rotation carries with it.
+async fn eye_axes(model: &Arc<FlameModel>, head: &PosedHead) -> Result<Vec<EyeAxis>, ToolError> {
+    let model = Arc::clone(model);
+    let posed = millimetres(&head.vertices);
+    blocking(move || {
+        let faces = model.faces();
+        let mut parent: Vec<usize> = (0..posed.len()).collect();
+        fn root(parent: &mut [usize], mut index: usize) -> usize {
+            while parent[index] != index {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            index
+        }
+        let minor = texture::minor_parts(faces);
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for pair in [[face[0], face[1]], [face[1], face[2]]] {
+                let (a, b) = (
+                    root(&mut parent, pair[0] as usize),
+                    root(&mut parent, pair[1] as usize),
+                );
+                parent[a] = b;
+            }
+        }
+        let mut parts: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        let mut seen = vec![false; posed.len()];
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for &vertex in face {
+                let vertex = vertex as usize;
+                if !std::mem::replace(&mut seen[vertex], true) {
+                    let part = root(&mut parent, vertex);
+                    parts.entry(part).or_default().push(vertex);
+                }
+            }
+        }
+        if !(1..=2).contains(&parts.len()) {
+            return Err(ToolError::Validation(format!(
+                "the {} model has no separate eyeballs to carve",
+                model.info().variant
+            )));
+        }
+        let rest = model
+            .evaluate(&FlameParams::default())
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        Ok(parts
+            .into_values()
+            .map(|vertices| {
+                let count = vertices.len() as f64;
+                let centre = [0, 1, 2].map(|axis| {
+                    vertices
+                        .iter()
+                        .map(|&vertex| f64::from(posed[vertex][axis]))
+                        .sum::<f64>()
+                        / count
+                });
+                let pole = vertices
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| rest.vertices[a][2].total_cmp(&rest.vertices[b][2]))
+                    .expect("a part has vertices");
+                EyeAxis {
+                    centre,
+                    front: posed[pole].map(f64::from),
+                }
+            })
+            .collect())
     })
     .await
 }

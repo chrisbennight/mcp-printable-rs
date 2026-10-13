@@ -334,6 +334,10 @@ reported as an error and not written.
 | `expression_scale` | 1 | 0 to 1 |
 | `mouth` | `as_posed` | `as_posed`, `closed` or `recessed`; see [Mouth](#mouth) |
 | `mouth_recess_mm` | 2 with `recessed` | 0.5 to 10 |
+| `eyes` | `plain` | `plain`, `pupil` or `iris_and_pupil`; see [Eyes](#eyes) |
+| `pupil_diameter_mm` | 4 mm at life size, scaled | 0.2 to 10 |
+| `iris_diameter_mm` | 11.5 mm at life size, scaled | 0.5 to 20 |
+| `eye_detail_depth_mm` | 2 mm at life size, scaled | 0.05 to 5 |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -576,6 +580,47 @@ with a closed jaw, where it is the spacing of the vertices, and renders with
 `closed` showed the lips meeting in a line. With `recessed` and 5 mm, the
 opening showed as a dark slot. Each bust was one valid solid and took about
 7 seconds.
+
+### Eyes
+
+A single-colour print shows smooth eyes as blank spheres. `eyes` carves them
+the way sculpted busts do, centred on each eye's gaze:
+
+- `plain`, the default, leaves them smooth.
+- `pupil` drills the pupil.
+- `iris_and_pupil` also engraves a ring at the edge of the iris.
+
+`pupil_diameter_mm`, `iris_diameter_mm` and `eye_detail_depth_mm` are
+millimetres on the finished bust; the ring is half as deep as the pupil and a
+tenth of the iris wide. By default each is its life size scaled with the
+bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. With a
+`printer`, the pupil is at least two nozzle widths across, or two
+`minimum_wall_mm` for resin, the ring at least one wide, at least one such
+width of iris is left between the ring and the pupil, and the detail is at
+least two layers deep. Detail wider than the eyeball allows is refused, with
+the eyeball's size in the message.
+
+The eyeballs are the parts of the model separate from the head. Each eye's
+gaze leaves it through the vertex furthest forward when the head is at rest,
+which the eye's rotation carries with it, so the carving follows
+`pose.left_eye` and `pose.right_eye`. Detail is measured from the eyeball's
+surface along the gaze. Only the eyeball is cut, so the eyelids keep their
+shape, but where an eyelid covers part of the ring, the ring continues under
+the lid's edge and can leave the edge thinner; the `thin` report of a
+`printer` shows such places. Where the head's surface covers a cut entirely,
+it is filled back in rather than left as a sealed void.
+
+The `bust` report adds `eyes` with the style, the sizes used, the smallest
+eyeball's diameter and `removed_mm3`, the volume carved away, with a `note`
+when nothing was removed.
+
+On a 100 mm FDM bust of the FLAME 2020 generic head reconstructed from one
+photograph, the defaults gave a pupil 1.4 mm across and 0.7 mm deep and an
+iris 4.0 mm across with a ring 0.4 mm wide and 0.4 mm deep, in eyeballs
+8.5 mm across. Renders showed the ring and pupil centred in each eye. The
+`thin` report grew from 2.4 to 7.6 mm², most of it near the eyeballs where
+the ring passes under the eyelids. A 150 mm bust without a printer took
+13.5 seconds; each bust was one valid solid.
 
 ## Reconstruct a head from photographs
 
