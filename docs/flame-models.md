@@ -571,6 +571,11 @@ they meet. This needs a model converted with `--masks`. The response adds
 `note` when the model has no mouth opening to recess, and, when a
 displacement map was given, `detail_faded_over`: `lips`, or null when the
 model has no such region. Faded detail does not count toward `relief_mm`.
+The limit that keeps relief from raising detail beyond 5% of the head's
+height counts, at full value, every map value a triangle with an unfaded
+corner, or a cap, could read. It never undercounts, but a strong value at
+the edge of a faded region can limit the relief more than the detail
+applied needs.
 
 On the FLAME 2020 generic model with a head reconstructed from one
 photograph, whose jaw was open by 0.09 radians, the largest vertical gap
