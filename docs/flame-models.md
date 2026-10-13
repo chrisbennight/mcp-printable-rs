@@ -858,7 +858,9 @@ an unusable view. `clamped_coefficients` counts values limited to ±5.
 For a model converted with `--eyelids`, the response also gives `eyelids`,
 how far SMIRK finds each eyelid closed in the primary photograph, left then
 right, from 0 to 1, in the form `create` and `prepare_print` accept. Other
-models get no `eyelids`, so the response can still be passed on whole.
+models get no `eyelids`, so the response can still be passed on whole. With
+such a model, the colour map also projects each photograph onto the head
+with the eyelid closure SMIRK finds in it, so a closed lid takes its colour.
 
 `primary_image` reports the photograph that set the expression and detail,
 by its index and path. `head_rotation` is the head's rotation in that

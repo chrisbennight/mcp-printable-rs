@@ -1715,6 +1715,9 @@ struct ReconView {
     expression: Vec<f32>,
     jaw: [f32; 3],
     head_rotation: [f32; 3],
+    /// How far SMIRK finds each eyelid closed in this photograph.
+    #[serde(default)]
+    eyelids: Option<[f32; 2]>,
     camera: [f32; 3],
     crop: ReconCrop,
     image_size: [usize; 2],
@@ -1994,7 +1997,12 @@ fn colour_map(
                     jaw: view.jaw,
                     ..Pose::default()
                 },
-                eyelids: [0.0; 2],
+                // With an eyelid basis, the lids close as photographed, so
+                // their colour lands on them.
+                eyelids: view
+                    .eyelids
+                    .filter(|_| model.has_eyelids())
+                    .unwrap_or_default(),
                 translation: [0.0; 3],
             })
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;

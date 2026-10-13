@@ -534,7 +534,9 @@ def eyelid_basis(left: Path, right: Path, vertices: int):
         shape, values = _parse_npy(read_bounded(path, MAX_EYELID_BYTES, f"{name} file"), name)
         if shape != (vertices, 3):
             raise ModelError(f"{name} must hold one 3D displacement for each of the model's {vertices} vertices")
-        if not all(math.isfinite(value) and abs(value) < MAX_EYELID_DISPLACEMENT_M for value in values):
+        lengths = (math.hypot(*values[index:index + 3]) for index in range(0, len(values), 3))
+        if not all(math.isfinite(value) for value in values) \
+                or not all(length < MAX_EYELID_DISPLACEMENT_M for length in lengths):
             raise ModelError(f"{name} displacements must be finite and under 5 cm, in metres")
         tensors[name] = ("F32", shape, _payload(_float32(name, values)))
     return tensors

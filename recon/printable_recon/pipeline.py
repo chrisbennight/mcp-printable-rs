@@ -191,6 +191,7 @@ def _view(smirk: dict[str, torch.Tensor], index: int, face: faces.Face) -> dict:
         "expression": value("expression"),
         "jaw": value("jaw"),
         "head_rotation": value("head_rotation"),
+        "eyelids": value("eyelids"),
         "camera": value("camera"),
         "crop": {"left": face.smirk_crop.left, "top": face.smirk_crop.top, "step": face.smirk_crop.step},
         "image_size": list(face.image_size),

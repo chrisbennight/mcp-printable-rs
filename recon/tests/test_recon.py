@@ -269,8 +269,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(fused.views), 2)
         view = fused.views[1]
         self.assertEqual(
-            [len(view[name]) for name in ("shape", "expression", "jaw", "head_rotation", "camera")],
-            [300, 50, 3, 3, 3],
+            [len(view[name]) for name in ("shape", "expression", "jaw", "head_rotation", "eyelids", "camera")],
+            [300, 50, 3, 3, 2, 3],
         )
         self.assertEqual(set(view["crop"]), {"left", "top", "step"})
         self.assertEqual(view["image_size"], [400, 400])

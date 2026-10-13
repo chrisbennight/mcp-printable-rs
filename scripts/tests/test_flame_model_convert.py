@@ -701,6 +701,8 @@ class EyelidTests(unittest.TestCase):
         cases = [
             (_npy("<f8", (3, 3), LEFT_LID[:9]), "each of the model's 4 vertices"),
             (_npy("<f8", (VERTICES, 3), [0.1] + LEFT_LID[1:]), "under 5 cm"),
+            # 4 cm along x and y moves the vertex 5.66 cm.
+            (_npy("<f8", (VERTICES, 3), [0.04, 0.04, 0.0] + LEFT_LID[3:]), "under 5 cm"),
             (_npy("<f8", (VERTICES, 3), [float("nan")] + LEFT_LID[1:]), "under 5 cm"),
             (_npy("|O", (VERTICES, 3), LEFT_LID), "unsupported type"),
             (_npy("<f8", (VERTICES, 3), LEFT_LID, fortran=True), "C-ordered"),

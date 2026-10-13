@@ -260,10 +260,12 @@ fn eyelids(
             return Err(ModelError::Eyelids);
         }
         let values: Vec<f32> = words(view.data()).map(f32::from_bits).collect();
-        if values
-            .iter()
-            .all(|value| value.abs() < MAX_EYELID_DISPLACEMENT_M)
-        {
+        // Each vertex's displacement, not each coordinate, is bounded.
+        if values.chunks_exact(3).all(|offset| {
+            offset.iter().all(|value| value.is_finite())
+                && offset.iter().map(|value| value * value).sum::<f32>().sqrt()
+                    < MAX_EYELID_DISPLACEMENT_M
+        }) {
             Ok(values)
         } else {
             Err(ModelError::Eyelids)
@@ -547,6 +549,8 @@ mod tests {
         for (left, right) in [
             (vec![0.001; 9], vec![0.001; 9]),
             (vec![0.1; 12], lid.clone()),
+            // 4 cm along x and y moves the vertex 5.66 cm.
+            ([vec![0.04, 0.04, 0.0], vec![0.0; 9]].concat(), lid.clone()),
             (lid.clone(), vec![f32::NAN; 12]),
         ] {
             let result = rebuilt(|fixture| fixture.eyelids = Some((left, right)));

@@ -6559,6 +6559,65 @@ async fn head_reconstruct_passes_the_eyelids_on_to_a_model_that_can_close_them()
 }
 
 #[tokio::test]
+async fn head_reconstruct_projects_each_photograph_with_its_eyelids() {
+    let root = tempfile::tempdir().unwrap();
+    // Red rises across the photograph, so a moved surface takes another red.
+    image::RgbImage::from_fn(224, 224, |x, _| image::Rgb([x as u8, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    let view = |eyelids: [f32; 2]| {
+        json!([{
+            "shape": [0.0], "expression": [0.0],
+            "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+            "eyelids": eyelids,
+            "camera": [1.0, -0.5, -0.5],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "image_size": [224, 224]
+        }])
+    };
+    let map = |basis: bool, eyelids: [f32; 2]| {
+        let root = root.path().to_owned();
+        let digest = digest.clone();
+        let changes = json!({"image_sha256": [digest], "views": view(eyelids)});
+        async move {
+            // Closing the left eye moves vertex 1 by 4 cm along x.
+            let mut left = vec![0.0; 12];
+            left[3] = 0.04;
+            let library = flame2020_library_edited(|fixture| {
+                fixture.uv = Some((
+                    vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                    vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+                ));
+                fixture.eyelids = basis.then(|| (left, vec![0.0; 12]));
+            });
+            let (endpoint, _, task) = fake_recon_worker_with(true, changes).await;
+            let server = recon_server_with(&root, &endpoint, library).await;
+            let result = server
+                .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                    "images": ["face.png"], "displacement_path": "detail.png",
+                    "texture_path": "colour.png", "overwrite": true, "lighting": "keep"
+                }})))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(false), "{result:?}");
+            task.abort();
+            std::fs::read(root.join("colour.png")).unwrap()
+        }
+    };
+    // With the basis, a photograph's closed lid moves where colour lands.
+    assert_ne!(map(true, [0.0, 0.0]).await, map(true, [1.0, 0.0]).await);
+    // Without it, the closure is ignored.
+    assert_eq!(map(false, [0.0, 0.0]).await, map(false, [1.0, 0.0]).await);
+}
+
+#[tokio::test]
 async fn head_export_writes_the_head_as_an_obj_without_blender() {
     for textured in [true, false] {
         let (_models, library) = tetrahedron_library(textured);
