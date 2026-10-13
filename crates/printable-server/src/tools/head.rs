@@ -956,6 +956,126 @@ pub(super) async fn prepare_print(
     .await
 }
 
+/// The largest suggested neck rotation: a half turn less a margin that
+/// rounding to single precision, in which poses are read and checked,
+/// cannot cross.
+const MAX_SUGGESTED_ANGLE: f64 = std::f64::consts::PI - 1e-5;
+
+/// A neck rotation that keeps a share of the head's rotation in a
+/// photograph. The rotation is split into a turn about y, then a pitch about
+/// x, then a roll about z; the turn is scaled by `turn` and the pitch and
+/// roll by `tilt`, and they are put back together as an axis-angle vector.
+fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
+    let matrix = axis_angle_matrix(rotation);
+    let pitch = (-matrix[1][2]).clamp(-1.0, 1.0).asin();
+    let yaw = matrix[0][2].atan2(matrix[2][2]);
+    let roll = matrix[1][0].atan2(matrix[1][1]);
+    let multiply = |a: [[f64; 3]; 3], b: [[f64; 3]; 3]| {
+        std::array::from_fn(|row| {
+            std::array::from_fn(|column| (0..3).map(|k| a[row][k] * b[k][column]).sum())
+        })
+    };
+    let kept = multiply(
+        multiply(
+            axis_angle_matrix([0.0, turn * yaw, 0.0]),
+            axis_angle_matrix([tilt * pitch, 0.0, 0.0]),
+        ),
+        axis_angle_matrix([0.0, 0.0, tilt * roll]),
+    );
+    // Through a unit quaternion with a non-negative scalar part, which is
+    // stable at every angle and gives an angle of at most a half turn.
+    let [w, x, y, z] = matrix_quaternion(kept);
+    let [w, x, y, z] = if w < 0.0 {
+        [-w, -x, -y, -z]
+    } else {
+        [w, x, y, z]
+    };
+    let length = (x * x + y * y + z * z).sqrt();
+    if length < 1e-12 {
+        return [0.0; 3];
+    }
+    let angle = (2.0 * length.atan2(w)).min(MAX_SUGGESTED_ANGLE);
+    [x, y, z].map(|value| value / length * angle)
+}
+
+/// The unit quaternion, scalar first, of a rotation matrix, by Shepperd's
+/// method: from whichever of its four parts is largest, so that no division
+/// is by a small number.
+fn matrix_quaternion(m: [[f64; 3]; 3]) -> [f64; 4] {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let quaternion = if trace > m[0][0].max(m[1][1]).max(m[2][2]) {
+        let s = (1.0 + trace).sqrt() * 2.0;
+        [
+            s / 4.0,
+            (m[2][1] - m[1][2]) / s,
+            (m[0][2] - m[2][0]) / s,
+            (m[1][0] - m[0][1]) / s,
+        ]
+    } else if m[0][0] >= m[1][1] && m[0][0] >= m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[2][1] - m[1][2]) / s,
+            s / 4.0,
+            (m[0][1] + m[1][0]) / s,
+            (m[0][2] + m[2][0]) / s,
+        ]
+    } else if m[1][1] >= m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[0][2] - m[2][0]) / s,
+            (m[0][1] + m[1][0]) / s,
+            s / 4.0,
+            (m[1][2] + m[2][1]) / s,
+        ]
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        [
+            (m[1][0] - m[0][1]) / s,
+            (m[0][2] + m[2][0]) / s,
+            (m[1][2] + m[2][1]) / s,
+            s / 4.0,
+        ]
+    };
+    let norm = quaternion
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    quaternion.map(|value| value / norm)
+}
+
+/// The rotation matrix of an axis-angle vector.
+fn axis_angle_matrix(rotation: [f64; 3]) -> [[f64; 3]; 3] {
+    let angle = rotation
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    if angle < 1e-12 {
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    }
+    let [x, y, z] = rotation.map(|value| value / angle);
+    let (sin, cos) = angle.sin_cos();
+    let versine = 1.0 - cos;
+    [
+        [
+            versine * x * x + cos,
+            versine * x * y - sin * z,
+            versine * x * z + sin * y,
+        ],
+        [
+            versine * x * y + sin * z,
+            versine * y * y + cos,
+            versine * y * z - sin * x,
+        ],
+        [
+            versine * x * z - sin * y,
+            versine * y * z + sin * x,
+            versine * z * z + cos,
+        ],
+    ]
+}
+
 /// Replace the vertex index of each region a print check found with the name
 /// of the smallest model region that holds that vertex, or else that holds
 /// the nearest vertex in any region. Unnamed when the model has no regions.
@@ -1136,6 +1256,16 @@ pub(super) async fn reconstruct(
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
     });
+    let (tilt, turn) = (
+        request.neck_tilt.unwrap_or(0.0),
+        request.neck_turn.unwrap_or(0.0),
+    );
+    if tilt > 0.0 || turn > 0.0 {
+        let rotation: Option<[f64; 3]> = serde_json::from_value(field("head_rotation")).ok();
+        if let Some(rotation) = rotation {
+            response["pose"]["neck"] = json!(suggested_neck(rotation, tilt, turn));
+        }
+    }
     if let (Some(model), Some(photos), Some(path)) =
         (textured_model, photos, request.texture_path.clone())
     {
@@ -1844,4 +1974,70 @@ fn annotate(mut result: Value, model: &FlameModel, head: &PosedHead) -> Value {
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9)
+    }
+
+    #[test]
+    fn the_whole_rotation_is_kept_with_full_shares() {
+        let rotation = [0.2, 0.1, 0.05];
+        let neck = suggested_neck(rotation, 1.0, 1.0);
+        assert!(close(neck, rotation), "{neck:?}");
+        assert_eq!(suggested_neck(rotation, 0.0, 0.0), [0.0; 3]);
+    }
+
+    #[test]
+    fn a_half_turn_is_accepted_as_a_pose() {
+        let half = f64::from(std::f32::consts::PI);
+        let neck = suggested_neck([0.0, 0.0, half], 1.0, 1.0);
+        let length = neck.iter().map(|value| value * value).sum::<f64>().sqrt();
+        assert!((length - std::f64::consts::PI).abs() < 1e-4, "{neck:?}");
+        assert!(neck[0].abs() < 1e-6 && neck[1].abs() < 1e-6, "{neck:?}");
+        // Read in single precision, as `create` reads a pose, every
+        // suggestion near a half turn passes its check.
+        let mut rotations = vec![[1.0471975803375244, 2.094395160675049, 2.094395160675049]];
+        for step in 0..400 {
+            let (polar, around) = (f64::from(step % 20) * 0.16, f64::from(step / 20) * 0.33);
+            let axis = [
+                polar.sin() * around.cos(),
+                polar.cos(),
+                polar.sin() * around.sin(),
+            ];
+            for angle in [std::f64::consts::PI, half, std::f64::consts::PI - 1e-7] {
+                rotations.push(axis.map(|value| value * angle));
+            }
+        }
+        for rotation in rotations {
+            let neck = suggested_neck(rotation, 1.0, 1.0).map(|value| value as f32);
+            assert!(
+                check_rotation("neck", neck).is_ok(),
+                "{rotation:?} {neck:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_and_tilt_are_kept_separately() {
+        // A pure turn is dropped by the tilt and halved by a half turn.
+        assert!(close(suggested_neck([0.0, 0.3, 0.0], 1.0, 0.0), [0.0; 3]));
+        assert!(close(
+            suggested_neck([0.0, 0.3, 0.0], 0.0, 0.5),
+            [0.0, 0.15, 0.0]
+        ));
+        // A pure roll or pitch follows the tilt alone.
+        assert!(close(
+            suggested_neck([0.0, 0.0, 0.2], 0.5, 1.0),
+            [0.0, 0.0, 0.1]
+        ));
+        assert!(close(
+            suggested_neck([0.2, 0.0, 0.0], 0.5, 0.0),
+            [0.1, 0.0, 0.0]
+        ));
+    }
 }

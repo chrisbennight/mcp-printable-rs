@@ -62,6 +62,18 @@ pub struct ReconRequest {
     /// Needs `texture_path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lighting: Option<LightingChoice>,
+    /// Share, 0 to 1 (default 0), of the head's tilt in the first
+    /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
+    /// so a bust can keep the subject's natural tilt. The server applies
+    /// it; the worker never sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_tilt: Option<f64>,
+    /// Share, 0 to 1 (default 0), of the head's turn in the first
+    /// photograph, its yaw, to keep in a suggested `pose.neck`. A turn
+    /// reflects where the camera stood as much as the subject. The server
+    /// applies it; the worker never sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_turn: Option<f64>,
 }
 
 /// What a colour map does with the photographs' lighting.
@@ -84,6 +96,15 @@ pub enum ScalpChoice {
 }
 
 impl ReconRequest {
+    /// The request without the options the server applies itself.
+    fn for_worker(&self) -> Self {
+        Self {
+            neck_tilt: None,
+            neck_turn: None,
+            ..self.clone()
+        }
+    }
+
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
         if self.images.is_empty() || self.images.len() > MAX_IMAGES {
@@ -123,6 +144,13 @@ impl ReconRequest {
         }
         if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
             return Err(ToolError::Validation("hair_colour needs scalp hair".into()));
+        }
+        for (name, share) in [("neck_tilt", self.neck_tilt), ("neck_turn", self.neck_turn)] {
+            if share.is_some_and(|share| !(0.0..=1.0).contains(&share)) {
+                return Err(ToolError::Validation(format!(
+                    "{name} must be between 0 and 1"
+                )));
+            }
         }
         Ok(())
     }
@@ -515,7 +543,23 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             scalp: None,
             hair_colour: None,
             lighting: None,
+            neck_tilt: None,
+            neck_turn: None,
         }
+    }
+
+    #[test]
+    fn neck_suggestions_stay_with_the_server() {
+        let request = ReconRequest {
+            neck_tilt: Some(0.5),
+            neck_turn: Some(1.0),
+            ..request(&["a.jpg"], "map.png")
+        };
+        let sent = serde_json::to_value(request.for_worker()).unwrap();
+        assert!(
+            sent.get("neck_tilt").is_none() && sent.get("neck_turn").is_none(),
+            "{sent}"
+        );
     }
 
     #[test]
@@ -684,7 +728,7 @@ impl ReconClient {
             .http
             .post(format!("{}/reconstruct", self.endpoint))
             .timeout(REQUEST_TIMEOUT)
-            .json(request)
+            .json(&request.for_worker())
             .send()
             .await
             .map_err(|_| {
