@@ -109,19 +109,53 @@ binary and source versions, including distribution patches, have exact Debian
 Snapshot locators. Python source distributions have registry-provided checksums;
 wheel-only native distributions use reviewed, version-specific upstream commits
 and retained source archives. A changed wheel-only version requires a new reviewed
-locator. Native libraries inside wheels and the Blender and Orca bundles retain
-their exact file hashes and ownership, upstream notices and available scanner
-metadata. Their distribution sources and dependency build specifications remain
-available alongside the inventory; scanner output alone cannot recover every
-statically linked upstream component or determine its legal obligations.
+locator. Native libraries inside wheels retain installed distribution ownership,
+exact file hashes and source records. Blender's bundled native libraries and
+Python extensions without distribution metadata have individual identities,
+available upstream versions, licenses and checksum-bound source locators from
+its dependency build specifications. Reviewed file hashes bind each identity to
+the pinned binary archive. Orca's copied libraries are matched to the exact Ubuntu
+binary packages; their retained source descriptors identify the matching upstream
+source and distribution patches. SPDX relationships connect the components and
+files to their distribution owner. Source archives, notices and dependency build
+specifications remain available alongside the inventory; scanner output alone
+cannot recover every statically linked upstream component or determine its legal
+obligations.
+
+The SPDX documents and materials also record Blender's upstream dependency
+declarations and Orca's external dependency specifications and vendored source
+trees as declared build material. These records retain available versions,
+licenses, source checksums, source notices and build references, with
+`BUILD_DEPENDENCY_OF` relationships. They cover available source material for
+dependencies that may be embedded in the application binaries. They do not assert
+that every optional or platform-specific upstream declaration is linked into the
+Linux binaries. An upstream version absent from vendored metadata stays absent;
+the exact containing source archive and subtree identify that material. The
+collector distinguishes these declarations from components verified against
+installed native files. Full binary linkage and a legal license assessment remain
+outside what this evidence can prove.
+
+Orca's wxWidgets build specification names a mutable branch. Its declared source
+record preserves that reference and an immutable commit observed during inventory
+review, together with the limit that the original compiled commit is unconfirmed.
+Printable's provenance authenticates the pinned runtime artifact and this
+workflow's source revision; it does not authenticate unavailable upstream build
+history.
 
 The collector explicitly adds the downloaded Blender, OrcaSlicer, VirtualGL and
 OpenCV bundles, the face landmarker model and embedded Fira font, with source
 locators and applicable notices. It hashes the whole regular-file filesystem and
 records links separately. Every native executable and library must have a Debian,
-Python, first-party or reviewed bundle owner. Missing source locators, required
+Python, first-party or individually identified native component owner. The Blender
+bridge, supervisor and launcher have commit-bound source and MIT license records;
+their installed files must match the checked-out sources and retained license.
+Missing source locators, required
 notices, binary metadata, package coverage or asset hashes stop publication.
-Unknown native files require investigation and an explicit inventory owner;
+An approved bundle directory never identifies an added library. Updating a bundle
+requires reviewing its actual native files, source build specifications, available
+versions and notices in `release/components.json`; hashes identify distributed
+bytes and do not replace upstream versions. Unknown native files require
+investigation and an explicit inventory owner;
 do not suppress the check or describe unidentified components as fully identified.
 These checks preserve distribution evidence and make remaining scanner limits
 visible. They do not certify license compliance or byte-for-byte reproducibility.

@@ -4,33 +4,1273 @@
     {
       "name": "Blender",
       "version": "5.2.0",
-      "roles": ["blender"],
-      "paths": ["opt/blender/blender"],
+      "roles": [
+        "blender"
+      ],
+      "paths": [
+        "opt/blender/blender"
+      ],
       "notice_prefix": "opt/blender/",
       "license": "GPL-3.0-or-later",
       "source_url": "https://download.blender.org/source/blender-5.2.0.tar.xz",
       "binary_url": "https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz",
       "binary_sha256": "96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48",
-      "description": "Official Linux bundle, including its native libraries and Python runtime. Exact bundled files and notices are retained in the image inventory. The source archive includes Blender's dependency build specifications."
+      "description": "Official Linux bundle, including its native libraries and Python runtime. Exact bundled files and notices are retained in the image inventory. The source archive includes Blender's dependency build specifications.",
+      "native_files": [
+        {
+          "path": "opt/blender/lib/libcycles_kernel_oneapi_aot.so",
+          "sha256": "af354effa3e706f7b0d40b5c0781317ad14ee67f5553643c25f0b0549850b7fc"
+        },
+        {
+          "path": "opt/blender/lib/libblender_cpu_check.so",
+          "sha256": "18a12455a56ecf7d5828f44d316ce9b189b8757e8063f6c0843c66b7f790a18f"
+        },
+        {
+          "path": "opt/blender/5.2/scripts/addons_core/io_scene_gltf2/libbf_intern_meshopt_bridge.so",
+          "sha256": "388b781ac984fc3db22c0f024a3e9f12de565383ed03706707651a5387ecc7ba"
+        },
+        {
+          "path": "opt/blender/5.2/scripts/addons_core/io_scene_gltf2/libbf_intern_draco_bridge.so",
+          "sha256": "bee34567ff1ee89540639cba05dc1250f37070b60b17702a8e532b1df07098db"
+        },
+        {
+          "path": "opt/blender/blender",
+          "sha256": "83e8261eace07a5337f71b52d156c1eece1a6ba913403cc6406182ae58bacf27"
+        },
+        {
+          "path": "opt/blender/blender-thumbnailer",
+          "sha256": "c9cbe54088291a6bf86ca5880b3a002119cede43b25368f7a7abd416648863e0"
+        }
+      ],
+      "native_components": [
+        {
+          "name": "Ceres Solver",
+          "version": "0c70ed3a1a2d6ba47c06c7e8b3b040880bc474db",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/ceres-solver/ceres-solver/archive/0c70ed3a1a2d6ba47c06c7e8b3b040880bc474db.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "bf0bcc78fae884e59dd893693e52510da7cc6866a7444fdae9ba8f19eae266cd"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "CERES",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libceres.so.2.3.0",
+              "sha256": "c511a9183895ba1a90a1507a13c6c9eed91bdf711bd8d2c6f91446ab255f01c3"
+            }
+          ]
+        },
+        {
+          "name": "Cython",
+          "version": "3.0.11",
+          "license": "Apache-2.0",
+          "source_url": "https://files.pythonhosted.org/packages/84/4d/b720d6000f4ca77f030bd70f12550820f0766b568e43f11af7f7ad9061aa/cython-3.0.11.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "7146dd2af8682b4ca61331851e6aebce9fe5158e75300343f80c07ca80b1faff"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "CYTHON",
+          "native_files": [
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/Code.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1e6222fd3cf4d964aac1b75f51b26894fcbefb34eb01f98094ca3b8ff22aec89"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/Parsing.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1f9a1c05cbbfda111c08650048a10a805695e15fd7531e8e32e06657837a28d0"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/Scanning.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "7020cb048bc83b2be0f24a7dd9ad33a9594d3a3f491419a2a3fbae0b0c3bfdc5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/FlowControl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "7ba9fae16c45db47b1c91a183c7bf1a4dcdd2427db1d87c253f790a2d0e334a3"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/Visitor.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "9ff998f61c8b2db6f776d96f818b86e5801808158e8b7911f710996bcfab4c01"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Compiler/FusedNode.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "52eb043d2aa52e713f0a2203dd75ca73515f6086efe3093450465fc8967f6c58"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Runtime/refnanny.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "f00d0b939c6a7202a6a91ed1e79b059491569b9ef41a97a714a9182cecaf8c21"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Tempita/_tempita.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "5439d018105c16b7ace765af296dc6d56414c75d53a29b2dbed125b33b3ca181"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Plex/Machines.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "6e11d8dbd835b3f2a84770a03a9029f67419986c4fa48fb1acd0b2a560c47bb9"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Plex/DFA.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "fc24fd31c7a2a2c9cb39be16541be4d5573283c44ae1ef0103cb584bcab55a38"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Plex/Transitions.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "adde7e316b7d2e55e6e322a66054dfd4206f19e79e2283022cb7a181d6108bc5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Plex/Scanners.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "4d20af0ca8aa7145920db56831b8991f58d85470c457104bb952dc58243d9ccd"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Plex/Actions.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "19d5fd461d420c4520431ac4323f27703fca28b28261c94388471537e50d8340"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/Utils.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "ca161987aebf9db441f704ea3cd14e4190766a6bd61466053f7de1a9b77fa55a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/Cython/StringIOTree.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "32d1858e6d4fc657fe4be9e421a4ccb02ff02e94a2526b1cd7d44ee11056743f"
+            }
+          ]
+        },
+        {
+          "name": "DPC++",
+          "version": "v6.3.0",
+          "license": "Apache-2.0 WITH LLVM-exception",
+          "source_url": "https://github.com/intel/llvm/archive/v6.3.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "63fb431da91f29e1c4387b06707d3d9b2af2120e733d1a96357f043aa37591e8"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "DPCPP",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libsycl.so.8.0.0-0",
+              "sha256": "b6aed89998738080310b2dc6769dc6d279aca2e08cfbf8509bcf06fdd8b90101"
+            }
+          ]
+        },
+        {
+          "name": "Draco",
+          "version": "1.5.7",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/google/draco/archive/refs/tags/1.5.7.zip",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "27b72ba2d5ff3d0a9814ad40d4cb88f8dc89a35491c0866d952473f8f9416b77"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "DRACO",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libdraco.so.9.0.0",
+              "sha256": "692475ffaa5145378ef22a91de1046bbbb5115e4bcbda230243ef27906a45391"
+            }
+          ]
+        },
+        {
+          "name": "Embree",
+          "version": "4.4.1",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/RenderKit/embree/archive/v4.4.1.zip",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "6e2eecafb312d8cf1f1ff555702637cf"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "EMBREE",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libembree4.so.4",
+              "sha256": "8715c82ff56331550c174266d737c644d6161469638f583a00003348140c0fb7"
+            }
+          ]
+        },
+        {
+          "name": "HIPRT",
+          "version": "606b4886efabce918dd0634ef71c06615a47c83b",
+          "license": "MIT",
+          "source_url": "https://github.com/GPUOpen-LibrariesAndSDKs/HIPRT/archive/606b4886efabce918dd0634ef71c06615a47c83b.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "4bb933c2cf284257625b782d571c02a0"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "HIPRT",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libhiprt0200564.so",
+              "sha256": "f415de9e022893d14cab4310b5dc9004218d8b16a58ad86dffcd584f6e91f75b"
+            }
+          ]
+        },
+        {
+          "name": "Imath",
+          "version": "3.2.2",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/AcademySoftwareFoundation/Imath/archive/v3.2.2.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "e29f25ce926ac53d8e0a52197299f61b"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "IMATH",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libImath.so.30.3.2.2",
+              "sha256": "10fd65525b08d33ebaf1505b70f86befe80ab2f33cf0fcee2a3d36e0af1cf1cf"
+            }
+          ]
+        },
+        {
+          "name": "MaterialX",
+          "version": "1.39.4",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/AcademySoftwareFoundation/MaterialX/archive/refs/tags/v1.39.4.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "4704716b93e4c2d6b3693aa56a13b71b"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "MATERIALX",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libMaterialXCore.so.1.39.4",
+              "sha256": "a5d03f6d28f4c800d70392d592aff15d344e9ac92b83f86ed74bdd79901507e0"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXGenGlsl.so.1.39.4",
+              "sha256": "91361d08a16dfac645090223635d5d192a7adbddd68eb89aa48bdc3db47a00b1"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXFormat.so.1.39.4",
+              "sha256": "37f6ce4f12c4ffd0b0804d20c1736f436aad1bb1fbd5a6895e5b9bf8052b8172"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXGenMdl.so.1.39.4",
+              "sha256": "b39331242ffbdc7d46a931dce24475a1d7b67b5f4f01e7b2e6c0fc2dbb01934a"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXRenderHw.so.1.39.4",
+              "sha256": "a5c8f47b4e6a53838565048eb71c23855a3f0e811a9c5fba9f90db30ad62b8fa"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXRender.so.1.39.4",
+              "sha256": "9383c72d7f2959178b3cdab87765a70ae4929ea708dbfaa9ef7737f966e1a68b"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXRenderGlsl.so.1.39.4",
+              "sha256": "b496c4b73704910a1999b40a3c3645c9b5380c978aca53da3326dcc87469399b"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXGenShader.so.1.39.4",
+              "sha256": "ec0ccbdfb5ad5881923f0045cdee0cb59eaf8b614c363c2e0f1fe8dea58a972f"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXGenMsl.so.1.39.4",
+              "sha256": "f849625d46ea32889cfede51ff8eab3c063cb8e110ee6d4c33a783f16e3c7edf"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXRenderOsl.so.1.39.4",
+              "sha256": "c135d6fd3eb94caa61dac2cde64a85cb54d294e7522d258360b820cff1246d2c"
+            },
+            {
+              "path": "opt/blender/lib/libMaterialXGenOsl.so.1.39.4",
+              "sha256": "998575ea710f2d74d55880d8901be85f58b71bae73c541278fa12f109faaacbf"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXGenMsl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "cadb699d08bfe40cd4d924a6fc28748557a9e0a06d8ab66b378e909fd605539a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXFormat.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "6a274012220556672a2f73fa8053817107b48b0c0f09d0daf264a2b5930945b1"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXCore.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "fd9c996ec26e7d7fe367ba49797644c7b16af808ae6a284b74f72403fa724192"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXRender.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2a69d9d3453014496a6643de36b3f9b2a5a208868db524473047997ee1eb03ca"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXRenderOsl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "79ad807bc2a36fb55ecdfc7227ab437caf5220bb0d4d9aa3026e67bd178fd02e"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXGenOsl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "d41266ff10e06f83b910b30093747d3cee0fcf3937a8b007fac0edc05f4d1fe5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXGenGlsl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1755e4e4ad52632737bd4c47fb12eb0365edec1b91bc2486649908b3fe245d0c"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXGenShader.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "9bf274aeb5f2cb50db8db4cb1933673c5b5459c44cb0d5714257d576f903cd18"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXGenMdl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "45d6d85b090aef0462b639b0084c33c28131001eedb3ac709ed486771cf0a042"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/MaterialX/PyMaterialXRenderGlsl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "f30378a50d24358f6c4127b1cdbc10c27bfff98865674ff518ec481a03322272"
+            }
+          ]
+        },
+        {
+          "name": "meshoptimizer",
+          "version": "1.1",
+          "license": "MIT",
+          "source_url": "https://github.com/zeux/meshoptimizer/archive/refs/tags/v1.1.zip",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "6aecc2d3b4328f1f5f4127fb16a144de80cc9eb35c32387807c8c04b0b6dbbf3"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "MESHOPTIMIZER",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libmeshoptimizer.so",
+              "sha256": "65c13d0a636f80e3fb8ab9c63df080de95b532459c4e0d290c023f314dfd9bea"
+            }
+          ]
+        },
+        {
+          "name": "OpenImageDenoise",
+          "version": "2.5.0",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/RenderKit/oidn/releases/download/v2.5.0/oidn-2.5.0.src.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "ae984ce4cc4c81ec152ab81b241a8738"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OIDN",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise_device_hip.so.2.5.0",
+              "sha256": "3524049f5761fecaf7cd9e4253221da5b16eda941254a40b8dd4e0fc3b085b99"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise.so.2.5.0",
+              "sha256": "640b85e907e420ca4c4c1a320a0c648dd80d746e38e30cd6915c081eede682a1"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise_core.so.2.5.0",
+              "sha256": "b25bebf5e9ba5058fdecdcabe5c9e990398c072ce2ef7ee5c217636300cc6ed2"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise_device_sycl.so.2.5.0",
+              "sha256": "78ddd99ed0d3721c0537084943ce4dd198cdfab04087b6c374e9fde3c945e8b7"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise_device_cuda.so.2.5.0",
+              "sha256": "baa354f85b236ba55719f6f2e6f42c3e43e490b40188685a3b6a7388e2368cd7"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageDenoise_device_cpu.so.2.5.0",
+              "sha256": "43bac84a37fe6b2083dbf230c10a9166514a5f7432d92c052c97970c51936809"
+            }
+          ]
+        },
+        {
+          "name": "OpenColorIO",
+          "version": "2.5.0",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/AcademySoftwareFoundation/OpenColorIO/archive/v2.5.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "41d6b62ac672ed333ebfdcc1108407e0"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENCOLORIO",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libOpenColorIO.so.2.5.0",
+              "sha256": "04047e22a1bc7c3b2fe6ba14f83c067fee7d6f28d2ffcc759c9735097d3ff625"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/PyOpenColorIO/PyOpenColorIO.so",
+              "sha256": "fecb20e51d850d1c970a0746b1aa29adbada599bb4114fae25d27e63c64c9e2e"
+            }
+          ]
+        },
+        {
+          "name": "OpenEXR",
+          "version": "3.4.10",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/AcademySoftwareFoundation/openexr/archive/v3.4.10.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "8926ba09c4e4cd21c7a0fa2d2b39fa82"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENEXR",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libIex.so.33.3.4.10",
+              "sha256": "396d46d788778a851d032527c95b6fcd1575b1d40b2afdd76cf476ce46612130"
+            },
+            {
+              "path": "opt/blender/lib/libOpenEXR.so.33.3.4.10",
+              "sha256": "533a5b6d6fadf588c940b0398580bd9ccf5a4dca1b21fb569cfafe82406d9495"
+            },
+            {
+              "path": "opt/blender/lib/libOpenEXRCore.so.33.3.4.10",
+              "sha256": "9dba564b853acc653e9c7fb17a08ad50401998ebe5a9c4afd17056bdda828b76"
+            },
+            {
+              "path": "opt/blender/lib/libIlmThread.so.33.3.4.10",
+              "sha256": "09004b052d34491d5a171265f8570b05b147fe4bceb30cf07043a19b15f32114"
+            },
+            {
+              "path": "opt/blender/lib/libOpenEXRUtil.so.33.3.4.10",
+              "sha256": "79fa92fff6828f00e24834389d085c442138ef570bb15caa781e73b47c0aa991"
+            }
+          ]
+        },
+        {
+          "name": "OpenImageIO",
+          "version": "v3.1.13.1",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/AcademySoftwareFoundation/OpenImageIO/archive/refs/tags/v3.1.13.1.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "9f6f083900680b79ca4a136270103844"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENIMAGEIO",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libOpenImageIO_Util.so.3.1.13",
+              "sha256": "e52439d9788a61ec3f7ad8a1af82970e06655512fd9842de92b421868a93c080"
+            },
+            {
+              "path": "opt/blender/lib/libOpenImageIO.so.3.1.13",
+              "sha256": "207b70b9d3d1ae48f6013dbad654ad0306a10ae35c8c0e546dab189a761d6efb"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/OpenImageIO/OpenImageIO.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "46253b9680269d2525d627d12175be60dab0675bf763d95f16434d41743cbfd5"
+            }
+          ]
+        },
+        {
+          "name": "OpenJPH",
+          "version": "0.25.2",
+          "license": "BSD-2-Clause",
+          "source_url": "https://github.com/aous72/OpenJPH/archive/refs/tags/0.25.2.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "ae5f09562cb811cb2fb881c5eb74583e18db941848cfa3c35787e2580f3defc6"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENJPH",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libopenjph.so.0.25.2",
+              "sha256": "021bd6eba7dd857b41abe530ee9d19755807e2a4d21831ffeae8a031cf2ee47c"
+            }
+          ]
+        },
+        {
+          "name": "OpenSubdiv",
+          "version": "v3_7_0",
+          "license": "TOST-1.0",
+          "source_url": "https://github.com/PixarAnimationStudios/OpenSubdiv/archive/v3_7_0.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "470d53c4d4335a601c33a052ce7c33b4"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENSUBDIV",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libosdCPU.so.3.7.0",
+              "sha256": "0770f40922cd12823380012e98297f8045e3c0c2bf36d3088e668f5edbcc9346"
+            },
+            {
+              "path": "opt/blender/lib/libosdGPU.so.3.7.0",
+              "sha256": "2adba30e0c32c3b28e3879f99b6cf3f9c8715dd9a402c0d05fa6fd66b6fb3e10"
+            }
+          ]
+        },
+        {
+          "name": "OpenVDB",
+          "version": "13.0.0",
+          "license": "MPL-2.0",
+          "source_url": "https://github.com/AcademySoftwareFoundation/openvdb/archive/v13.0.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "7a10f529ed12d9e3ed6d3fd50f157378"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OPENVDB",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libopenvdb.so.13.0.0",
+              "sha256": "ba2fa6a5f970293e344c4745e105240ca77d0d92404ac20af1507206dedc8cf4"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/openvdb.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "f14b0102bb818b91212e02d6e761679f1442b32cd67d1efc46104297eae14fc1"
+            }
+          ]
+        },
+        {
+          "name": "Open Shading Language",
+          "version": "1.15.3.0",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/AcademySoftwareFoundation/OpenShadingLanguage/releases/download/v1.15.3.0/OSL-1.15.3.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "560232b3298e33f3bf45c6f21f20b484f5acc260f6d4035db0f76f22994d679a"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "OSL",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/liboslnoise.so.1.15.3",
+              "sha256": "7cbd41c4ee0f363edb56ecfbf6f9c4bbd27a858fca9ac14409410c3c7ec45c65"
+            },
+            {
+              "path": "opt/blender/lib/liboslcomp.so.1.15.3",
+              "sha256": "d2cd39af12389754b11070005ac55a298a55379d7d9a77413fcee4dff2e9653f"
+            },
+            {
+              "path": "opt/blender/lib/liboslexec.so.1.15.3",
+              "sha256": "5497e7bb936d51dcc6e2eadcbc777f01ef3ff5e24c48cf518853b7a5ad69728a"
+            },
+            {
+              "path": "opt/blender/lib/liboslquery.so.1.15.3",
+              "sha256": "9c06af8590676129284baf4f23b2c7e7d911468e061ea96e3a0765d3d65f62e5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/oslquery/oslquery.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "9f980d338f288208bbc57f59938fca44836e31b6450841b2ab0dc40ca166ebbe"
+            }
+          ]
+        },
+        {
+          "name": "CPython",
+          "version": "3.13.13",
+          "license": "Python-2.0",
+          "source_url": "https://www.python.org/ftp/python/3.13.13/Python-3.13.13.tar.xz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "3a19dd420883dd599728c9dd07c141e7"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "PYTHON",
+          "native_files": [
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/config-3.13-x86_64-linux-gnu/python.o",
+              "sha256": "d63efab0596f1b9e1819c237d9b5eb6934f0650640f1a76a9b8a093af1ffcbff"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/select.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "df7b8bb4a95fb4104ba4fcd6506c52e629ab1f8a5872615021b27e6d3e52a4b4"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_md5.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "94cebb7b9a0759bf7e4d347b4193215be92cdbc14930b2c8bb4cf349b4bb343c"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_hashlib.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "ee548c361407a187cf9cad91ef8bd6231d5083a55d75f6cb51ccd41b7edb96c1"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_tw.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "3148d2def4b6b73c8b47ab6c0f8c6344a4d2e9fe9972898263720d3bee2d51fe"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_jp.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2785621b43c78ca55b255be516107aa59ab95b776934c9ac5a428b553127f584"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_struct.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "db37d12812b827a73c8d297fa888b6f5f58a1859e344c3d78963bc64c75b9593"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_ssl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "a9f248dab570526bb96afd0c764586ea9da2f317c58664f93bcfb8fbc81f9783"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_lsprof.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "92aec2861522a7970eb03571f30b696231008e575cc502f83add9ca0397838eb"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_decimal.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "5be52d5993d57adeced16a424ec5064fd267e661fd0b726ed0197c1274f7d6cb"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_curses_panel.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2070dd59573947c6b4a30ec50e15e38c619fca6b4514ca3c589a20c54494852d"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_ctypes.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "909f694f6cf495c8b6c5c202667dd582c3d098022f122240cb31dbbd16850bfc"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_lzma.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "f071cf16acaf0db2eacb7094de576913f45197ba36f47c963a9c52ec32f0eb2b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_csv.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "880612002ade89d8eeae8ed2bd4a92a82b8c796da6180e10d125bb76071de4a6"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_kr.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "0d8e28c8141ffd24875a8b5d2d675d1edf7c1784deef28ea13d66b0c99972551"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_interpqueues.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2f4b02fa844b33a7a607149263a542b8eb40247999abf0599c1c2f4929d10413"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_queue.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "b57bf2d2736a6774d586856dcaca892525fa76295e3449aec8102a1aa7ca3d5b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_random.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "89714dcefae83221ff8544445ff4a375abc695a470fcab981c3a74e6dd2cef65"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_opcode.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "a1784f0e1d307f0ef6a80bbd48315a0807ed62c9fbb1e39eec953f3f836d6b4e"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/syslog.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "85b09817410bb8762df8f30e14dd1e6cca518baddaa30c8afd69002db956b3cf"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_blake2.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "5f6af77be6f91d0d5dd4a7d2ca9d433c6126ebce9f615e250483362730ebab92"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/mmap.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "497372a477e464bc7a629b1eb9ab604b89bd250a466c42c7758a6ea44528fce3"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_sha1.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "773f717ec85a5efe3aa37fb98f6f7615fc1907a80834155fd26f135977cf910e"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_interpchannels.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "87d618ff6e5d6c85a04e9a6fe2551b0e68393c09e3f8b03220c6900f4234dac7"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/unicodedata.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "07d1ea56b6492a102e07e7cd09a12c4a58f88d1a5b9b733fc12fbf70c73625c8"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_posixshmem.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "443c99463622706866150853d7edd0f5dad850e2cfbc961a3b1176cc2ad9386a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_multiprocessing.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "891902324233d89f72a574fc89c4a37f61b83fadfdbc6a49ec17d4c84e9b7184"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_cn.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2fa47835ff6b3ed98359d4d2737bcf8f30de4fa4710b55d23aa59148c58e0759"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/fcntl.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1ef5e701a91cd32eda73bb9728dec998bdd2a5a72b774fea61873a1be16ddbb8"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/math.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "c6afcf5c25ed213c11e1bee32465e79a8e6dea887ff332581cf2a6766ed439b1"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_bz2.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "90126e533baa31d13a12df9fbd068f9ae96d26c3bc8e92b80fc5e0e173e4ffcd"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_sha3.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "cfa8584541fab7c095d45c528d7401dcd6dbf6bf5d9026671d0275bb406f77e2"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_interpreters.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "4ac92f20ea96a2417a9d0dce37995fae8ec2ff431ca65933f6976b533fe46092"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_heapq.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "19c6c6ae1a2dea90d1cb8e2a0635ed7fbfb7c079b59c62353a3e7051926a4448"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_json.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "0580f24409d41608302e69451b4c63b876958bffdce39b624b97cf179ba699ed"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_socket.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "15575c2983b271a5ea0ae5bd3081754e349fd1f05493817d7adf0a08637c4f7a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/grp.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "9e4dc9179e49229537da7fd4245ccf05f958045a0367965e55bcf589e3779028"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/zlib.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "7b839e6e31f185113c8e6dac6730d02aefa72733eabb44ff0c27cc97ea5c13dd"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_sqlite3.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "5b3491c3ba59b1bb9c7ad65e9024897446abf239e7e894e90fe1b8ee56625946"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/array.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1b29f374fc7ac8fdccd6ed21daf2f8dbb7d7e46c18c8eec597ec35318de35258"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_multibytecodec.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "6c84bd65f249593415329fbc1a7284aae140f45a06cffeb72465fc095ee5d0b6"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_sha2.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "3369262f15395af3c2c1f0150ced159f04a982e7946475c1149882e778005aee"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/binascii.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "a448433dd04fa867d46e1d5f3d59e5830ea1348f77cf0fda3be6ef46acd1a87c"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/resource.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "9df628353868ebbbec23e32801ab711c8eac4bad20dfff8058ff8457e4a5cdde"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_contextvars.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "1b42fba6761c4a8c721e244f127aa83fbdf13850c5a3ef2881d776e21f446e32"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_bisect.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "8912d59db5099a93b54893adbca102d693b8c99505cdd460947f6387c8226aa5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_zoneinfo.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "ae0335773c51b717ee385e7e9e43049096c51bda1e00c68f6c5e29b65444d911"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_datetime.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "c836e24c071991ad97c2f9fbaf67173083bd920f0255aeb062d1957ef4de247a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_pickle.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "fb7a3c78088c7d09c52bdad8e798e9e3a9d30a530aecc411cecc12bbcfb91e2c"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_posixsubprocess.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "73319cdedd531a44329d1380c65a7746b2e7c770ac505db2cb9ef593ea7cb769"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_curses.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "3ff1478d148e45ad45063c29c2ef7f1aa3ddc186edc96917490e83925fcd373a"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_statistics.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "e33e0b4d13e16a03d86eaefa593da85036b21fe5c94c63151b3ef5962d8ab13b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_hk.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "2665a6d4abd56c4eb3e8bf31808949d878926afc3365b8054eb5c64d6035b513"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_elementtree.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "0c19b708fb73dc3a9fd1c9749e9fd15e792e08c7a799777444171c9fc05a3f90"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_uuid.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "a0a4534381f29e157cf4556fabc7ff53f1398281b91c81f81c0c2cae9dc083d0"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_asyncio.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "39b46f78ff83002cda497ad07dc2b28a0e70ba0febf87d24e1402f5ad04ecef5"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/cmath.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "bc5a87fe3a8b390ebcc0947d1eee2b1c2686110e6b465ef97ba485cd862a0525"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/termios.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "045fd6900615900103be444d823097b5af4fec454caf18f0ebf8350f87229ec9"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/pyexpat.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "8d23dd2b49fd8ec5c59e3a2e073603dd0aba77189540463d3a8e7b8404f99900"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/lib-dynload/_codecs_iso2022.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "39b2e7c74b2582b1a9f1ba64c9a0224908bde675e22aa2d8e6eebd89c8ddf9e2"
+            }
+          ]
+        },
+        {
+          "name": "SDL",
+          "version": "3.4.2",
+          "license": "Zlib",
+          "source_url": "https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-3.4.2.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "b488ea1ede947c06855588314effe905"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "SDL",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libSDL3.so.0.4.2",
+              "sha256": "3557d0fb8aaa52b630141692e8c5aabcccc6b186ec95c3b8986864224d3be339"
+            }
+          ]
+        },
+        {
+          "name": "oneTBB",
+          "version": "v2022.3.0",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/uxlfoundation/oneTBB/archive/refs/tags/v2022.3.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "2b242c465b194ac8e1451ea1354873ae"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "TBB",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libtbb.so.12.17",
+              "sha256": "2a3b7bc867f52a0c3c8bf65db01333fd0d7bfab0924b4ecace1e74bc64f0a6a6"
+            },
+            {
+              "path": "opt/blender/lib/libtbbmalloc.so.2.17",
+              "sha256": "a4196d95c106d71d3ae39ba79a145e5f2955ae611380ae7c7a8a5fdb7cda6bfe"
+            },
+            {
+              "path": "opt/blender/lib/libtbbmalloc_proxy.so.2.17",
+              "sha256": "162ebd71b3859d52cf22596d05b4c2718e3de936360896e256b11be6f35f3965"
+            }
+          ]
+        },
+        {
+          "name": "Unified Runtime",
+          "version": "0.12.0",
+          "license": "Apache-2.0 WITH LLVM-exception",
+          "source_url": "https://github.com/intel/llvm/archive/v6.3.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "63fb431da91f29e1c4387b06707d3d9b2af2120e733d1a96357f043aa37591e8"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "DPCPP",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libur_adapter_level_zero_v2.so.0.12.0",
+              "sha256": "2ee6cd41531208a99eeaa1f2c96a6f9acf003a32cee5b03250c6c3514aead0e8"
+            },
+            {
+              "path": "opt/blender/lib/libur_loader.so.0.12.0",
+              "sha256": "343e9e6dd036e529bd9748784a7eb8eb9074b26db17954e3dfb54a7fcda1e7e2"
+            },
+            {
+              "path": "opt/blender/lib/libur_adapter_level_zero.so.0.12.0",
+              "sha256": "008109739e254e8dc3713294f09fa9adacb067094d4a9b38b6a01772e76f5989"
+            }
+          ],
+          "source_subdirectory": "unified-runtime",
+          "version_reference": "https://github.com/intel/llvm/blob/v6.3.0/unified-runtime/CMakeLists.txt"
+        },
+        {
+          "name": "OpenUSD",
+          "version": "26.03",
+          "license": "TOST-1.0",
+          "source_url": "https://github.com/PixarAnimationStudios/OpenUSD/archive/v26.03.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "cc6d6bffdcdd038f60e2fe4726b08673"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "USD",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libusd_ms.so",
+              "sha256": "112ce383528d475160b88f6ff2d16ce5a2544116b967cf2b7882af7271b56996"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdValidation/_usdValidation.so",
+              "sha256": "70712a3caa5cde7c482b3b8b15dbfdf7810caa929fbd9a0d3f0281275917b5e6"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdProc/_usdProc.so",
+              "sha256": "8a1e54c5c9872b1d34b1201593940c0cf6de586768e321bd6a48caaf14213fa2"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdMtlx/_usdMtlx.so",
+              "sha256": "a180cdeb901eea79ab39ca506956f236d793e49bb31d403ae109cbc135b215d9"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdUtils/_usdUtils.so",
+              "sha256": "33c85af12461712f98ad52cb4feea29d1630f5d9b96108c448fd9a0fd0ad9695"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdUI/_usdUI.so",
+              "sha256": "49d6ada09e9cd8e94cbeb98cf3a7d40975769200404417df424cd712604029f9"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdShade/_usdShade.so",
+              "sha256": "b50bf0b0263c0dad0683633e6e2ba18b2d8a5f861460725517a40e4f0bed777f"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdMedia/_usdMedia.so",
+              "sha256": "c8f69951be0380c221c60a8814a6145309e7c35e8ae595871a8c9287528a6c47"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Work/_work.so",
+              "sha256": "c5681183c75615587d03931c3c12dc53035774b47948f40ee860ccf2aec70880"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdSemantics/_usdSemantics.so",
+              "sha256": "aed1f0e623629c6f88ac5ba24c69d45db2124e85916a98223e8138782422ad2b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdLux/_usdLux.so",
+              "sha256": "f96660206605456478c5837f4753b8e9f181a3bb565c89fb6e83fa0a1ee36c84"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdVol/_usdVol.so",
+              "sha256": "2ac5664bef705cceab5e73d36ba8ecb6c2d63390334f411b4d68992859f64f44"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Vt/_vt.so",
+              "sha256": "f2c6fe0ce45bafeb1088e5adaf7790dc536cb732e5158e7548f9478bcb2fdc59"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdHydra/_usdHydra.so",
+              "sha256": "f1f214e84ac9211bc4f4abdd212857cfe2aae5c8144c15f6a4367b00607c4233"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/CameraUtil/_cameraUtil.so",
+              "sha256": "917c9bea0e370ab8b49dcbcf9262e143ff6bd3a908a3a9df52fc4352caa97ad7"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Glf/_glf.so",
+              "sha256": "842edf23f9a1e1570312e0cfa1d392da6c4913b2181e6d506ef56e8e5872b892"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Plug/_plug.so",
+              "sha256": "6c58e9bf2708d9f3b63b6c9be46941c6ac23028f1a283e2b8de8e49661933741"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdImagingGL/_usdImagingGL.so",
+              "sha256": "c1470b42a74564011ea2e0ef08ce47c862e366a1de41e322af55ce209663f837"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Sdf/_sdf.so",
+              "sha256": "dd036b635c1c85ccbb5e79dafd54d1771b7336923ea5c72e7a4273d98c7ef18b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Sdr/_sdr.so",
+              "sha256": "4fbcd7ff9daa960123dbc6121341369130334a64a5816c1d1133deb81d109de4"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Trace/_trace.so",
+              "sha256": "f96b8d542af73625c1fcebf062df816278094f193073b08e86eddd1b42cc7165"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdAppUtils/_usdAppUtils.so",
+              "sha256": "0289c003d834319a9c65d0b4b9d7160ce002d05c1f0af1f6e0b6d149b08ef344"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdPhysics/_usdPhysics.so",
+              "sha256": "b3bf956bc7461ce79b3b14ce64a5e5df0870e495514347fd085af7ea8da0a46e"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdGeom/_usdGeom.so",
+              "sha256": "4198cf5ebd8340f78618c13168f11b92c14cd02351096d3bb27188c0af51269d"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Kind/_kind.so",
+              "sha256": "efb8c945977adab5b21b8c5a67ed7f111920ab4cac03d8f01216049d4fb3c6f6"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Ts/_ts.so",
+              "sha256": "eba729d3dc09501c255a65d12073b0cab2f747273e8859e18d6bfefc6331adc8"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Usd/_usd.so",
+              "sha256": "ea9b512b600933338c6a800a4b3dfdecf9799681ed2bfde916fac1fcf4cb1658"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Tf/_tf.so",
+              "sha256": "8b588bd08e3dcd4351386015f41a8a7cdfae9c3770ac1e34ab6c6743b158a6ed"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Ar/_ar.so",
+              "sha256": "c522d50a009a3bc4f72d2ff8d15172d178b811919c00502207075ca45c7cac7f"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/GeomUtil/_geomUtil.so",
+              "sha256": "ecae5d8ae6bf5442b61550baeb0b334040586f62af2fd5d14df3a44c0cc52936"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/PxOsd/_pxOsd.so",
+              "sha256": "e2f343d397d2eb403892988f2c44fe52101734a76912262e901f57ca7d17c543"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdRi/_usdRi.so",
+              "sha256": "5a9cfa22b09582b12b8e29e0045cdf211544b43f1de6f47f227c420431cc58e8"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Pcp/_pcp.so",
+              "sha256": "bebbebb5e3b2033f6cb437b3c9c4af56dc1e30bb667b5445e8d074365710eafd"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdSkel/_usdSkel.so",
+              "sha256": "3b8fe59ec6a064bab37d613d0e9512bff8d5ff17cafdcd3efac56b7dcb4bea59"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/Gf/_gf.so",
+              "sha256": "60a17dcc7e2fd8d249c1117fff2dfbd3f3dbf8450912b38c6ac59ae12a20a14b"
+            },
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/pxr/UsdRender/_usdRender.so",
+              "sha256": "9a71c6fabdd0883cefdb76dfec5caa6f4d54e97586349e7d0831e29f0b533c40"
+            }
+          ]
+        },
+        {
+          "name": "Vulkan Loader",
+          "version": "1.4.341",
+          "license": "Apache-2.0",
+          "source_url": "https://github.com/KhronosGroup/Vulkan-Loader/archive/refs/tags/v1.4.341.tar.gz",
+          "source_checksum": {
+            "algorithm": "MD5",
+            "value": "30c6850af7ed0e4af5c57002253c0138"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "VULKAN_LOADER",
+          "native_files": [
+            {
+              "path": "opt/blender/lib/libvulkan.so.1.4.341",
+              "sha256": "86713c6a4c2216cdc92c9141fe6ebf293f66ebf61311c2f6208a395ce1218e23"
+            }
+          ]
+        },
+        {
+          "name": "python-zstandard",
+          "version": "0.25.0",
+          "license": "BSD-3-Clause",
+          "source_url": "https://github.com/indygreg/python-zstandard/releases/download/0.25.0/zstandard-0.25.0.tar.gz",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "7713e1179d162cf5c7906da876ec2ccb9c3a9dcbdffef0cc7f70c3667a205f0b"
+          },
+          "build_spec": "build_files/build_environment/cmake/versions.cmake",
+          "build_spec_key": "ZSTANDARD",
+          "native_files": [
+            {
+              "path": "opt/blender/5.2/python/lib/python3.13/site-packages/zstandard/backend_c.cpython-313-x86_64-linux-gnu.so",
+              "sha256": "38b2e5723486d8bb6da1a58f4b8ab0e28df19842cb739f9236cd803787783b38"
+            }
+          ]
+        }
+      ],
+      "source_sha256": "a5f99fc5fabf5062e661ca55d70987ae8f08d33324ac4865f133bbed7498d7bf",
+      "required_notices": [
+        "opt/blender/license/license.md"
+      ],
+      "notice_sha256": {
+        "opt/blender/license/license.md": "6539df65e78fea926cbd46e45aeae6f6f1a54a48a3414e41236ad1ad4935bb97"
+      },
+      "build_inventory": {
+        "kind": "blender-cmake",
+        "path": "build_files/build_environment/cmake/versions.cmake",
+        "sha256": "c17b7766d42d6499682bc368eb05718c941a5ebb7f14954acebdf2affcdccf86",
+        "license_inventory": "opt/blender/license/license.md"
+      }
     },
     {
       "name": "OrcaSlicer",
       "version": "local-2.4.2-6915edb",
-      "roles": ["slicer"],
-      "paths": ["opt/orca/AppRun"],
+      "roles": [
+        "slicer"
+      ],
+      "paths": [
+        "opt/orca/AppRun"
+      ],
       "notice_prefix": "opt/orca/",
       "license": "AGPL-3.0-only",
       "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/6915edbfae3746da236b22630ff75a2fa304b796.tar.gz",
       "source_commit": "6915edbfae3746da236b22630ff75a2fa304b796",
       "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-6915edb/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-6915edb.AppImage",
       "binary_sha256": "eb46a67b37063cc5ccbe00c058b45cf5cd71e4c0c15e66a96ca2c0c89ca1da13",
-      "description": "Fork AppImage and bundled libraries. Packaging extracts the AppImage and removes resources/web; the source archive retains dependency build specifications."
+      "description": "Fork AppImage and bundled libraries. Packaging extracts the AppImage and removes resources/web; the source archive retains dependency build specifications.",
+      "native_files": [
+        {
+          "path": "opt/orca/bin/orca-slicer",
+          "sha256": "31b8c388f28c55a945fc4d26cb199078fa0de98e4c3abb518c8961ac10632c57"
+        }
+      ],
+      "source_sha256": "e6276f3004df8ee446d74f17a5925f86a55999ddd7c49ec7a2e1df2032cfe00d",
+      "native_components": [
+        {
+          "name": "Expat",
+          "version": "2.6.1-2ubuntu0.4",
+          "license": "MIT",
+          "source_url": "https://launchpad.net/ubuntu/+archive/primary/+files/expat_2.6.1-2ubuntu0.4.dsc",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "a25d3fde103454ad5d34d4770bd5adb60bb5872da775df74cad193b5c4de1dff"
+          },
+          "retain_source_descriptor": true,
+          "source_package": "expat",
+          "source_version": "2.6.1-2ubuntu0.4",
+          "binary_package_url": "https://launchpad.net/ubuntu/+archive/primary/+files/libexpat1_2.6.1-2ubuntu0.4_amd64.deb",
+          "binary_package_sha256": "126a5612e652bdc2edee19ae8fe4308db72b5b3b0a5581bf885b44a093baf3e5",
+          "native_files": [
+            {
+              "path": "opt/orca/lib/orca-runtime/libexpat.so.1.9.1",
+              "sha256": "c42ff317838b4b4639e2ea801905f0317177c6df7e31b2f0d0240e3c3ac0cfde"
+            }
+          ],
+          "required_notices": [
+            "opt/orca/licenses/copyright-expat.txt"
+          ]
+        },
+        {
+          "name": "liblzma",
+          "version": "5.6.1+really5.4.5-1ubuntu0.3",
+          "license": "LicenseRef-liblzma-public-domain",
+          "source_url": "https://launchpad.net/ubuntu/+archive/primary/+files/xz-utils_5.6.1+really5.4.5-1ubuntu0.3.dsc",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "34c2be772533a5c31e881bc620cedaf9be3d315feb677f00e12c136c299d126a"
+          },
+          "retain_source_descriptor": true,
+          "source_package": "xz-utils",
+          "source_version": "5.6.1+really5.4.5-1ubuntu0.3",
+          "binary_package_url": "https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
+          "binary_package_sha256": "d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52",
+          "native_files": [
+            {
+              "path": "opt/orca/lib/orca-runtime/liblzma.so.5.4.5",
+              "sha256": "696e868dd0700a19a6d65fc01608ec2d70d3cb91f65710e89180cd2e688f30cb"
+            }
+          ],
+          "required_notices": [
+            "opt/orca/licenses/copyright-xz-utils.txt"
+          ],
+          "license_text": "This file has been put in the public domain.\nYou can do whatever you want with this file."
+        },
+        {
+          "name": "libmspack",
+          "version": "0.11-1.1build1",
+          "license": "LGPL-2.1-or-later",
+          "source_url": "https://launchpad.net/ubuntu/+archive/primary/+files/libmspack_0.11-1.1build1.dsc",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "b1c60ce611a2797d6701328b55c5a1ad421f49c4aac5de12f1e3119638858776"
+          },
+          "retain_source_descriptor": true,
+          "source_package": "libmspack",
+          "source_version": "0.11-1.1build1",
+          "binary_package_url": "https://archive.ubuntu.com/ubuntu/pool/main/libm/libmspack/libmspack0t64_0.11-1.1build1_amd64.deb",
+          "binary_package_sha256": "a84ab4c5188c5a73ad5b59d29ca8bc7bd3cc32e27544437788416c0f21190cfd",
+          "native_files": [
+            {
+              "path": "opt/orca/lib/orca-runtime/libmspack.so.0.1.0",
+              "sha256": "5120b0b21bcc4503d8fbaa269bc3d2f4747057f65b4deeefe58281ea4eeee1c1"
+            }
+          ],
+          "required_notices": [
+            "opt/orca/licenses/copyright-libmspack.txt",
+            "usr/share/common-licenses/LGPL-2.1"
+          ]
+        },
+        {
+          "name": "zlib",
+          "version": "1:1.3.dfsg-3.1ubuntu2.2",
+          "license": "Zlib",
+          "source_url": "https://launchpad.net/ubuntu/+archive/primary/+files/zlib_1.3.dfsg-3.1ubuntu2.2.dsc",
+          "source_checksum": {
+            "algorithm": "SHA256",
+            "value": "56a7cd029863cbddafce831e4e63cccfa84017f93617929cb7c02f80bb5a122a"
+          },
+          "retain_source_descriptor": true,
+          "source_package": "zlib",
+          "source_version": "1:1.3.dfsg-3.1ubuntu2.2",
+          "binary_package_url": "https://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",
+          "binary_package_sha256": "84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273",
+          "native_files": [
+            {
+              "path": "opt/orca/lib/orca-runtime/libz.so.1.3",
+              "sha256": "86200da370f20476a2507e9097a789b5ef97269b4ca8d5e164ad82dab9d99892"
+            }
+          ],
+          "required_notices": [
+            "opt/orca/licenses/copyright-zlib.txt"
+          ]
+        }
+      ],
+      "required_notices": [
+        "opt/orca/licenses/LICENSE-OrcaSlicer.txt"
+      ],
+      "notice_sha256": {
+        "opt/orca/licenses/copyright-expat.txt": "60919fe1a156395ff14511bb6ff79756c50ade2fff59ac60c9bae1d8a7fe6292",
+        "opt/orca/licenses/copyright-libmspack.txt": "03060a3ad1f4639d2c3f5bade18191b37e44142aa7e82fe8bddd156b6abb75b7",
+        "opt/orca/licenses/LICENSE-OrcaSlicer.txt": "57c8ff33c9c0cfc3ef00e650a1cc910d7ee479a8bc509f6c9209a7c2a11399d6",
+        "opt/orca/licenses/copyright-xz-utils.txt": "a2dc8fac0f496e1c58aff67018cf0c6b88336316afa5642f9335b71642e28aa8",
+        "opt/orca/licenses/copyright-zlib.txt": "9e5b96d63773a5d177ba264254390f792be07e41748ebd94730981c6cac31cc6"
+      },
+      "build_inventory": {
+        "kind": "orca-cmake",
+        "declared_versions": {
+          "Boost": "1.84.0",
+          "CGAL": "5.6.3",
+          "CURL": "7.75.0",
+          "Cereal": "1.3.0",
+          "Draco": "1.5.7",
+          "Eigen": "5.0.1",
+          "FREETYPE": "2.12.1",
+          "GLFW": "3.4",
+          "GMP": "6.2.1",
+          "JPEG": "3.0.1",
+          "MPFR": "4.2.2",
+          "NLopt": "2.5.0",
+          "OCCT": "7.6.0",
+          "OpenCSG": "1.4.2",
+          "OpenCV": "4.6.0",
+          "OpenEXR": "2.5.5",
+          "OpenSSL": "1.1.1w",
+          "PNG": "1.6.35",
+          "Qhull": "8.0.2",
+          "TBB": "2021.5.0",
+          "ZLIB": "1.2.13",
+          "libnoise": "1.0",
+          "wxWidgets": "3.3.2"
+        },
+        "source_overrides": {
+          "wxWidgets": {
+            "source": "https://github.com/SoftFever/Orca-deps-wxWidgets/archive/88f3483ca546fbf4ad732e1acd94cc930935077a.tar.gz",
+            "source_commit": "88f3483ca546fbf4ad732e1acd94cc930935077a",
+            "declared_source_ref": "v3.3.2",
+            "source_resolution": "Observed declared branch at inventory review; compiled source commit is not independently confirmed."
+          }
+        }
+      }
     },
     {
       "name": "VirtualGL",
       "version": "3.1.5",
-      "roles": ["blender"],
-      "paths": ["opt/VirtualGL/bin/vglrun"],
+      "roles": [
+        "blender"
+      ],
+      "paths": [
+        "opt/VirtualGL/bin/vglrun"
+      ],
       "notice_prefix": "opt/VirtualGL/",
       "license": "wxWindows",
       "source_url": "https://github.com/VirtualGL/virtualgl/archive/d045fcf1777e7b47913ea363d14f71b1fb26b2b9.tar.gz",
@@ -41,8 +1281,12 @@
     {
       "name": "OpenCV",
       "version": "5.0.0.93",
-      "roles": ["recon"],
-      "paths": ["opt/opencv-python/LICENSE-OpenCV"],
+      "roles": [
+        "recon"
+      ],
+      "paths": [
+        "opt/opencv-python/LICENSE-OpenCV"
+      ],
       "notice_prefix": "opt/opencv-python/",
       "license": "Apache-2.0",
       "source_url": "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz",
@@ -52,14 +1296,43 @@
     {
       "name": "MediaPipe face landmarker model",
       "version": "float16/1",
-      "roles": ["recon"],
-      "paths": ["opt/printable/recon/face_landmarker.task"],
+      "roles": [
+        "recon"
+      ],
+      "paths": [
+        "opt/printable/recon/face_landmarker.task"
+      ],
       "notice_prefix": "opt/recon/",
       "license": "Apache-2.0",
       "source_url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
       "source_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
       "asset_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
       "description": "Unmodified distributable model asset; operator-supplied checkpoints are outside the image."
+    }
+  ],
+  "first_party_components": [
+    {
+      "name": "Printable Blender bridge and supervisor",
+      "roles": [
+        "blender"
+      ],
+      "source_path": "addon",
+      "installed_path": "opt/printable/addon",
+      "exclude": [
+        "tests"
+      ],
+      "license": "MIT",
+      "notice": "usr/share/doc/printable/LICENSE"
+    },
+    {
+      "name": "Printable headless Blender launcher",
+      "roles": [
+        "blender"
+      ],
+      "source_path": "scripts/run-headless-blender",
+      "installed_path": "opt/printable/scripts/run-headless-blender",
+      "license": "MIT",
+      "notice": "usr/share/doc/printable/LICENSE"
     }
   ]
 }

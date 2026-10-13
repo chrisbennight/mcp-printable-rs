@@ -57,8 +57,14 @@ Debian sources use the installed source package version and distribution patches
 Rust crate locators use lockfile checksums and compiled dependency metadata.
 Wheel-only Python distributions have reviewed upstream source revisions. The
 Blender and Orca bundles retain their file inventories, notices and exact upstream
-source material, including dependency build specifications. Bundle ownership and
-scanner metadata do not establish the license of every static library; preserve
+source material, including dependency build specifications. Their native files
+have individual component and source records in `release/components.json`.
+Orca's copied Ubuntu libraries retain their matching package copyright notices
+under `/opt/orca/licenses/`, together with its AGPL notice. Checksummed source
+descriptors identify the corresponding distribution sources and patches. The
+Blender bridge, supervisor and launcher retain first-party source, version and MIT
+license records. Bundle ownership and scanner metadata do not establish the
+license of every static library; preserve
 the upstream material and investigate gaps when a bundled component changes.
 Use [independent verification](docs/releases.md#independent-verification) before
 trusting downloaded evidence.

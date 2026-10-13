@@ -28,9 +28,9 @@ SYFT_VERSION = "1.54.1"
 BINARY_NAMES = {"server": ("printable-server", "printable-geometry-worker"),
                 "cad": ("printable-cad-worker",), "slicer": ("printable-slicer-worker",),
                 "recon": ("printable-recon-worker",), "blender": ()}
-NOTICE = re.compile(r"license|copying|copyright|notice", re.IGNORECASE)
+NOTICE = re.compile(r"license|copying|copyright|notice|^OFL(?:\.|$)", re.IGNORECASE)
 SOURCE_HOSTS = {"files.pythonhosted.org", "download.blender.org", "github.com", "codeload.github.com",
-                "www.vtk.org", "vtk.org", "storage.googleapis.com"}
+                "www.vtk.org", "vtk.org", "storage.googleapis.com", "launchpad.net", "launchpadlibrarian.net"}
 
 
 def write_json(path, value):
@@ -215,19 +215,24 @@ def python_source(name, version, overrides, directory):
 
 
 def add_spdx_package(document, component, source, checksum=None):
+    version = component.get("version")
     for existing in document.setdefault("packages", []):
-        if existing["name"] == component["name"] and existing.get("versionInfo") == component["version"]:
+        if existing["name"] == component["name"] and existing.get("versionInfo") == version:
             existing["sourceInfo"] = source + ("#sha256=" + checksum if checksum else "")
             if component.get("license"):
                 existing["licenseDeclared"] = component["license"]
-            return
-    identifier = "SPDXRef-printable-" + hashlib.sha256((component["name"] + "@" + component["version"]).encode()).hexdigest()[:24]
-    package = {"SPDXID": identifier, "name": component["name"], "versionInfo": component["version"],
+            return existing["SPDXID"]
+    identifier = "SPDXRef-printable-" + hashlib.sha256((component["name"] + "@" + (version or source)).encode()).hexdigest()[:24]
+    package = {"SPDXID": identifier, "name": component["name"],
                "downloadLocation": source if urlsplit(source).scheme in ("http", "https") else "NOASSERTION", "filesAnalyzed": False,
                "licenseConcluded": "NOASSERTION", "licenseDeclared": component.get("license") or "NOASSERTION",
                "copyrightText": "NOASSERTION"}
+    if version:
+        package["versionInfo"] = version
     if component.get("description"):
         package["description"] = component["description"]
+    if component.get("primaryPackagePurpose"):
+        package["primaryPackagePurpose"] = component["primaryPackagePurpose"]
     package["sourceInfo"] = source
     if checksum:
         package["checksums"] = [{"algorithm": "SHA256", "checksumValue": checksum}]
@@ -235,11 +240,318 @@ def add_spdx_package(document, component, source, checksum=None):
         document["packages"].append(package)
         document.setdefault("relationships", []).append({"spdxElementId": "SPDXRef-DOCUMENT",
                                                          "relationshipType": "DESCRIBES", "relatedSpdxElement": identifier})
+    return identifier
+
+
+def contains_package(document, parent, child):
+    relationship = {"spdxElementId": parent, "relationshipType": "CONTAINS", "relatedSpdxElement": child}
+    if relationship not in document.setdefault("relationships", []):
+        document["relationships"].append(relationship)
+
+
+def declared_build_materials(component, source, sources, document, notice_root=None):
+    """Retain upstream declarations without asserting optional or static linkage from filenames."""
+    policy = component.get("build_inventory")
+    if not policy:
+        return []
+    records = []
+    with tarfile.open(sources / source["sha256"]) as archive:
+        members = archive_members(archive)
+        roots = {name.split("/", 1)[0] for name in members}
+        if len(roots) != 1:
+            raise ValueError("bundle source archive has no unique source root")
+        prefix = next(iter(roots)) + "/"
+        if policy["kind"] == "blender-cmake":
+            raw = read_member(archive, members, prefix + policy["path"])
+            if raw is None or hashlib.sha256(raw).hexdigest() != policy["sha256"]:
+                raise ValueError("declared Blender build specification differs from its reviewed source")
+            values = {match[1]: match[2].strip().strip('"')
+                      for match in re.finditer(r'^set\((\w+)\s+("(?:\\.|[^"\\])*"|[^()"\\]*)\s*\)', raw.decode(), re.MULTILINE)}
+            license_keys = set(re.findall(r"^set\((\w+_LICENSE)\s", raw.decode(), re.MULTILINE))
+            if license_keys != {key for key in values if key.endswith("_LICENSE")}:
+                raise ValueError("declared Blender license inventory has unsupported assignments")
+            def resolve(value):
+                for _ in range(20):
+                    updated = re.sub(r"\$\{([^}]+)\}", lambda match: values.get(match[1], match[0]), value)
+                    if updated == value:
+                        return value
+                    value = updated
+                raise ValueError("declared source variables do not converge")
+            for key in sorted(value.removesuffix("_LICENSE") for value in values if value.endswith("_LICENSE")):
+                name = values.get(key + "_NAME") or key
+                version = resolve(values.get(key + "_VERSION", ""))
+                license_value = resolve(values[key + "_LICENSE"])
+                uri = resolve(values.get(key + "_URI", ""))
+                checksum = resolve(values.get(key + "_HASH", ""))
+                algorithm = values.get(key + "_HASH_TYPE")
+                reviewed = next((native for native in component.get("native_components", [])
+                                 if native.get("build_spec_key") == key), None)
+                if not uri and reviewed:
+                    uri = reviewed["source_url"]
+                    checksum = reviewed["source_checksum"]["value"]
+                    algorithm = reviewed["source_checksum"]["algorithm"]
+                record = {"name": component["name"] + " declared build dependency: " + name,
+                          "upstream_name": name, "license": license_value.removeprefix("SPDX:") if license_value != "Public Domain" else "NOASSERTION",
+                          "available_license": license_value, "build_spec": policy["path"], "build_spec_key": key,
+                          "source": uri if uri and "${" not in uri else source["url"],
+                          "source_archive": source}
+                if version and "${" not in version:
+                    record["version"] = version
+                if checksum and algorithm:
+                    record["source_checksum"] = {"algorithm": algorithm, "value": checksum}
+                records.append(record)
+            licensing = []
+            if policy.get("license_inventory"):
+                if notice_root is None:
+                    raise ValueError("declared Blender distribution license inventory is absent")
+                path = policy["license_inventory"]
+                text = (notice_root / path).read_text()
+                license_value, license_url = "NOASSERTION", ""
+                fonts = False
+                for line in text.splitlines():
+                    if line == "## Fonts":
+                        fonts = True
+                    heading = re.match(r"^## \[.+\]\((.+)\)$", line)
+                    if heading:
+                        fonts = False
+                        license_url = heading[1]
+                        identifier = re.fullmatch(r"https://spdx.org/licenses/(.+)\.html", license_url)
+                        license_value = identifier[1] if identifier else "NOASSERTION"
+                    row = re.match(r"^\| \[(.+?)\]\((.+)\)[¹²³]? \| ([^|]+) \|(?: (.*?) \|)?$", line)
+                    if row:
+                        record = {"name": row[1], "homepage": row[2], "license": license_value,
+                                  "license_url": license_url, "copyright": row[4] or "NOASSERTION"}
+                        record["available_license" if fonts else "declared_version"] = row[3].strip()
+                        licensing.append(record)
+                if not licensing:
+                    raise ValueError("declared Blender distribution license inventory is empty")
+                records.append({"name": component["name"] + " distribution license inventory", "license": "NOASSERTION",
+                                "source": source["url"], "source_archive": source,
+                                "distribution_notice": path, "declared_components": licensing})
+            vendor_directories = sorted({name.removeprefix(prefix).split("/")[1] for name, member in members.items()
+                                         if member.isfile() and name.startswith(prefix + "extern/")
+                                         and len(name.removeprefix(prefix).split("/")) > 2})
+            for upstream in vendor_directories:
+                directory = "extern/" + upstream + "/"
+                normalized = re.sub(r"[^a-z0-9]", "", upstream.lower())
+                matches = [item for item in licensing if re.sub(r"[^a-z0-9]", "", item["name"].lower()) == normalized]
+                notices = [name.removeprefix(prefix) for name, member in members.items()
+                           if member.isfile() and name.startswith(prefix + directory)
+                           and NOTICE.search(PurePosixPath(name).name)]
+                record = {"name": component["name"] + " vendored source: " + upstream,
+                          "upstream_name": upstream, "license": "NOASSERTION", "source": source["url"],
+                          "source_archive": source, "source_subdirectory": directory, "source_notices": notices}
+                if len(matches) == 1:
+                    declaration = matches[0]
+                    record["distribution_declaration"] = declaration
+                    record["license"] = declaration["license"]
+                    version = re.match(r"^(v?\d+(?:[._]\d+)+(?:[a-z]\d*)?)(?:$|\s)", declaration.get("declared_version", ""))
+                    if version:
+                        record["version"] = version[1]
+                records.append(record)
+        elif policy["kind"] == "orca-cmake":
+            specifications = [(name, member) for name, member in members.items()
+                              if member.isfile() and name.startswith(prefix + "deps/") and name.endswith(".cmake")]
+            for name, member in sorted(specifications):
+                raw = archive.extractfile(member).read()
+                declarations = []
+                for line in raw.decode().splitlines():
+                    line = line.strip()
+                    if re.match(r"^(URL|URL_HASH|GIT_REPOSITORY|GIT_TAG|SOURCE_DIR)\s+", line):
+                        declarations.append(line.split("#", 1)[0].rstrip())
+                if not declarations:
+                    continue
+                relative = name.removeprefix(prefix)
+                upstream = relative.split("/")[1]
+                record = {"name": component["name"] + " declared build dependency: " + upstream,
+                          "upstream_name": upstream, "license": "NOASSERTION", "source": source["url"],
+                          "source_archive": source, "build_spec": relative,
+                          "build_spec_sha256": hashlib.sha256(raw).hexdigest(),
+                          "source_declarations": declarations}
+                urls = list(dict.fromkeys(line.split(None, 1)[1].strip('"') for line in declarations if line.startswith("URL ")))
+                hashes = list(dict.fromkeys(line.split(None, 1)[1].strip('"') for line in declarations if line.startswith("URL_HASH ")))
+                if len(urls) == len(hashes) == 1 and re.fullmatch(r"SHA256=[0-9a-fA-F]{64}", hashes[0]):
+                    record["source"] = urls[0]
+                    record["source_checksum"] = {"algorithm": "SHA256", "value": hashes[0].split("=", 1)[1].lower()}
+                tags = list(dict.fromkeys(line.split(None, 1)[1].strip('"') for line in declarations if line.startswith("GIT_TAG ")))
+                if len(tags) == 1:
+                    record["declared_source_ref"] = tags[0]
+                override = policy.get("source_overrides", {}).get(upstream)
+                if override:
+                    if override["declared_source_ref"] not in tags or not re.fullmatch(r"[0-9a-f]{40}", override["source_commit"]):
+                        raise ValueError("declared dependency source revision differs from its reviewed reference")
+                    record.update(override)
+                if upstream in policy.get("declared_versions", {}):
+                    version = policy["declared_versions"][upstream]
+                    marker = re.sub(r"[^a-z0-9]", "", version.lower())
+                    references = [re.sub(r"[^a-z0-9]", "", value.lower()) for value in [*urls, *tags]]
+                    if not marker or not any(marker in reference for reference in references):
+                        raise ValueError("declared dependency version has no matching source reference")
+                    record["version"] = version
+                records.append(record)
+            vendor_directories = sorted({name.removeprefix(prefix).split("/")[1] for name, member in members.items()
+                                         if member.isfile() and name.startswith(prefix + "deps_src/")})
+            for upstream in vendor_directories:
+                directory = "deps_src/" + upstream + "/"
+                notices = [name.removeprefix(prefix) for name, member in members.items()
+                           if member.isfile() and name.startswith(prefix + directory)
+                           and NOTICE.search(PurePosixPath(name).name)]
+                records.append({"name": component["name"] + " vendored source: " + upstream,
+                                "upstream_name": upstream, "license": "NOASSERTION", "source": source["url"],
+                                "source_archive": source, "source_subdirectory": directory, "source_notices": notices})
+        else:
+            raise ValueError("bundle declared build inventory has an unknown format")
+        if not records:
+            raise ValueError("bundle declared build inventory is empty")
+        parent = add_spdx_package(document, component, source["url"])
+        for record in records:
+            record["classification"] = "declared build material"
+            record["binary_linkage"] = "not independently confirmed; declarations may be optional or platform-specific"
+            record["description"] = record["classification"] + "; " + record["binary_linkage"]
+            if record.get("source_resolution"):
+                record["description"] += "; " + record["source_resolution"]
+            record["primaryPackagePurpose"] = "SOURCE"
+            locator = record["source"]
+            if locator == source["url"]:
+                locator += "#sha256=" + source["sha256"]
+            elif record.get("source_checksum"):
+                checksum = record["source_checksum"]
+                locator += "#" + checksum["algorithm"].lower() + "=" + checksum["value"]
+            identifier = add_spdx_package(document, record, locator)
+            document.setdefault("relationships", []).append({"spdxElementId": identifier,
+                "relationshipType": "BUILD_DEPENDENCY_OF", "relatedSpdxElement": parent,
+                "comment": record["binary_linkage"]})
+    return records
+
+
+def spdx_file(document, parent, path, checksum):
+    identifier = "SPDXRef-file-" + hashlib.sha256(path.encode()).hexdigest()[:24]
+    record = {"SPDXID": identifier, "fileName": "/" + path,
+              "checksums": [{"algorithm": "SHA256", "checksumValue": checksum}],
+              "licenseConcluded": "NOASSERTION", "licenseInfoInFiles": ["NOASSERTION"],
+              "copyrightText": "NOASSERTION"}
+    if not any(item["SPDXID"] == identifier for item in document.setdefault("files", [])):
+        document["files"].append(record)
+    contains_package(document, parent, identifier)
+
+
+def identify_bundled_native(component, inventory, ownership, document, supplements, sources=None):
+    """A distribution directory proves placement; exact reviewed files prove component identity."""
+    parent = add_spdx_package(document, component, component["source_url"])
+    files = {item["path"]: item for item in inventory if item.get("elf")}
+    identified = set()
+    for native in [component, *component.get("native_components", [])]:
+        expected = native.get("native_files", [])
+        if not expected:
+            if native is not component:
+                raise ValueError("bundled native component has no reviewed files")
+            continue
+        if not all(native.get(field) for field in ("name", "version", "license", "source_url")):
+            raise ValueError("bundled native component has incomplete identity or source information")
+        source = urlsplit(native["source_url"])
+        if source.scheme != "https" or not source.hostname or source.username or source.password:
+            raise ValueError("bundled native component has no public HTTPS source locator")
+        native_source = native["source_url"]
+        if native.get("source_checksum"):
+            checksum = native["source_checksum"]
+            lengths = {"MD5": 32, "SHA256": 64}
+            length = lengths.get(checksum.get("algorithm"))
+            if length is None or not re.fullmatch(r"[0-9a-f]{" + str(length) + "}", checksum.get("value", "")):
+                raise ValueError("bundled native source checksum is malformed")
+            native_source += "#" + checksum["algorithm"].lower() + "=" + checksum["value"]
+        if native.get("retain_source_descriptor"):
+            if sources is None or native["source_checksum"]["algorithm"] != "SHA256":
+                raise ValueError("bundled native source descriptor cannot be retained")
+            retained = download_source(native["source_url"], sources, native["source_checksum"]["value"])
+            native = native | {"retained_source_descriptor": retained}
+        if native["license"].startswith("LicenseRef-"):
+            text = native.get("license_text")
+            if not text:
+                raise ValueError("bundled native custom license text is absent")
+            document.setdefault("hasExtractedLicensingInfos", []).append({"licenseId": native["license"],
+                "name": native["name"] + " license", "extractedText": text})
+        native_id = add_spdx_package(document, native, native_source)
+        if native is not component:
+            contains_package(document, parent, native_id)
+            supplements.append(native | {"distribution_owner": component["name"] + "@" + component["version"]})
+        for notice in native.get("required_notices", []):
+            if not any(item["path"] == notice for item in inventory):
+                raise ValueError("bundled native component notice is absent")
+        for expected_file in expected:
+            path, checksum = expected_file["path"], expected_file["sha256"]
+            if (path in identified or not path.startswith(component["notice_prefix"])
+                    or not re.fullmatch(r"[0-9a-f]{64}", checksum)):
+                raise ValueError("bundled native file identity is ambiguous or malformed")
+            actual = files.get(path)
+            if actual is None or actual["sha256"] != checksum:
+                raise ValueError("bundled native file differs from its reviewed component: " + path)
+            identified.add(path)
+            ownership[path] = "component:" + native["name"] + "@" + native["version"]
+            actual["component_spdx_id"] = native_id
+            actual["distribution_owner"] = component["name"] + "@" + component["version"]
+            spdx_file(document, native_id, path, checksum)
+    for path, actual in files.items():
+        if path.startswith(component["notice_prefix"]):
+            if path not in ownership:
+                raise ValueError("bundled native file has no individual component identity: " + path)
+            actual["distribution_owner"] = component["name"] + "@" + component["version"]
+            if path not in identified:
+                name, version = ownership[path].split(":", 1)[1].rsplit("@", 1)
+                matches = [package for package in document.get("packages", [])
+                           if canonical_name(package["name"]) == canonical_name(name)
+                           and package.get("versionInfo") == version]
+                exact = [package for package in matches if package["name"] == name]
+                if exact:
+                    matches = exact
+                if len(matches) != 1:
+                    raise ValueError("bundled native inventory owner has no unique SPDX identity: " + path)
+                actual["component_spdx_id"] = matches[0]["SPDXID"]
+                contains_package(document, parent, matches[0]["SPDXID"])
+                spdx_file(document, matches[0]["SPDXID"], path, actual["sha256"])
+
+
+def identify_first_party(component, archive, members, revision, document):
+    source_root = ROOT / component["source_path"]
+    excluded = component.get("exclude", [])
+    paths = sorted(source_root.rglob("*")) if source_root.is_dir() else [source_root]
+    expected = {}
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(source_root).as_posix() if source_root.is_dir() else ""
+        if ("__pycache__" in path.parts or path.suffix == ".pyc"
+                or any(relative == prefix or relative.startswith(prefix + "/") for prefix in excluded)):
+            continue
+        installed = component["installed_path"] + ("/" + relative if relative else "")
+        expected[installed] = sha256(path)
+    if not expected:
+        raise ValueError("first-party component source files are absent")
+    installed_files = {path for path, member in members.items()
+                       if (path == component["installed_path"] or path.startswith(component["installed_path"] + "/"))
+                       and not member.isdir()}
+    if set(expected) != installed_files:
+        raise ValueError("first-party installed file set differs from its source: " + component["name"])
+    for path, checksum in expected.items():
+        data = read_member(archive, members, path)
+        if data is None or hashlib.sha256(data).hexdigest() != checksum:
+            raise ValueError("first-party installed file differs from its source: " + path)
+    notice = read_member(archive, members, component["notice"])
+    if notice is None or notice != (ROOT / "LICENSE").read_bytes():
+        raise ValueError("first-party license notice is absent or changed")
+    source = ReleaseIdentity.from_environment().source + ("/tree/" if source_root.is_dir() else "/blob/") + revision + "/" + component["source_path"]
+    record = component | {"version": revision, "source": source, "files": expected,
+                          "notices": ["notices/" + component["notice"]]}
+    identifier = add_spdx_package(document, record, source)
+    for path, checksum in expected.items():
+        spdx_file(document, identifier, path, checksum)
+    return record
 
 
 def verify_component_inputs(component):
     recipe = (ROOT / ("blender/Dockerfile" if component["name"] in ("Blender", "VirtualGL") else "Dockerfile")).read_text()
     for field in ("binary_sha256", "source_sha256", "asset_sha256"):
+        if field == "source_sha256" and component["name"] in ("Blender", "OrcaSlicer"):
+            continue
         if component.get(field) and component[field] not in recipe:
             raise ValueError("reviewed component checksum differs from its build recipe")
     if component["name"] == "Blender" and "ARG BLENDER_VERSION=" + component["version"] + "\n" not in recipe:
@@ -261,7 +573,8 @@ def collect_role(role, image, revision, output, sources):
     if spdx.get("spdxVersion") != "SPDX-2.3":
         raise ValueError("image SBOM must use SPDX 2.3")
     detected = {(canonical_name(item["name"]), item["version"]) for item in syft["artifacts"]}
-    components = json.loads((ROOT / "release/components.json").read_text())["components"]
+    component_manifest = json.loads((ROOT / "release/components.json").read_text())
+    components = component_manifest["components"]
     overrides = json.loads((ROOT / "release/python-sources.json").read_text())
     inventory, notices, ownership, installed_python = [], [], {}, []
     supplements = []
@@ -279,7 +592,7 @@ def collect_role(role, image, revision, output, sources):
                             digest.update(chunk)
                     inventory.append({"path": name, "sha256": digest.hexdigest(), "size": member.size,
                                       "elf": prefix == b"\x7fELF"})
-                    if NOTICE.search(PurePosixPath(name).name):
+                    if NOTICE.search(PurePosixPath(name).name) or name.startswith("usr/share/common-licenses/"):
                         target = role_dir / "notices" / name
                         target.parent.mkdir(parents=True, exist_ok=True)
                         with archive.extractfile(member) as stream, target.open("wb") as destination:
@@ -394,6 +707,12 @@ def collect_role(role, image, revision, output, sources):
                 component_notices = [path for path in notices if path.startswith(component["notice_prefix"])]
                 if not component_notices:
                     raise ValueError("required distributed component has no notice: " + component["name"])
+                if any(path not in notices for path in component.get("required_notices", [])):
+                    raise ValueError("required distributed component license notice is absent")
+                for path, checksum in component.get("notice_sha256", {}).items():
+                    data = read_member(archive, members, path)
+                    if data is None or hashlib.sha256(data).hexdigest() != checksum:
+                        raise ValueError("distributed component license notice differs from its reviewed source")
                 if component.get("asset_sha256"):
                     data = read_member(archive, members, component["paths"][0])
                     if hashlib.sha256(data).hexdigest() != component["asset_sha256"]:
@@ -401,9 +720,11 @@ def collect_role(role, image, revision, output, sources):
                 source = download_source(component["source_url"], sources, component.get("source_sha256"))
                 supplements.append(component | {"source": source, "notices": component_notices})
                 add_spdx_package(spdx, component, source["url"], component.get("asset_sha256"))
-                for path in members:
-                    if path.startswith(component["notice_prefix"]):
-                        ownership.setdefault(path, "bundle:" + component["name"] + "@" + component["version"])
+                supplements.extend(declared_build_materials(component, source, sources, spdx, role_dir / "notices"))
+                identify_bundled_native(component, inventory, ownership, spdx, supplements, sources)
+            for component in component_manifest.get("first_party_components", []):
+                if role in component["roles"]:
+                    supplements.append(identify_first_party(component, archive, members, revision, spdx))
             if role == "server":
                 font = ROOT / "crates/printable-imaging/assets/FiraSans-Regular.ttf"
                 notice = "usr/share/doc/printable/LICENSE-Fira-OFL.txt"

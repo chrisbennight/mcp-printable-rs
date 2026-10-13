@@ -16,7 +16,8 @@ import zlib
 
 from release_build_materials import BINARIES, auditable_dependencies, collect
 from release_evidence import (archive_members, canonical_path, collect_role, debian_packages,
-                              download_source, file_index, python_source, read_member, write_json)
+                              declared_build_materials, download_source, file_index, identify_bundled_native, identify_first_party,
+                              python_source, read_member, write_json)
 from release_evidence_record import seal
 from release_identity import ReleaseIdentity
 from release_record import ROLES
@@ -193,10 +194,11 @@ class SourceLocatorTests(unittest.TestCase):
 
 
 class ImageInventoryTests(unittest.TestCase):
-    def run_collector(self, directory, change=None):
+    def run_collector(self, directory, change=None, components=None):
         root = Path(directory)
         (root / "release").mkdir()
-        write_json(root / "release/components.json", {"components": []})
+        write_json(root / "release/components.json", {"components": components or []})
+        (root / "Dockerfile").write_text("")
         write_json(root / "release/python-sources.json", {})
         (root / "crates/printable-imaging/assets").mkdir(parents=True)
         (root / "crates/printable-imaging/assets/FiraSans-Regular.ttf").write_bytes(b"font")
@@ -242,7 +244,8 @@ class ImageInventoryTests(unittest.TestCase):
         sources = output / "sources"
         sources.mkdir(parents=True)
         with patch("release_evidence.ROOT", root), patch("release_evidence.image_archive", side_effect=export), \
-                patch("release_evidence.subprocess.run", side_effect=scanner):
+                patch("release_evidence.subprocess.run", side_effect=scanner), \
+                patch("release_evidence.download_source", return_value={"url": "https://github.com/owner/source", "sha256": "c" * 64}):
             collect_role("server", IMAGE, REVISION, output, sources)
         return output
 
@@ -265,12 +268,190 @@ class ImageInventoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no inventory owner"):
                 self.run_collector(directory, lambda files: files.update({"opt/unknown.so": b"\x7fELFunknown"}))
 
+    def test_approved_distribution_directory_does_not_identify_an_added_library(self):
+        component = {"name": "Example bundle", "version": "1.0", "roles": ["server"],
+                     "license": "MIT", "source_url": "https://github.com/owner/source",
+                     "paths": ["opt/example/AppRun"], "notice_prefix": "opt/example/"}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "individual component identity"):
+            self.run_collector(directory, lambda files: files.update({"opt/example/AppRun": b"launcher",
+                "opt/example/LICENSE": b"notice", "opt/example/libunknown.so": b"\x7fELFunknown"}), [component])
+
     def test_missing_native_sources_and_changed_binary_fail(self):
         for change in (lambda files: files.pop("usr/share/doc/printable/build/native-sources.tar.gz"),
                        lambda files: files.update({"usr/local/bin/printable-server": b"\x7fELFchanged"})):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
                 with self.assertRaises(ValueError):
                     self.run_collector(directory, change)
+
+
+class BundledComponentTests(unittest.TestCase):
+    def test_declared_static_material_does_not_claim_confirmed_runtime_linkage(self):
+        spec = b'set(FFTW_VERSION 3.3.10)\nset(FFTW_URI\n https://fftw.org/fftw-${FFTW_VERSION}.tar.gz\n)\nset(FFTW_LICENSE SPDX:GPL-2.0-or-later)\nset(FFTW_HASH abcdef)\nset(FFTW_HASH_TYPE MD5)\nset(LLVM_VERSION 20.1.8)\nset(LLVM_LICENSE SPDX:Apache-2.0 WITH LLVM-exception)\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / ("c" * 64)
+            make_archive(archive, {"blender/build/versions.cmake": spec, "blender/extern/vendor/LICENSE": b"MIT notice",
+                                  "blender/extern/vendor/source.h": b"actual vendored source"})
+            source = {"sha256": "c" * 64, "url": "https://download.blender.org/source/blender.tar.xz"}
+            component = {"name": "Blender", "version": "5.2.0", "license": "GPL-3.0-or-later",
+                         "build_inventory": {"kind": "blender-cmake", "path": "build/versions.cmake",
+                                             "sha256": hashlib.sha256(spec).hexdigest()}}
+            notice_root = root / "notices"
+            notice_root.mkdir()
+            (notice_root / "licenses.md").write_text('## Fonts\n| [Font](https://example.org/font) | [SIL](https://spdx.org/licenses/OFL-1.1.html) |\n'
+                '## [MIT](https://spdx.org/licenses/MIT.html)\n| [Vendor](https://example.org/vendor) | 1.2.3 | Copyright vendor |\n')
+            component["build_inventory"]["license_inventory"] = "licenses.md"
+            document = {}
+            records = declared_build_materials(component, source, root, document, notice_root)
+            self.assertEqual(records[0]["version"], "3.3.10")
+            self.assertEqual(records[0]["source"], "https://fftw.org/fftw-3.3.10.tar.gz")
+            self.assertEqual(records[0]["classification"], "declared build material")
+            self.assertEqual(next(item for item in records if item["upstream_name"] == "LLVM")["license"], "Apache-2.0 WITH LLVM-exception")
+            vendor = next(item for item in records if item.get("upstream_name") == "vendor")
+            self.assertEqual(vendor["version"], "1.2.3")
+            self.assertEqual(vendor["source_subdirectory"], "extern/vendor/")
+            self.assertEqual(vendor["source_notices"], ["extern/vendor/LICENSE"])
+            declarations = next(item["declared_components"] for item in records if "declared_components" in item)
+            self.assertNotIn("declared_version", declarations[0])
+            self.assertNotIn("native_files", records[0])
+            self.assertIn("not independently confirmed", records[0]["binary_linkage"])
+            self.assertTrue(any(item["relationshipType"] == "BUILD_DEPENDENCY_OF" for item in document["relationships"]))
+            component["build_inventory"]["sha256"] = "d" * 64
+            with self.assertRaisesRegex(ValueError, "build specification"):
+                declared_build_materials(component, source, root, {})
+
+    def test_declared_orca_sources_retain_hashes_and_vendored_notices_without_inventing_versions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_archive(root / ("c" * 64), {"orca/deps/ZLIB/ZLIB.cmake":
+                b'URL https://github.com/madler/zlib/archive/refs/tags/v1.2.13.zip\nURL_HASH SHA256=' + b'd' * 64 + b'\n',
+                "orca/deps/wxWidgets/wxWidgets.cmake": b'GIT_REPOSITORY https://github.com/owner/wx\nGIT_TAG v3.3.2\n',
+                "orca/deps_src/embedded/LICENSE": b"actual embedded license", "orca/deps_src/embedded/source.h": b"source"})
+            source = {"sha256": "c" * 64, "url": "https://github.com/owner/OrcaSlicer/archive/" + REVISION + ".tar.gz"}
+            component = {"name": "OrcaSlicer", "version": "release", "license": "AGPL-3.0-only",
+                         "build_inventory": {"kind": "orca-cmake", "declared_versions": {"ZLIB": "1.2.13"},
+                             "source_overrides": {"wxWidgets": {"source": "https://github.com/owner/wx/archive/" + REVISION + ".tar.gz",
+                                 "source_commit": REVISION, "declared_source_ref": "v3.3.2",
+                                 "source_resolution": "Observed declared branch; compiled commit unconfirmed."}}}}
+            document = {}
+            records = declared_build_materials(component, source, root, document)
+            external = next(item for item in records if item["upstream_name"] == "ZLIB")
+            vendored = next(item for item in records if item["upstream_name"] == "embedded")
+            self.assertEqual(external["version"], "1.2.13")
+            self.assertEqual(external["source_checksum"]["value"], "d" * 64)
+            self.assertEqual(vendored["source_notices"], ["deps_src/embedded/LICENSE"])
+            self.assertNotIn("version", vendored)
+            package = next(item for item in document["packages"] if "vendored source" in item["name"])
+            self.assertNotIn("versionInfo", package)
+            self.assertTrue(package["sourceInfo"].endswith("#sha256=" + "c" * 64))
+            wx = next(item for item in records if item["upstream_name"] == "wxWidgets")
+            self.assertEqual(wx["source_commit"], REVISION)
+            self.assertIn("compiled commit unconfirmed", wx["description"])
+            component["build_inventory"]["source_overrides"]["wxWidgets"]["declared_source_ref"] = "different"
+            with self.assertRaisesRegex(ValueError, "source revision"):
+                declared_build_materials(component, source, root, {})
+
+    def fixture(self):
+        digest = hashlib.sha256(b"native library").hexdigest()
+        native = {"name": "Actual upstream library", "version": "2.3.4", "license": "MIT",
+                  "source_url": "https://github.com/owner/library/archive/v2.3.4.tar.gz",
+                  "source_checksum": {"algorithm": "SHA256", "value": "c" * 64},
+                  "native_files": [{"path": "opt/bundle/library.so.9", "sha256": digest}]}
+        component = {"name": "Distribution", "version": "1.0", "license": "GPL-3.0-or-later",
+                     "source_url": "https://github.com/owner/distribution/archive/v1.0.tar.gz",
+                     "notice_prefix": "opt/bundle/", "native_components": [native]}
+        inventory = [{"path": "opt/bundle/library.so.9", "sha256": digest, "elf": True}]
+        return component, inventory
+
+    def test_file_identity_retains_upstream_version_source_and_distribution_relationship(self):
+        component, inventory = self.fixture()
+        document, ownership, supplements = {}, {}, []
+        identify_bundled_native(component, inventory, ownership, document, supplements)
+        library = next(item for item in document["packages"] if item["name"] == "Actual upstream library")
+        distribution = next(item for item in document["packages"] if item["name"] == "Distribution")
+        self.assertEqual(library["versionInfo"], "2.3.4")
+        self.assertTrue(library["sourceInfo"].endswith("#sha256=" + "c" * 64))
+        self.assertEqual(inventory[0]["distribution_owner"], "Distribution@1.0")
+        self.assertEqual(inventory[0]["component_spdx_id"], library["SPDXID"])
+        self.assertEqual(ownership[inventory[0]["path"]], "component:Actual upstream library@2.3.4")
+        self.assertIn({"spdxElementId": distribution["SPDXID"], "relationshipType": "CONTAINS",
+                       "relatedSpdxElement": library["SPDXID"]}, document["relationships"])
+        self.assertEqual(document["files"][0]["checksums"][0]["checksumValue"], inventory[0]["sha256"])
+
+    def test_unknown_changed_missing_and_ambiguous_native_files_fail(self):
+        for change in (lambda c, i: i.append({"path": "opt/bundle/unknown.so", "sha256": "d" * 64, "elf": True}),
+                       lambda c, i: i[0].update(sha256="d" * 64), lambda c, i: i.clear(),
+                       lambda c, i: c["native_components"].append(dict(c["native_components"][0])),
+                       lambda c, i: c["native_components"][0].update(source_url=""),
+                       lambda c, i: c["native_components"][0].update(version="")):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                component, inventory = self.fixture()
+                change(component, inventory)
+                identify_bundled_native(component, inventory, {}, {}, [])
+
+    def test_native_source_descriptor_is_retained_and_missing_custom_license_fails(self):
+        component, inventory = self.fixture()
+        native = component["native_components"][0]
+        native["retain_source_descriptor"] = True
+        supplements = []
+        with patch("release_evidence.download_source", return_value={"retained": "sources/" + "c" * 64}) as download:
+            identify_bundled_native(component, inventory, {}, {}, supplements, Path("sources"))
+        self.assertEqual(download.call_args.args[2], "c" * 64)
+        self.assertEqual(supplements[0]["retained_source_descriptor"]["retained"], "sources/" + "c" * 64)
+        native.pop("retain_source_descriptor")
+        native["license"] = "LicenseRef-example"
+        with self.assertRaisesRegex(ValueError, "custom license text"):
+            identify_bundled_native(component, inventory, {}, {}, [])
+
+    def test_first_party_installed_files_and_license_match_the_commit_sources(self):
+        for change in (None, "missing", "changed", "extra", "notice"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "addon").mkdir()
+                (root / "addon/bridge.py").write_bytes(b"actual source")
+                (root / "addon/tests").mkdir()
+                (root / "addon/tests/test.py").write_bytes(b"excluded test")
+                (root / "LICENSE").write_bytes(b"MIT source license")
+                files = {"opt/printable/addon/bridge.py": b"actual source", "usr/share/doc/printable/LICENSE": b"MIT source license"}
+                if change == "missing": files.pop("opt/printable/addon/bridge.py")
+                elif change == "changed": files["opt/printable/addon/bridge.py"] = b"changed"
+                elif change == "extra": files["opt/printable/addon/untracked.py"] = b"extra"
+                elif change == "notice": files["usr/share/doc/printable/LICENSE"] = b"wrong license"
+                component = {"name": "Printable bridge", "source_path": "addon", "installed_path": "opt/printable/addon",
+                             "exclude": ["tests"], "license": "MIT", "notice": "usr/share/doc/printable/LICENSE"}
+                fixture = root / "image.tar"
+                make_archive(fixture, files)
+                with patch("release_evidence.ROOT", root), tarfile.open(fixture) as archive:
+                    members, document = archive_members(archive), {}
+                    if change:
+                        with self.assertRaisesRegex(ValueError, "first-party"):
+                            identify_first_party(component, archive, members, REVISION, document)
+                    else:
+                        record = identify_first_party(component, archive, members, REVISION, document)
+                        self.assertEqual(record["version"], REVISION)
+                        self.assertEqual(record["source"], ReleaseIdentity.source + "/tree/" + REVISION + "/addon")
+                        self.assertEqual(document["packages"][0]["licenseDeclared"], "MIT")
+                        self.assertEqual(set(record["files"]), {"opt/printable/addon/bridge.py"})
+                        self.assertEqual(len(document["files"]), 1)
+
+    def test_first_party_launcher_uses_exact_installed_bytes_and_file_source_locator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            (root / "scripts/launcher").write_bytes(b"#!/bin/sh\nexec python3 bridge\n")
+            (root / "LICENSE").write_bytes(b"MIT notice")
+            fixture = root / "image.tar"
+            make_archive(fixture, {"opt/printable/launcher": (root / "scripts/launcher").read_bytes(),
+                                   "usr/share/doc/printable/LICENSE": b"MIT notice"})
+            component = {"name": "Printable launcher", "source_path": "scripts/launcher",
+                         "installed_path": "opt/printable/launcher", "license": "MIT",
+                         "notice": "usr/share/doc/printable/LICENSE"}
+            with patch("release_evidence.ROOT", root), tarfile.open(fixture) as archive:
+                document = {}
+                record = identify_first_party(component, archive, archive_members(archive), REVISION, document)
+            self.assertEqual(record["source"], ReleaseIdentity.source + "/blob/" + REVISION + "/scripts/launcher")
+            self.assertEqual(document["files"][0]["checksums"][0]["checksumValue"],
+                             hashlib.sha256((root / "scripts/launcher").read_bytes()).hexdigest())
 
 
 class SignedEvidenceTests(unittest.TestCase):

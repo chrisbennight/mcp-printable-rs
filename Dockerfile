@@ -75,6 +75,7 @@ RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisb
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
 COPY --from=build /release-materials /usr/share/doc/printable/build
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
+COPY release/notices/orca /opt/orca/licenses
 ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
