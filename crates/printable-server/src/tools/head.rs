@@ -1275,6 +1275,12 @@ pub(super) async fn reconstruct(
             scalp: request.scalp.unwrap_or_default(),
             hair_colour: request.hair_colour,
             lighting: request.lighting.unwrap_or_default(),
+            size: request
+                .texture_size
+                .map_or(COLOUR_MAP_TEXELS, |size| size as usize),
+            eyes: request.eyes.unwrap_or_default(),
+            iris_colour: request.iris_colour,
+            sclera_colour: request.sclera_colour,
         };
         let views = field("views");
         let digests = field("image_sha256");
@@ -1331,8 +1337,13 @@ fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, Strin
     Ok((snapshot, digest))
 }
 
-/// Side of the colour map in texels.
+/// Side of the colour map in texels unless the caller chooses another.
 const COLOUR_MAP_TEXELS: usize = 1024;
+/// Painted eyes: life-size iris and pupil diameters in metres, the model's
+/// units, and the default colour of the white.
+const PAINTED_IRIS_M: f32 = 0.0115;
+const PAINTED_PUPIL_M: f32 = 0.004;
+const DEFAULT_SCLERA_RGB: [u8; 3] = [240, 236, 230];
 /// Largest photograph decoded for the colour map, in pixels.
 const MAX_PHOTO_PIXELS: u64 = 50_000_000;
 
@@ -1383,6 +1394,10 @@ struct Colouring {
     scalp: crate::recon::ScalpChoice,
     hair_colour: Option<[u8; 3]>,
     lighting: crate::recon::LightingChoice,
+    size: usize,
+    eyes: crate::recon::EyeChoice,
+    iris_colour: Option<[u8; 3]>,
+    sclera_colour: Option<[u8; 3]>,
 }
 
 /// Decode a view's labels: a square greyscale PNG whose values name the
@@ -1559,7 +1574,7 @@ fn colour_map(
     let mut builder = texture::ColourMapBuilder::new(
         model.faces(),
         layout,
-        COLOUR_MAP_TEXELS,
+        colouring.size,
         &kinds,
         texture::Colouring {
             scalp,
@@ -1570,6 +1585,33 @@ fn colour_map(
         },
     )
     .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let knows_eyes = kinds.contains(&texture::FaceKind::Eye);
+    if colouring.eyes == crate::recon::EyeChoice::Painted && knows_eyes {
+        // The eyes are painted on the fitted head at rest, where each looks
+        // along +z.
+        let first = views.first().ok_or_else(|| {
+            ToolError::Validation("the reconstruction worker described no photographs".into())
+        })?;
+        let rest = model
+            .evaluate(&FlameParams {
+                identity: first.shape.clone(),
+                expression: Vec::new(),
+                pose: Pose::default(),
+                translation: [0.0; 3],
+            })
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        builder
+            .paint_eyes(
+                &rest.vertices,
+                texture::PaintedEyes {
+                    iris: colouring.iris_colour,
+                    sclera: colouring.sclera_colour.unwrap_or(DEFAULT_SCLERA_RGB),
+                    iris_diameter: PAINTED_IRIS_M,
+                    pupil_diameter: PAINTED_PUPIL_M,
+                },
+            )
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+    }
     let mut segmented = 0usize;
     // One photograph at a time: each is read, decoded, projected and dropped
     // before the next.
@@ -1647,6 +1689,24 @@ fn colour_map(
     if let Some(note) = note {
         scalp_report["note"] = json!(note);
     }
+    let mut eye_report = json!({"requested": colouring.eyes});
+    match map.iris {
+        Some((iris, source)) => {
+            eye_report["applied"] = json!("painted");
+            eye_report["iris_colour"] = json!(iris);
+            eye_report["iris_source"] = json!(match source {
+                texture::IrisSource::Given => "given",
+                texture::IrisSource::Measured => "measured",
+                texture::IrisSource::Default => "default",
+            });
+        }
+        None => {
+            eye_report["applied"] = json!("photo");
+            if colouring.eyes == crate::recon::EyeChoice::Painted {
+                eye_report["note"] = json!("the model has no separate eyeballs to paint");
+            }
+        }
+    }
     Ok(json!({
         "artifact": artifact,
         "width": side,
@@ -1654,6 +1714,7 @@ fn colour_map(
         "seen": map.seen,
         "skin_only": segmented == views.len(),
         "scalp": scalp_report,
+        "eyes": eye_report,
         "lighting": {
             "requested": colouring.lighting,
             // Each photograph's shading in linear light, as ambient plus

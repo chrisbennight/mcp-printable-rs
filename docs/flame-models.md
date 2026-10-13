@@ -743,8 +743,9 @@ coefficients and variant. See [Surface detail](#surface-detail).
 
 ### Colour map
 
-With `texture_path`, `reconstruct` also writes a 1024 by 1024 RGB PNG colour
-map in FLAME's texture layout. It needs the FLAME 2020 generic model converted
+With `texture_path`, `reconstruct` also writes a square RGB PNG colour map in
+FLAME's texture layout, 1024 texels on each side unless `texture_size` asks
+for 512 or 2048. It needs the FLAME 2020 generic model converted
 with `--texture`, and `overwrite` applies to it as to the displacement map. The
 colour comes from the photographs themselves:
 
@@ -758,7 +759,10 @@ colour comes from the photographs themselves:
    outline never matches the real one exactly, and the background lies just
    beyond it. Skin takes colour only from pixels labelled skin, so hair over
    the forehead or ears and clothing over the neck are left out. The eyeballs
-   take colour from anything but hair, clothing and background.
+   take colour from anything but hair, clothing and background. A point on an
+   eyeball counts as hidden when it lies more than 0.5 mm behind the nearest
+   surface, against 2 mm elsewhere, so the eyelids just in front of the
+   eyeballs do not colour them.
 4. Photographs are blended by how squarely they see each point.
 5. Surface that no photograph sees, such as the back of the head, is filled
    smoothly across the head's surface from the colour around it. Skin is
@@ -779,11 +783,35 @@ the photographs by how much hair each shows. `hair_colour`, an sRGB triple from
 the FLAME 2020 generic model must be converted with `--masks`; without its
 regions the whole head is coloured as skin, and the response says so.
 
+`eyes` chooses how the eyeballs are coloured:
+
+| Value | Eye colour |
+| --- | --- |
+| `photo` (default) | from the photographs, where they show the eyeball itself |
+| `painted` | a clean iris and pupil around each eye's gaze, and white elsewhere |
+
+Painted eyes are painted on the fitted head at rest, where each eye looks
+straight ahead, with a life-size iris 11.5 mm and pupil 4 mm across, so
+`pose.left_eye` and `pose.right_eye` turn them with the eyeballs. The iris
+darkens toward its edge, the pupil is near black, and the edges are blended.
+`iris_colour`, an sRGB triple from 0 to 255, sets the iris colour. Otherwise
+it is measured from the photographs. Each eye's iris is found where the
+darkness of its photographed eyeball is centred, which allows for a subject
+who looked aside. The colour is then the middle half, by luminance, of the
+photographed texels between about half and most of the iris's radius from
+there, which leaves out the pupil, reflections and lashes. Where too little
+of the iris was seen, a mid brown (96, 66, 42) is used. `sclera_colour` sets
+the white, by default (240, 236, 230). Painting needs separate eyeballs: the
+model's eyeball regions, from `--masks`, or otherwise its parts beside the
+head. Without them nothing is painted, and the response says so.
+
 The response adds `texture` with the artifact, its size and `seen`, the share
 of the head's surface whose colour some photograph gave directly. `skin_only`
 says whether every photograph was segmented. `scalp` reports the colouring
 requested and applied, the hair colour used and the hair colour found, and a
-`note` when the colouring applied differs from the one requested. The server reads the
+`note` when the colouring applied differs from the one requested. `eyes`
+reports the colouring requested and applied, and for painted eyes the iris
+colour used and `iris_source`: `given`, `measured` or `default`. The server reads the
 photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
 stops the colour map instead of misplacing it. The server makes one colour map
@@ -831,6 +859,14 @@ skin-coloured ears and neck, the scalp in the hair colour found, and the
 photograph's centre parting as bare scalp. Renders of the textured head
 matched the photograph's eyes, brows, nose and mouth, and the filled back of
 the head showed no seams.
+
+On the same photograph, maps 512, 1024 and 2048 texels on a side took 0.7,
+1.0 and 2.0 seconds and were 0.15, 0.47 and 1.4 MB, well within the 12 MiB
+colour map that `create` accepts. With the tighter visibility test for the
+eyeballs, most of the eyelid and lash colour along the lower edge of each eye
+opening was gone. Painted eyes showed a clean iris, pupil and white in each
+eye. The measured iris colour was (138, 116, 80), the amber khaki that the
+photograph's hazel iris has in the map.
 
 On the same photograph, removing the lighting reduced the difference in
 brightness between the forehead, the cheeks and the jaw from 44 to 18 levels
