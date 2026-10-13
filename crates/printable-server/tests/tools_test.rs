@@ -5877,6 +5877,26 @@ fn open_tetrahedron_library(
 }
 
 #[tokio::test]
+async fn head_prepare_print_scales_the_default_edge_with_a_small_bust() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (height, edge) in [(25.0, 0.1), (50.0, 0.2), (150.0, 0.4)] {
+        let path = format!("bust-{height}.stl");
+        let result = server
+            .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+                "path": path, "height_mm": height, "max_triangles": 100_000
+            }})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let requested = value["bust"]["requested_edge_length_mm"].as_f64().unwrap();
+        assert!((requested - edge).abs() < 1e-9, "{height}: {value}");
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_follows_the_printer() {
     let (_models, library) = open_tetrahedron_library(false);
     let root = tempfile::tempdir().unwrap();
@@ -5990,6 +6010,53 @@ async fn head_prepare_print_follows_the_printer() {
         assert!(value["bust"].get(key).is_none(), "{value}");
     }
     assert!(value["bust"]["life_size_fraction"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn head_prepare_print_adds_a_body_below_the_head() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (path, extra, kind, height) in [
+        (
+            "neck.stl",
+            json!({"body": "extended_neck", "neck_extension_mm": 8.0}),
+            "extended_neck",
+            Some(8.0),
+        ),
+        (
+            "shoulders.stl",
+            json!({"body": "shoulders"}),
+            "shoulders",
+            None,
+        ),
+    ] {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+        assert_eq!(
+            value["validation"]["topology"]["connected_components"], 1,
+            "{value}"
+        );
+        assert!((value["bust"]["size_mm"][2].as_f64().unwrap() - 50.0).abs() < 1e-6);
+        let body = &value["bust"]["body"];
+        assert_eq!(body["kind"], kind, "{value}");
+        if let Some(height) = height {
+            assert_eq!(body["height_mm"], height, "{value}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -6519,6 +6586,38 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
         (
             json!({"path": "head.stl", "mouth": "recessed", "mouth_recess_mm": 20.0}),
             "mouth_recess_mm",
+        ),
+        (
+            json!({"path": "head.stl", "pupil_diameter_mm": 1.0}),
+            "need eyes pupil or iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "iris_diameter_mm": 3.0}),
+            "iris_diameter_mm needs eyes iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "pupil_diameter_mm": 20.0}),
+            "pupil_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "iris_and_pupil", "eye_detail_depth_mm": 0.0}),
+            "eye_detail_depth_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil"}),
+            "no separate eyeballs",
+        ),
+        (
+            json!({"path": "head.stl", "neck_extension_mm": 10.0}),
+            "needs body extended_neck",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "shoulder_width_mm": 80.0}),
+            "need body shoulders",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "neck_extension_mm": 500.0}),
+            "neck_extension_mm",
         ),
         (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),

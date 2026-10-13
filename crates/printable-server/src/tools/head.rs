@@ -5,7 +5,9 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, Hollow, Plinth, PrintChecks};
+use printable_geom::{
+    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
+};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -19,6 +21,8 @@ const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
 /// on a 100 mm bust, below what a 0.2 mm nozzle reproduces.
 const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
 const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
+/// Busts under 100 mm default to facets this share of their height.
+const EDGE_LENGTH_SHARE: f64 = 0.004;
 const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
@@ -39,6 +43,15 @@ const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
 const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
 const EXPRESSION_SCALE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
+const PUPIL_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.2..=10.0;
+const IRIS_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
+const EYE_DETAIL_DEPTH_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+const NECK_EXTENSION_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+const SHOULDER_WIDTH_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
+const SHOULDER_DEPTH_MM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+const SHOULDER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+/// Carved eye detail is at least this many layers deep.
+const EYE_DETAIL_LAYERS: f64 = 2.0;
 const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
 /// The model region over which detail fades out on a closed or recessed
 /// mouth, so that the lips are not raised into a ridge where they meet.
@@ -275,6 +288,51 @@ pub(super) struct HeadPreparePrintParams {
     /// 10 mm (default 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mouth_recess_mm: Option<f64>,
+    /// How the eyes are carved, centred on each eye's gaze: `plain` (the
+    /// default) leaves them smooth, `pupil` drills the pupil, and
+    /// `iris_and_pupil` also engraves a ring at the edge of the iris.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyes: Option<EyeStyle>,
+    /// Pupil diameter on the finished bust, 0.2 to 10 mm. Defaults to 4 mm at
+    /// life size scaled with the bust, and to no less than two nozzle widths
+    /// with an FDM `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pupil_diameter_mm: Option<f64>,
+    /// Iris diameter on the finished bust, 0.5 to 20 mm, for
+    /// `iris_and_pupil`. Defaults to 11.5 mm at life size scaled with the
+    /// bust, and wide enough to leave the printer's narrowest feature between
+    /// the ring and the pupil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iris_diameter_mm: Option<f64>,
+    /// How deep the pupil is drilled on the finished bust, 0.05 to 5 mm; the
+    /// ring is half as deep, and with a `printer` no shallower than two
+    /// layers. Defaults to 2 mm at life size scaled with the bust, and to no
+    /// less than two layers with a `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_detail_depth_mm: Option<f64>,
+    /// What stands below the head, within `height_mm` above any plinth:
+    /// `neck` (the default) ends at the neck's cut, `extended_neck` continues
+    /// the neck down along its own lean, and `shoulders` adds a block of
+    /// chest and shoulders. The head keeps at least half the height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<BodyShape>,
+    /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neck_extension_mm: Option<f64>,
+    /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
+    /// head's width, and at least 1.3 times the neck's. Shoulders too small to
+    /// hold the neck are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_width_mm: Option<f64>,
+    /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
+    /// head's depth, and at least 1.3 times the neck's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_depth_mm: Option<f64>,
+    /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_height_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -284,7 +342,8 @@ pub(super) struct HeadPreparePrintParams {
     /// (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     height_mm: Option<f64>,
-    /// Target facet edge length, 0.1 to 5 mm (default 0.4). Shorter edges
+    /// Target facet edge length, 0.1 to 5 mm. Defaults to 0.4, or to 0.4% of
+    /// `height_mm` on busts under 100 mm and no less than 0.1. Shorter edges
     /// follow the smooth surface more closely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
@@ -299,7 +358,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
     /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and never less than the neck section. Requires a plinth.
+    /// extent and reaches at least 1 mm beyond the bust's base. Requires a
+    /// plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
     /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
@@ -341,6 +401,36 @@ pub(super) enum MouthShape {
     Closed,
     /// With the surface closing the mouth set back into the head.
     Recessed,
+}
+
+/// What stands below the head of a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BodyShape {
+    /// The neck as cut.
+    #[default]
+    Neck,
+    /// The neck continued down along its own lean.
+    ExtendedNeck,
+    /// A block of chest and shoulders.
+    Shoulders,
+}
+
+/// How the eyes of a bust are carved.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum EyeStyle {
+    /// Smooth, as modelled.
+    #[default]
+    Plain,
+    /// A drilled pupil.
+    Pupil,
+    /// A drilled pupil within an engraved iris ring.
+    IrisAndPupil,
 }
 
 /// How the bust will be printed.
@@ -692,9 +782,13 @@ pub(super) async fn prepare_print(
         params.height_mm.unwrap_or(DEFAULT_PRINT_HEIGHT_MM),
         &PRINT_HEIGHT_MM,
     )?;
+    // A small bust keeps the same detail relative to its size: thin parts
+    // such as the ears stay several facets thick.
+    let default_edge =
+        (EDGE_LENGTH_SHARE * height_mm).clamp(*EDGE_LENGTH_MM.start(), DEFAULT_EDGE_LENGTH_MM);
     let edge_length_mm = in_range(
         "edge_length_mm",
-        params.edge_length_mm.unwrap_or(DEFAULT_EDGE_LENGTH_MM),
+        params.edge_length_mm.unwrap_or(default_edge),
         &EDGE_LENGTH_MM,
     )?;
     let max_triangles = in_range(
@@ -795,6 +889,101 @@ pub(super) async fn prepare_print(
             }
         }
     }
+    let eye_style = params.eyes.unwrap_or_default();
+    let eye_sizes = [
+        params.pupil_diameter_mm,
+        params.iris_diameter_mm,
+        params.eye_detail_depth_mm,
+    ];
+    if eye_style == EyeStyle::Plain && eye_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "pupil_diameter_mm, iris_diameter_mm and eye_detail_depth_mm need eyes pupil or iris_and_pupil".into(),
+        ));
+    }
+    if eye_style == EyeStyle::Pupil && params.iris_diameter_mm.is_some() {
+        return Err(ToolError::Validation(
+            "iris_diameter_mm needs eyes iris_and_pupil".into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "pupil_diameter_mm",
+            params.pupil_diameter_mm,
+            &PUPIL_DIAMETER_MM,
+        ),
+        (
+            "iris_diameter_mm",
+            params.iris_diameter_mm,
+            &IRIS_DIAMETER_MM,
+        ),
+        (
+            "eye_detail_depth_mm",
+            params.eye_detail_depth_mm,
+            &EYE_DETAIL_DEPTH_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let shoulder_sizes = [
+        params.shoulder_width_mm,
+        params.shoulder_depth_mm,
+        params.shoulder_height_mm,
+    ];
+    let body_shape = params.body.unwrap_or_default();
+    if body_shape != BodyShape::ExtendedNeck && params.neck_extension_mm.is_some() {
+        return Err(ToolError::Validation(
+            "neck_extension_mm needs body extended_neck".into(),
+        ));
+    }
+    if body_shape != BodyShape::Shoulders && shoulder_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "shoulder_width_mm, shoulder_depth_mm and shoulder_height_mm need body shoulders"
+                .into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "neck_extension_mm",
+            params.neck_extension_mm,
+            &NECK_EXTENSION_MM,
+        ),
+        (
+            "shoulder_width_mm",
+            params.shoulder_width_mm,
+            &SHOULDER_WIDTH_MM,
+        ),
+        (
+            "shoulder_depth_mm",
+            params.shoulder_depth_mm,
+            &SHOULDER_DEPTH_MM,
+        ),
+        (
+            "shoulder_height_mm",
+            params.shoulder_height_mm,
+            &SHOULDER_HEIGHT_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let body = match body_shape {
+        BodyShape::Neck => None,
+        BodyShape::ExtendedNeck => Some(Body {
+            kind: BodyKind::ExtendedNeck,
+            height_mm: params.neck_extension_mm,
+            width_mm: None,
+            depth_mm: None,
+        }),
+        BodyShape::Shoulders => Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: params.shoulder_height_mm,
+            width_mm: params.shoulder_width_mm,
+            depth_mm: params.shoulder_depth_mm,
+        }),
+    };
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -822,6 +1011,19 @@ pub(super) async fn prepare_print(
         pose,
     )
     .await?;
+    let eyes = match eye_style {
+        EyeStyle::Plain => None,
+        EyeStyle::Pupil | EyeStyle::IrisAndPupil => Some(EyeCarving {
+            eyes: eye_axes(&model, &head).await?,
+            iris_ring: eye_style == EyeStyle::IrisAndPupil,
+            pupil_diameter_mm: params.pupil_diameter_mm,
+            iris_diameter_mm: params.iris_diameter_mm,
+            depth_mm: params.eye_detail_depth_mm,
+            smallest_mm: printer
+                .and_then(|printer| printer.nozzle_diameter_mm.or(printer.minimum_wall_mm)),
+            shallowest_mm: printer.map(|printer| EYE_DETAIL_LAYERS * printer.layer_height_mm),
+        }),
+    };
     // A closed or recessed mouth takes no detail on the lips, when the model
     // knows where they are.
     let faded = match mouth {
@@ -878,6 +1080,8 @@ pub(super) async fn prepare_print(
             overhang_degrees: printer.maximum_overhang_degrees,
             min_feature_mm: printer.minimum_wall_mm,
         }),
+        eyes,
+        body,
         mouth_recess_mm,
     };
     let variant = model.info().variant.clone();
@@ -929,6 +1133,13 @@ pub(super) async fn prepare_print(
             applied["filter"] = filter;
         }
         name_regions(&model, &head_vertices, &mut report);
+        if let Some(carved) = report.get_mut("eyes") {
+            carved["style"] = json!(eye_style);
+            if carved["removed_mm3"].as_f64().is_some_and(|removed| removed <= 0.0) {
+                carved["note"] =
+                    json!("the head's surface covers the eyes where they would be carved; nothing was removed");
+            }
+        }
         let mut response = json!({
             "artifact": artifact,
             "units": "millimetres",
@@ -952,6 +1163,89 @@ pub(super) async fn prepare_print(
             response["mouth"] = mouth;
         }
         Ok::<_, ToolError>(response)
+    })
+    .await
+}
+
+/// Each eyeball's centre and the point where its gaze leaves it, in
+/// millimetres. The eyeballs are the parts separate from the head, and the
+/// gaze leaves each through its vertex furthest forward when the head is at
+/// rest, which the eye's rotation carries with it.
+async fn eye_axes(model: &Arc<FlameModel>, head: &PosedHead) -> Result<Vec<EyeAxis>, ToolError> {
+    let model = Arc::clone(model);
+    let posed = millimetres(&head.vertices);
+    blocking(move || {
+        let faces = model.faces();
+        let mut parent: Vec<usize> = (0..posed.len()).collect();
+        fn root(parent: &mut [usize], mut index: usize) -> usize {
+            while parent[index] != index {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            index
+        }
+        let minor = texture::minor_parts(faces);
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for pair in [[face[0], face[1]], [face[1], face[2]]] {
+                let (a, b) = (
+                    root(&mut parent, pair[0] as usize),
+                    root(&mut parent, pair[1] as usize),
+                );
+                parent[a] = b;
+            }
+        }
+        let mut parts: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        let mut seen = vec![false; posed.len()];
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for &vertex in face {
+                let vertex = vertex as usize;
+                if !std::mem::replace(&mut seen[vertex], true) {
+                    let part = root(&mut parent, vertex);
+                    parts.entry(part).or_default().push(vertex);
+                }
+            }
+        }
+        if !(1..=2).contains(&parts.len()) {
+            return Err(ToolError::Validation(format!(
+                "the {} model has no separate eyeballs to carve",
+                model.info().variant
+            )));
+        }
+        let rest = model
+            .evaluate(&FlameParams::default())
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        Ok(parts
+            .into_values()
+            .map(|vertices| {
+                let count = vertices.len() as f64;
+                let centre = [0, 1, 2].map(|axis| {
+                    vertices
+                        .iter()
+                        .map(|&vertex| f64::from(posed[vertex][axis]))
+                        .sum::<f64>()
+                        / count
+                });
+                let pole = vertices
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| rest.vertices[a][2].total_cmp(&rest.vertices[b][2]))
+                    .expect("a part has vertices");
+                EyeAxis {
+                    centre,
+                    front: posed[pole].map(f64::from),
+                }
+            })
+            .collect())
     })
     .await
 }

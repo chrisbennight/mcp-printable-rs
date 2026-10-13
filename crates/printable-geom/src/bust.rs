@@ -13,6 +13,9 @@
 use std::collections::{HashMap, HashSet};
 
 use manifold_csg::{Manifold, MeshGL64, MeshGL64Options};
+use parry3d_f64::math::Vector;
+use parry3d_f64::query::{Ray, RayCast};
+use parry3d_f64::shape::TriMesh;
 use serde::{Deserialize, Serialize};
 
 use crate::print_check::{self, PrintChecks, SurfaceFinding};
@@ -42,8 +45,11 @@ const TRIANGLES_PER_AREA: f64 = 2.6;
 /// Round parts are faceted so that no chord is farther than this from the
 /// circle.
 const CIRCLE_TOLERANCE_MM: f64 = 0.01;
-/// A default plinth is this fraction of the bust's widest extent across.
+/// A default plinth is this fraction of the bust's widest extent across, and
+/// reaches at least this far beyond the base's outline, whose edge would
+/// otherwise touch the plinth's.
 const PLINTH_WIDTH_FRACTION: f64 = 0.7;
+const PLINTH_MARGIN_MM: f64 = 1.0;
 /// Marching tetrahedra with mean edge L yields about 3.1 triangles per unit
 /// of area divided by L squared; this allows a margin for the drain holes.
 const CAVITY_TRIANGLES_PER_AREA: f64 = 3.5;
@@ -57,6 +63,41 @@ const DRAIN_OVERLAP_MM: f64 = 1.0;
 const SECTION_OFFSET_MM: f64 = 0.01;
 /// Largest displacement map side accepted, in samples.
 const MAX_DISPLACEMENT_SIDE: usize = 1024;
+/// Unless sized, an extended neck is this share of the head's height, and
+/// shoulders are these shares of the head's height, width and depth.
+const NECK_EXTENSION_SHARE: f64 = 0.15;
+const SHOULDER_HEIGHT_SHARE: f64 = 0.35;
+const SHOULDER_WIDTH_SHARE: f64 = 1.6;
+const SHOULDER_DEPTH_SHARE: f64 = 0.9;
+/// The shoulders' top edge is this share of their height above their base,
+/// and their top is the neck's section reduced to this share of its size.
+const SHOULDER_LINE_SHARE: f64 = 0.6;
+const SHOULDER_TOP_SHARE: f64 = 0.9;
+/// Unsized shoulders are at least this share of the neck's span across, which
+/// holds any section of that span reduced to their top's share.
+const SHOULDER_NECK_SHARE: f64 = 1.3;
+/// The neck's direction is taken between its base and this share of the
+/// head's height above it, and a body leans at most this far from vertical.
+const NECK_DIRECTION_SHARE: f64 = 0.08;
+const MAX_LEAN_DEGREES: f64 = 30.0;
+/// A part beside the head, such as an eyeball, is joined to it by a hidden
+/// stem this share of its radius thick, reaching this share of its radius
+/// from its centre toward the head's, but no further than the head's centre.
+const STEM_RADIUS_SHARE: f64 = 0.35;
+const STEM_LENGTH_SHARE: f64 = 2.5;
+/// The head keeps at least this share of the height above any plinth.
+const MIN_HEAD_SHARE: f64 = 0.5;
+/// Life-size eye detail: a pupil 4 mm across, drilled 2 mm deep, in an iris
+/// 11.5 mm across, whose engraved ring is a tenth of the iris wide.
+const LIFE_PUPIL_MM: f64 = 4.0;
+const LIFE_PUPIL_DEPTH_MM: f64 = 2.0;
+const LIFE_IRIS_MM: f64 = 11.5;
+const RING_WIDTH_SHARE: f64 = 0.1;
+/// Eye detail must stay within these shares of the eyeball's radius: the
+/// pupil and the depth within half of it, the iris within nine tenths.
+const MAX_PUPIL_SHARE: f64 = 0.5;
+const MAX_IRIS_SHARE: f64 = 0.9;
+const MAX_DEPTH_SHARE: f64 = 0.5;
 /// A mouth cap's centre may be set back at most this fraction of the head's
 /// height, which keeps it well inside the head.
 const MAX_RECESS_FRACTION: f64 = 0.2;
@@ -102,12 +143,110 @@ pub struct BustRequest {
     /// Check the finished bust for overhangs and thin parts.
     #[serde(default)]
     pub checks: Option<PrintChecks>,
+    /// Carve each eye with a pupil and, optionally, an iris ring.
+    #[serde(default)]
+    pub eyes: Option<EyeCarving>,
+    /// A body below the head, within `height_mm` above any plinth.
+    #[serde(default)]
+    pub body: Option<Body>,
     /// Set the centre of the cap closing each opening other than the neck,
     /// the mouth, this many millimetres of the finished bust back into the
     /// head, along the cap's inward normal, so that an open mouth reads as a
     /// shadow rather than a flat surface.
     #[serde(default)]
     pub mouth_recess_mm: Option<f64>,
+}
+
+/// What stands below the head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyKind {
+    /// The neck continued down along its own direction.
+    ExtendedNeck,
+    /// A block of chest and shoulders below the neck.
+    Shoulders,
+}
+
+/// A body below the head, in millimetres on the finished bust. Unsized
+/// measures default to shares of the head's.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Body {
+    pub kind: BodyKind,
+    #[serde(default)]
+    pub height_mm: Option<f64>,
+    /// Shoulders only.
+    #[serde(default)]
+    pub width_mm: Option<f64>,
+    /// Shoulders only.
+    #[serde(default)]
+    pub depth_mm: Option<f64>,
+}
+
+/// The body added, in millimetres on the finished bust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BodyReport {
+    pub kind: BodyKind,
+    pub height_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_mm: Option<f64>,
+    /// How far the neck leans from vertical, which an extended neck follows.
+    pub lean_degrees: f64,
+}
+
+/// Carving for the eyes: a drilled pupil and, optionally, an engraved ring at
+/// the edge of the iris, centred on each eye's gaze. Sizes are in
+/// millimetres on the finished bust; each defaults to its life size scaled
+/// with the bust, and to no less than the printer can form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EyeCarving {
+    /// Each eye, in the request's units and frame.
+    pub eyes: Vec<EyeAxis>,
+    /// Engrave a ring at the edge of the iris as well.
+    #[serde(default)]
+    pub iris_ring: bool,
+    #[serde(default)]
+    pub pupil_diameter_mm: Option<f64>,
+    #[serde(default)]
+    pub iris_diameter_mm: Option<f64>,
+    /// How deep the pupil is drilled; the ring is half as deep.
+    #[serde(default)]
+    pub depth_mm: Option<f64>,
+    /// The narrowest feature the printer forms, such as its nozzle.
+    #[serde(default)]
+    pub smallest_mm: Option<f64>,
+    /// The shallowest feature the printer forms, such as two layers.
+    #[serde(default)]
+    pub shallowest_mm: Option<f64>,
+}
+
+/// An eye: the centre of its eyeball and the point on the eyeball's surface
+/// where its gaze leaves it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EyeAxis {
+    pub centre: [f64; 3],
+    pub front: [f64; 3],
+}
+
+/// The eye carving applied, in millimetres on the finished bust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EyeReport {
+    pub pupil_diameter_mm: f64,
+    pub depth_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iris_diameter_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_width_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_depth_mm: Option<f64>,
+    /// The smallest eyeball carved, across.
+    pub eyeball_diameter_mm: f64,
+    /// The volume carved away; zero when the surface covers every cut.
+    pub removed_mm3: f64,
 }
 
 /// A displacement map over the head's texture coordinates.
@@ -156,8 +295,8 @@ impl Displacement {
 #[serde(deny_unknown_fields)]
 pub struct Plinth {
     pub height_mm: f64,
-    /// Defaults to 70% of the bust's widest extent, and never less than the
-    /// neck section it supports.
+    /// Defaults to 70% of the bust's widest extent, and reaches at least
+    /// 1 mm beyond the base it supports.
     #[serde(default)]
     pub diameter_mm: Option<f64>,
     /// The bottom edge is cut back this far at 45 degrees, so that the first
@@ -234,6 +373,10 @@ pub struct BustReport {
     /// measured straight in from each face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thin: Option<SurfaceFinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eyes: Option<EyeReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<BodyReport>,
     /// How far the mouth was set back on the finished bust: the requested
     /// depth, which was applied before smoothing, times the height
     /// correction that followed. Absent when no mouth was recessed.
@@ -298,7 +441,22 @@ enum Prepared {
 }
 
 fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, GeometryError> {
-    let bust_height = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
+    let available = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
+    // The head's own height; any body takes the rest above the plinth.
+    let bust_height = match request.body {
+        Some(Body {
+            height_mm: Some(height),
+            ..
+        }) => available - height,
+        Some(body) => available / (1.0 + body.kind.default_share()),
+        None => available,
+    };
+    if bust_height < MIN_HEAD_SHARE * available {
+        return Err(GeometryError::InvalidOptions(format!(
+            "the body would leave the head less than {:.0}% of the height above the plinth",
+            MIN_HEAD_SHARE * 100.0
+        )));
+    }
     let mut parts = closed_parts(&request.vertices, &request.triangles)?;
     let heights = request.vertices.iter().map(|vertex| vertex[1]);
     let span = heights.clone().fold(f64::MIN, f64::max) - heights.fold(f64::MAX, f64::min);
@@ -345,11 +503,28 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         let vertex = upright(vertex);
         [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
     };
+    let eyeballs = match &request.eyes {
+        Some(carving) => eyeball_parts(&parts, carving)?,
+        None => Vec::new(),
+    };
+    // A carved eyeball keeps the surface its carving is measured from, and
+    // skin detail does not belong on it anyway, so its vertices are faded.
+    let detail = request.displacement.as_ref().map(|map| {
+        let mut map = map.clone();
+        map.faded.extend(
+            eyeballs
+                .iter()
+                .flat_map(|&part| parts[part].origins.iter().copied()),
+        );
+        map.faded.sort_unstable();
+        map.faded.dedup();
+        map
+    });
     let rims: Vec<Vec<u32>> = parts
         .iter()
         .flat_map(|part| part.openings.iter().map(|opening| opening.rim.clone()))
         .collect();
-    let relieved = match &request.displacement {
+    let relieved = match &detail {
         Some(map) => Some(with_relief(
             map,
             (&request.vertices, &request.triangles, &rims),
@@ -433,6 +608,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     refined.status().map_err(|error| {
         GeometryError::Kernel(format!("the refined bust is not a valid solid: {error}"))
     })?;
+    let refined = join_parts(refined, &parts, place, base)?;
     // Thin gaps can leave specks of almost no volume as separate shells. They
     // cannot print, so drop them; anything larger means the parts did not join.
     let pieces = refined.decompose();
@@ -473,6 +649,33 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     // finished bust before any plinth raises it. They name the parts of the
     // head where checks find something.
     let offset = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let to_final = |point: [f64; 3]| {
+        let placed = place(point);
+        [0, 1, 2].map(|axis| (placed[axis] - offset[axis]) * correction)
+    };
+    let (solid, eyes, fragments) = match &request.eyes {
+        Some(carving) => {
+            let placing = (offset, correction, scale * correction);
+            let eyes = (&eyeballs[..], &parts[..]);
+            let (solid, report, specks) =
+                carve_eyes(solid, carving, eyes, place, to_final, placing, edge)?;
+            (solid, Some(report), fragments + specks)
+        }
+        None => (solid, None, fragments),
+    };
+    let body_height = available - bust_height;
+    let (solid, body) = match request.body {
+        Some(_) if cut.is_none() => {
+            return Err(GeometryError::InvalidOptions(
+                "a body needs a neck opening to join".into(),
+            ));
+        }
+        Some(body) => {
+            let (solid, report) = add_body(solid, body, (body_height, bust_height), edge)?;
+            (solid, Some(report))
+        }
+        None => (solid, None),
+    };
     let mut head: Vec<(u32, [f64; 3])> = match request.checks {
         Some(_) => request
             .vertices
@@ -480,9 +683,8 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             .enumerate()
             .filter(|(_, vertex)| kept_height(vertex))
             .map(|(index, vertex)| {
-                let placed = place(*vertex);
-                let point = [0, 1, 2].map(|axis| (placed[axis] - offset[axis]) * correction);
-                (index as u32, point)
+                let [x, y, z] = to_final(*vertex);
+                (index as u32, [x, y, z + body_height])
             })
             .collect(),
         None => Vec::new(),
@@ -560,9 +762,545 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         }),
         overhang,
         thin,
+        eyes,
+        body,
         mouth_recess_mm: recessed.map(|recess| recess * correction),
     };
     Ok(Prepared::Done(mesh, Box::new(report)))
+}
+
+impl BodyKind {
+    /// The body's height as a share of the head's, unless sized.
+    fn default_share(self) -> f64 {
+        match self {
+            Self::ExtendedNeck => NECK_EXTENSION_SHARE,
+            Self::Shoulders => SHOULDER_HEIGHT_SHARE,
+        }
+    }
+}
+
+/// Join each part beside the head, such as an eyeball, to the head with a
+/// stem from its centre toward the head's. An eyeball sits in a pocket of
+/// the head's surface and touches it only where the eyelids overlap it, a
+/// joint thinner than the rebuild can keep on a small bust; the stem holds
+/// it from behind, inside the head, where the eyeball hides it. A stem ends
+/// at the head's centre at the latest, and nothing of it below the `base`
+/// plane is kept, so it never shows outside. The head is the part with the
+/// neck opening, or the first part without one.
+fn join_parts(
+    solid: Manifold,
+    parts: &[ClosedPart],
+    place: impl Fn([f64; 3]) -> [f64; 3],
+    base: Option<f64>,
+) -> Result<Manifold, GeometryError> {
+    if parts.len() < 2 {
+        return Ok(solid);
+    }
+    let head = parts
+        .iter()
+        .enumerate()
+        .flat_map(|(index, part)| {
+            part.openings
+                .iter()
+                .map(move |opening| (index, opening.mean_height))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(0, |(index, _)| index);
+    let placed = |part: &ClosedPart| -> Vec<[f64; 3]> {
+        part.vertices.iter().map(|vertex| place(*vertex)).collect()
+    };
+    let centre = |points: &[[f64; 3]]| {
+        let count = points.len().max(1) as f64;
+        [0, 1, 2].map(|axis| points.iter().map(|point| point[axis]).sum::<f64>() / count)
+    };
+    let head_centre = centre(&placed(&parts[head]));
+    let stems: Vec<Manifold> = parts
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != head)
+        .filter_map(|(_, part)| {
+            let points = placed(part);
+            let middle = centre(&points);
+            let radius = points
+                .iter()
+                .map(|point| norm(sub(*point, middle)))
+                .sum::<f64>()
+                / points.len().max(1) as f64;
+            let towards = sub(head_centre, middle);
+            (radius > 0.0 && norm(towards) > 0.0).then(|| {
+                let thickness = STEM_RADIUS_SHARE * radius;
+                let stem = Manifold::cylinder(
+                    (STEM_LENGTH_SHARE * radius).min(norm(towards)),
+                    thickness,
+                    thickness,
+                    circle_segments(thickness),
+                    false,
+                );
+                along(stem, middle, normalize(towards))
+            })
+        })
+        .collect();
+    if stems.is_empty() {
+        return Ok(solid);
+    }
+    let stems = Manifold::batch_union(&stems);
+    let stems = match base {
+        Some(height) => stems.trim_by_plane([0.0, 0.0, 1.0], height),
+        None => stems,
+    };
+    let joined = solid.union(&stems);
+    joined
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("joining the parts failed: {error}")))?;
+    Ok(joined)
+}
+
+/// Raise the head, whose base rests on z = 0, by `height` and add a body
+/// below it. The neck is continued by stretching its lowest band, two edges
+/// tall, down to the build plate, so the body begins with the neck's own
+/// surface and no join. An extended neck follows the neck's lean; shoulders
+/// are centred under the neck's base, with the neck inside them straight.
+fn add_body(
+    head: Manifold,
+    body: Body,
+    (height, head_height): (f64, f64),
+    edge: f64,
+) -> Result<(Manifold, BodyReport), GeometryError> {
+    let section = head.slice_at_z(SECTION_OFFSET_MM);
+    let (base, _) = section_centre(&section)
+        .ok_or_else(|| GeometryError::Kernel("the bust has no flat base for a body".into()))?;
+    let rise = NECK_DIRECTION_SHARE * head_height;
+    let upper = section_centre(&head.slice_at_z(rise)).map_or(base, |(centre, _)| centre);
+    // Sideways movement per unit of height, at most the steepest lean.
+    let mut neck_lean = [(upper[0] - base[0]) / rise, (upper[1] - base[1]) / rise];
+    let slope = neck_lean[0].hypot(neck_lean[1]);
+    let steepest = MAX_LEAN_DEGREES.to_radians().tan();
+    if slope > steepest {
+        neck_lean = neck_lean.map(|value| value * steepest / slope);
+    }
+    let lean = match body.kind {
+        BodyKind::ExtendedNeck => neck_lean,
+        BodyKind::Shoulders => [0.0; 2],
+    };
+    let size = head
+        .bounding_box()
+        .map(|bounds| bounds.dimensions())
+        .ok_or_else(|| GeometryError::Kernel("the bust has no extent".into()))?;
+    let band = (2.0 * edge).min(0.5 * rise);
+    // How far the stretched neck lies back along the lean at a height.
+    let back = move |z: f64| {
+        let share = 1.0 - (z / (band + height)).clamp(0.0, 1.0);
+        [-lean[0] * height * share, -lean[1] * height * share]
+    };
+    // Split the surface where it crosses the band's top, so that every
+    // triangle lies wholly on one side, then raise what is above and stretch
+    // the band: each side's map is affine and the two meet at the band's top,
+    // so the surface stays closed and never crosses itself.
+    let mut mesh = split_at_height(&mesh_from(&head), band);
+    drop(head);
+    for vertex in &mut mesh.vertices {
+        let [x, y, z] = *vertex;
+        *vertex = if z >= band {
+            [x, y, z + height]
+        } else {
+            let raised = z.max(0.0) / band * (band + height);
+            let [dx, dy] = back(raised);
+            [x + dx, y + dy, raised]
+        };
+    }
+    let flat: Vec<f64> = mesh.vertices.iter().flatten().copied().collect();
+    let indices: Vec<u64> = mesh
+        .triangles
+        .iter()
+        .flatten()
+        .map(|&index| u64::from(index))
+        .collect();
+    let neck = Manifold::from_mesh_f64(&flat, 3, &indices)
+        .map_err(|error| GeometryError::Kernel(format!("stretching the neck failed: {error}")))?;
+    let (solid, width, depth) = match body.kind {
+        BodyKind::ExtendedNeck => (neck, None, None),
+        BodyKind::Shoulders => {
+            let span = |axis: usize| {
+                let values = section.iter().flatten().map(|point| point[axis]);
+                values.clone().fold(f64::NEG_INFINITY, f64::max)
+                    - values.fold(f64::INFINITY, f64::min)
+            };
+            // Unsized, the shoulders are shares of the head, and always wide
+            // enough to hold the neck.
+            let width = body
+                .width_mm
+                .unwrap_or((SHOULDER_WIDTH_SHARE * size[0]).max(SHOULDER_NECK_SHARE * span(0)));
+            let depth = body
+                .depth_mm
+                .unwrap_or((SHOULDER_DEPTH_SHARE * size[1]).max(SHOULDER_NECK_SHARE * span(1)));
+            let foot = back(0.0);
+            let centre = [base[0] + foot[0], base[1] + foot[1]];
+            let segments = circle_segments(width.max(depth) / 2.0);
+            let ring = |z: f64| {
+                (0..segments).map(move |index| {
+                    let angle = std::f64::consts::TAU * f64::from(index) / f64::from(segments);
+                    [
+                        centre[0] + width / 2.0 * angle.cos(),
+                        centre[1] + depth / 2.0 * angle.sin(),
+                        z,
+                    ]
+                })
+            };
+            // The block's top is the neck's section, a little smaller and a
+            // band below the head, but no more than a quarter of the block's
+            // height, so that it lies inside the stretched neck, above the
+            // plate, and its sides cross the neck's rather than meeting them.
+            let top = height - band.min(0.25 * height);
+            let [dx, dy] = back(top);
+            let crown: Vec<[f64; 3]> = section
+                .iter()
+                .flatten()
+                .map(|point| {
+                    [
+                        base[0] + dx + SHOULDER_TOP_SHARE * (point[0] - base[0]),
+                        base[1] + dy + SHOULDER_TOP_SHARE * (point[1] - base[1]),
+                        top,
+                    ]
+                })
+                .collect();
+            // Shoulders that cannot contain that top would be wider at the
+            // top than their stated size, so they are refused.
+            let inside = |point: &[f64; 3]| {
+                ((point[0] - centre[0]) / (width / 2.0)).powi(2)
+                    + ((point[1] - centre[1]) / (depth / 2.0)).powi(2)
+                    <= 1.0
+            };
+            if !crown.iter().all(inside) {
+                return Err(GeometryError::InvalidOptions(format!(
+                    "shoulders {width:.1} by {depth:.1} mm cannot hold the neck, which is {:.1} by {:.1} mm across; make them wider and deeper",
+                    span(0),
+                    span(1)
+                )));
+            }
+            let points: Vec<[f64; 3]> = crown
+                .into_iter()
+                .chain(ring(SHOULDER_LINE_SHARE * height))
+                .chain(ring(0.0))
+                .collect();
+            let block = Manifold::hull_pts(&points);
+            (neck.union(&block), Some(width), Some(depth))
+        }
+    };
+    solid
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("adding the body failed: {error}")))?;
+    Ok((
+        solid,
+        BodyReport {
+            kind: body.kind,
+            height_mm: height,
+            width_mm: width,
+            depth_mm: depth,
+            lean_degrees: neck_lean[0].hypot(neck_lean[1]).atan().to_degrees(),
+        },
+    ))
+}
+
+/// Split each triangle that crosses the plane z = `height` along it, sharing
+/// the new vertices between neighbours, so that every triangle lies wholly
+/// on one side and the surface keeps its orientation.
+fn split_at_height(mesh: &TriangleMesh, height: f64) -> TriangleMesh {
+    let mut vertices = mesh.vertices.clone();
+    let mut cuts: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut cut = |a: u32, b: u32, vertices: &mut Vec<[f64; 3]>| -> u32 {
+        *cuts.entry((a.min(b), a.max(b))).or_insert_with(|| {
+            let (p, q) = (vertices[a as usize], vertices[b as usize]);
+            let share = (height - p[2]) / (q[2] - p[2]);
+            vertices.push([
+                p[0] + share * (q[0] - p[0]),
+                p[1] + share * (q[1] - p[1]),
+                height,
+            ]);
+            (vertices.len() - 1) as u32
+        })
+    };
+    let side = |z: f64| (z > height) as i8 - (z < height) as i8;
+    let mut triangles = Vec::with_capacity(mesh.triangles.len());
+    for &triangle in &mesh.triangles {
+        let sides = triangle.map(|vertex| side(vertices[vertex as usize][2]));
+        if !(sides.contains(&1) && sides.contains(&-1)) {
+            triangles.push(triangle);
+            continue;
+        }
+        // Turn the triangle so that its first corner is the one on the
+        // plane, or else the one alone on its side.
+        let first = (0..3)
+            .find(|&corner| sides[corner] == 0)
+            .or_else(|| {
+                (0..3).find(|&corner| sides.iter().filter(|&&s| s == sides[corner]).count() == 1)
+            })
+            .expect("a crossing triangle has a corner on the plane or alone");
+        let [a, b, c] = [0, 1, 2].map(|step| triangle[(first + step) % 3]);
+        if sides[first] == 0 {
+            let middle = cut(b, c, &mut vertices);
+            triangles.extend([[a, b, middle], [a, middle, c]]);
+        } else {
+            let (near_b, near_c) = (cut(a, b, &mut vertices), cut(a, c, &mut vertices));
+            triangles.extend([[a, near_b, near_c], [near_b, b, c], [near_b, c, near_c]]);
+        }
+    }
+    TriangleMesh {
+        vertices,
+        triangles,
+    }
+}
+
+/// Drill each eye's pupil and engrave its iris ring along its gaze. Only the
+/// eyeball, enlarged by an edge so that the cut passes cleanly through its
+/// rebuilt surface, is cut, so the eyelids around it keep their shape.
+/// Returns the carved bust, the eye report and the specks dropped.
+fn carve_eyes(
+    solid: Manifold,
+    carving: &EyeCarving,
+    (eyeballs, parts): (&[usize], &[ClosedPart]),
+    place: impl Fn([f64; 3]) -> [f64; 3],
+    to_final: impl Fn([f64; 3]) -> [f64; 3],
+    (offset, correction, fraction): ([f64; 3], f64, f64),
+    edge: f64,
+) -> Result<(Manifold, EyeReport, usize), GeometryError> {
+    let smallest = carving.smallest_mm.unwrap_or(0.0);
+    let shallowest = carving.shallowest_mm.unwrap_or(0.0);
+    let pupil = carving
+        .pupil_diameter_mm
+        .unwrap_or((LIFE_PUPIL_MM * fraction).max(2.0 * smallest));
+    let depth = carving
+        .depth_mm
+        .unwrap_or((LIFE_PUPIL_DEPTH_MM * fraction).max(shallowest));
+    // The ring is a tenth of the iris wide and at least the narrowest
+    // feature. A default iris leaves at least the ring's width and one
+    // narrowest feature of iris between the ring and the pupil, whichever
+    // bound sets the width, so some iris shows even without a printer.
+    let ring = carving.iris_ring.then(|| {
+        let iris = carving.iris_diameter_mm.unwrap_or(
+            (LIFE_IRIS_MM * fraction)
+                .max((pupil + 2.0 * smallest) / (1.0 - 4.0 * RING_WIDTH_SHARE))
+                .max(pupil + 4.0 * smallest),
+        );
+        let width = (RING_WIDTH_SHARE * iris).max(smallest);
+        (iris, width, (depth / 2.0).max(shallowest))
+    });
+    let mut cuts = Vec::new();
+    let mut smallest_radius = f64::INFINITY;
+    for (eye, &part) in carving.eyes.iter().zip(eyeballs) {
+        let centre = to_final(eye.centre);
+        let gaze = normalize(sub(to_final(eye.front), centre));
+        // Built as the bust's eyeball was, without the properties a
+        // displacement map adds, which a cut would carry into the bust.
+        // Smoothing takes effect when the part is refined. The eyeball's
+        // radius is how far its surface reaches along the gaze, where the
+        // detail is measured from.
+        let eyeball = part_solid(&parts[part], &place, None)
+            .map_err(|error| {
+                GeometryError::Kernel(format!("an eyeball is not a closed surface: {error}"))
+            })?
+            .smooth_out(SMOOTH_EVERY_EDGE_DEGREES, 0.0)
+            .refine_to_length(edge / correction)
+            .translate(-offset[0], -offset[1], -offset[2])
+            .scale(correction, correction, correction);
+        let surface = mesh_from(&eyeball);
+        let radius = surface
+            .vertices
+            .iter()
+            .map(|vertex| dot(sub(*vertex, centre), gaze))
+            .fold(0.0, f64::max);
+        smallest_radius = smallest_radius.min(radius);
+        // Depths are measured at the edge of each cut, where the eyeball's
+        // surface is lowest, so that the cut shows its full width.
+        let rim = rim_heights(&surface, centre, gaze, radius)?;
+        let fits = pupil / 2.0 < MAX_PUPIL_SHARE * radius
+            && depth < MAX_DEPTH_SHARE * radius
+            && ring.is_none_or(|(iris, width, ring_depth)| {
+                iris / 2.0 < MAX_IRIS_SHARE * radius
+                    && iris / 2.0 - width > pupil / 2.0
+                    && ring_depth < MAX_DEPTH_SHARE * radius
+            });
+        let pupil_rim = rim(pupil / 2.0);
+        let ring_rim = ring.map(|(iris, _, _)| rim(iris / 2.0));
+        let (true, Some(pupil_rim), None | Some(Some(_))) = (fits, pupil_rim, ring_rim) else {
+            return Err(GeometryError::InvalidOptions(format!(
+                "the eye detail does not fit eyes {:.1} mm across; choose a taller bust or smaller eye detail",
+                2.0 * radius
+            )));
+        };
+        let grow = 1.0 + edge / radius;
+        let eyeball = eyeball
+            .translate(-centre[0], -centre[1], -centre[2])
+            .scale(grow, grow, grow)
+            .translate(centre[0], centre[1], centre[2]);
+        let at = |height: f64| [0, 1, 2].map(|axis| centre[axis] + gaze[axis] * height);
+        let start = pupil_rim - depth;
+        let mut tool = along(
+            Manifold::cylinder(
+                2.0 * radius - start,
+                pupil / 2.0,
+                pupil / 2.0,
+                circle_segments(pupil / 2.0),
+                false,
+            ),
+            at(start),
+            gaze,
+        );
+        if let (Some((iris, width, ring_depth)), Some(Some(ring_rim))) = (ring, ring_rim) {
+            let outer = iris / 2.0;
+            let start = ring_rim - ring_depth;
+            let height = 2.0 * radius - start;
+            let segments = circle_segments(outer);
+            let band = Manifold::cylinder(height, outer, outer, segments, false).difference(
+                &Manifold::cylinder(height + 2.0, outer - width, outer - width, segments, false)
+                    .translate(0.0, 0.0, -1.0),
+            );
+            tool = tool.union(&along(band, at(start), gaze));
+        }
+        cuts.push(tool.intersection(&eyeball));
+    }
+    let before = solid.volume();
+    let carved = solid.difference(&Manifold::batch_union(&cuts));
+    drop(solid);
+    carved
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("carving the eyes failed: {error}")))?;
+    let (carved, specks) = one_carved_solid(carved)?;
+    let removed_mm3 = before - carved.volume();
+    Ok((
+        carved,
+        EyeReport {
+            pupil_diameter_mm: pupil,
+            depth_mm: depth,
+            iris_diameter_mm: ring.map(|(iris, _, _)| iris),
+            ring_width_mm: ring.map(|(_, width, _)| width),
+            ring_depth_mm: ring.map(|(_, _, ring_depth)| ring_depth),
+            eyeball_diameter_mm: 2.0 * smallest_radius,
+            removed_mm3,
+        },
+        specks,
+    ))
+}
+
+/// The one solid a carving leaves, and the number of specks dropped. Where
+/// the head's surface covers a cut entirely, as an eyelid can, the cut is a
+/// sealed void inside the solid; voids are filled back in. As after
+/// refining, specks are dropped, and anything more is refused.
+fn one_carved_solid(carved: Manifold) -> Result<(Manifold, usize), GeometryError> {
+    let pieces = carved.decompose();
+    drop(carved);
+    let total: f64 = pieces.iter().map(Manifold::volume).sum();
+    let solids = pieces.iter().filter(|piece| piece.volume() > 0.0).count();
+    let mut kept: Vec<Manifold> = pieces
+        .into_iter()
+        .filter(|piece| piece.volume() > FRAGMENT_VOLUME_FRACTION * total)
+        .collect();
+    if kept.len() != 1 {
+        return Err(GeometryError::InvalidOptions(format!(
+            "carving the eyes leaves {} separate solids; choose smaller or shallower eye detail",
+            kept.len()
+        )));
+    }
+    Ok((kept.pop().expect("one piece is kept"), solids - 1))
+}
+
+/// For each eye, the part whose centre is nearest the eye's: its eyeball.
+fn eyeball_parts(parts: &[ClosedPart], carving: &EyeCarving) -> Result<Vec<usize>, GeometryError> {
+    let centroid = |part: &ClosedPart| {
+        let count = part.vertices.len().max(1) as f64;
+        [0, 1, 2].map(|axis| part.vertices.iter().map(|vertex| vertex[axis]).sum::<f64>() / count)
+    };
+    carving
+        .eyes
+        .iter()
+        .map(|eye| {
+            (0..parts.len())
+                .min_by(|&a, &b| {
+                    let distance = |index: usize| norm(sub(centroid(&parts[index]), eye.centre));
+                    distance(a).total_cmp(&distance(b))
+                })
+                .ok_or_else(|| {
+                    GeometryError::InvalidOptions(
+                        "the eyes are not separate parts of the head".into(),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// For a circle of a given radius around the gaze, how far the eyeball's
+/// surface reaches along the gaze from its centre at the circle's lowest
+/// point, found by casting rays back along the gaze from in front of the
+/// eyeball. `None` where the circle passes beyond the eyeball.
+fn rim_heights(
+    surface: &TriangleMesh,
+    centre: [f64; 3],
+    gaze: [f64; 3],
+    radius: f64,
+) -> Result<impl Fn(f64) -> Option<f64>, GeometryError> {
+    let shape = TriMesh::new(
+        surface
+            .vertices
+            .iter()
+            .map(|vertex| Vector::from_array(*vertex))
+            .collect(),
+        surface.triangles.clone(),
+    )
+    .map_err(|error| GeometryError::Kernel(format!("an eyeball surface is invalid: {error}")))?;
+    let (across, up) = perpendiculars(gaze);
+    let front = 2.0 * radius;
+    let back = Vector::from_array(gaze.map(|value| -value));
+    Ok(move |half: f64| {
+        // Several samples on each side of the cutter's polygon, which has
+        // its corners on the circle.
+        let count = 4 * circle_segments(half);
+        (0..count)
+            .map(|step| {
+                let (sin, cos) =
+                    (std::f64::consts::TAU * f64::from(step) / f64::from(count)).sin_cos();
+                let origin = [0, 1, 2].map(|axis| {
+                    centre[axis] + gaze[axis] * front + (across[axis] * cos + up[axis] * sin) * half
+                });
+                shape
+                    .cast_local_ray(
+                        &Ray::new(Vector::from_array(origin), back),
+                        2.0 * front,
+                        true,
+                    )
+                    .map(|distance| front - distance)
+            })
+            .try_fold(f64::INFINITY, |lowest, height| Some(lowest.min(height?)))
+    })
+}
+
+/// Two unit directions square to `direction` and to each other.
+fn perpendiculars(direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let helper = if direction[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let across = normalize(cross(helper, direction));
+    (across, cross(direction, across))
+}
+
+/// Turn a solid built along +z so that +z points along `direction`, and move
+/// its origin to `base`.
+fn along(solid: Manifold, base: [f64; 3], direction: [f64; 3]) -> Manifold {
+    let (across, up) = perpendiculars(direction);
+    solid.transform(&[
+        across[0],
+        across[1],
+        across[2],
+        up[0],
+        up[1],
+        up[2],
+        direction[0],
+        direction[1],
+        direction[2],
+        base[0],
+        base[1],
+        base[2],
+    ])
 }
 
 /// Move the centre of the cap closing every opening but the lowest, the
@@ -822,9 +1560,9 @@ fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport)
         .bounding_box()
         .map(|bounds| bounds.dimensions())
         .ok_or_else(|| GeometryError::Kernel("the bust has no extent".into()))?;
-    let diameter = plinth
-        .diameter_mm
-        .unwrap_or_else(|| (PLINTH_WIDTH_FRACTION * size[0].max(size[1])).max(2.0 * reach));
+    let diameter = plinth.diameter_mm.unwrap_or_else(|| {
+        (PLINTH_WIDTH_FRACTION * size[0].max(size[1])).max(2.0 * (reach + PLINTH_MARGIN_MM))
+    });
     if diameter < 2.0 * reach {
         return Err(GeometryError::InvalidOptions(format!(
             "a plinth {diameter} mm across does not cover the {:.1} mm neck section",
@@ -1054,6 +1792,46 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
         .is_some_and(|recess| !(recess.is_finite() && recess > 0.0))
     {
         return invalid("the mouth recess must be a positive number of millimetres");
+    }
+    if let Some(body) = request.body
+        && ![body.height_mm, body.width_mm, body.depth_mm]
+            .iter()
+            .all(|value| value.is_none_or(|value| value.is_finite() && value > 0.0))
+    {
+        return invalid("body sizes must be positive numbers of millimetres");
+    }
+    if let Some(body) = request.body
+        && body.kind == BodyKind::ExtendedNeck
+        && (body.width_mm.is_some() || body.depth_mm.is_some())
+    {
+        return invalid("an extended neck takes no width or depth");
+    }
+    if let Some(carving) = &request.eyes {
+        let positive =
+            |value: Option<f64>| value.is_none_or(|value| value.is_finite() && value > 0.0);
+        let at_least_zero =
+            |value: Option<f64>| value.is_none_or(|value| value.is_finite() && value >= 0.0);
+        if !(1..=2).contains(&carving.eyes.len())
+            || !carving.eyes.iter().all(|eye| {
+                eye.centre
+                    .iter()
+                    .chain(&eye.front)
+                    .all(|value| value.is_finite())
+                    && eye.centre != eye.front
+            })
+        {
+            return invalid(
+                "eye carving needs one or two eyes, each with a distinct centre and front",
+            );
+        }
+        if !(positive(carving.pupil_diameter_mm)
+            && positive(carving.iris_diameter_mm)
+            && positive(carving.depth_mm)
+            && at_least_zero(carving.smallest_mm)
+            && at_least_zero(carving.shallowest_mm))
+        {
+            return invalid("eye detail sizes must be positive numbers of millimetres");
+        }
     }
     if let Some(checks) = request.checks {
         if !(checks.overhang_degrees.is_finite() && (0.0..=90.0).contains(&checks.overhang_degrees))
@@ -1773,6 +2551,8 @@ mod tests {
             hollow: None,
             displacement: None,
             checks: None,
+            eyes: None,
+            body: None,
             mouth_recess_mm: None,
         }
     }
@@ -2300,6 +3080,493 @@ mod tests {
                 Err(GeometryError::InvalidOptions(_))
             ));
         }
+    }
+
+    /// The fixture's small cube, stretched to jut 24 mm out of the box's
+    /// face, stands in for an eyeball centred 5 mm behind its end and
+    /// looking along +z.
+    fn with_an_eye(mut request: BustRequest) -> BustRequest {
+        for vertex in &mut request.vertices[8..] {
+            if vertex[2] > 40.0 {
+                vertex[2] += 15.0;
+            }
+        }
+        request
+    }
+
+    fn carving(iris_ring: bool) -> EyeCarving {
+        EyeCarving {
+            eyes: vec![EyeAxis {
+                centre: [20.0, 30.0, 59.0],
+                front: [20.0, 30.0, 64.0],
+            }],
+            iris_ring,
+            pupil_diameter_mm: Some(2.0),
+            iris_diameter_mm: Some(6.0),
+            depth_mm: Some(1.0),
+            smallest_mm: None,
+            shallowest_mm: None,
+        }
+    }
+
+    #[test]
+    fn eyes_are_carved_along_their_gaze() {
+        let (_, plain) = prepare_bust(&with_an_eye(request(1.0, 1_000_000))).unwrap();
+        for iris_ring in [false, true] {
+            let mut carved = with_an_eye(request(1.0, 1_000_000));
+            carved.eyes = Some(carving(iris_ring));
+            let (mesh, report) = prepare_bust(&carved).unwrap();
+            let validation = validated(&mesh);
+            assert!(validation.solid_geometry, "{validation:?}");
+            assert_eq!(validation.topology.connected_components, 1);
+            let eyes = report.eyes.expect("eye report");
+            assert_eq!((eyes.pupil_diameter_mm, eyes.depth_mm), (2.0, 1.0));
+            assert_eq!(eyes.iris_diameter_mm, iris_ring.then_some(6.0));
+            // Smoothing rounds the stretched part's end out to about 7.7 mm
+            // from the eye's centre.
+            assert!((13.0..18.0).contains(&eyes.eyeball_diameter_mm), "{eyes:?}");
+            // A pupil 2 mm across and 1 mm deep takes about 3 mm³; the ring
+            // adds a groove around it.
+            let removed = plain.volume_mm3 - report.volume_mm3;
+            let expected = if iris_ring { 4.0..40.0 } else { 1.5..6.0 };
+            assert!(expected.contains(&removed), "{removed} {eyes:?}");
+            assert!(
+                (eyes.removed_mm3 - removed).abs() < 0.01 * removed,
+                "{eyes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shallow_pupil_shows_its_full_width() {
+        let mut shallow = with_an_eye(request(1.0, 1_000_000));
+        shallow.eyes = Some(EyeCarving {
+            pupil_diameter_mm: Some(4.0),
+            depth_mm: Some(0.05),
+            ..carving(false)
+        });
+        let (mesh, report) = prepare_bust(&shallow).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        // A 4 mm disc 0.05 mm deep at its rim, plus the dome of the eyeball
+        // above the rim: about 1.5 mm³. Measured from the pole instead, the
+        // cut would show only a spot near the middle.
+        let removed = report.eyes.expect("eye report").removed_mm3;
+        assert!((0.8..4.0).contains(&removed), "{removed}");
+    }
+
+    #[test]
+    fn a_cut_starts_from_the_eyeballs_own_surface() {
+        // The same eyeball and gaze, its centre given 5 mm or 14 mm behind its
+        // front. A sphere through the front about either centre would put the
+        // pupil's rim at a different height, but the surface is the same, so
+        // the cut must be too.
+        let removed = |centre: f64| {
+            let mut shallow = with_an_eye(request(1.0, 1_000_000));
+            shallow.eyes = Some(EyeCarving {
+                eyes: vec![EyeAxis {
+                    centre: [20.0, 30.0, centre],
+                    front: [20.0, 30.0, centre + 5.0],
+                }],
+                pupil_diameter_mm: Some(4.0),
+                depth_mm: Some(0.05),
+                ..carving(false)
+            });
+            prepare_bust(&shallow)
+                .unwrap()
+                .1
+                .eyes
+                .expect("eye report")
+                .removed_mm3
+        };
+        let (near, far) = (removed(59.0), removed(50.0));
+        assert!((near - far).abs() < 0.05 * near, "{near} {far}");
+    }
+
+    #[test]
+    fn detail_does_not_move_a_carved_eye() {
+        let removed = |map: bool| {
+            let mut carved = with_an_eye(request(1.0, 1_000_000));
+            if map {
+                carved = with_map(carved, |_, _| 0.5);
+            }
+            carved.eyes = Some(carving(true));
+            prepare_bust(&carved)
+                .unwrap()
+                .1
+                .eyes
+                .expect("eye report")
+                .removed_mm3
+        };
+        let (plain, detailed) = (removed(false), removed(true));
+        assert!((plain - detailed).abs() < 0.1 * plain, "{plain} {detailed}");
+    }
+
+    #[test]
+    fn the_ring_is_a_tenth_of_the_iris_used() {
+        let mut wide = with_an_eye(request(1.0, 1_000_000));
+        wide.eyes = Some(EyeCarving {
+            iris_diameter_mm: Some(8.0),
+            ..carving(true)
+        });
+        let eyes = prepare_bust(&wide).unwrap().1.eyes.expect("eye report");
+        assert_eq!(eyes.ring_width_mm, Some(0.8));
+    }
+
+    #[test]
+    fn a_carving_leaves_one_solid() {
+        let cube =
+            |size: f64, at: f64| Manifold::cube(size, size, size, false).translate(at, 0.0, 0.0);
+        // A speck beside the bust is dropped and counted.
+        let (solid, specks) = one_carved_solid(cube(10.0, 0.0).union(&cube(0.01, 20.0))).unwrap();
+        assert_eq!(specks, 1);
+        assert!((solid.volume() - 1000.0).abs() < 1e-6);
+        // A sealed void is filled back in and is not a speck.
+        let hollow = cube(10.0, 0.0).difference(&cube(2.0, 4.0).translate(0.0, 4.0, 4.0));
+        let (solid, specks) = one_carved_solid(hollow).unwrap();
+        assert_eq!(specks, 0);
+        assert!((solid.volume() - 1000.0).abs() < 1e-6);
+        // A piece cut away whole is refused.
+        assert!(matches!(
+            one_carved_solid(cube(10.0, 0.0).union(&cube(5.0, 20.0))),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("2 separate solids")
+        ));
+    }
+
+    #[test]
+    fn a_default_iris_shows_beside_an_enlarged_pupil() {
+        // No printer minimum and no iris diameter, with a pupil wide enough
+        // that it, not the life-size iris, sets the iris: some iris must
+        // show between the ring and the pupil. The stand-in eye is widened
+        // to 18 mm and its centre set further back so that such a pupil fits.
+        let mut enlarged = with_an_eye(request(1.0, 1_000_000));
+        for vertex in &mut enlarged.vertices[8..] {
+            vertex[0] = 20.0 + (vertex[0] - 20.0) * 1.8;
+            vertex[1] = 30.0 + (vertex[1] - 30.0) * 1.8;
+        }
+        enlarged.eyes = Some(EyeCarving {
+            eyes: vec![EyeAxis {
+                centre: [20.0, 30.0, 50.0],
+                front: [20.0, 30.0, 55.0],
+            }],
+            pupil_diameter_mm: Some(10.0),
+            iris_diameter_mm: None,
+            ..carving(true)
+        });
+        let report = prepare_bust(&enlarged).unwrap().1;
+        let eyes = report.eyes.expect("eye report");
+        let (iris, width) = (eyes.iris_diameter_mm.unwrap(), eyes.ring_width_mm.unwrap());
+        assert!(
+            10.0 / 0.8 > LIFE_IRIS_MM * report.life_size_fraction,
+            "{report:?}"
+        );
+        assert!(iris / 2.0 - width - 5.0 >= width - 1e-9, "{eyes:?}");
+    }
+
+    #[test]
+    fn a_cut_the_surface_covers_leaves_no_void() {
+        // The small cube moved to the middle of the box, sealed inside it:
+        // its pupil cannot reach the surface.
+        let mut covered = request(1.0, 1_000_000);
+        for vertex in &mut covered.vertices[8..] {
+            vertex[1] -= 10.0;
+            vertex[2] -= 24.0;
+        }
+        covered.eyes = Some(EyeCarving {
+            eyes: vec![EyeAxis {
+                centre: [20.0, 20.0, 20.0],
+                front: [20.0, 20.0, 25.0],
+            }],
+            ..carving(false)
+        });
+        let (mesh, report) = prepare_bust(&covered).unwrap();
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(
+            validation.topology.connected_components, 1,
+            "{validation:?}"
+        );
+        assert!(report.eyes.expect("eye report").removed_mm3.abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_ring_keeps_the_printers_minimum_under_a_shallow_pupil() {
+        let mut shallow = with_an_eye(request(1.0, 1_000_000));
+        shallow.eyes = Some(EyeCarving {
+            depth_mm: Some(0.1),
+            shallowest_mm: Some(0.4),
+            ..carving(true)
+        });
+        let eyes = prepare_bust(&shallow).unwrap().1.eyes.expect("eye report");
+        assert_eq!((eyes.depth_mm, eyes.ring_depth_mm), (0.1, Some(0.4)));
+    }
+
+    #[test]
+    fn a_ring_deeper_than_the_eye_allows_is_refused() {
+        // A shallow pupil, but a printer minimum deeper than half the stand-in
+        // eye's radius of about 7.7 mm.
+        let mut deep = with_an_eye(request(1.0, 1_000_000));
+        deep.eyes = Some(EyeCarving {
+            depth_mm: Some(0.1),
+            shallowest_mm: Some(4.0),
+            ..carving(true)
+        });
+        assert!(matches!(
+            prepare_bust(&deep),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("does not fit")
+        ));
+    }
+
+    #[test]
+    fn eye_detail_that_does_not_fit_is_refused() {
+        let mut request = with_an_eye(request(1.0, 1_000_000));
+        let mut eyes = carving(true);
+        // An iris wider than the eyeball.
+        eyes.iris_diameter_mm = Some(15.0);
+        request.eyes = Some(eyes.clone());
+        assert!(matches!(
+            prepare_bust(&request),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("does not fit")
+        ));
+        // A ring that would swallow the pupil.
+        eyes.iris_diameter_mm = Some(2.5);
+        request.eyes = Some(eyes.clone());
+        assert!(matches!(
+            prepare_bust(&request),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("does not fit")
+        ));
+        for unusable in [
+            EyeCarving {
+                eyes: Vec::new(),
+                ..carving(false)
+            },
+            EyeCarving {
+                depth_mm: Some(-1.0),
+                ..carving(false)
+            },
+            EyeCarving {
+                eyes: vec![EyeAxis {
+                    centre: [20.0, 30.0, 59.0],
+                    front: [20.0, 30.0, 59.0],
+                }],
+                ..carving(false)
+            },
+        ] {
+            request.eyes = Some(unusable);
+            assert!(matches!(
+                prepare_bust(&request),
+                Err(GeometryError::InvalidOptions(_))
+            ));
+        }
+    }
+
+    fn body(kind: BodyKind, height_mm: Option<f64>) -> Option<Body> {
+        Some(Body {
+            kind,
+            height_mm,
+            width_mm: None,
+            depth_mm: None,
+        })
+    }
+
+    /// The mean x of the vertices resting on the build plate.
+    fn foot_x(mesh: &TriangleMesh) -> f64 {
+        let foot: Vec<f64> = mesh
+            .vertices
+            .iter()
+            .filter(|vertex| vertex[2] < 1e-6)
+            .map(|vertex| vertex[0])
+            .collect();
+        foot.iter().sum::<f64>() / foot.len() as f64
+    }
+
+    #[test]
+    fn an_extended_neck_or_shoulders_stand_below_the_head() {
+        let (_, plain) = prepare_bust(&request(2.0, 1_000_000)).unwrap();
+        let mut extended = request(2.0, 1_000_000);
+        extended.body = body(BodyKind::ExtendedNeck, Some(10.0));
+        let (mesh, report) = prepare_bust(&extended).unwrap();
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        let neck = report.body.expect("body report");
+        assert_eq!((neck.kind, neck.height_mm), (BodyKind::ExtendedNeck, 10.0));
+        // Smoothing rounds the box's foot a little unevenly.
+        assert!(neck.lean_degrees < 8.0, "{neck:?}");
+        // The head shrinks to 40 mm to make room.
+        assert!(
+            (report.life_size_fraction / plain.life_size_fraction - 0.8).abs() < 0.01,
+            "{report:?}"
+        );
+
+        let mut shoulders = request(2.0, 1_000_000);
+        shoulders.body = body(BodyKind::Shoulders, None);
+        shoulders.plinth = Some(Plinth {
+            height_mm: 5.0,
+            diameter_mm: None,
+            chamfer_mm: 0.5,
+        });
+        let (mesh, report) = prepare_bust(&shoulders).unwrap();
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+        let block = report.body.expect("body report");
+        // 45 mm above the plinth: a head of 45 / 1.35 and shoulders of the rest.
+        assert!(
+            (block.height_mm - 45.0 * 0.35 / 1.35).abs() < 1e-9,
+            "{block:?}"
+        );
+        assert!(
+            block.width_mm.unwrap() > report.size_mm[0] * 0.9,
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn shoulders_narrower_than_the_neck_are_refused() {
+        let mut narrow = request(2.0, 1_000_000);
+        narrow.body = Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: Some(10.0),
+            width_mm: Some(10.0),
+            depth_mm: None,
+        });
+        assert!(matches!(
+            prepare_bust(&narrow),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("cannot hold the neck")
+        ));
+    }
+
+    #[test]
+    fn short_shoulders_stay_above_the_plate() {
+        // On a 100 mm bust with 2 mm edges, the stretched band is about
+        // 4 mm, twice the block's height.
+        let mut short = request(2.0, 1_000_000);
+        short.height_mm = 100.0;
+        short.body = body(BodyKind::Shoulders, Some(2.0));
+        let (mesh, report) = prepare_bust(&short).unwrap();
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert!((report.size_mm[2] - 100.0).abs() < 1e-6, "{report:?}");
+        assert!(mesh.vertices.iter().all(|vertex| vertex[2] >= -1e-9));
+    }
+
+    #[test]
+    fn a_body_follows_a_leaning_neck() {
+        // The box leans toward +x as it rises.
+        let mut leaning = request(2.0, 1_000_000);
+        for vertex in &mut leaning.vertices {
+            vertex[0] += 0.3 * vertex[1];
+        }
+        leaning.body = body(BodyKind::ExtendedNeck, Some(10.0));
+        let (mesh, report) = prepare_bust(&leaning).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        let neck = report.body.expect("body report");
+        assert!((10.0..25.0).contains(&neck.lean_degrees), "{neck:?}");
+        // The neck's foot lies back toward -x of the head's base.
+        let mut upright = leaning.clone();
+        upright.body = None;
+        let (head, _) = prepare_bust(&upright).unwrap();
+        assert!(
+            foot_x(&mesh) < foot_x(&head) - 1.0,
+            "{} {}",
+            foot_x(&mesh),
+            foot_x(&head)
+        );
+    }
+
+    #[test]
+    fn splitting_at_a_height_keeps_a_closed_surface() {
+        let solid = Manifold::sphere(10.0, 24).rotate(10.0, 20.0, 0.0);
+        let mesh = mesh_from(&solid);
+        // Through vertices on the plane as well as across edges.
+        for height in [0.0, 3.3, mesh.vertices[5][2]] {
+            let split = split_at_height(&mesh, height);
+            assert!(split.triangles.len() > mesh.triangles.len());
+            for triangle in &split.triangles {
+                let sides = triangle.map(|vertex| {
+                    let z = split.vertices[vertex as usize][2];
+                    (z > height) as i8 - (z < height) as i8
+                });
+                assert!(!(sides.contains(&1) && sides.contains(&-1)), "{sides:?}");
+            }
+            let mut directed = HashSet::new();
+            for [a, b, c] in &split.triangles {
+                for edge in [(*a, *b), (*b, *c), (*c, *a)] {
+                    assert!(directed.insert(edge));
+                }
+            }
+            assert!(directed.iter().all(|(a, b)| directed.contains(&(*b, *a))));
+        }
+    }
+
+    #[test]
+    fn a_body_must_leave_the_head_room() {
+        let mut tall = request(2.0, 1_000_000);
+        tall.body = body(BodyKind::Shoulders, Some(30.0));
+        assert!(matches!(
+            prepare_bust(&tall),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("less than 50%")
+        ));
+        tall.body = Some(Body {
+            kind: BodyKind::ExtendedNeck,
+            height_mm: Some(5.0),
+            width_mm: Some(40.0),
+            depth_mm: None,
+        });
+        assert!(matches!(
+            prepare_bust(&tall),
+            Err(GeometryError::InvalidOptions(_))
+        ));
+    }
+
+    #[test]
+    fn a_stem_stays_inside_the_head() {
+        // The small cube moved to the middle of the box, sealed inside it,
+        // with its centre near the box's own: its stem must not reach out.
+        let (alone, _) = {
+            let mut box_only = request(2.0, 1_000_000);
+            box_only.vertices.truncate(8);
+            box_only.triangles.truncate(10);
+            prepare_bust(&box_only).unwrap()
+        };
+        let mut sealed = request(2.0, 1_000_000);
+        for vertex in &mut sealed.vertices[8..] {
+            vertex[1] -= 10.0;
+            vertex[2] -= 24.0;
+        }
+        let (mesh, report) = prepare_bust(&sealed).unwrap();
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6, "{report:?}");
+        let footprint = |mesh: &TriangleMesh| validated(mesh).overhang.bed_contact.area_mm2;
+        let (with, without) = (footprint(&mesh), footprint(&alone));
+        assert!((with - without).abs() < 0.02 * without, "{with} {without}");
+    }
+
+    #[test]
+    fn a_part_apart_from_the_head_is_joined_by_a_stem() {
+        // The open box and, 5 mm beyond its +x face, a separate cube.
+        let (mut vertices, mut triangles) = open_box_with_part();
+        vertices.truncate(8);
+        triangles.truncate(10);
+        let cube = Manifold::cube(10.0, 10.0, 10.0, false).translate(45.0, 15.0, 15.0);
+        let cube_mesh = mesh_from(&cube);
+        let offset = vertices.len() as u32;
+        vertices.extend(cube_mesh.vertices);
+        triangles.extend(
+            cube_mesh
+                .triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        let parts = closed_parts(&vertices, &triangles).unwrap();
+        let solid = parts
+            .iter()
+            .map(|part| part_solid(part, |vertex| vertex, None).unwrap())
+            .reduce(|a, b| a.union(&b))
+            .unwrap();
+        assert_eq!(solid.decompose().len(), 2);
+        let joined = join_parts(solid, &parts, |vertex| vertex, None).unwrap();
+        assert_eq!(joined.decompose().len(), 1);
     }
 
     #[test]
