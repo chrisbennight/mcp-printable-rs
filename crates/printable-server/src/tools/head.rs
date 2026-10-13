@@ -5,7 +5,9 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, Hollow, Plinth, PrintChecks};
+use printable_geom::{
+    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
+};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -19,6 +21,8 @@ const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
 /// on a 100 mm bust, below what a 0.2 mm nozzle reproduces.
 const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
 const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
+/// Busts under 100 mm default to facets this share of their height.
+const EDGE_LENGTH_SHARE: f64 = 0.004;
 const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
@@ -37,6 +41,21 @@ const HIGH_PASS_MM: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 const CLIP_PERCENTILE: std::ops::RangeInclusive<f64> = 50.0..=100.0;
 const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
 const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
+const EXPRESSION_SCALE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
+const PUPIL_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.2..=10.0;
+const IRIS_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
+const EYE_DETAIL_DEPTH_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+const NECK_EXTENSION_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+const SHOULDER_WIDTH_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
+const SHOULDER_DEPTH_MM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+const SHOULDER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
+/// Carved eye detail is at least this many layers deep.
+const EYE_DETAIL_LAYERS: f64 = 2.0;
+const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
+/// The model region over which detail fades out on a closed or recessed
+/// mouth, so that the lips are not raised into a ridge where they meet.
+const LIPS_REGION: &str = "lips";
 const PLINTH_CHAMFER_MM: std::ops::RangeInclusive<f64> = 0.0..=5.0;
 /// An FDM bust stands on a plinth this fraction of its height by default.
 const FDM_PLINTH_FRACTION: f64 = 0.08;
@@ -102,6 +121,10 @@ pub(super) struct HeadCreateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
+    /// Multiply the expression coefficients and the jaw rotation by this, 0
+    /// to 1 (default 1), to soften the expression; 0 gives a neutral face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Unique name for the new object (default `Head`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -223,6 +246,9 @@ pub(super) struct HeadUpdateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Workspace path of a PNG colour map that replaces the head's own, as for
     /// `create`. The head must have been created from a model converted with
     /// its texture layout.
@@ -246,6 +272,67 @@ pub(super) struct HeadPreparePrintParams {
     /// stands on its neck, so turn or tilt the head with `neck`.
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
+    /// How the mouth is printed. `as_posed` (the default) keeps the pose and
+    /// closes the mouth opening flat behind the lips. `closed` sets the jaw
+    /// rotation to zero, replacing `pose.jaw`, which brings the lips together
+    /// unless the expression itself parts them. `recessed` keeps the pose
+    /// and sets the centre of the surface closing the mouth back by
+    /// `mouth_recess_mm`, so an open mouth reads as a shadow. With `closed`
+    /// or `recessed`, surface detail fades out over the lips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouth: Option<MouthShape>,
+    /// How far `recessed` sets the mouth back on the finished bust, 0.5 to
+    /// 10 mm (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouth_recess_mm: Option<f64>,
+    /// How the eyes are carved, centred on each eye's gaze: `plain` (the
+    /// default) leaves them smooth, `pupil` drills the pupil, and
+    /// `iris_and_pupil` also engraves a ring at the edge of the iris.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyes: Option<EyeStyle>,
+    /// Pupil diameter on the finished bust, 0.2 to 10 mm. Defaults to 4 mm at
+    /// life size scaled with the bust, and to no less than two nozzle widths
+    /// with an FDM `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pupil_diameter_mm: Option<f64>,
+    /// Iris diameter on the finished bust, 0.5 to 20 mm, for
+    /// `iris_and_pupil`. Defaults to 11.5 mm at life size scaled with the
+    /// bust, and wide enough to leave the printer's narrowest feature between
+    /// the ring and the pupil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iris_diameter_mm: Option<f64>,
+    /// How deep the pupil is drilled on the finished bust, 0.05 to 5 mm; the
+    /// ring is half as deep, and with a `printer` no shallower than two
+    /// layers. Defaults to 2 mm at life size scaled with the bust, and to no
+    /// less than two layers with a `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_detail_depth_mm: Option<f64>,
+    /// What stands below the head, within `height_mm` above any plinth:
+    /// `neck` (the default) ends at the neck's cut, `extended_neck` continues
+    /// the neck down along its own lean, and `shoulders` adds a block of
+    /// chest and shoulders. The head keeps at least half the height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<BodyShape>,
+    /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    neck_extension_mm: Option<f64>,
+    /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
+    /// head's width, and at least 1.3 times the neck's. Shoulders too small to
+    /// hold the neck are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_width_mm: Option<f64>,
+    /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
+    /// head's depth, and at least 1.3 times the neck's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_depth_mm: Option<f64>,
+    /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
+    /// head's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shoulder_height_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -255,7 +342,8 @@ pub(super) struct HeadPreparePrintParams {
     /// (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     height_mm: Option<f64>,
-    /// Target facet edge length, 0.1 to 5 mm (default 0.4). Shorter edges
+    /// Target facet edge length, 0.1 to 5 mm. Defaults to 0.4, or to 0.4% of
+    /// `height_mm` on busts under 100 mm and no less than 0.1. Shorter edges
     /// follow the smooth surface more closely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
@@ -270,7 +358,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
     /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and never less than the neck section. Requires a plinth.
+    /// extent and reaches at least 1 mm beyond the bust's base. Requires a
+    /// plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
     /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
@@ -297,6 +386,51 @@ pub(super) struct HeadPreparePrintParams {
     /// shallow to print. Without it, nothing is assumed about the printer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     printer: Option<PrinterParams>,
+}
+
+/// How the mouth of a bust is printed.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum MouthShape {
+    /// As the pose leaves it.
+    #[default]
+    AsPosed,
+    /// With the jaw closed.
+    Closed,
+    /// With the surface closing the mouth set back into the head.
+    Recessed,
+}
+
+/// What stands below the head of a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BodyShape {
+    /// The neck as cut.
+    #[default]
+    Neck,
+    /// The neck continued down along its own lean.
+    ExtendedNeck,
+    /// A block of chest and shoulders.
+    Shoulders,
+}
+
+/// How the eyes of a bust are carved.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum EyeStyle {
+    /// Smooth, as modelled.
+    #[default]
+    Plain,
+    /// A drilled pupil.
+    Pupil,
+    /// A drilled pupil within an engraved iris ring.
+    IrisAndPupil,
 }
 
 /// How the bust will be printed.
@@ -440,6 +574,9 @@ pub(super) struct HeadExportParams {
     /// Joint rotations, as for `create`.
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Workspace path for the Wavefront OBJ file.
     path: String,
     /// Replace an existing file at `path`.
@@ -502,8 +639,7 @@ pub(super) async fn create(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -544,8 +680,7 @@ pub(super) async fn update(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -575,8 +710,7 @@ pub(super) async fn export(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -648,9 +782,13 @@ pub(super) async fn prepare_print(
         params.height_mm.unwrap_or(DEFAULT_PRINT_HEIGHT_MM),
         &PRINT_HEIGHT_MM,
     )?;
+    // A small bust keeps the same detail relative to its size: thin parts
+    // such as the ears stay several facets thick.
+    let default_edge =
+        (EDGE_LENGTH_SHARE * height_mm).clamp(*EDGE_LENGTH_MM.start(), DEFAULT_EDGE_LENGTH_MM);
     let edge_length_mm = in_range(
         "edge_length_mm",
-        params.edge_length_mm.unwrap_or(DEFAULT_EDGE_LENGTH_MM),
+        params.edge_length_mm.unwrap_or(default_edge),
         &EDGE_LENGTH_MM,
     )?;
     let max_triangles = in_range(
@@ -751,16 +889,153 @@ pub(super) async fn prepare_print(
             }
         }
     }
+    let eye_style = params.eyes.unwrap_or_default();
+    let eye_sizes = [
+        params.pupil_diameter_mm,
+        params.iris_diameter_mm,
+        params.eye_detail_depth_mm,
+    ];
+    if eye_style == EyeStyle::Plain && eye_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "pupil_diameter_mm, iris_diameter_mm and eye_detail_depth_mm need eyes pupil or iris_and_pupil".into(),
+        ));
+    }
+    if eye_style == EyeStyle::Pupil && params.iris_diameter_mm.is_some() {
+        return Err(ToolError::Validation(
+            "iris_diameter_mm needs eyes iris_and_pupil".into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "pupil_diameter_mm",
+            params.pupil_diameter_mm,
+            &PUPIL_DIAMETER_MM,
+        ),
+        (
+            "iris_diameter_mm",
+            params.iris_diameter_mm,
+            &IRIS_DIAMETER_MM,
+        ),
+        (
+            "eye_detail_depth_mm",
+            params.eye_detail_depth_mm,
+            &EYE_DETAIL_DEPTH_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let shoulder_sizes = [
+        params.shoulder_width_mm,
+        params.shoulder_depth_mm,
+        params.shoulder_height_mm,
+    ];
+    let body_shape = params.body.unwrap_or_default();
+    if body_shape != BodyShape::ExtendedNeck && params.neck_extension_mm.is_some() {
+        return Err(ToolError::Validation(
+            "neck_extension_mm needs body extended_neck".into(),
+        ));
+    }
+    if body_shape != BodyShape::Shoulders && shoulder_sizes.iter().any(Option::is_some) {
+        return Err(ToolError::Validation(
+            "shoulder_width_mm, shoulder_depth_mm and shoulder_height_mm need body shoulders"
+                .into(),
+        ));
+    }
+    for (name, value, range) in [
+        (
+            "neck_extension_mm",
+            params.neck_extension_mm,
+            &NECK_EXTENSION_MM,
+        ),
+        (
+            "shoulder_width_mm",
+            params.shoulder_width_mm,
+            &SHOULDER_WIDTH_MM,
+        ),
+        (
+            "shoulder_depth_mm",
+            params.shoulder_depth_mm,
+            &SHOULDER_DEPTH_MM,
+        ),
+        (
+            "shoulder_height_mm",
+            params.shoulder_height_mm,
+            &SHOULDER_HEIGHT_MM,
+        ),
+    ] {
+        if let Some(value) = value {
+            in_range(name, value, range)?;
+        }
+    }
+    let body = match body_shape {
+        BodyShape::Neck => None,
+        BodyShape::ExtendedNeck => Some(Body {
+            kind: BodyKind::ExtendedNeck,
+            height_mm: params.neck_extension_mm,
+            width_mm: None,
+            depth_mm: None,
+        }),
+        BodyShape::Shoulders => Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: params.shoulder_height_mm,
+            width_mm: params.shoulder_width_mm,
+            depth_mm: params.shoulder_depth_mm,
+        }),
+    };
+    let mouth = params.mouth.unwrap_or_default();
+    let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
+        (MouthShape::Recessed, recess) => Some(in_range(
+            "mouth_recess_mm",
+            recess.unwrap_or(DEFAULT_MOUTH_RECESS_MM),
+            &MOUTH_RECESS_MM,
+        )?),
+        (_, Some(_)) => {
+            return Err(ToolError::Validation(
+                "mouth_recess_mm requires mouth recessed".into(),
+            ));
+        }
+        (_, None) => None,
+    };
+    let mut pose = params.pose;
+    if mouth == MouthShape::Closed {
+        pose.jaw = [0.0; 3];
+    }
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
-        params.pose,
+        (params.identity, params.expression, params.expression_scale),
+        pose,
     )
     .await?;
+    let eyes = match eye_style {
+        EyeStyle::Plain => None,
+        EyeStyle::Pupil | EyeStyle::IrisAndPupil => Some(EyeCarving {
+            eyes: eye_axes(&model, &head).await?,
+            iris_ring: eye_style == EyeStyle::IrisAndPupil,
+            pupil_diameter_mm: params.pupil_diameter_mm,
+            iris_diameter_mm: params.iris_diameter_mm,
+            depth_mm: params.eye_detail_depth_mm,
+            smallest_mm: printer
+                .and_then(|printer| printer.nozzle_diameter_mm.or(printer.minimum_wall_mm)),
+            shallowest_mm: printer.map(|printer| EYE_DETAIL_LAYERS * printer.layer_height_mm),
+        }),
+    };
+    // A closed or recessed mouth takes no detail on the lips, when the model
+    // knows where they are.
+    let faded = match mouth {
+        MouthShape::AsPosed => None,
+        MouthShape::Closed | MouthShape::Recessed => model.region(LIPS_REGION),
+    };
+    let mut mouth_report = (mouth != MouthShape::AsPosed).then(|| {
+        json!({
+            "shape": mouth,
+            "recess_mm": mouth_recess_mm,
+        })
+    });
     let (displacement, detail_filter) = match params.displacement {
         Some(mut map) => {
             // With a printer, detail is made deep enough to print unless the
@@ -778,7 +1053,12 @@ pub(super) async fn prepare_print(
                 }
                 _ => false,
             };
-            let (map, report) = displacement(&workspace, &model, &head, map, limit_relief).await?;
+            if let Some(report) = &mut mouth_report {
+                report["detail_faded_over"] = json!(faded.map(|_| LIPS_REGION));
+            }
+            let faded = faded.map(<[u32]>::to_vec).unwrap_or_default();
+            let (map, report) =
+                displacement(&workspace, &model, &head, map, (limit_relief, faded)).await?;
             (Some(map), Some(report))
         }
         None => (None, None),
@@ -800,6 +1080,9 @@ pub(super) async fn prepare_print(
             overhang_degrees: printer.maximum_overhang_degrees,
             min_feature_mm: printer.minimum_wall_mm,
         }),
+        eyes,
+        body,
+        mouth_recess_mm,
     };
     let variant = model.info().variant.clone();
     let validation_options = ValidationOptions {
@@ -850,6 +1133,13 @@ pub(super) async fn prepare_print(
             applied["filter"] = filter;
         }
         name_regions(&model, &head_vertices, &mut report);
+        if let Some(carved) = report.get_mut("eyes") {
+            carved["style"] = json!(eye_style);
+            if carved["removed_mm3"].as_f64().is_some_and(|removed| removed <= 0.0) {
+                carved["note"] =
+                    json!("the head's surface covers the eyes where they would be carved; nothing was removed");
+            }
+        }
         let mut response = json!({
             "artifact": artifact,
             "units": "millimetres",
@@ -861,9 +1151,223 @@ pub(super) async fn prepare_print(
             response["warnings"] = json!(print_warnings(&printer, &response["bust"]));
             response["printer"] = serde_json::to_value(printer)?;
         }
+        if let Some(mut mouth) = mouth_report {
+            // The depth applied on the finished bust, which the smoothing's
+            // height correction moves slightly from the request.
+            if mouth_recess_mm.is_some() {
+                mouth["recess_mm"] = response["bust"]["mouth_recess_mm"].clone();
+                if mouth["recess_mm"].is_null() {
+                    mouth["note"] = json!("the model has no mouth opening to recess");
+                }
+            }
+            response["mouth"] = mouth;
+        }
         Ok::<_, ToolError>(response)
     })
     .await
+}
+
+/// Each eyeball's centre and the point where its gaze leaves it, in
+/// millimetres. The eyeballs are the parts separate from the head, and the
+/// gaze leaves each through its vertex furthest forward when the head is at
+/// rest, which the eye's rotation carries with it.
+async fn eye_axes(model: &Arc<FlameModel>, head: &PosedHead) -> Result<Vec<EyeAxis>, ToolError> {
+    let model = Arc::clone(model);
+    let posed = millimetres(&head.vertices);
+    blocking(move || {
+        let faces = model.faces();
+        let mut parent: Vec<usize> = (0..posed.len()).collect();
+        fn root(parent: &mut [usize], mut index: usize) -> usize {
+            while parent[index] != index {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            index
+        }
+        let minor = texture::minor_parts(faces);
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for pair in [[face[0], face[1]], [face[1], face[2]]] {
+                let (a, b) = (
+                    root(&mut parent, pair[0] as usize),
+                    root(&mut parent, pair[1] as usize),
+                );
+                parent[a] = b;
+            }
+        }
+        let mut parts: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        let mut seen = vec![false; posed.len()];
+        for face in faces
+            .iter()
+            .zip(&minor)
+            .filter(|(_, minor)| **minor)
+            .map(|(face, _)| face)
+        {
+            for &vertex in face {
+                let vertex = vertex as usize;
+                if !std::mem::replace(&mut seen[vertex], true) {
+                    let part = root(&mut parent, vertex);
+                    parts.entry(part).or_default().push(vertex);
+                }
+            }
+        }
+        if !(1..=2).contains(&parts.len()) {
+            return Err(ToolError::Validation(format!(
+                "the {} model has no separate eyeballs to carve",
+                model.info().variant
+            )));
+        }
+        let rest = model
+            .evaluate(&FlameParams::default())
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        Ok(parts
+            .into_values()
+            .map(|vertices| {
+                let count = vertices.len() as f64;
+                let centre = [0, 1, 2].map(|axis| {
+                    vertices
+                        .iter()
+                        .map(|&vertex| f64::from(posed[vertex][axis]))
+                        .sum::<f64>()
+                        / count
+                });
+                let pole = vertices
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| rest.vertices[a][2].total_cmp(&rest.vertices[b][2]))
+                    .expect("a part has vertices");
+                EyeAxis {
+                    centre,
+                    front: posed[pole].map(f64::from),
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
+/// The largest suggested neck rotation: a half turn less a margin that
+/// rounding to single precision, in which poses are read and checked,
+/// cannot cross.
+const MAX_SUGGESTED_ANGLE: f64 = std::f64::consts::PI - 1e-5;
+
+/// A neck rotation that keeps a share of the head's rotation in a
+/// photograph. The rotation is split into a turn about y, then a pitch about
+/// x, then a roll about z; the turn is scaled by `turn` and the pitch and
+/// roll by `tilt`, and they are put back together as an axis-angle vector.
+fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
+    let matrix = axis_angle_matrix(rotation);
+    let pitch = (-matrix[1][2]).clamp(-1.0, 1.0).asin();
+    let yaw = matrix[0][2].atan2(matrix[2][2]);
+    let roll = matrix[1][0].atan2(matrix[1][1]);
+    let multiply = |a: [[f64; 3]; 3], b: [[f64; 3]; 3]| {
+        std::array::from_fn(|row| {
+            std::array::from_fn(|column| (0..3).map(|k| a[row][k] * b[k][column]).sum())
+        })
+    };
+    let kept = multiply(
+        multiply(
+            axis_angle_matrix([0.0, turn * yaw, 0.0]),
+            axis_angle_matrix([tilt * pitch, 0.0, 0.0]),
+        ),
+        axis_angle_matrix([0.0, 0.0, tilt * roll]),
+    );
+    // Through a unit quaternion with a non-negative scalar part, which is
+    // stable at every angle and gives an angle of at most a half turn.
+    let [w, x, y, z] = matrix_quaternion(kept);
+    let [w, x, y, z] = if w < 0.0 {
+        [-w, -x, -y, -z]
+    } else {
+        [w, x, y, z]
+    };
+    let length = (x * x + y * y + z * z).sqrt();
+    if length < 1e-12 {
+        return [0.0; 3];
+    }
+    let angle = (2.0 * length.atan2(w)).min(MAX_SUGGESTED_ANGLE);
+    [x, y, z].map(|value| value / length * angle)
+}
+
+/// The unit quaternion, scalar first, of a rotation matrix, by Shepperd's
+/// method: from whichever of its four parts is largest, so that no division
+/// is by a small number.
+fn matrix_quaternion(m: [[f64; 3]; 3]) -> [f64; 4] {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let quaternion = if trace > m[0][0].max(m[1][1]).max(m[2][2]) {
+        let s = (1.0 + trace).sqrt() * 2.0;
+        [
+            s / 4.0,
+            (m[2][1] - m[1][2]) / s,
+            (m[0][2] - m[2][0]) / s,
+            (m[1][0] - m[0][1]) / s,
+        ]
+    } else if m[0][0] >= m[1][1] && m[0][0] >= m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[2][1] - m[1][2]) / s,
+            s / 4.0,
+            (m[0][1] + m[1][0]) / s,
+            (m[0][2] + m[2][0]) / s,
+        ]
+    } else if m[1][1] >= m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        [
+            (m[0][2] - m[2][0]) / s,
+            (m[0][1] + m[1][0]) / s,
+            s / 4.0,
+            (m[1][2] + m[2][1]) / s,
+        ]
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        [
+            (m[1][0] - m[0][1]) / s,
+            (m[0][2] + m[2][0]) / s,
+            (m[1][2] + m[2][1]) / s,
+            s / 4.0,
+        ]
+    };
+    let norm = quaternion
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    quaternion.map(|value| value / norm)
+}
+
+/// The rotation matrix of an axis-angle vector.
+fn axis_angle_matrix(rotation: [f64; 3]) -> [[f64; 3]; 3] {
+    let angle = rotation
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    if angle < 1e-12 {
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    }
+    let [x, y, z] = rotation.map(|value| value / angle);
+    let (sin, cos) = angle.sin_cos();
+    let versine = 1.0 - cos;
+    [
+        [
+            versine * x * x + cos,
+            versine * x * y - sin * z,
+            versine * x * z + sin * y,
+        ],
+        [
+            versine * x * y + sin * z,
+            versine * y * y + cos,
+            versine * y * z - sin * x,
+        ],
+        [
+            versine * x * z - sin * y,
+            versine * y * z + sin * x,
+            versine * z * z + cos,
+        ],
+    ]
 }
 
 /// Replace the vertex index of each region a print check found with the name
@@ -1046,6 +1550,16 @@ pub(super) async fn reconstruct(
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
     });
+    let (tilt, turn) = (
+        request.neck_tilt.unwrap_or(0.0),
+        request.neck_turn.unwrap_or(0.0),
+    );
+    if tilt > 0.0 || turn > 0.0 {
+        let rotation: Option<[f64; 3]> = serde_json::from_value(field("head_rotation")).ok();
+        if let Some(rotation) = rotation {
+            response["pose"]["neck"] = json!(suggested_neck(rotation, tilt, turn));
+        }
+    }
     if let (Some(model), Some(photos), Some(path)) =
         (textured_model, photos, request.texture_path.clone())
     {
@@ -1054,9 +1568,17 @@ pub(super) async fn reconstruct(
         let colouring = Colouring {
             scalp: request.scalp.unwrap_or_default(),
             hair_colour: request.hair_colour,
+            lighting: request.lighting.unwrap_or_default(),
+            size: request
+                .texture_size
+                .map_or(COLOUR_MAP_TEXELS, |size| size as usize),
+            eyes: request.eyes.unwrap_or_default(),
+            iris_colour: request.iris_colour,
+            sclera_colour: request.sclera_colour,
         };
         let views = field("views");
         let digests = field("image_sha256");
+        let identity = field("identity");
         let texture = blocking(move || {
             // Held by the work itself, so a cancelled request cannot let
             // another map start while this one is still being made.
@@ -1072,6 +1594,9 @@ pub(super) async fn reconstruct(
                     "the reconstruction worker did not identify the photographs it used".into(),
                 )
             })?;
+            let identity: Vec<f32> = serde_json::from_value(identity).map_err(|_| {
+                ToolError::Validation("the reconstruction worker returned no identity".into())
+            })?;
             let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
             if fitted.iter().collect::<Vec<_>>() != read {
                 return Err(ToolError::Validation(
@@ -1085,6 +1610,7 @@ pub(super) async fn reconstruct(
                     images: &images,
                     photos: &photos,
                     views: &views,
+                    identity: &identity,
                     path: &path,
                     overwrite,
                     colouring,
@@ -1110,8 +1636,13 @@ fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, Strin
     Ok((snapshot, digest))
 }
 
-/// Side of the colour map in texels.
+/// Side of the colour map in texels unless the caller chooses another.
 const COLOUR_MAP_TEXELS: usize = 1024;
+/// Painted eyes: life-size iris and pupil diameters in metres, the model's
+/// units, and the default colour of the white.
+const PAINTED_IRIS_M: f32 = 0.0115;
+const PAINTED_PUPIL_M: f32 = 0.004;
+const DEFAULT_SCLERA_RGB: [u8; 3] = [240, 236, 230];
 /// Largest photograph decoded for the colour map, in pixels.
 const MAX_PHOTO_PIXELS: u64 = 50_000_000;
 
@@ -1161,6 +1692,11 @@ const MAX_LABEL_PNG_BYTES: usize = 1024 * 1024;
 struct Colouring {
     scalp: crate::recon::ScalpChoice,
     hair_colour: Option<[u8; 3]>,
+    lighting: crate::recon::LightingChoice,
+    size: usize,
+    eyes: crate::recon::EyeChoice,
+    iris_colour: Option<[u8; 3]>,
+    sclera_colour: Option<[u8; 3]>,
 }
 
 /// Decode a view's labels: a square greyscale PNG whose values name the
@@ -1264,6 +1800,9 @@ struct ColourMapRequest<'a> {
     images: &'a [String],
     photos: &'a [(Snapshot, String)],
     views: &'a [ReconView],
+    /// The identity the reconstruction returns, which shapes the head that
+    /// `create` makes from it.
+    identity: &'a [f32],
     path: &'a str,
     overwrite: bool,
     colouring: Colouring,
@@ -1279,6 +1818,7 @@ fn colour_map(
         images,
         photos,
         views,
+        identity,
         path,
         overwrite,
         colouring,
@@ -1334,9 +1874,44 @@ fn colour_map(
             ),
         },
     };
-    let mut builder =
-        texture::ColourMapBuilder::new(model.faces(), layout, COLOUR_MAP_TEXELS, &kinds, scalp)
+    let mut builder = texture::ColourMapBuilder::new(
+        model.faces(),
+        layout,
+        colouring.size,
+        &kinds,
+        texture::Colouring {
+            scalp,
+            lighting: match colouring.lighting {
+                crate::recon::LightingChoice::Remove => texture::Lighting::Remove,
+                crate::recon::LightingChoice::Keep => texture::Lighting::Keep,
+            },
+        },
+    )
+    .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let knows_eyes = kinds.contains(&texture::FaceKind::Eye);
+    if colouring.eyes == crate::recon::EyeChoice::Painted && knows_eyes {
+        // The eyes are painted on the returned head at rest, the head that
+        // `create` makes, where each looks along +z.
+        let rest = model
+            .evaluate(&FlameParams {
+                identity: identity.to_vec(),
+                expression: Vec::new(),
+                pose: Pose::default(),
+                translation: [0.0; 3],
+            })
             .map_err(|error| ToolError::Validation(error.to_string()))?;
+        builder
+            .paint_eyes(
+                &rest.vertices,
+                texture::PaintedEyes {
+                    iris: colouring.iris_colour,
+                    sclera: colouring.sclera_colour.unwrap_or(DEFAULT_SCLERA_RGB),
+                    iris_diameter: PAINTED_IRIS_M,
+                    pupil_diameter: PAINTED_PUPIL_M,
+                },
+            )
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+    }
     let mut segmented = 0usize;
     // One photograph at a time: each is read, decoded, projected and dropped
     // before the next.
@@ -1414,6 +1989,24 @@ fn colour_map(
     if let Some(note) = note {
         scalp_report["note"] = json!(note);
     }
+    let mut eye_report = json!({"requested": colouring.eyes});
+    match map.iris {
+        Some((iris, source)) => {
+            eye_report["applied"] = json!("painted");
+            eye_report["iris_colour"] = json!(iris);
+            eye_report["iris_source"] = json!(match source {
+                texture::IrisSource::Given => "given",
+                texture::IrisSource::Measured => "measured",
+                texture::IrisSource::Default => "default",
+            });
+        }
+        None => {
+            eye_report["applied"] = json!("photo");
+            if colouring.eyes == crate::recon::EyeChoice::Painted {
+                eye_report["note"] = json!("the model has no separate eyeballs to paint");
+            }
+        }
+    }
     Ok(json!({
         "artifact": artifact,
         "width": side,
@@ -1421,6 +2014,20 @@ fn colour_map(
         "seen": map.seen,
         "skin_only": segmented == views.len(),
         "scalp": scalp_report,
+        "eyes": eye_report,
+        "lighting": {
+            "requested": colouring.lighting,
+            // Each photograph's shading in linear light, as ambient plus
+            // direction · normal per colour channel with the direction in
+            // the head's own frame, or null where it was kept or too little
+            // skin was seen to estimate it.
+            "shading": map.shading.iter().zip(views.iter()).map(|(shading, view)| {
+                shading.map(|shading| {
+                    let shading = shading.turned_back(view.head_rotation);
+                    json!({"ambient": shading.ambient, "direction": shading.direction})
+                })
+            }).collect::<Vec<_>>(),
+        },
     }))
 }
 
@@ -1456,13 +2063,13 @@ fn decode_photo(bytes: &[u8]) -> Result<RgbImage, String> {
 /// Read a displacement map from the workspace, filter it as requested and
 /// pair it with the model's texture coordinates. Also describes the filtering.
 /// With `limit_relief`, a relief beyond the limit for detail is reduced to it
-/// rather than refused.
+/// rather than refused. Detail fades to nothing at the `faded` vertices.
 async fn displacement(
     workspace: &Arc<Workspace>,
     model: &Arc<FlameModel>,
     head: &PosedHead,
     params: DisplacementParams,
-    limit_relief: bool,
+    (limit_relief, faded): (bool, Vec<u32>),
 ) -> Result<(Displacement, Value), ToolError> {
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
@@ -1526,6 +2133,7 @@ async fn displacement(
             triangle_uvs,
             relief_mm: params.relief_mm,
             limit_relief,
+            faded,
         },
         description,
     ))
@@ -1635,8 +2243,7 @@ fn library(settings: &Settings) -> Result<&crate::flame::FlameLibrary, ToolError
 async fn evaluate(
     settings: &Settings,
     variant: Option<&str>,
-    identity: Vec<f32>,
-    expression: Vec<f32>,
+    (identity, expression, expression_scale): (Vec<f32>, Vec<f32>, Option<f64>),
     pose: HeadPose,
 ) -> Result<(Arc<FlameModel>, PosedHead), ToolError> {
     let model = Arc::clone(
@@ -1646,10 +2253,16 @@ async fn evaluate(
     );
     check_coefficients("identity", &identity)?;
     check_coefficients("expression", &expression)?;
+    let scale = in_range(
+        "expression_scale",
+        expression_scale.unwrap_or(1.0),
+        &EXPRESSION_SCALE,
+    )? as f32;
+    let expression = expression.iter().map(|value| value * scale).collect();
     let pose = Pose {
         global: check_rotation("global", pose.global)?,
         neck: check_rotation("neck", pose.neck)?,
-        jaw: check_rotation("jaw", pose.jaw)?,
+        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
         left_eye: check_rotation("left_eye", pose.left_eye)?,
         right_eye: check_rotation("right_eye", pose.right_eye)?,
     };
@@ -1722,4 +2335,70 @@ fn annotate(mut result: Value, model: &FlameModel, head: &PosedHead) -> Value {
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9)
+    }
+
+    #[test]
+    fn the_whole_rotation_is_kept_with_full_shares() {
+        let rotation = [0.2, 0.1, 0.05];
+        let neck = suggested_neck(rotation, 1.0, 1.0);
+        assert!(close(neck, rotation), "{neck:?}");
+        assert_eq!(suggested_neck(rotation, 0.0, 0.0), [0.0; 3]);
+    }
+
+    #[test]
+    fn a_half_turn_is_accepted_as_a_pose() {
+        let half = f64::from(std::f32::consts::PI);
+        let neck = suggested_neck([0.0, 0.0, half], 1.0, 1.0);
+        let length = neck.iter().map(|value| value * value).sum::<f64>().sqrt();
+        assert!((length - std::f64::consts::PI).abs() < 1e-4, "{neck:?}");
+        assert!(neck[0].abs() < 1e-6 && neck[1].abs() < 1e-6, "{neck:?}");
+        // Read in single precision, as `create` reads a pose, every
+        // suggestion near a half turn passes its check.
+        let mut rotations = vec![[1.0471975803375244, 2.094395160675049, 2.094395160675049]];
+        for step in 0..400 {
+            let (polar, around) = (f64::from(step % 20) * 0.16, f64::from(step / 20) * 0.33);
+            let axis = [
+                polar.sin() * around.cos(),
+                polar.cos(),
+                polar.sin() * around.sin(),
+            ];
+            for angle in [std::f64::consts::PI, half, std::f64::consts::PI - 1e-7] {
+                rotations.push(axis.map(|value| value * angle));
+            }
+        }
+        for rotation in rotations {
+            let neck = suggested_neck(rotation, 1.0, 1.0).map(|value| value as f32);
+            assert!(
+                check_rotation("neck", neck).is_ok(),
+                "{rotation:?} {neck:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_and_tilt_are_kept_separately() {
+        // A pure turn is dropped by the tilt and halved by a half turn.
+        assert!(close(suggested_neck([0.0, 0.3, 0.0], 1.0, 0.0), [0.0; 3]));
+        assert!(close(
+            suggested_neck([0.0, 0.3, 0.0], 0.0, 0.5),
+            [0.0, 0.15, 0.0]
+        ));
+        // A pure roll or pitch follows the tilt alone.
+        assert!(close(
+            suggested_neck([0.0, 0.0, 0.2], 0.5, 1.0),
+            [0.0, 0.0, 0.1]
+        ));
+        assert!(close(
+            suggested_neck([0.2, 0.0, 0.0], 0.5, 0.0),
+            [0.1, 0.0, 0.0]
+        ));
+    }
 }

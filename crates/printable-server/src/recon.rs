@@ -55,7 +55,66 @@ pub struct ReconRequest {
     /// of the hair colour found in the photographs. Needs `scalp` `hair`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hair_colour: Option<[u8; 3]>,
+    /// What becomes of the photographs' light and shade in the colour map
+    /// (default `remove`): `remove` estimates each photograph's smooth
+    /// shading over the skin and divides it out, keeping the typical skin
+    /// colour and limiting highlights; `keep` leaves it as photographed.
+    /// Needs `texture_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<LightingChoice>,
+    /// Side of the colour map in texels: 512, 1024 (the default) or 2048.
+    /// Needs `texture_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_size: Option<u32>,
+    /// How the colour map colours the eyeballs (default `photo`): `photo`
+    /// takes the photographs' colour where they see the eyeball itself, and
+    /// `painted` paints a clean iris and pupil around each eye's gaze and
+    /// white elsewhere, at life size. Needs `texture_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eyes: Option<EyeChoice>,
+    /// sRGB iris colour, each component 0 to 255, for painted eyes. When
+    /// omitted it is measured from what the photographs show of the iris.
+    /// Needs `eyes` `painted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iris_colour: Option<[u8; 3]>,
+    /// sRGB colour of the white of painted eyes (default 240, 236, 230).
+    /// Needs `eyes` `painted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sclera_colour: Option<[u8; 3]>,
+    /// Share, 0 to 1 (default 0), of the head's tilt in the first
+    /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
+    /// so a bust can keep the subject's natural tilt. The server applies
+    /// it; the worker never sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_tilt: Option<f64>,
+    /// Share, 0 to 1 (default 0), of the head's turn in the first
+    /// photograph, its yaw, to keep in a suggested `pose.neck`. A turn
+    /// reflects where the camera stood as much as the subject. The server
+    /// applies it; the worker never sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neck_turn: Option<f64>,
 }
+
+/// What a colour map does with the photographs' lighting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LightingChoice {
+    #[default]
+    Remove,
+    Keep,
+}
+
+/// How a colour map colours the eyeballs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EyeChoice {
+    #[default]
+    Photo,
+    Painted,
+}
+
+/// Colour map sides a caller may ask for, in texels.
+pub const TEXTURE_SIZES: [u32; 3] = [512, 1024, 2048];
 
 /// How a colour map colours the scalp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
@@ -68,6 +127,19 @@ pub enum ScalpChoice {
 }
 
 impl ReconRequest {
+    /// The request without the options the server applies itself.
+    fn for_worker(&self) -> Self {
+        Self {
+            neck_tilt: None,
+            neck_turn: None,
+            texture_size: None,
+            eyes: None,
+            iris_colour: None,
+            sclera_colour: None,
+            ..self.clone()
+        }
+    }
+
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
         if self.images.is_empty() || self.images.len() > MAX_IMAGES {
@@ -100,13 +172,40 @@ impl ReconRequest {
                     "texture_path and displacement_path must differ".into(),
                 ));
             }
-        } else if self.scalp.is_some() || self.hair_colour.is_some() {
+        } else if self.scalp.is_some()
+            || self.hair_colour.is_some()
+            || self.lighting.is_some()
+            || self.texture_size.is_some()
+            || self.eyes.is_some()
+        {
             return Err(ToolError::Validation(
-                "scalp and hair_colour need texture_path".into(),
+                "scalp, hair_colour, lighting, texture_size and eyes need texture_path".into(),
             ));
         }
         if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
             return Err(ToolError::Validation("hair_colour needs scalp hair".into()));
+        }
+        if self
+            .texture_size
+            .is_some_and(|size| !TEXTURE_SIZES.contains(&size))
+        {
+            return Err(ToolError::Validation(
+                "texture_size must be 512, 1024 or 2048".into(),
+            ));
+        }
+        if (self.iris_colour.is_some() || self.sclera_colour.is_some())
+            && self.eyes.unwrap_or_default() != EyeChoice::Painted
+        {
+            return Err(ToolError::Validation(
+                "iris_colour and sclera_colour need eyes painted".into(),
+            ));
+        }
+        for (name, share) in [("neck_tilt", self.neck_tilt), ("neck_turn", self.neck_turn)] {
+            if share.is_some_and(|share| !(0.0..=1.0).contains(&share)) {
+                return Err(ToolError::Validation(format!(
+                    "{name} must be between 0 and 1"
+                )));
+            }
         }
         Ok(())
     }
@@ -498,6 +597,104 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             texture_path: None,
             scalp: None,
             hair_colour: None,
+            lighting: None,
+            texture_size: None,
+            eyes: None,
+            iris_colour: None,
+            sclera_colour: None,
+            neck_tilt: None,
+            neck_turn: None,
+        }
+    }
+
+    #[test]
+    fn options_the_server_applies_stay_with_the_server() {
+        let request = ReconRequest {
+            neck_tilt: Some(0.5),
+            neck_turn: Some(1.0),
+            texture_path: Some("colour.png".into()),
+            texture_size: Some(2048),
+            eyes: Some(EyeChoice::Painted),
+            iris_colour: Some([1, 2, 3]),
+            sclera_colour: Some([4, 5, 6]),
+            ..request(&["a.jpg"], "map.png")
+        };
+        let sent = serde_json::to_value(request.for_worker()).unwrap();
+        for name in [
+            "neck_tilt",
+            "neck_turn",
+            "texture_size",
+            "eyes",
+            "iris_colour",
+            "sclera_colour",
+        ] {
+            assert!(sent.get(name).is_none(), "{name}: {sent}");
+        }
+        assert_eq!(sent["texture_path"], "colour.png");
+    }
+
+    #[test]
+    fn colour_map_options_are_checked() {
+        let textured = ReconRequest {
+            texture_path: Some("colour.png".into()),
+            ..request(&["a.jpg"], "map.png")
+        };
+        for size in TEXTURE_SIZES {
+            let sized = ReconRequest {
+                texture_size: Some(size),
+                ..textured.clone()
+            };
+            assert!(sized.validate().is_ok());
+        }
+        let painted = ReconRequest {
+            eyes: Some(EyeChoice::Painted),
+            iris_colour: Some([1, 2, 3]),
+            sclera_colour: Some([4, 5, 6]),
+            ..textured.clone()
+        };
+        assert!(painted.validate().is_ok());
+        for (refused, message) in [
+            (
+                ReconRequest {
+                    texture_size: Some(4096),
+                    ..textured.clone()
+                },
+                "512, 1024 or 2048",
+            ),
+            (
+                ReconRequest {
+                    texture_path: None,
+                    texture_size: Some(1024),
+                    ..textured.clone()
+                },
+                "need texture_path",
+            ),
+            (
+                ReconRequest {
+                    texture_path: None,
+                    eyes: Some(EyeChoice::Photo),
+                    ..textured.clone()
+                },
+                "need texture_path",
+            ),
+            (
+                ReconRequest {
+                    iris_colour: Some([1, 2, 3]),
+                    ..textured.clone()
+                },
+                "eyes painted",
+            ),
+            (
+                ReconRequest {
+                    eyes: Some(EyeChoice::Photo),
+                    sclera_colour: Some([1, 2, 3]),
+                    ..textured.clone()
+                },
+                "eyes painted",
+            ),
+        ] {
+            let error = refused.validate().unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
         }
     }
 
@@ -550,6 +747,17 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             let error = coloured(scalp, hair, texture).validate().unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
+        let unlit = ReconRequest {
+            lighting: Some(LightingChoice::Keep),
+            ..request(&["a.jpg"], "map.png")
+        };
+        assert!(
+            unlit
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("need texture_path")
+        );
     }
 }
 
@@ -656,7 +864,7 @@ impl ReconClient {
             .http
             .post(format!("{}/reconstruct", self.endpoint))
             .timeout(REQUEST_TIMEOUT)
-            .json(request)
+            .json(&request.for_worker())
             .send()
             .await
             .map_err(|_| {

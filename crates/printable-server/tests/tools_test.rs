@@ -5877,6 +5877,26 @@ fn open_tetrahedron_library(
 }
 
 #[tokio::test]
+async fn head_prepare_print_scales_the_default_edge_with_a_small_bust() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (height, edge) in [(25.0, 0.1), (50.0, 0.2), (150.0, 0.4)] {
+        let path = format!("bust-{height}.stl");
+        let result = server
+            .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+                "path": path, "height_mm": height, "max_triangles": 100_000
+            }})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let requested = value["bust"]["requested_edge_length_mm"].as_f64().unwrap();
+        assert!((requested - edge).abs() < 1e-9, "{height}: {value}");
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_follows_the_printer() {
     let (_models, library) = open_tetrahedron_library(false);
     let root = tempfile::tempdir().unwrap();
@@ -5993,6 +6013,53 @@ async fn head_prepare_print_follows_the_printer() {
 }
 
 #[tokio::test]
+async fn head_prepare_print_adds_a_body_below_the_head() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (path, extra, kind, height) in [
+        (
+            "neck.stl",
+            json!({"body": "extended_neck", "neck_extension_mm": 8.0}),
+            "extended_neck",
+            Some(8.0),
+        ),
+        (
+            "shoulders.stl",
+            json!({"body": "shoulders"}),
+            "shoulders",
+            None,
+        ),
+    ] {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+        assert_eq!(
+            value["validation"]["topology"]["connected_components"], 1,
+            "{value}"
+        );
+        assert!((value["bust"]["size_mm"][2].as_f64().unwrap() - 50.0).abs() < 1e-6);
+        let body = &value["bust"]["body"];
+        assert_eq!(body["kind"], kind, "{value}");
+        if let Some(height) = height {
+            assert_eq!(body["height_mm"], height, "{value}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_makes_detail_deep_enough_for_the_printer() {
     let (_models, library) = open_tetrahedron_library(true);
     let root = tempfile::tempdir().unwrap();
@@ -6038,6 +6105,171 @@ async fn head_prepare_print_makes_detail_deep_enough_for_the_printer() {
             .contains("shallower than one 0.2 mm layer"),
         "{value}"
     );
+}
+
+#[tokio::test]
+async fn head_expression_scale_softens_the_expression_to_neutral() {
+    let (_models, library) = tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let mut written = Vec::new();
+    for (path, params) in [
+        ("neutral.obj", json!({})),
+        (
+            "scaled.obj",
+            json!({"expression": [2.0], "expression_scale": 0.0}),
+        ),
+        (
+            "half.obj",
+            json!({"expression": [2.0], "expression_scale": 0.5}),
+        ),
+        ("one.obj", json!({"expression": [1.0]})),
+    ] {
+        let mut params = params;
+        params["path"] = json!(path);
+        let result = server
+            .invoke_tool(head_call(json!({"action": "export", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        written.push(std::fs::read(root.path().join(path)).unwrap());
+    }
+    assert_eq!(
+        written[0], written[1],
+        "a scale of 0 gives the neutral face"
+    );
+    assert_eq!(written[2], written[3], "half of 2 is 1");
+    assert_ne!(written[0], written[3]);
+}
+
+#[tokio::test]
+async fn head_prepare_print_closes_or_recesses_the_mouth_and_fades_detail_on_the_lips() {
+    let models = tempfile::tempdir().unwrap();
+    let faces = vec![0, 2, 1, 0, 3, 2, 1, 2, 3];
+    let fixture = printable_flame::fixture::Fixture {
+        faces: faces.clone(),
+        uv: Some((vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5], faces)),
+        // The apex, the only vertex above the cut, stands in for the lips.
+        regions: vec![("lips".into(), vec![2])],
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(16, 16, |_, _| u16::MAX),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |path: &str, extra: Value| {
+        let mut params = json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 2.0,
+            "displacement": {"path": "detail.png", "offset_mm": 0.0, "scale_mm": 10.0}
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let median = |value: &Value| {
+        value["bust"]["displacement"]["percentiles_mm"]["p50"]
+            .as_f64()
+            .unwrap()
+    };
+    let posed = run("posed.stl", json!({})).await.unwrap();
+    let posed = posed.structured_content.unwrap();
+    assert!(posed.get("mouth").is_none(), "{posed}");
+    for (shape, extra) in [
+        (
+            "closed",
+            json!({"mouth": "closed", "pose": {"jaw": [0.2, 0.0, 0.0]}}),
+        ),
+        (
+            "recessed",
+            json!({"mouth": "recessed", "mouth_recess_mm": 1.0}),
+        ),
+    ] {
+        let result = run(&format!("{shape}.stl"), extra).await.unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["mouth"]["shape"], shape, "{value}");
+        assert_eq!(value["mouth"]["detail_faded_over"], "lips", "{value}");
+        if shape == "recessed" {
+            // The fixture's only opening is its neck.
+            assert!(value["mouth"]["recess_mm"].is_null(), "{value}");
+            assert!(
+                value["mouth"]["note"]
+                    .as_str()
+                    .is_some_and(|note| note.contains("no mouth opening")),
+                "{value}"
+            );
+        }
+        assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+        // Fading the apex leaves the even raise in full only near the rim.
+        assert!(median(&value) < 0.9 * median(&posed), "{value} {posed}");
+    }
+}
+
+#[tokio::test]
+async fn head_prepare_print_closes_the_jaw_and_passes_the_recess_to_the_worker() {
+    // The open tetrahedron with vertex 3 bound to the jaw, joint 2, which
+    // sits on vertex 2: opening the jaw moves vertex 3.
+    let models = tempfile::tempdir().unwrap();
+    let mut weights = vec![0.0f32; 4 * 5];
+    for vertex in 0..3 {
+        weights[vertex * 5] = 1.0;
+    }
+    weights[3 * 5 + 2] = 1.0;
+    let fixture = printable_flame::fixture::Fixture {
+        faces: vec![0, 2, 1, 0, 3, 2, 1, 2, 3],
+        weights,
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |path: &str, extra: Value| {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let mut written = Vec::new();
+    for (path, extra) in [
+        ("still.stl", json!({})),
+        ("open.stl", json!({"pose": {"jaw": [0.3, 0.0, 0.0]}})),
+        (
+            "closed.stl",
+            json!({"pose": {"jaw": [0.3, 0.0, 0.0]}, "mouth": "closed"}),
+        ),
+    ] {
+        let result = run(path, extra).await.unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        written.push(std::fs::read(root.path().join(path)).unwrap());
+    }
+    assert_ne!(written[0], written[1], "the jaw moves the fixture");
+    assert_eq!(written[0], written[2], "closed replaces the jaw rotation");
+
+    // The fixture has no mouth opening to show a recess, but a recess too
+    // deep for a 20 mm bust reaches the worker's limit.
+    let result = run(
+        "deep.stl",
+        json!({"height_mm": 20.0, "mouth": "recessed", "mouth_recess_mm": 10.0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    assert!(format!("{result:?}").contains("mouth recess"), "{result:?}");
 }
 
 #[tokio::test]
@@ -6344,6 +6576,50 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
             "printer.minimum_wall_mm",
         ),
         (
+            json!({"path": "head.stl", "expression_scale": 1.5}),
+            "expression_scale",
+        ),
+        (
+            json!({"path": "head.stl", "mouth_recess_mm": 2.0}),
+            "requires mouth recessed",
+        ),
+        (
+            json!({"path": "head.stl", "mouth": "recessed", "mouth_recess_mm": 20.0}),
+            "mouth_recess_mm",
+        ),
+        (
+            json!({"path": "head.stl", "pupil_diameter_mm": 1.0}),
+            "need eyes pupil or iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "iris_diameter_mm": 3.0}),
+            "iris_diameter_mm needs eyes iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "pupil_diameter_mm": 20.0}),
+            "pupil_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "iris_and_pupil", "eye_detail_depth_mm": 0.0}),
+            "eye_detail_depth_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil"}),
+            "no separate eyeballs",
+        ),
+        (
+            json!({"path": "head.stl", "neck_extension_mm": 10.0}),
+            "needs body extended_neck",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "shoulder_width_mm": 80.0}),
+            "need body shoulders",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "neck_extension_mm": 500.0}),
+            "neck_extension_mm",
+        ),
+        (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),
             "must exceed plinth_height_mm",
         ),
@@ -6509,19 +6785,28 @@ fn flame2020_library_with_regions(
     textured: bool,
     regions: Vec<(String, Vec<u32>)>,
 ) -> Arc<printable_server::flame::FlameLibrary> {
-    let models = tempfile::tempdir().unwrap();
-    // The published model's split: 300 identity and 100 expression components.
-    let mut fixture = printable_flame::fixture::Fixture {
-        shapedirs: vec![0.0; 4 * 3 * 400],
-        uv: textured.then(|| {
+    flame2020_library_edited(|fixture| {
+        fixture.uv = textured.then(|| {
             (
                 vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
                 vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             )
-        }),
-        regions,
+        });
+        fixture.regions = regions;
+    })
+}
+
+/// The FLAME 2020 fixture, changed by `edit`.
+fn flame2020_library_edited(
+    edit: impl FnOnce(&mut printable_flame::fixture::Fixture),
+) -> Arc<printable_server::flame::FlameLibrary> {
+    let models = tempfile::tempdir().unwrap();
+    // The published model's split: 300 identity and 100 expression components.
+    let mut fixture = printable_flame::fixture::Fixture {
+        shapedirs: vec![0.0; 4 * 3 * 400],
         ..Default::default()
     };
+    edit(&mut fixture);
     for (key, value) in [
         ("variant", "flame2020_generic"),
         (
@@ -6758,6 +7043,69 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_suggests_a_neck_pose_from_the_head_rotation() {
+    // The fake worker reports the head turned 0.1 radians about y.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let run = |extra: Value| {
+        let mut params =
+            json!({"images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "reconstruct", "params": params}),
+        ))
+    };
+    let neck = |value: &Value| -> Vec<f64> {
+        value["pose"]["neck"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|axis| axis.as_f64().unwrap())
+            .collect()
+    };
+    let plain = run(json!({})).await.unwrap().structured_content.unwrap();
+    assert!(plain["pose"].get("neck").is_none(), "{plain}");
+    // The turn is kept only when asked for; a tilt alone drops it.
+    let turned = run(json!({"neck_turn": 1.0}))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let suggested = neck(&turned);
+    assert!(
+        (suggested[1] - 0.1).abs() < 1e-9 && suggested[0].abs() < 1e-9,
+        "{turned}"
+    );
+    let tilted = run(json!({"neck_tilt": 1.0}))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        neck(&tilted).iter().all(|axis| axis.abs() < 1e-9),
+        "{tilted}"
+    );
+    let refused = run(json!({"neck_tilt": 2.0})).await.unwrap();
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    assert!(format!("{refused:?}").contains("neck_tilt"), "{refused:?}");
+    // The server applies the shares; the worker is never sent them.
+    let sent = seen.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert!(
+        sent.iter()
+            .all(|body| body.get("neck_tilt").is_none() && body.get("neck_turn").is_none()),
+        "{sent:?}"
+    );
+    drop(sent);
+    task.abort();
+}
+
+#[tokio::test]
 async fn head_reconstruct_colours_skin_from_skin_and_the_scalp_as_asked() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
@@ -6984,8 +7332,16 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
         (Some(1024), Some(1024))
     );
     assert!(texture["seen"].as_f64().unwrap() > 0.1, "{value}");
+    // Lighting is removed by default, and the shading found is reported for
+    // the one photograph.
+    assert_eq!(texture["lighting"]["requested"], "remove", "{value}");
+    assert_eq!(
+        texture["lighting"]["shading"].as_array().map(Vec::len),
+        Some(1),
+        "{value}"
+    );
     // A single-coloured photograph colours the whole map, including what it
-    // cannot see.
+    // cannot see, and has no shading to remove.
     let map = image::open(root.path().join("colour.png"))
         .unwrap()
         .into_rgb8();
@@ -7090,6 +7446,141 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(asked, 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_sizes_the_colour_map_and_paints_the_eyes() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Every vertex of the fixture's head is an eyeball.
+    let eyed = flame2020_library_with_regions(
+        true,
+        vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ],
+    );
+    let sclera = [1u8, 2, 3];
+    for (library, painted) in [(eyed, true), (flame2020_library_with_uv(true), false)] {
+        let (endpoint, seen, task) =
+            fake_recon_worker_with(true, json!({"image_sha256": [digest]})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": [10, 200, 30], "sclera_colour": sclera,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let texture = &value["texture"];
+        assert_eq!(texture["width"], 512, "{value}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(map.dimensions(), (512, 512));
+        let shows_sclera = map.pixels().any(|pixel| pixel.0 == sclera);
+        let eyes = &texture["eyes"];
+        assert_eq!(eyes["requested"], "painted", "{value}");
+        if painted {
+            assert_eq!(eyes["applied"], "painted", "{value}");
+            assert_eq!(eyes["iris_colour"], json!([10, 200, 30]), "{value}");
+            assert_eq!(eyes["iris_source"], "given", "{value}");
+            assert!(shows_sclera);
+        } else {
+            // Without separate eyeballs nothing is painted, and the response
+            // says so.
+            assert_eq!(eyes["applied"], "photo", "{value}");
+            assert!(
+                eyes["note"].as_str().unwrap().contains("eyeballs"),
+                "{value}"
+            );
+            assert!(!shows_sclera);
+        }
+        // The worker is not sent the options the server applies.
+        let sent = seen.lock().unwrap();
+        for name in ["texture_size", "eyes", "iris_colour", "sclera_colour"] {
+            assert!(sent[0].get(name).is_none(), "{name}: {sent:?}");
+        }
+        drop(sent);
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn head_reconstruct_paints_eyes_on_the_head_it_returns() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Identity component 0 scales the head about the origin; every vertex
+    // is an eyeball. The worker's views keep the metre-wide head, but the
+    // identity it returns shrinks it to a centimetre, about the size of a
+    // life-size iris.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.uv = Some((
+            vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+            vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        ));
+        fixture.regions = vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ];
+        for (index, value) in fixture.template.clone().into_iter().enumerate() {
+            fixture.shapedirs[index * 400] = value;
+        }
+    });
+    let iris = [10u8, 200, 30];
+    let mut painted = Vec::new();
+    for identity in [json!([0.0]), json!([-0.99])] {
+        let (endpoint, _, task) = fake_recon_worker_with(
+            true,
+            json!({"image_sha256": [digest], "identity": identity}),
+        )
+        .await;
+        let server = recon_server_with(root.path(), &endpoint, Arc::clone(&library)).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": iris,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        painted.push(map.pixels().filter(|pixel| pixel.0 == iris).count());
+        task.abort();
+    }
+    // On the metre-wide head the iris is a speck; on the returned head it
+    // covers much of the front.
+    assert!(painted[1] > 20 * painted[0].max(1), "{painted:?}");
 }
 
 #[tokio::test]

@@ -14,6 +14,17 @@
 //! it are left out and unseen skin is filled from skin alone. The scalp can
 //! take the photographs' colour, be treated as skin, or be painted a hair
 //! colour where no photograph shows bare skin there.
+//!
+//! The eyeballs can be painted instead of photographed: an iris and pupil
+//! around each eyeball's gaze and white elsewhere, with the iris colour
+//! given or measured from what the photographs show of the iris.
+//!
+//! The photographs' light and shade can be removed. For each photograph, a
+//! smooth shading, an ambient term plus one direction for each colour
+//! channel in linear light, is fitted to the skin from the fitted head's
+//! surface normals and divided out. The mean skin colour is kept, so the
+//! subject's skin tone stays as photographed, and specular highlights are
+//! limited.
 
 use thiserror::Error;
 
@@ -33,6 +44,30 @@ const FULL_WEIGHT: f32 = 0.5;
 /// A point counts as visible when it is no more than this far, in metres,
 /// behind the nearest surface at its pixel.
 const DEPTH_TOLERANCE_M: f32 = 0.002;
+/// The same for a point on an eyeball. The eyelids lie just in front of the
+/// eyeballs, so the general tolerance would let them colour the eyeballs.
+const EYE_DEPTH_TOLERANCE_M: f32 = 0.0005;
+/// The pupil's colour in painted eyes, sRGB.
+const PUPIL_RGB: [f32; 3] = [16.0, 14.0, 14.0];
+/// Share of a painted iris's radius, at its edge, that darkens toward the
+/// white, and how much it darkens there.
+const LIMBUS_SHARE: f32 = 0.15;
+const LIMBUS_DARKENING: f32 = 0.45;
+/// Painted edges blend over this share of the iris's radius on each side.
+const PAINT_SOFTNESS: f32 = 0.04;
+/// A measured iris colour comes from photographed texels between these
+/// shares of the iris's radius, clear of the pupil and of the white.
+const IRIS_SAMPLE_SHARES: [f32; 2] = [0.45, 0.85];
+/// The iris is looked for within this share of its radius of the gaze.
+const IRIS_SEARCH_SHARE: f32 = 2.0;
+/// The white of a photographed eye is taken as this share of the way up its
+/// luminances, and an iris must be at least this share darker than it.
+const WHITE_PERCENTILE: f32 = 0.9;
+const MIN_IRIS_CONTRAST: f32 = 0.15;
+/// Fewest photographed iris texels to measure an iris colour from.
+const MIN_IRIS_TEXELS: usize = 16;
+/// Iris colour used when it is neither given nor measured: a mid brown.
+pub const DEFAULT_IRIS_RGB: [u8; 3] = [96, 66, 42];
 /// Below this share of the map in view of some photograph, the projection
 /// is taken to have failed. A texel is in view whether or not its colour is
 /// used, so hair in front of skin does not count against the projection.
@@ -59,6 +94,123 @@ pub enum FaceKind {
     Scalp,
     Eye,
 }
+
+/// What becomes of the light and shade in the photographs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lighting {
+    /// As photographed.
+    Keep,
+    /// Each photograph's smooth shading over the skin is estimated and
+    /// divided out.
+    Remove,
+}
+
+/// Eyeballs painted rather than photographed: an iris and pupil around each
+/// eyeball's gaze, which is +z with the head at rest, and white elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintedEyes {
+    /// sRGB iris colour, or `None` to measure it from the photographs.
+    pub iris: Option<[u8; 3]>,
+    /// sRGB colour of the white of the eye.
+    pub sclera: [u8; 3],
+    /// Diameters across the gaze, in the model's units.
+    pub iris_diameter: f32,
+    pub pupil_diameter: f32,
+}
+
+/// Where a painted iris's colour came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrisSource {
+    Given,
+    Measured,
+    /// Neither given nor seen well enough to measure: [`DEFAULT_IRIS_RGB`].
+    Default,
+}
+
+/// A texel on an eyeball, placed relative to its eyeball at rest.
+#[derive(Debug, Clone, Copy)]
+struct EyeTexel {
+    texel: usize,
+    /// Which eyeball it is on.
+    eye: usize,
+    /// Offset across the gaze, in x and y, from the eyeball's centre.
+    offset: [f32; 2],
+    /// Whether it lies on the front half, facing along the gaze.
+    front: bool,
+}
+
+impl EyeTexel {
+    /// Distance from the eyeball's gaze axis.
+    fn across(&self) -> f32 {
+        self.offset[0].hypot(self.offset[1])
+    }
+}
+
+/// How a colour map treats the head's parts and the photographs' light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Colouring {
+    pub scalp: ScalpColour,
+    pub lighting: Lighting,
+}
+
+/// The shading estimated for one photograph, in linear light: for each
+/// colour channel, `ambient + direction · normal`, where the normal is in
+/// the camera's frame with x right, y up and z toward the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shading {
+    pub ambient: [f32; 3],
+    pub direction: [[f32; 3]; 3],
+}
+
+impl Shading {
+    /// The same shading with its directions turned back by an axis-angle
+    /// rotation. Turned back by the head's rotation in its photograph, they
+    /// go from the camera's frame to the head's own.
+    pub fn turned_back(self, rotation: [f32; 3]) -> Shading {
+        let angle = rotation
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        if angle == 0.0 {
+            return self;
+        }
+        let axis = rotation.map(|value| value / angle);
+        let (sin, cos) = (-angle).sin_cos();
+        let turn = |vector: [f32; 3]| {
+            let across = [
+                axis[1] * vector[2] - axis[2] * vector[1],
+                axis[2] * vector[0] - axis[0] * vector[2],
+                axis[0] * vector[1] - axis[1] * vector[0],
+            ];
+            let along = axis[0] * vector[0] + axis[1] * vector[1] + axis[2] * vector[2];
+            std::array::from_fn(|index| {
+                vector[index] * cos + across[index] * sin + axis[index] * along * (1.0 - cos)
+            })
+        };
+        Shading {
+            ambient: self.ambient,
+            direction: self.direction.map(turn),
+        }
+    }
+
+    fn at(&self, channel: usize, normal: [f32; 3]) -> f32 {
+        let direction = self.direction[channel];
+        self.ambient[channel]
+            + direction[0] * normal[0]
+            + direction[1] * normal[1]
+            + direction[2] * normal[2]
+    }
+}
+
+/// Fewer skin samples than this leave a photograph's lighting as it is.
+const MIN_LIGHTING_SAMPLES: usize = 200;
+/// Shading is not trusted below this share of its average, where dividing by
+/// it would blow up noise in deep shadow.
+const MIN_SHADING_SHARE: f32 = 0.25;
+/// Luminance above this percentile of the skin's is treated as specular
+/// highlight and brought down to it.
+const HIGHLIGHT_PERCENTILE: f64 = 97.0;
 
 /// How the scalp is coloured.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -176,6 +328,12 @@ pub struct ColourMap {
     /// Share of the map's texels on the head's surface that some photograph
     /// saw directly.
     pub seen: f64,
+    /// For each photograph in the order added, the shading removed from it:
+    /// `None` when lighting is kept or too little skin was seen to estimate it.
+    pub shading: Vec<Option<Shading>>,
+    /// For painted eyes, the iris colour used and where it came from; `None`
+    /// when the eyes were photographed or the head has no eyeballs.
+    pub iris: Option<([u8; 3], IrisSource)>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -192,6 +350,8 @@ pub enum TextureError {
     NotVisible,
     #[error("the head's parts do not match its triangles")]
     Kinds,
+    #[error("painted eyes need a pupil narrower than the iris, both above zero")]
+    EyeSizes,
     #[error("a photograph's labels do not match their size")]
     Labels,
 }
@@ -204,7 +364,11 @@ pub fn bake(
     size: usize,
 ) -> Result<ColourMap, TextureError> {
     let kinds = vec![FaceKind::Skin; faces.len()];
-    let mut builder = ColourMapBuilder::new(faces, layout, size, &kinds, ScalpColour::Photo)?;
+    let colouring = Colouring {
+        scalp: ScalpColour::Photo,
+        lighting: Lighting::Keep,
+    };
+    let mut builder = ColourMapBuilder::new(faces, layout, size, &kinds, colouring)?;
     for view in views {
         builder.add(view)?;
     }
@@ -224,18 +388,21 @@ pub struct ColourMapBuilder<'a> {
     colour: Vec<[f32; 3]>,
     size: usize,
     kinds: Vec<FaceKind>,
-    scalp: ScalpColour,
+    colouring: Colouring,
+    shading: Vec<Option<Shading>>,
+    painted: Option<(PaintedEyes, Vec<EyeTexel>)>,
 }
 
 impl<'a> ColourMapBuilder<'a> {
     /// A builder for a `size` texel map. `kinds` names the part of the head
-    /// each triangle belongs to, and `scalp` says how the scalp is coloured.
+    /// each triangle belongs to, and `colouring` says how the scalp is
+    /// coloured and what becomes of the photographs' light.
     pub fn new(
         faces: &'a [[u32; 3]],
         layout: &UvLayout,
         size: usize,
         kinds: &[FaceKind],
-        scalp: ScalpColour,
+        colouring: Colouring,
     ) -> Result<Self, TextureError> {
         if size < 2 {
             return Err(TextureError::Size);
@@ -252,21 +419,102 @@ impl<'a> ColourMapBuilder<'a> {
             colour: vec![[0.0; 3]; size * size],
             size,
             kinds: kinds.to_vec(),
-            scalp,
+            colouring,
+            shading: Vec::new(),
+            painted: None,
         })
+    }
+
+    /// Paint the eyeballs instead of colouring them from the photographs.
+    /// `rest` is the head at rest, one vertex per model vertex, in the
+    /// model's units. Each eyeball's centre is the middle of its extent.
+    pub fn paint_eyes(&mut self, rest: &[[f32; 3]], eyes: PaintedEyes) -> Result<(), TextureError> {
+        if !(eyes.pupil_diameter > 0.0 && eyes.pupil_diameter < eyes.iris_diameter)
+            || !eyes.iris_diameter.is_finite()
+        {
+            return Err(TextureError::EyeSizes);
+        }
+        if self
+            .faces
+            .iter()
+            .flatten()
+            .any(|&vertex| vertex as usize >= rest.len())
+        {
+            return Err(TextureError::Vertices);
+        }
+        let on_eye = |face: usize| self.kinds[face] == FaceKind::Eye;
+        // Eyeballs are the connected groups of eye triangles.
+        let mut parent: Vec<usize> = (0..rest.len()).collect();
+        for (face, corners) in self.faces.iter().enumerate() {
+            if on_eye(face) {
+                for pair in [[corners[0], corners[1]], [corners[1], corners[2]]] {
+                    let (a, b) = (
+                        root(&mut parent, pair[0] as usize),
+                        root(&mut parent, pair[1] as usize),
+                    );
+                    parent[a] = b;
+                }
+            }
+        }
+        let mut bounds: std::collections::HashMap<usize, ([f32; 3], [f32; 3])> =
+            std::collections::HashMap::new();
+        for (face, corners) in self.faces.iter().enumerate() {
+            if !on_eye(face) {
+                continue;
+            }
+            for &vertex in corners {
+                let point = rest[vertex as usize];
+                let (low, high) = bounds
+                    .entry(root(&mut parent, vertex as usize))
+                    .or_insert((point, point));
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(point[axis]);
+                    high[axis] = high[axis].max(point[axis]);
+                }
+            }
+        }
+        let mut texels = Vec::new();
+        for (index, &face) in self.texels.face.iter().enumerate() {
+            if face == NO_FACE || !on_eye(face as usize) {
+                continue;
+            }
+            let corners = self.faces[face as usize];
+            let eye = root(&mut parent, corners[0] as usize);
+            let (low, high) = bounds[&eye];
+            let [wa, wb] = self.texels.barycentric[index];
+            let shares = [wa, wb, 1.0 - wa - wb];
+            let offset: [f32; 3] = std::array::from_fn(|axis| {
+                corners
+                    .iter()
+                    .zip(shares)
+                    .map(|(corner, share)| share * rest[*corner as usize][axis])
+                    .sum::<f32>()
+                    - (low[axis] + high[axis]) / 2.0
+            });
+            texels.push(EyeTexel {
+                texel: index,
+                eye,
+                offset: [offset[0], offset[1]],
+                front: offset[2] > 0.0,
+            });
+        }
+        self.painted = Some((eyes, texels));
+        Ok(())
     }
 
     /// Add one photograph's colour to the texels it sees.
     pub fn add(&mut self, view: &View<'_>) -> Result<(), TextureError> {
-        accumulate(
+        let shading = accumulate(
             self.faces,
             &self.texels,
             view,
-            (&self.kinds, self.scalp),
+            (&self.kinds, self.colouring),
             &mut self.weight,
             &mut self.colour,
             (&mut self.in_view, &mut self.skin),
-        )
+        )?;
+        self.shading.push(shading);
+        Ok(())
     }
 
     /// Blend the photographs and fill what none of them saw.
@@ -280,22 +528,27 @@ impl<'a> ColourMapBuilder<'a> {
             mut colour,
             size,
             kinds,
-            scalp,
+            colouring,
+            shading,
+            painted,
         } = self;
+        let scalp = colouring.scalp;
         let in_view =
             in_view.iter().filter(|&&seen| seen).count() as f64 / texels.on_surface().max(1) as f64;
         if in_view < MIN_SEEN {
             return Err(TextureError::NotVisible);
         }
-        finish(
+        let mut map = finish(
             faces,
             &texels,
             (&weight, skin),
             &mut colour,
             size,
-            &kinds,
+            (&kinds, painted.as_ref()),
             scalp,
-        )
+        )?;
+        map.shading = shading;
+        Ok(map)
     }
 }
 
@@ -309,13 +562,6 @@ pub fn minor_parts(faces: &[[u32; 3]]) -> Vec<bool> {
         .max()
         .unwrap_or(0);
     let mut parent: Vec<usize> = (0..vertex_count).collect();
-    fn root(parent: &mut [usize], mut index: usize) -> usize {
-        while parent[index] != index {
-            parent[index] = parent[parent[index]];
-            index = parent[index];
-        }
-        index
-    }
     for face in faces {
         for pair in [[face[0], face[1]], [face[1], face[2]]] {
             let (a, b) = (
@@ -340,25 +586,38 @@ pub fn minor_parts(faces: &[[u32; 3]]) -> Vec<bool> {
     roots.iter().map(|part| Some(*part) != largest).collect()
 }
 
+/// The representative of a vertex's group, halving the path on the way.
+fn root(parent: &mut [usize], mut index: usize) -> usize {
+    while parent[index] != index {
+        parent[index] = parent[parent[index]];
+        index = parent[index];
+    }
+    index
+}
+
 fn finish(
     faces: &[[u32; 3]],
     texels: &TexelMap,
     (weight, skin): (&[f32], SkinSamples),
     colour: &mut [[f32; 3]],
     size: usize,
-    kinds: &[FaceKind],
+    (kinds, painting): (&[FaceKind], Option<&(PaintedEyes, Vec<EyeTexel>)>),
     scalp: ScalpColour,
 ) -> Result<ColourMap, TextureError> {
     let on_scalp = |face: u32| kinds[face as usize] == FaceKind::Scalp;
     let painted = matches!(scalp, ScalpColour::Hair(_));
     let mut on_surface = 0usize;
     let mut seen = 0usize;
+    // Painted eyes show no photograph's colour.
+    let painted_eyes = painting.is_some_and(|(_, texels)| !texels.is_empty());
     for (index, &face) in texels.face.iter().enumerate() {
         if face != NO_FACE {
             on_surface += 1;
             // Painted hair shows a photograph's colour only where it saw
             // bare scalp.
-            let shown = if painted && on_scalp(face) {
+            let shown = if painted_eyes && kinds[face as usize] == FaceKind::Eye {
+                0.0
+            } else if painted && on_scalp(face) {
                 skin.weight[index]
             } else {
                 weight[index]
@@ -374,6 +633,15 @@ fn finish(
             *colour = colour.map(|channel| channel / weight);
         }
     }
+    let iris = painting
+        .filter(|(_, texels)| !texels.is_empty())
+        .map(|(eyes, texels)| match eyes.iris {
+            Some(given) => (given, IrisSource::Given),
+            None => match measured_iris(eyes, texels, weight, colour) {
+                Some(measured) => (measured, IrisSource::Measured),
+                None => (DEFAULT_IRIS_RGB, IrisSource::Default),
+            },
+        });
     let vertex_count = faces
         .iter()
         .flatten()
@@ -457,12 +725,142 @@ fn finish(
         }
         confidence[index] = 1.0;
     }
+    if let (Some((eyes, texels)), Some((iris, _))) = (painting, iris) {
+        for texel in texels {
+            colour[texel.texel] = painted_colour(eyes, iris.map(f32::from), texel);
+        }
+    }
     let filled = pull_push(size, confidence, colour.to_vec());
     let rgb = filled
         .iter()
         .flat_map(|texel| texel.map(|channel| channel.round().clamp(0.0, 255.0) as u8))
         .collect();
-    Ok(ColourMap { size, rgb, seen })
+    Ok(ColourMap {
+        size,
+        rgb,
+        seen,
+        shading: Vec::new(),
+        iris,
+    })
+}
+
+/// The iris colour the photographs show. A subject who looked aside shows
+/// the iris away from the eyeball's gaze at rest, so each eye's iris is
+/// found first: the iris and pupil are darker than the white around them,
+/// and their centre is where the darkness near the gaze is centred. The
+/// colour is the middle half, by luminance, of the photographed texels
+/// around that centre clear of the pupil and of the white, so that
+/// reflections and lashes are left out. `None` when too few were seen.
+fn measured_iris(
+    eyes: &PaintedEyes,
+    texels: &[EyeTexel],
+    weight: &[f32],
+    colour: &[[f32; 3]],
+) -> Option<[u8; 3]> {
+    let radius = eyes.iris_diameter / 2.0;
+    let [inner, outer] = IRIS_SAMPLE_SHARES.map(|share| share * radius);
+    let inner = inner.max(eyes.pupil_diameter / 2.0);
+    let luminance = |rgb: &[f32; 3]| 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    let seen: Vec<&EyeTexel> = texels
+        .iter()
+        .filter(|texel| texel.front && weight[texel.texel] > 0.0)
+        .collect();
+    let mut eye_ids: Vec<usize> = seen.iter().map(|texel| texel.eye).collect();
+    eye_ids.sort_unstable();
+    eye_ids.dedup();
+    let mut samples: Vec<[f32; 3]> = Vec::new();
+    for eye in eye_ids {
+        let near: Vec<&&EyeTexel> = seen
+            .iter()
+            .filter(|texel| texel.eye == eye && texel.across() <= IRIS_SEARCH_SHARE * radius)
+            .collect();
+        if near.is_empty() {
+            continue;
+        }
+        let mean = near
+            .iter()
+            .map(|texel| luminance(&colour[texel.texel]))
+            .sum::<f32>()
+            / near.len() as f32;
+        let mut total = 0.0f32;
+        let mut sum = [0.0f32; 2];
+        for texel in &near {
+            let darkness = (mean - luminance(&colour[texel.texel])).max(0.0);
+            total += darkness;
+            for (total, offset) in sum.iter_mut().zip(texel.offset) {
+                *total += darkness * offset;
+            }
+        }
+        if total <= 0.0 {
+            continue;
+        }
+        let centre = sum.map(|value| value / total);
+        let ring: Vec<[f32; 3]> = seen
+            .iter()
+            .filter(|texel| {
+                let distance = (texel.offset[0] - centre[0]).hypot(texel.offset[1] - centre[1]);
+                texel.eye == eye && (inner..=outer).contains(&distance)
+            })
+            .map(|texel| colour[texel.texel])
+            .collect();
+        // Small variations in a white with no iris in view would also give
+        // a centre, so only a ring distinctly darker than the white counts.
+        let percentile = |mut values: Vec<f32>, share: f32| {
+            values.sort_by(f32::total_cmp);
+            values[((values.len() - 1) as f32 * share) as usize]
+        };
+        if ring.is_empty() {
+            continue;
+        }
+        let white = percentile(
+            near.iter()
+                .map(|texel| luminance(&colour[texel.texel]))
+                .collect(),
+            WHITE_PERCENTILE,
+        );
+        let middle = percentile(ring.iter().map(luminance).collect(), 0.5);
+        if middle <= (1.0 - MIN_IRIS_CONTRAST) * white {
+            samples.extend(ring);
+        }
+    }
+    let mut seen = samples;
+    if seen.len() < MIN_IRIS_TEXELS {
+        return None;
+    }
+    seen.sort_by(|a, b| luminance(a).total_cmp(&luminance(b)));
+    let middle = &seen[seen.len() / 4..seen.len() - seen.len() / 4];
+    let count = middle.len() as f32;
+    Some(std::array::from_fn(|channel| {
+        (middle.iter().map(|rgb| rgb[channel]).sum::<f32>() / count)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    }))
+}
+
+/// A painted eye's colour at a texel: pupil, iris darkening toward its edge,
+/// or white, with edges blended so that they do not show the texels.
+fn painted_colour(eyes: &PaintedEyes, iris: [f32; 3], texel: &EyeTexel) -> [f32; 3] {
+    let sclera = eyes.sclera.map(f32::from);
+    if !texel.front {
+        return sclera;
+    }
+    let radius = eyes.iris_diameter / 2.0;
+    let soft = PAINT_SOFTNESS * radius;
+    let across = texel.across();
+    let inside = |edge: f32| 1.0 - smoothstep(edge - soft, edge + soft, across);
+    let limbus = smoothstep(radius * (1.0 - LIMBUS_SHARE), radius, across);
+    let ring = iris.map(|channel| channel * (1.0 - LIMBUS_DARKENING * limbus));
+    let mix = |a: [f32; 3], b: [f32; 3], share: f32| -> [f32; 3] {
+        std::array::from_fn(|channel| a[channel] * (1.0 - share) + b[channel] * share)
+    };
+    let iris = mix(ring, PUPIL_RGB, inside(eyes.pupil_diameter / 2.0));
+    mix(sclera, iris, inside(radius))
+}
+
+/// 0 below `low`, 1 above `high`, and a smooth rise between.
+fn smoothstep(low: f32, high: f32, value: f32) -> f32 {
+    let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// A colour for every vertex: photographed colour where the vertex was seen
@@ -617,17 +1015,31 @@ fn texel_range(low: f64, high: f64, size: usize) -> std::ops::Range<usize> {
     first.min(size)..last.min(size)
 }
 
-/// Add one photograph's colour to the texels it sees, weighted by how squarely
-/// it sees them.
+/// One photographed colour for a texel, before it is added.
+struct Sample {
+    texel: usize,
+    share: f32,
+    colour: [f32; 3],
+    /// Unit surface normal in the camera's frame.
+    normal: [f32; 3],
+    /// Whether the texel is on skin, whose shading the lighting is fitted to.
+    skin: bool,
+    /// Whether the pixel was labelled skin.
+    labelled_skin: bool,
+}
+
+/// Add one photograph's colour to the texels it sees, weighted by how
+/// squarely it sees them, and return the shading removed from it, if any.
 fn accumulate(
     faces: &[[u32; 3]],
     texels: &TexelMap,
     view: &View<'_>,
-    (kinds, scalp): (&[FaceKind], ScalpColour),
+    (kinds, colouring): (&[FaceKind], Colouring),
     weight: &mut [f32],
     colour: &mut [[f32; 3]],
     (in_view, skin): (&mut [bool], &mut SkinSamples),
-) -> Result<(), TextureError> {
+) -> Result<Option<Shading>, TextureError> {
+    let scalp = colouring.scalp;
     let photo = &view.photo;
     if photo.rgb.len() != photo.width * photo.height * 3 || photo.width == 0 || photo.height == 0 {
         return Err(TextureError::Photo);
@@ -667,9 +1079,16 @@ fn accumulate(
         .collect();
     let depth = DepthBuffer::render(faces, &projected, photo.width, photo.height);
     let normals = vertex_normals(faces, view.vertices);
-    let tolerance = projection.scale * DEPTH_TOLERANCE_M;
+    let tolerance = |face: u32| {
+        projection.scale
+            * match kinds[face as usize] {
+                FaceKind::Eye => EYE_DEPTH_TOLERANCE_M,
+                FaceKind::Skin | FaceKind::Scalp => DEPTH_TOLERANCE_M,
+            }
+    };
     // One pixel more, because probes are read at the nearest pixel centre.
     let margin = OUTLINE_MARGIN * CROP_PIXELS / projection.crop_step + 1.0;
+    let mut samples = Vec::new();
     for (index, &face) in texels.face.iter().enumerate() {
         if face == NO_FACE {
             continue;
@@ -702,7 +1121,7 @@ fn accumulate(
         let Some(nearest) = depth.at(pixel) else {
             continue;
         };
-        if point_depth < nearest - tolerance {
+        if point_depth < nearest - tolerance(face) {
             continue;
         }
         // Eight probes around a circle of the margin's radius; the octagon
@@ -735,22 +1154,199 @@ fn accumulate(
             }
             None => false,
         };
-        let Some(sample) = sample(photo, pixel) else {
+        let Some(photographed) = sample(photo, pixel) else {
             continue;
         };
-        let share = ((facing - MIN_FACING) / (1.0 - MIN_FACING)).powi(2);
-        weight[index] += share;
-        for channel in 0..3 {
-            colour[index][channel] += share * sample[channel];
+        samples.push(Sample {
+            texel: index,
+            share: ((facing - MIN_FACING) / (1.0 - MIN_FACING)).powi(2),
+            colour: photographed,
+            normal: normal.map(|axis| axis / length),
+            skin: kinds[face as usize] == FaceKind::Skin,
+            labelled_skin,
+        });
+    }
+    let shading = match colouring.lighting {
+        Lighting::Keep => None,
+        Lighting::Remove => remove_lighting(&mut samples),
+    };
+    for sample in samples {
+        weight[sample.texel] += sample.share;
+        for (total, value) in colour[sample.texel].iter_mut().zip(sample.colour) {
+            *total += sample.share * value;
         }
-        if labelled_skin {
-            skin.weight[index] += share;
-            for (total, value) in skin.colour[index].iter_mut().zip(sample) {
-                *total += share * value;
+        if sample.labelled_skin {
+            skin.weight[sample.texel] += sample.share;
+            for (total, value) in skin.colour[sample.texel].iter_mut().zip(sample.colour) {
+                *total += sample.share * value;
             }
         }
     }
-    Ok(())
+    Ok(shading)
+}
+
+/// Fit a smooth shading to the skin samples and divide it out of every
+/// sample, keeping the skin's mean colour and limiting highlights. Returns
+/// the shading, on the corrected colours' scale, or `None` when too little
+/// skin was seen to fit it.
+fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
+    // Only skin the photograph's segmentation confirms, so hair or clothing
+    // over the face does not enter the fit.
+    let skin: Vec<usize> = (0..samples.len())
+        .filter(|&at| samples[at].skin && samples[at].labelled_skin)
+        .collect();
+    if skin.len() < MIN_LIGHTING_SAMPLES {
+        return None;
+    }
+    let linear: Vec<[f32; 3]> = samples
+        .iter()
+        .map(|sample| sample.colour.map(|value| srgb_to_linear(value / 255.0)))
+        .collect();
+    let basis = |normal: [f32; 3]| [1.0, normal[0], normal[1], normal[2]].map(f64::from);
+    // Weighted least squares: for each channel, minimise the squared
+    // difference between the colour and ambient + direction · normal.
+    let mut normal_matrix = [[0.0f64; 4]; 4];
+    let mut right = [[0.0f64; 4]; 3];
+    for &at in &skin {
+        let terms = basis(samples[at].normal);
+        let share = f64::from(samples[at].share);
+        for row in 0..4 {
+            for column in 0..4 {
+                normal_matrix[row][column] += share * terms[row] * terms[column];
+            }
+            for channel in 0..3 {
+                right[channel][row] += share * terms[row] * f64::from(linear[at][channel]);
+            }
+        }
+    }
+    let mut shading = Shading {
+        ambient: [0.0; 3],
+        direction: [[0.0; 3]; 3],
+    };
+    for (channel, right) in right.into_iter().enumerate() {
+        let solution = solve4(normal_matrix, right)?;
+        shading.ambient[channel] = solution[0] as f32;
+        shading.direction[channel] =
+            [solution[1], solution[2], solution[3]].map(|value| value as f32);
+    }
+    let total: f64 = skin.iter().map(|&at| f64::from(samples[at].share)).sum();
+    let average = |value: &dyn Fn(usize) -> f32| -> f64 {
+        skin.iter()
+            .map(|&at| f64::from(samples[at].share) * f64::from(value(at)))
+            .sum::<f64>()
+            / total
+    };
+    let floors: [f32; 3] = std::array::from_fn(|channel| {
+        MIN_SHADING_SHARE * average(&|at| shading.at(channel, samples[at].normal)) as f32
+    });
+    if floors
+        .iter()
+        .any(|floor| !(floor.is_finite() && *floor > 0.0))
+    {
+        return None;
+    }
+    let corrected: Vec<[f32; 3]> = samples
+        .iter()
+        .zip(&linear)
+        .map(|(sample, linear)| {
+            std::array::from_fn(|channel| {
+                linear[channel] / shading.at(channel, sample.normal).max(floors[channel])
+            })
+        })
+        .collect();
+    // Skin brighter than its 97th percentile luminance is a highlight and is
+    // brought down to it. Eyes and the scalp may be brighter than skin
+    // without being highlights, so they are left as they are.
+    let luminance = |colour: [f32; 3]| 0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2];
+    let mut skin_luminance: Vec<f32> = skin.iter().map(|&at| luminance(corrected[at])).collect();
+    skin_luminance.sort_unstable_by(f32::total_cmp);
+    let rank = (HIGHLIGHT_PERCENTILE / 100.0 * (skin_luminance.len() - 1) as f64).round();
+    let ceiling = skin_luminance[rank as usize];
+    let limited: Vec<[f32; 3]> = samples
+        .iter()
+        .zip(corrected)
+        .map(|(sample, colour)| {
+            let level = luminance(colour);
+            if sample.skin && level > ceiling && level > 0.0 {
+                colour.map(|value| value * ceiling / level)
+            } else {
+                colour
+            }
+        })
+        .collect();
+    // Keep the skin's average colour as photographed: each channel's plain
+    // mean over the fitted skin, in linear light, maps to itself. Shares,
+    // which say how squarely a sample was seen, weight only the fit.
+    let mean = |value: &dyn Fn(usize) -> f32| -> f64 {
+        skin.iter().map(|&at| f64::from(value(at))).sum::<f64>() / skin.len() as f64
+    };
+    let gains: [f32; 3] = std::array::from_fn(|channel| {
+        (mean(&|at| linear[at][channel]) / mean(&|at| limited[at][channel]).max(1e-9)) as f32
+    });
+    // Report the shading on the corrected colours' scale, as the estimate of
+    // this photograph's light a caller can relight the map with.
+    for (channel, gain) in gains.into_iter().enumerate() {
+        shading.ambient[channel] /= gain;
+        shading.direction[channel] = shading.direction[channel].map(|value| value / gain);
+    }
+    for (sample, colour) in samples.iter_mut().zip(limited) {
+        sample.colour = std::array::from_fn(|channel| {
+            linear_to_srgb((colour[channel] * gains[channel]).clamp(0.0, 1.0)) * 255.0
+        });
+    }
+    Some(shading)
+}
+
+/// Solve a 4 by 4 linear system by Gaussian elimination with partial
+/// pivoting; `None` when it is singular.
+fn solve4(mut matrix: [[f64; 4]; 4], mut right: [f64; 4]) -> Option<[f64; 4]> {
+    let scale = (0..4)
+        .map(|index| matrix[index][index].abs())
+        .fold(0.0, f64::max);
+    for pivot in 0..4 {
+        let best = (pivot..4)
+            .max_by(|&a, &b| matrix[a][pivot].abs().total_cmp(&matrix[b][pivot].abs()))?;
+        if matrix[best][pivot].abs() <= 1e-12 * scale.max(1e-300) {
+            return None;
+        }
+        matrix.swap(pivot, best);
+        right.swap(pivot, best);
+        let pivot_row = matrix[pivot];
+        for row in pivot + 1..4 {
+            let factor = matrix[row][pivot] / pivot_row[pivot];
+            for (value, above) in matrix[row].iter_mut().zip(pivot_row).skip(pivot) {
+                *value -= factor * above;
+            }
+            right[row] -= factor * right[pivot];
+        }
+    }
+    let mut solution = [0.0; 4];
+    for row in (0..4).rev() {
+        let known: f64 = (row + 1..4)
+            .map(|column| matrix[row][column] * solution[column])
+            .sum();
+        solution[row] = (right[row] - known) / matrix[row][row];
+    }
+    solution
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(solution)
+}
+
+fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// Each texel's photographed colour from pixels labelled skin alone, as
@@ -973,6 +1569,11 @@ fn bilinear(colour: &[[f32; 3]], side: usize, x: f32, y: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
+    const KEEP: Colouring = Colouring {
+        scalp: ScalpColour::Photo,
+        lighting: Lighting::Keep,
+    };
+
     /// Vertices, triangles and per-vertex texture coordinates.
     type Square = (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<[f32; 2]>);
 
@@ -1043,7 +1644,7 @@ mod tests {
             &faces,
             &texels,
             &views[0],
-            (&[FaceKind::Skin; 2], ScalpColour::Photo),
+            (&[FaceKind::Skin; 2], KEEP),
             &mut weight,
             &mut colour,
             (&mut vec![false; 64 * 64], &mut SkinSamples::new(64 * 64)),
@@ -1106,7 +1707,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
             (
@@ -1159,7 +1760,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&vec![FaceKind::Skin; faces.len()], ScalpColour::Photo),
+            (&vec![FaceKind::Skin; faces.len()], KEEP),
             &mut weight,
             &mut colour,
             (
@@ -1242,7 +1843,17 @@ mod tests {
             })
             .collect();
         let layout = layout(coords, &faces);
-        let mut builder = ColourMapBuilder::new(&faces, &layout, 32, &kinds, scalp).unwrap();
+        let mut builder = ColourMapBuilder::new(
+            &faces,
+            &layout,
+            32,
+            &kinds,
+            Colouring {
+                scalp,
+                lighting: Lighting::Keep,
+            },
+        )
+        .unwrap();
         builder
             .add(&View {
                 photo: Photo {
@@ -1355,7 +1966,11 @@ mod tests {
         // Photograph columns 56 to 168 span the strip; thirds of it.
         let third = |column: usize| (column.saturating_sub(56) * 3 / 112).min(2);
         let layout = layout(coords, &faces);
-        let mut builder = ColourMapBuilder::new(&faces, &layout, 48, &kinds, scalp).unwrap();
+        let colouring = Colouring {
+            scalp,
+            lighting: Lighting::Keep,
+        };
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 48, &kinds, colouring).unwrap();
         for (colours, thirds) in views {
             let rgb: Vec<u8> = (0..224 * 224)
                 .flat_map(|index| colours[third(index % 224)])
@@ -1457,8 +2072,7 @@ mod tests {
             .collect();
         let layout = layout(coords, &faces);
         let kinds = [FaceKind::Eye, FaceKind::Eye, FaceKind::Skin, FaceKind::Skin];
-        let mut builder =
-            ColourMapBuilder::new(&faces, &layout, 32, &kinds, ScalpColour::Photo).unwrap();
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 32, &kinds, KEEP).unwrap();
         builder
             .add(&View {
                 photo: Photo {
@@ -1482,6 +2096,272 @@ mod tests {
         assert_eq!(texel(&map, 0.75), [128, 128, 128]);
     }
 
+    /// A cube from -1 to 1 standing in for an eyeball, every triangle an eye:
+    /// its front (+z) face covers the whole map and the others have no area
+    /// in it. Front x is 2u - 1 and y is 2v - 1.
+    fn eyeball() -> (Vec<[f32; 3]>, Vec<[u32; 3]>, UvLayout) {
+        let vertices: Vec<[f32; 3]> = (0..8)
+            .map(|corner| [0, 1, 2].map(|axis| if corner >> axis & 1 == 1 { 1.0 } else { -1.0 }))
+            .collect();
+        let quads = [
+            [4, 5, 7, 6], // +z, the front
+            [0, 2, 3, 1],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+        ];
+        let faces: Vec<[u32; 3]> = quads
+            .iter()
+            .flat_map(|[a, b, c, d]| [[*a, *b, *c], [*a, *c, *d]])
+            .collect();
+        // Corners 4 to 7 of the front at their u and v; everything else at the origin.
+        let mut coords = vec![[0.0f32, 0.0]; 8];
+        for (corner, coord) in coords.iter_mut().enumerate().skip(4) {
+            *coord = [(corner & 1) as f32, (corner >> 1 & 1) as f32];
+        }
+        let uv_faces: Vec<[u32; 3]> = faces
+            .iter()
+            .enumerate()
+            .map(|(index, face)| if index < 2 { *face } else { [0, 0, 0] })
+            .collect();
+        (vertices, faces, layout(coords, &uv_faces))
+    }
+
+    /// The eyeball cube photographed by a picture coloured and labelled by
+    /// `paint` at each point of the front's x and y, painted with `iris`.
+    fn painted_bake(iris: Option<[u8; 3]>, paint: impl Fn(f64, f64) -> ([u8; 3], u8)) -> ColourMap {
+        let (vertices, faces, layout) = eyeball();
+        // Pixel p shows x = (p - 112) / 56, and y the other way up.
+        let at = |index: usize| {
+            let (column, row) = ((index % 224) as f64, (index / 224) as f64);
+            paint((column - 112.0) / 56.0, (112.0 - row) / 56.0)
+        };
+        let rgb: Vec<u8> = (0..224 * 224).flat_map(|index| at(index).0).collect();
+        let labels: Vec<u8> = (0..224 * 224).map(|index| at(index).1).collect();
+        let kinds = vec![FaceKind::Eye; faces.len()];
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, KEEP).unwrap();
+        builder
+            .paint_eyes(
+                &vertices,
+                PaintedEyes {
+                    iris,
+                    sclera: [240, 236, 230],
+                    iris_diameter: 1.0,
+                    pupil_diameter: 0.4,
+                },
+            )
+            .unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &labels,
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
+            })
+            .unwrap();
+        builder.finish().unwrap()
+    }
+
+    /// The map's colour at a point of the eyeball's front.
+    fn front(map: &ColourMap, x: f64, y: f64) -> [u8; 3] {
+        let column = ((x + 1.0) / 2.0 * map.size as f64) as usize;
+        let row = ((1.0 - y) / 2.0 * map.size as f64) as usize;
+        let at = row * map.size + column;
+        [0, 1, 2].map(|channel| map.rgb[at * 3 + channel])
+    }
+
+    #[test]
+    fn painted_eyes_show_a_pupil_an_iris_and_white() {
+        let blue = [40, 80, 160];
+        let map = painted_bake(Some(blue), |_, _| ([200, 150, 120], LABEL_OTHER));
+        assert_eq!(map.iris, Some((blue, IrisSource::Given)));
+        assert_eq!(front(&map, 0.0, 0.0), [16, 14, 14]);
+        assert_eq!(front(&map, 0.33, 0.0), blue);
+        assert_eq!(front(&map, 0.0, -0.33), blue);
+        assert_eq!(front(&map, 0.8, 0.0), [240, 236, 230]);
+        // The iris darkens toward its edge.
+        let edge = front(&map, 0.0, 0.47);
+        assert!(edge[2] < 130 && edge[2] > 40, "{edge:?}");
+    }
+
+    #[test]
+    fn a_painted_iris_takes_the_photographed_iris_colour() {
+        let green = [30, 120, 60];
+        // A green iris with a white reflection in it, on a white eye.
+        let map = painted_bake(None, |x, y| {
+            let across = x.hypot(y);
+            if (0.2..0.5).contains(&across) && !(x > 0.25 && y > 0.25) {
+                (green, LABEL_OTHER)
+            } else {
+                ([235, 235, 235], LABEL_OTHER)
+            }
+        });
+        assert_eq!(map.iris, Some((green, IrisSource::Measured)));
+        assert_eq!(front(&map, -0.33, 0.0), green);
+        // Looking aside: a dark pupil and green iris away from the gaze. The
+        // iris is found where it is, and still painted on the gaze.
+        let aside = painted_bake(None, |x, y| {
+            let across = (x - 0.3).hypot(y - 0.1);
+            if across < 0.2 {
+                ([10, 10, 10], LABEL_OTHER)
+            } else if across < 0.5 && !(x > 0.55 && y > 0.3) {
+                (green, LABEL_OTHER)
+            } else {
+                ([235, 235, 235], LABEL_OTHER)
+            }
+        });
+        assert_eq!(aside.iris, Some((green, IrisSource::Measured)));
+        assert_eq!(front(&aside, 0.0, 0.0), [16, 14, 14]);
+        // Hair over the iris: nothing to measure, so the default.
+        let covered = painted_bake(None, |x, y| {
+            if x.hypot(y) < 0.6 {
+                ([20, 20, 20], LABEL_HAIR)
+            } else {
+                ([235, 235, 235], LABEL_OTHER)
+            }
+        });
+        assert_eq!(covered.iris, Some((DEFAULT_IRIS_RGB, IrisSource::Default)));
+        assert_eq!(front(&covered, 0.33, 0.0), DEFAULT_IRIS_RGB);
+        // White with a barely darker spot is not an iris.
+        let white = painted_bake(None, |x, y| {
+            if x.hypot(y) < 0.05 {
+                ([234, 234, 234], LABEL_OTHER)
+            } else {
+                ([235, 235, 235], LABEL_OTHER)
+            }
+        });
+        assert_eq!(white.iris, Some((DEFAULT_IRIS_RGB, IrisSource::Default)));
+        let unseen = {
+            let (vertices, faces, layout) = eyeball();
+            let kinds = vec![FaceKind::Eye; faces.len()];
+            let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, KEEP).unwrap();
+            let eyes = PaintedEyes {
+                iris: None,
+                sclera: [240, 236, 230],
+                iris_diameter: 1.0,
+                pupil_diameter: 0.4,
+            };
+            builder.paint_eyes(&vertices, eyes).unwrap();
+            assert_eq!(
+                builder.paint_eyes(
+                    &vertices,
+                    PaintedEyes {
+                        pupil_diameter: 1.0,
+                        ..eyes
+                    }
+                ),
+                Err(TextureError::EyeSizes)
+            );
+            // Seen from behind, the front is turned away.
+            let behind: Vec<[f32; 3]> = vertices.iter().map(|[x, y, z]| [-*x, *y, -*z]).collect();
+            let rgb = vec![120u8; 224 * 224 * 3];
+            builder
+                .add(&View {
+                    photo: Photo {
+                        width: 224,
+                        height: 224,
+                        rgb: &rgb,
+                    },
+                    vertices: &behind,
+                    projection: PROJECTION,
+                    labels: None,
+                })
+                .unwrap();
+            builder.finish()
+        };
+        assert_eq!(unseen.unwrap_err(), TextureError::NotVisible);
+    }
+
+    #[test]
+    fn painted_eyes_do_not_count_as_seen() {
+        let painted = painted_bake(Some([40, 80, 160]), |_, _| ([200, 150, 120], LABEL_OTHER));
+        assert_eq!(painted.seen, 0.0);
+        let (vertices, faces, layout) = eyeball();
+        let kinds = vec![FaceKind::Eye; faces.len()];
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, KEEP).unwrap();
+        let rgb = vec![120u8; 224 * 224 * 3];
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: None,
+            })
+            .unwrap();
+        assert!(builder.finish().unwrap().seen > 0.5);
+    }
+
+    #[test]
+    fn an_eyeball_just_behind_an_eyelid_takes_no_colour_from_it() {
+        // An eye square, and beside it a skin square, each half of the map,
+        // with a lid square 1 mm in front of both.
+        let (mut vertices, mut faces, mut coords) = square(0.0, [-1.0, 0.0], [0.0, 0.5], false);
+        let (skin, skin_faces, skin_coords) = square(0.0, [0.0, 1.0], [0.5, 1.0], false);
+        vertices.extend(skin);
+        faces.extend(skin_faces.iter().map(|face| face.map(|vertex| vertex + 4)));
+        coords.extend(skin_coords);
+        let (lid, lid_faces, _) = square(0.001, [-1.0, 1.0], [0.0, 0.0], false);
+        vertices.extend(lid);
+        faces.extend(lid_faces.iter().map(|face| face.map(|vertex| vertex + 8)));
+        coords.extend([[0.0, 0.0]; 4]);
+        let kinds = [
+            FaceKind::Eye,
+            FaceKind::Eye,
+            FaceKind::Skin,
+            FaceKind::Skin,
+            FaceKind::Skin,
+            FaceKind::Skin,
+        ];
+        let rgb = gradient();
+        let view = View {
+            photo: Photo {
+                width: 224,
+                height: 224,
+                rgb: &rgb,
+            },
+            vertices: &vertices,
+            projection: PROJECTION,
+            labels: None,
+        };
+        let size = 32;
+        let texels = TexelMap::new(&faces, &layout(coords, &faces), size);
+        let mut weight = vec![0.0; size * size];
+        accumulate(
+            &faces,
+            &texels,
+            &view,
+            (&kinds, KEEP),
+            &mut weight,
+            &mut vec![[0.0; 3]; size * size],
+            (
+                &mut vec![false; size * size],
+                &mut SkinSamples::new(size * size),
+            ),
+        )
+        .unwrap();
+        let at = |u: f64| (size / 2) * size + (u * size as f64) as usize;
+        assert_eq!(weight[at(0.25)], 0.0, "the eyeball is hidden by the lid");
+        assert!(
+            weight[at(0.75)] > 0.0,
+            "skin as far behind still counts as seen"
+        );
+    }
+
     #[test]
     fn a_photograph_without_labels_cannot_show_bare_scalp() {
         let (vertices, faces, coords) = square(0.0, [-1.0, 1.0], [0.0, 1.0], false);
@@ -1493,7 +2373,10 @@ mod tests {
             &layout,
             32,
             &[FaceKind::Scalp; 2],
-            ScalpColour::Hair(paint),
+            Colouring {
+                scalp: ScalpColour::Hair(paint),
+                lighting: Lighting::Keep,
+            },
         )
         .unwrap();
         builder
@@ -1534,7 +2417,10 @@ mod tests {
             &layout,
             32,
             &kinds,
-            ScalpColour::Hair([10, 200, 30]),
+            Colouring {
+                scalp: ScalpColour::Hair([10, 200, 30]),
+                lighting: Lighting::Keep,
+            },
         )
         .unwrap();
         builder
@@ -1601,7 +2487,7 @@ mod tests {
             &faces,
             &texels,
             &view,
-            (&[FaceKind::Scalp; 2], ScalpColour::Photo),
+            (&[FaceKind::Scalp; 2], KEEP),
             &mut weight,
             &mut colour,
             (&mut vec![false; size * size], &mut skin),
@@ -1640,6 +2526,311 @@ mod tests {
             !labels.agree([0.0, 80.0], skin),
             "the square's edge is not trusted"
         );
+    }
+
+    /// A dome of the unit sphere over x and y from -0.7 to 0.7, facing the
+    /// camera, with texture coordinates spread over the map.
+    fn dome() -> Square {
+        let steps = 24;
+        let mut vertices = Vec::new();
+        let mut coords = Vec::new();
+        for row in 0..=steps {
+            for column in 0..=steps {
+                let x = -0.7 + 1.4 * column as f32 / steps as f32;
+                let y = -0.7 + 1.4 * row as f32 / steps as f32;
+                vertices.push([x, y, (1.0 - x * x - y * y).sqrt()]);
+                coords.push([(x + 0.7) / 1.4, (y + 0.7) / 1.4]);
+            }
+        }
+        let at = |row: usize, column: usize| (row * (steps + 1) + column) as u32;
+        let mut faces = Vec::new();
+        for row in 0..steps {
+            for column in 0..steps {
+                let (a, b) = (at(row, column), at(row, column + 1));
+                let (c, d) = (at(row + 1, column + 1), at(row + 1, column));
+                faces.extend([[a, b, c], [a, c, d]]);
+            }
+        }
+        (vertices, faces, coords)
+    }
+
+    /// A photograph of the sphere, of linear albedo 0.6, lit by an ambient
+    /// light and one from the upper right.
+    fn lit_sphere() -> Vec<u8> {
+        let light = {
+            let raw = [1.0f32, 0.3, 1.0];
+            let length = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+            raw.map(|axis| axis / length)
+        };
+        (0..224 * 224)
+            .flat_map(|index| {
+                let (column, row) = ((index % 224) as f32, (index / 224) as f32);
+                let x = (column / 112.0 - 1.0) / 0.5;
+                let y = (1.0 - row / 112.0) / 0.5;
+                let squared = x * x + y * y;
+                if squared >= 1.0 {
+                    return [0u8; 3];
+                }
+                let normal = [x, y, (1.0 - squared).sqrt()];
+                let lit =
+                    (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]).max(0.0);
+                let value = linear_to_srgb(0.6 * (0.25 + 0.75 * lit)) * 255.0;
+                [value.round() as u8; 3]
+            })
+            .collect()
+    }
+
+    fn lit_bake(lighting: Lighting) -> ColourMap {
+        let (vertices, faces, coords) = dome();
+        let rgb = lit_sphere();
+        let layout = layout(coords, &faces);
+        let kinds = vec![FaceKind::Skin; faces.len()];
+        let colouring = Colouring {
+            scalp: ScalpColour::Photo,
+            lighting,
+        };
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, colouring).unwrap();
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &[LABEL_FACE_SKIN; 224 * 224],
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
+            })
+            .unwrap();
+        builder.finish().unwrap()
+    }
+
+    /// The spread and mean of the red channel over the map's middle, which
+    /// the photograph sees.
+    fn spread_and_mean(map: &ColourMap) -> (f64, f64) {
+        let values: Vec<f64> = (16..48)
+            .flat_map(|row| (16..48).map(move |column| row * 64 + column))
+            .map(|at| f64::from(map.rgb[at * 3]))
+            .collect();
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let spread = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / values.len() as f64;
+        (spread.sqrt(), mean)
+    }
+
+    #[test]
+    fn removing_lighting_evens_out_shading_and_keeps_the_skin_tone() {
+        let kept = lit_bake(Lighting::Keep);
+        let removed = lit_bake(Lighting::Remove);
+        assert_eq!(kept.shading, vec![None]);
+        let shading = removed.shading[0].expect("shading was estimated");
+        // The light comes from +x and +z.
+        assert!(
+            shading.direction[0][0] > 0.0 && shading.direction[0][2] > 0.0,
+            "{shading:?}"
+        );
+        let (kept_spread, kept_mean) = spread_and_mean(&kept);
+        let (removed_spread, removed_mean) = spread_and_mean(&removed);
+        assert!(kept_spread > 8.0, "{kept_spread}");
+        assert!(
+            removed_spread < 0.25 * kept_spread,
+            "{removed_spread} {kept_spread}"
+        );
+        assert!(
+            (removed_mean - kept_mean).abs() < 0.15 * kept_mean,
+            "{removed_mean} {kept_mean}"
+        );
+    }
+
+    /// Skin samples lit from +z: 60% facing away from the light and 40%
+    /// facing it, with normals spread around each direction so that the
+    /// shading can be fitted.
+    fn lit_samples() -> Vec<Sample> {
+        (0..500)
+            .map(|texel| {
+                let turn = (texel % 7) as f32 * 0.1 - 0.3;
+                let normal = if texel % 5 < 3 {
+                    normalize3([turn, 0.3, 0.2])
+                } else {
+                    normalize3([turn, -0.2, 1.0])
+                };
+                let light = 0.1 + 0.5 * normal[2].max(0.0);
+                Sample {
+                    texel,
+                    // As in a photograph, surface seen at an angle counts less.
+                    share: normal[2].max(0.05),
+                    colour: [light; 3].map(|value| linear_to_srgb(value) * 255.0),
+                    normal,
+                    skin: true,
+                    labelled_skin: true,
+                }
+            })
+            .collect()
+    }
+
+    fn normalize3(vector: [f32; 3]) -> [f32; 3] {
+        let length = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+        vector.map(|value| value / length)
+    }
+
+    fn linear_mean(samples: &[Sample], keep: impl Fn(&Sample) -> bool) -> f32 {
+        let chosen: Vec<f32> = samples
+            .iter()
+            .filter(|sample| keep(sample))
+            .map(|sample| srgb_to_linear(sample.colour[0] / 255.0))
+            .collect();
+        chosen.iter().sum::<f32>() / chosen.len() as f32
+    }
+
+    #[test]
+    fn removing_lighting_keeps_the_average_skin_colour() {
+        let mut samples = lit_samples();
+        let before = linear_mean(&samples, |_| true);
+        remove_lighting(&mut samples).expect("shading was estimated");
+        let after = linear_mean(&samples, |_| true);
+        assert!((after - before).abs() < 0.01 * before, "{before} {after}");
+        // The light is gone: every sample has about the same colour.
+        let spread = samples
+            .iter()
+            .map(|sample| (srgb_to_linear(sample.colour[0] / 255.0) - after).abs())
+            .fold(0.0, f32::max);
+        assert!(spread < 0.05 * after, "{spread} {after}");
+    }
+
+    #[test]
+    fn the_reported_shading_relights_the_corrected_samples() {
+        let mut samples = lit_samples();
+        let photographed: Vec<f32> = samples
+            .iter()
+            .map(|sample| srgb_to_linear(sample.colour[0] / 255.0))
+            .collect();
+        let shading = remove_lighting(&mut samples).expect("shading was estimated");
+        // Samples brought down as highlights cannot be relit exactly.
+        let relit = samples
+            .iter()
+            .zip(&photographed)
+            .filter(|(sample, photographed)| {
+                let relit = srgb_to_linear(sample.colour[0] / 255.0) * shading.at(0, sample.normal);
+                (relit - **photographed).abs() < 0.02 * **photographed
+            })
+            .count();
+        assert!(
+            relit > 9 * samples.len() / 10,
+            "{relit} of {}",
+            samples.len()
+        );
+    }
+
+    #[test]
+    fn shading_turns_back_into_the_head_frame() {
+        // A head turned a quarter turn about y faces the camera's +x; light
+        // from the camera's +x comes from straight in front of the head.
+        let shading = Shading {
+            ambient: [0.2; 3],
+            direction: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let back = shading.turned_back([0.0, std::f32::consts::FRAC_PI_2, 0.0]);
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-6);
+        assert!(close(back.direction[0], [0.0, 0.0, 1.0]), "{back:?}");
+        assert!(close(back.direction[1], [0.0, 1.0, 0.0]), "{back:?}");
+        assert!(close(back.direction[2], [-1.0, 0.0, 0.0]), "{back:?}");
+        assert_eq!(back.ambient, shading.ambient);
+        assert_eq!(shading.turned_back([0.0; 3]), shading);
+    }
+
+    #[test]
+    fn unsegmented_skin_leaves_the_lighting_alone() {
+        let mut samples = lit_samples();
+        for sample in &mut samples {
+            sample.labelled_skin = false;
+        }
+        let colours: Vec<[f32; 3]> = samples.iter().map(|sample| sample.colour).collect();
+        assert_eq!(remove_lighting(&mut samples), None);
+        assert!(
+            samples
+                .iter()
+                .zip(colours)
+                .all(|(sample, colour)| sample.colour == colour)
+        );
+    }
+
+    #[test]
+    fn eyes_brighter_than_skin_are_not_highlights() {
+        let mut samples = lit_samples();
+        // A sclera three times as bright as the skin, under the same light.
+        let skin = &samples[499];
+        let sclera = Sample {
+            texel: 500,
+            share: 1.0,
+            colour: skin
+                .colour
+                .map(|value| linear_to_srgb(3.0 * srgb_to_linear(value / 255.0)) * 255.0),
+            normal: skin.normal,
+            skin: false,
+            labelled_skin: false,
+        };
+        samples.push(sclera);
+        remove_lighting(&mut samples).expect("shading was estimated");
+        let brightest_skin = samples[..500]
+            .iter()
+            .map(|sample| sample.colour[0])
+            .fold(0.0, f32::max);
+        let sclera = samples[500].colour;
+        // Capped, it would be about as bright as the brightest skin.
+        assert!(
+            sclera[0] > 1.3 * brightest_skin,
+            "{sclera:?} {brightest_skin}"
+        );
+    }
+
+    #[test]
+    fn too_little_skin_leaves_the_lighting_alone() {
+        let mut samples: Vec<Sample> = (0..10)
+            .map(|texel| Sample {
+                texel,
+                share: 1.0,
+                colour: [100.0, 80.0, 60.0],
+                normal: [0.0, 0.0, 1.0],
+                skin: true,
+                labelled_skin: true,
+            })
+            .collect();
+        assert_eq!(remove_lighting(&mut samples), None);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.colour == [100.0, 80.0, 60.0])
+        );
+    }
+
+    #[test]
+    fn small_systems_are_solved_and_singular_ones_refused() {
+        let matrix = [
+            [4.0, 1.0, 0.0, 0.0],
+            [1.0, 3.0, 1.0, 0.0],
+            [0.0, 1.0, 2.0, 1.0],
+            [0.0, 0.0, 1.0, 5.0],
+        ];
+        let expected = [1.0, -2.0, 0.5, 3.0];
+        let right: [f64; 4] = std::array::from_fn(|row| {
+            (0..4)
+                .map(|column| matrix[row][column] * expected[column])
+                .sum()
+        });
+        let solved = solve4(matrix, right).unwrap();
+        for (value, wanted) in solved.iter().zip(expected) {
+            assert!((value - wanted).abs() < 1e-9, "{solved:?}");
+        }
+        assert_eq!(solve4([[1.0; 4]; 4], [1.0; 4]), None);
     }
 
     #[test]
@@ -1715,17 +2906,11 @@ mod tests {
             TextureError::Size
         );
         assert_eq!(
-            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin], ScalpColour::Photo).err(),
+            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin], KEEP).err(),
             Some(TextureError::Kinds)
         );
-        let mut builder = ColourMapBuilder::new(
-            &faces,
-            &layout,
-            16,
-            &[FaceKind::Skin; 2],
-            ScalpColour::Photo,
-        )
-        .unwrap();
+        let mut builder =
+            ColourMapBuilder::new(&faces, &layout, 16, &[FaceKind::Skin; 2], KEEP).unwrap();
         let short = vec![LABEL_FACE_SKIN; 10];
         assert_eq!(
             builder
