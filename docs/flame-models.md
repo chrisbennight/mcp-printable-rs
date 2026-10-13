@@ -568,16 +568,20 @@ as a thin membrane. `mouth` chooses how the mouth is printed:
   meet when the jaw is closed unless the expression itself parts them;
   `expression_scale` softens such an expression.
 - `recessed` keeps the pose and sets the centre of the surface closing the
-  mouth back into the head by `mouth_recess_mm` on the finished bust, 0.5 to
-  10 and 2 by default, along that surface's inward normal whatever the
-  head's pose, so an open mouth reads as a shadow. A recess deeper than a
-  fifth of the head's height is refused.
+  mouth back into the head by about `mouth_recess_mm` on the finished bust,
+  0.5 to 10 and 2 by default, along that surface's inward normal whatever
+  the head's pose, so an open mouth reads as a shadow. The recess is made
+  before smoothing, whose height correction changes it slightly; the
+  response gives the depth applied. A recess deeper than a fifth of the
+  head's height is refused.
 
 With `closed` or `recessed`, surface detail from `displacement` fades out
 over FLAME's `lips` region, so the lips are not raised into a ridge where
 they meet. This needs a model converted with `--masks`. The response adds
-`mouth` with the shape, the recess and, when a displacement map was given,
-`detail_faded_over`: `lips`, or null when the model has no such region.
+`mouth` with the shape, the recess applied on the finished bust, with a
+`note` when the model has no mouth opening to recess, and, when a
+displacement map was given, `detail_faded_over`: `lips`, or null when the
+model has no such region. Faded detail does not count toward `relief_mm`.
 
 On the FLAME 2020 generic model with a head reconstructed from one
 photograph, whose jaw was open by 0.09 radians, the largest vertical gap
@@ -599,8 +603,9 @@ the way sculpted busts do, centred on each eye's gaze:
 - `iris_and_pupil` also engraves a ring at the edge of the iris.
 
 `pupil_diameter_mm`, `iris_diameter_mm` and `eye_detail_depth_mm` are
-millimetres on the finished bust; the ring is half as deep as the pupil and a
-tenth of the iris wide, whether the iris is given or the default. Depths are
+millimetres on the finished bust; the ring is half as deep as the pupil, and
+with a `printer` no shallower than two layers, and a tenth of the iris wide,
+whether the iris is given or the default. Depths are
 measured at the edge of each cut, so a shallow pupil still shows its full
 width. By default each is its life size scaled with the
 bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. With a

@@ -303,8 +303,9 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     iris_diameter_mm: Option<f64>,
     /// How deep the pupil is drilled on the finished bust, 0.05 to 5 mm; the
-    /// ring is half as deep. Defaults to 2 mm at life size scaled with the
-    /// bust, and to no less than two layers with a `printer`.
+    /// ring is half as deep, and with a `printer` no shallower than two
+    /// layers. Defaults to 2 mm at life size scaled with the bust, and to no
+    /// less than two layers with a `printer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eye_detail_depth_mm: Option<f64>,
     /// What stands below the head, within `height_mm` above any plinth:
@@ -1142,7 +1143,15 @@ pub(super) async fn prepare_print(
             response["warnings"] = json!(print_warnings(&printer, &response["bust"]));
             response["printer"] = serde_json::to_value(printer)?;
         }
-        if let Some(mouth) = mouth_report {
+        if let Some(mut mouth) = mouth_report {
+            // The depth applied on the finished bust, which the smoothing's
+            // height correction moves slightly from the request.
+            if mouth_recess_mm.is_some() {
+                mouth["recess_mm"] = response["bust"]["mouth_recess_mm"].clone();
+                if mouth["recess_mm"].is_null() {
+                    mouth["note"] = json!("the model has no mouth opening to recess");
+                }
+            }
             response["mouth"] = mouth;
         }
         Ok::<_, ToolError>(response)
