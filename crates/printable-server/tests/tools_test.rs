@@ -2659,6 +2659,16 @@ async fn assembly_worker_memory_exhaustion_fails_without_killing_the_server() {
         .read_artifact("fixed.stl")
         .expect("server remains usable after child termination");
     assert_eq!(fixed, cube_stl(1.0));
+    assert_eq!(
+        ws.storage_usage()
+            .unwrap()
+            .by_class
+            .get("temporary")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "failed geometry work releases its immutable snapshots"
+    );
 }
 
 #[tokio::test]
