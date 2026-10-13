@@ -45,11 +45,13 @@ pub struct FitView<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FitMeasures {
     /// Share of the head's projected area labelled as part of the person
-    /// rather than background. Low when the head spills past the person.
-    pub head_on_person: f64,
+    /// rather than background. Low when the head spills past the person;
+    /// `None` when the head covers none of the square.
+    pub head_on_person: Option<f64>,
     /// Share of the pixels labelled face skin that the head covers. Low when
-    /// the head is too small or misplaced.
-    pub face_skin_covered: f64,
+    /// the head is too small or misplaced; `None` when the square shows no
+    /// face skin.
+    pub face_skin_covered: Option<f64>,
 }
 
 /// The nearest triangle at each pixel of a grid, with the barycentric
@@ -243,14 +245,13 @@ pub fn fit_picture(
 }
 
 /// Compare the head's projection with a photograph's labels, pixel by pixel
-/// over the labelled square. `None` when the head covers none of the square
-/// or the photograph shows no face skin there.
+/// over the labelled square.
 pub fn fit_measures(
     faces: &[[u32; 3]],
     vertices: &[[f32; 3]],
     projection: Projection,
     labels: &Labels<'_>,
-) -> Option<FitMeasures> {
+) -> FitMeasures {
     // Label pixel p lies at photograph pixel p / step + (left, top).
     let placed: Vec<([f64; 2], f32)> = vertices
         .iter()
@@ -279,10 +280,11 @@ pub fn fit_measures(
             skin_covered += usize::from(covered);
         }
     }
-    (head > 0 && skin > 0).then(|| FitMeasures {
-        head_on_person: head_on_person as f64 / head as f64,
-        face_skin_covered: skin_covered as f64 / skin as f64,
-    })
+    let share = |part: usize, whole: usize| (whole > 0).then(|| part as f64 / whole as f64);
+    FitMeasures {
+        head_on_person: share(head_on_person, head),
+        face_skin_covered: share(skin_covered, skin),
+    }
 }
 
 #[cfg(test)]
@@ -406,17 +408,37 @@ mod tests {
             fit_measures(&faces, &vertices, PROJECTION, &labels)
         };
         // The head covers columns 56 to 168 of rows 56 to 168.
-        let exact = measure([56, 169], [0, 0]).unwrap();
-        assert!(exact.head_on_person > 0.99, "{exact:?}");
+        let exact = measure([56, 169], [0, 0]);
+        assert!(exact.head_on_person.unwrap() > 0.99, "{exact:?}");
         // Skin rows run the full height, so the head covers half of them.
-        assert!(
-            (exact.face_skin_covered - 113.0 / 224.0).abs() < 0.01,
-            "{exact:?}"
-        );
+        let covered = exact.face_skin_covered.unwrap();
+        assert!((covered - 113.0 / 224.0).abs() < 0.01, "{exact:?}");
         // Half the head over the background.
-        let shifted = measure([112, 169], [112, 224]).unwrap();
-        assert!((shifted.head_on_person - 0.5).abs() < 0.02, "{shifted:?}");
-        // No face skin, nothing to measure.
-        assert_eq!(measure([0, 0], [0, 224]), None);
+        let shifted = measure([112, 169], [112, 224]);
+        assert!(
+            (shifted.head_on_person.unwrap() - 0.5).abs() < 0.02,
+            "{shifted:?}"
+        );
+        // No face skin: the head's share on the person is still measured.
+        let bare = measure([0, 0], [0, 224]);
+        assert_eq!(bare.face_skin_covered, None);
+        assert!(bare.head_on_person.unwrap() > 0.99, "{bare:?}");
+    }
+
+    #[test]
+    fn a_head_beside_the_labels_covers_none_of_the_skin() {
+        let (vertices, faces) = squares();
+        // A square of face skin labels well to the left of the head.
+        let data = vec![LABEL_FACE_SKIN; 16 * 16];
+        let labels = Labels {
+            side: 16,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 1.0,
+        };
+        let measures = fit_measures(&faces, &vertices, PROJECTION, &labels);
+        assert_eq!(measures.face_skin_covered, Some(0.0));
+        assert_eq!(measures.head_on_person, None);
     }
 }

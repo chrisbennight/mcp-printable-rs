@@ -1791,7 +1791,7 @@ fn fit_measures(model: &FlameModel, images: &[String], views: &[ReconView]) -> V
             let measures = view.segmentation.as_ref().and_then(|segmentation| {
                 let (side, data) = decode_labels(segmentation).ok()?;
                 let head = view_head(model, view).ok()?;
-                printable_flame::fit::fit_measures(
+                Some(printable_flame::fit::fit_measures(
                     model.faces(),
                     &head.vertices,
                     view_projection(view),
@@ -1802,12 +1802,12 @@ fn fit_measures(model: &FlameModel, images: &[String], views: &[ReconView]) -> V
                         top: segmentation.crop.top,
                         step: segmentation.crop.step,
                     },
-                )
+                ))
             });
             json!({
                 "image": image,
-                "head_on_person": measures.map(|measures| measures.head_on_person),
-                "face_skin_covered": measures.map(|measures| measures.face_skin_covered),
+                "head_on_person": measures.and_then(|measures| measures.head_on_person),
+                "face_skin_covered": measures.and_then(|measures| measures.face_skin_covered),
             })
         })
         .collect()

@@ -845,8 +845,10 @@ square the segmenter labelled:
 - `face_skin_covered`: how much of the photographed face skin the head
   covers. It falls when the head is too small or misplaced.
 
-A close fit gives both near 1. They are null for a photograph that was not
-segmented. `identity_agreement` compares each photograph's identity with the
+A close fit gives both near 1. Both are null for a photograph that was not
+segmented; otherwise `head_on_person` is null only when the head lands
+outside the labelled square, where `face_skin_covered` is then 0, and
+`face_skin_covered` only when the photograph shows no face skin. `identity_agreement` compares each photograph's identity with the
 average of all of them, so with one photograph it is always 1 and says
 nothing about the fit.
 
