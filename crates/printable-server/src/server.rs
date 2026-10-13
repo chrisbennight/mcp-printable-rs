@@ -20,13 +20,14 @@ use rmcp::transport::streamable_http_server::{
 };
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use tokio_util::sync::CancellationToken;
-use tower::{ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
+use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 use printable_blender::{BlenderClient, ClientOptions};
 use printable_workspace::Workspace;
 
 use crate::{
+    admission::{Admission, retain_response},
     config::{BearerSecret, Settings},
     file_transfer,
     health::HealthResponse,
@@ -43,16 +44,6 @@ use crate::{
 /// artifacts arrive as a sequence of these bounded chunks, never one big body.
 const MAX_REQUEST_BODY_BYTES: usize = CHUNK_MAX_DECODED.div_ceil(3) * 4 + 64 * 1024;
 
-/// Maximum concurrent in-flight requests across all sessions. A request holds
-/// its body (≤ [`MAX_REQUEST_BODY_BYTES`]) from parse until it completes, so the
-/// per-request body cap alone leaves aggregate retained memory unbounded in the
-/// number of queued requests. Bounding the count bounds that sum
-/// (≤ `MAX_INFLIGHT_REQUESTS * MAX_REQUEST_BODY_BYTES`, ~45 MiB). Set generously
-/// relative to a single-tenant deployment (one live session plus its calls) so
-/// it never gates normal use; it exists so a hostile burst cannot sum to
-/// unbounded memory. Acquired outside the body-limit layer, before the body is
-/// read.
-const MAX_INFLIGHT_REQUESTS: usize = 32;
 const DUPLICATE_JSON_MEMBER: &str = "duplicate JSON object member";
 
 /// Build the router. `/mcp` is the stateful streamable-HTTP transport, guarded
@@ -101,12 +92,10 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
             .with_allowed_hosts(settings.allowed_hosts.clone()),
     );
 
-    // Scope the body + concurrency limits to `/mcp` (not the whole router), so a
-    // burst of slow tool calls holding every permit can never starve the
-    // `/healthz` liveness probe, which must answer within the healthcheck
-    // deadline. Concurrency is outermost so its permit is held while the body is
-    // read (bounding aggregate retained request memory). The JSON boundary
-    // enforces the per-request body limit before rebuilding the request for rmcp.
+    // Admission bounds body readers, retained tool work, and subscriptions
+    // separately. Health routes stay outside those lanes, and control requests
+    // retain capacity when ordinary calls occupy the backend.
+    let admission = Admission::new(cancel.child_token());
     let mcp = ServiceBuilder::new()
         .layer(middleware::from_fn_with_state(
             settings.allowed_origins.clone(),
@@ -116,8 +105,10 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
             settings.mcp_bearer.clone(),
             require_mcp_bearer,
         ))
-        .layer(GlobalConcurrencyLimitLayer::new(MAX_INFLIGHT_REQUESTS))
-        .layer(middleware::from_fn(validate_json_request))
+        .layer(middleware::from_fn_with_state(
+            admission,
+            validate_json_request,
+        ))
         .service(mcp_service);
 
     let downloads = Router::new()
@@ -199,12 +190,25 @@ async fn require_allowed_origin(
     next.run(request).await
 }
 
-async fn validate_json_request(request: Request, next: Next) -> Response {
+async fn validate_json_request(
+    State(admission): State<Admission>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.method() == Method::GET {
+        let Some(permit) = admission.subscription() else {
+            return busy_response();
+        };
+        return retain_response(next.run(request).await, permit);
+    }
     if request.method() != Method::POST {
         return next.run(request).await;
     }
 
-    let (parts, body) = request.into_parts();
+    let Some(body_permit) = admission.body() else {
+        return busy_response();
+    };
+    let (mut parts, body) = request.into_parts();
     let bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -226,8 +230,31 @@ async fn validate_json_request(request: Request, next: Next) -> Response {
         return (StatusCode::BAD_REQUEST, DUPLICATE_JSON_MEMBER).into_response();
     }
 
-    next.run(Request::from_parts(parts, Body::from(bytes)))
-        .await
+    let payload = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return next
+                .run(Request::from_parts(parts, Body::from(bytes)))
+                .await;
+        }
+    };
+    let Some(permit) = admission.request(&payload) else {
+        return busy_response();
+    };
+    drop(payload);
+    drop(body_permit);
+    parts.extensions.insert(permit.retained());
+    retain_response(
+        next.run(Request::from_parts(parts, Body::from(bytes)))
+            .await,
+        permit,
+    )
+}
+
+fn busy_response() -> Response {
+    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({
+        "error": "server_busy", "message": "server admission is full; inspect active work before retrying"
+    }))).into_response()
 }
 
 struct UniqueJsonValue;

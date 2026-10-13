@@ -1,0 +1,581 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-10-12",
+  "source": {
+    "baseline_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
+    "candidate_base_revision": "ac86e5f7bd666577723f1ae69edde3c6b19ba89d",
+    "candidate_blobs": {
+      "crates/printable-server/src/lib.rs": "cc1d8f402f5af87d38f13562d08d0c38ba5e80e9",
+      "crates/printable-server/src/admission.rs": "2d1266711d45eb5d98ac5f64ea8236ae52b1764c",
+      "crates/printable-server/src/mcp.rs": "1249c9f3681247f3301123c3c3ccf8de7069628e",
+      "crates/printable-server/src/server.rs": "a2babc588dda5a780213ff2fbd5d2aabe68a4abc",
+      "crates/printable-server/tests/mcp_endpoint_test.rs": "4e61d98030562ffd69cd1a2c762f7ab5619dfda9",
+      "crates/printable-server/tests/admission_memory_test.rs": "ebb85eeb979df37874f0e509cb3c6ae35cf82194"
+    },
+    "baseline_memory_overlay": [
+      "crates/printable-server/tests/admission_memory_test.rs"
+    ]
+  },
+  "environment": {
+    "system": "Linux",
+    "machine": "aarch64",
+    "logical_cpus": 8,
+    "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "build_profile": "dev/test (unoptimized + debuginfo)",
+    "container_memory_max": "max",
+    "container_cpu_max": "max 100000",
+    "linux_mem_total": "12220972 kB",
+    "toolchain_image": {
+      "id": "sha256:7f86f402306e669aaa302392b72df885cf854c013eee4fbb08dfd6afd89d6f55",
+      "os": "linux",
+      "architecture": "arm64"
+    },
+    "container_limits": {
+      "Memory": 0,
+      "MemorySwap": 0,
+      "NanoCpus": 0,
+      "CpuQuota": 0,
+      "CpuPeriod": 0,
+      "PidsLimit": null,
+      "Init": true
+    }
+  },
+  "memory": {
+    "baseline": [
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 1,
+        "accepted_calls": 1,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 0,
+        "server_peak_before_kib": 30972,
+        "server_peak_while_blocked_kib": 37704,
+        "server_peak_after_control_kib": 38672,
+        "server_peak_observed_kib": 38672,
+        "server_peak_growth_kib": 7700,
+        "control_response_ms": 47.699506,
+        "offer_and_control_ms": 88.34505300000001,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 16,
+        "accepted_calls": 16,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 15,
+        "server_peak_before_kib": 30920,
+        "server_peak_while_blocked_kib": 73352,
+        "server_peak_after_control_kib": 72720,
+        "server_peak_observed_kib": 73352,
+        "server_peak_growth_kib": 42432,
+        "control_response_ms": 42.865005999999994,
+        "offer_and_control_ms": 238.250779,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 64,
+        "accepted_calls": 64,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 63,
+        "server_peak_before_kib": 30848,
+        "server_peak_while_blocked_kib": 174244,
+        "server_peak_after_control_kib": 173580,
+        "server_peak_observed_kib": 174244,
+        "server_peak_growth_kib": 143396,
+        "control_response_ms": 49.562090000000005,
+        "offer_and_control_ms": 804.845268,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 128,
+        "accepted_calls": 128,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 127,
+        "server_peak_before_kib": 31064,
+        "server_peak_while_blocked_kib": 302280,
+        "server_peak_after_control_kib": 302280,
+        "server_peak_observed_kib": 302280,
+        "server_peak_growth_kib": 271216,
+        "control_response_ms": 43.189172,
+        "offer_and_control_ms": 1533.0774000000001,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      }
+    ],
+    "candidate": [
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 1,
+        "accepted_calls": 1,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 0,
+        "server_peak_before_kib": 31144,
+        "server_peak_while_blocked_kib": 36908,
+        "server_peak_after_control_kib": 37960,
+        "server_peak_observed_kib": 37960,
+        "server_peak_growth_kib": 6816,
+        "control_response_ms": 45.043673,
+        "offer_and_control_ms": 94.346097,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 16,
+        "accepted_calls": 16,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 15,
+        "server_peak_before_kib": 31068,
+        "server_peak_while_blocked_kib": 72088,
+        "server_peak_after_control_kib": 72088,
+        "server_peak_observed_kib": 72088,
+        "server_peak_growth_kib": 41020,
+        "control_response_ms": 51.667591,
+        "offer_and_control_ms": 251.44866100000002,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 64,
+        "accepted_calls": 32,
+        "refused_calls": 32,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 31,
+        "server_peak_before_kib": 31128,
+        "server_peak_while_blocked_kib": 115880,
+        "server_peak_after_control_kib": 116876,
+        "server_peak_observed_kib": 116876,
+        "server_peak_growth_kib": 85748,
+        "control_response_ms": 43.364339,
+        "offer_and_control_ms": 764.7138190000001,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 128,
+        "accepted_calls": 32,
+        "refused_calls": 96,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 31,
+        "server_peak_before_kib": 31052,
+        "server_peak_while_blocked_kib": 117876,
+        "server_peak_after_control_kib": 118864,
+        "server_peak_observed_kib": 118864,
+        "server_peak_growth_kib": 87812,
+        "control_response_ms": 50.922716,
+        "offer_and_control_ms": 1399.730661,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      }
+    ],
+    "initial_baseline_samples": [
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 1,
+        "accepted_calls": 1,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 0,
+        "server_peak_before_kib": 30932,
+        "server_peak_while_blocked_kib": 37064,
+        "server_peak_after_control_kib": 38036,
+        "server_peak_growth_kib": 7104,
+        "control_response_ms": 41.581503999999995,
+        "offer_and_control_ms": 84.894299,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 16,
+        "accepted_calls": 16,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 15,
+        "server_peak_before_kib": 30988,
+        "server_peak_while_blocked_kib": 72732,
+        "server_peak_after_control_kib": 72732,
+        "server_peak_growth_kib": 41744,
+        "control_response_ms": 41.15717,
+        "offer_and_control_ms": 234.019146,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 64,
+        "accepted_calls": 64,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 63,
+        "server_peak_before_kib": 31064,
+        "server_peak_while_blocked_kib": 173816,
+        "server_peak_after_control_kib": 173816,
+        "server_peak_growth_kib": 142752,
+        "control_response_ms": 51.513004,
+        "offer_and_control_ms": 815.979366,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      },
+      {
+        "outcome": "completed",
+        "protocol": "2025-11-25",
+        "offered_calls": 128,
+        "accepted_calls": 128,
+        "refused_calls": 0,
+        "completed_calls": 0,
+        "argument_utf8_bytes": 589839,
+        "backend_deliveries_while_blocked": 1,
+        "waiting_calls": 127,
+        "server_peak_before_kib": 31164,
+        "server_peak_while_blocked_kib": 309888,
+        "server_peak_after_control_kib": 309096,
+        "server_peak_growth_kib": 277932,
+        "control_response_ms": 41.289629,
+        "offer_and_control_ms": 1536.903765,
+        "memory_scope": "Linux VmHWM of the real server subprocess; excludes clients and fake bridge",
+        "workload_scope": "one fresh server and legacy session; no model provider, native engine or GPU",
+        "fake_response_delay_ms": 30000,
+        "teardown": {
+          "signal": "SIGKILL",
+          "observed_signal": 9,
+          "purpose": "dispose blocked measurement fixture; no graceful-drain claim"
+        }
+      }
+    ],
+    "method": "Fresh real server per offered concurrency. Read server-only /proc/PID/status VmHWM before offering work, while backend is blocked, and after health/status. Report greatest sampled value; preserve every reading.",
+    "limits": [
+      "Single sample per concurrency, debug binaries, kernel RSS accounting",
+      "Clients and fake bridge excluded; no provider, native engine or GPU",
+      "SIGKILL deliberately disposes fixtures; does not establish graceful shutdown"
+    ]
+  },
+  "wire": {
+    "baseline": [
+      {
+        "protocol": "2025-11-25",
+        "offered_calls": 40,
+        "argument_utf8_bytes": 589839,
+        "response_headers_received": 40,
+        "requests_waiting_for_headers": 0,
+        "refused_calls": 0,
+        "backend_deliveries_while_blocked": 1,
+        "offer_and_refusal_ms": 891.79895
+      }
+    ],
+    "candidate": [
+      {
+        "protocol": "2025-11-25",
+        "offered_calls": 40,
+        "argument_utf8_bytes": 589839,
+        "response_headers_received": 32,
+        "requests_waiting_for_headers": 0,
+        "refused_calls": 8,
+        "backend_deliveries_while_blocked": 1,
+        "offer_and_refusal_ms": 836.118707
+      },
+      {
+        "protocol": "2026-07-28",
+        "offered_calls": 40,
+        "argument_utf8_bytes": 589839,
+        "response_headers_received": 0,
+        "requests_waiting_for_headers": 32,
+        "refused_calls": 8,
+        "backend_deliveries_while_blocked": 1,
+        "offer_and_refusal_ms": 832.406332
+      }
+    ],
+    "candidate_control": [
+      {
+        "protocol": "2025-11-25",
+        "observation_and_control_ms": 480.58894699999996,
+        "refused_calls_after_disconnect": 8
+      },
+      {
+        "protocol": "2026-07-28",
+        "observation_and_control_ms": 476.918112,
+        "refused_calls_after_disconnect": 8
+      }
+    ],
+    "baseline_contract_test_exit_code": 101,
+    "baseline_contract_test_expected_exit_code": 101,
+    "candidate_contract_test_exit_code": 0,
+    "modern_client_requirements": [
+      "MCP-Protocol-Version",
+      "Mcp-Method",
+      "Mcp-Name for tools/call",
+      "per-request protocol/client metadata"
+    ],
+    "limits": [
+      "Modern blocked requests can wait for their first protocol message before receiving response headers",
+      "Control probes used missing handles or unconfigured services; no real stop/cancel effect measured",
+      "Reserved control capacity covers retained-tool-work saturation; shared body readers can still saturate"
+    ]
+  },
+  "measurement_checks": [
+    {
+      "check": "refresh",
+      "argv": [
+        "cargo",
+        "clean",
+        "-p",
+        "printable-server",
+        "-p",
+        "printable-geom",
+        "-p",
+        "printable-flame"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "memory",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--test",
+        "admission_memory_test",
+        "--locked",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "ownership",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--test",
+        "mcp_endpoint_test",
+        "retained_tool_work_stays_bounded_after_stream_headers_and_disconnects",
+        "--locked",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "lanes",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--lib",
+        "admission::tests",
+        "--locked"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "baseline_checks": [
+    {
+      "check": "refresh",
+      "argv": [
+        "cargo",
+        "clean",
+        "-p",
+        "printable-server",
+        "-p",
+        "printable-geom",
+        "-p",
+        "printable-flame"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "memory",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--test",
+        "admission_memory_test",
+        "--locked",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "binaries",
+      "argv": [
+        "cargo",
+        "build",
+        "-p",
+        "printable-server",
+        "--bin",
+        "printable-server",
+        "--bin",
+        "printable-cad-worker",
+        "--bin",
+        "printable-recon-worker",
+        "--bin",
+        "printable-slicer-worker",
+        "--locked"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "memory-reviewed-high-water-readings",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--test",
+        "admission_memory_test",
+        "--locked",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "unavailable_metrics": {
+    "provider_tokens": "not measured",
+    "response_bytes": "not measured",
+    "gpu_performance": "not measured",
+    "supported_linux_amd64_installation": "not qualified"
+  },
+  "retained_diagnostics": [
+    {
+      "artifact": ".dev/admission-ownership-incomplete.log",
+      "purpose": "Earlier unbounded test stopped before completion; not final evidence",
+      "sha256": "f4f316f1371eedfd87cfb5a75370e4cc9fd6688c30bd8feaeb5c3047b82453ec"
+    },
+    {
+      "artifact": ".dev/admission-diagnostic.log",
+      "purpose": "Earlier modern request helper omitted required Mcp-Name header",
+      "sha256": "a495bae91d67114c88abf6b334f77cc0b405e9490d65e23738907457351a0c4e"
+    },
+    {
+      "artifact": ".dev/admission-diagnostic-second.log",
+      "purpose": "Legacy partial run succeeded; modern request helper omitted required Mcp-Name header",
+      "sha256": "176d56138826fe3eaaf047c21eceed30415c99b86ad74cdb71d570fd7bde646c"
+    },
+    {
+      "artifact": ".dev/target/admission-memory-baseline-source/.dev/baseline-final-memory-stale-geometry-cache.log",
+      "purpose": "Build exit 101 from stale geometry artifact; changed workspace crates cleaned before successful rerun",
+      "sha256": "85badafe5dcf7a3b46df93fd7a09c14fdf70d81bffc6d38b72e6ca6835a9cc50"
+    }
+  ]
+}
