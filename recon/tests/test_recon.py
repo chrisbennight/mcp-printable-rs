@@ -155,6 +155,72 @@ class FaceTests(unittest.TestCase):
             self.assertEqual(faces.decode(png).shape, (12, 16, 3))
 
 
+class SegmentationTests(unittest.TestCase):
+    def test_the_square_reaches_beyond_the_face_and_hair_colour_is_measured(self):
+        image = numpy.zeros((400, 400, 3), dtype=numpy.uint8)
+        image[:120] = (40, 20, 10)
+        landmarks = synthetic_landmarks()
+
+        def labeller(square):
+            self.assertEqual(square.shape, (faces.SEGMENT_SIDE, faces.SEGMENT_SIDE, 3))
+            # Label hair wherever the square shows the dark top band.
+            return numpy.where((square == (40, 20, 10)).all(axis=-1), faces.HAIR, 3).astype(numpy.uint8)
+
+        segmentation = faces.segment(image, landmarks, labeller)
+        self.assertEqual(segmentation.hair_rgb, (40, 20, 10))
+        self.assertGreater(segmentation.hair_pixels, 0)
+        crop = segmentation.crop
+        # The square spans more than the landmarks, so it reaches the hair band.
+        self.assertLess(crop.top, landmarks[:, 1].min())
+        self.assertGreater(crop.top + (faces.SEGMENT_SIDE - 1) / crop.step, landmarks[:, 1].max())
+        # Label row r lies at image row r / step + top.
+        row = int(round((119 - crop.top) * crop.step))
+        self.assertEqual(segmentation.labels[row - 2, faces.SEGMENT_SIDE // 2], faces.HAIR)
+        self.assertEqual(segmentation.labels[row + 3, faces.SEGMENT_SIDE // 2], 3)
+
+    def test_no_hair_gives_no_hair_colour(self):
+        image = numpy.zeros((400, 400, 3), dtype=numpy.uint8)
+        segmentation = faces.segment(
+            image, synthetic_landmarks(), lambda square: numpy.full(square.shape[:2], 3, numpy.uint8)
+        )
+        self.assertIsNone(segmentation.hair_rgb)
+        self.assertEqual(segmentation.hair_pixels, 0)
+
+    def test_segmentation_travels_as_a_greyscale_png(self):
+        labels = numpy.arange(256 * 256, dtype=numpy.uint32).reshape(256, 256) % 6
+        segmentation = faces.Segmentation(
+            labels=labels.astype(numpy.uint8), crop=faces.Crop(left=-5.0, top=7.5, step=0.5),
+            hair_rgb=(1, 2, 3), hair_pixels=10,
+        )
+        encoded = pipeline._segmentation(segmentation)
+        with Image.open(io.BytesIO(__import__("base64").b64decode(encoded["labels_png"]))) as image:
+            self.assertEqual(image.mode, "L")
+            numpy.testing.assert_array_equal(numpy.asarray(image), labels)
+        self.assertEqual(encoded["classes"], list(faces.SEGMENT_CLASSES))
+        self.assertEqual(encoded["crop"], {"left": -5.0, "top": 7.5, "step": 0.5})
+        self.assertEqual((encoded["hair_rgb"], encoded["hair_pixels"]), ([1, 2, 3], 10))
+
+
+@unittest.skipUnless(
+    all(os.environ.get(name) for name in ("PRINTABLE_TEST_RECON_SEGMENTER", "PRINTABLE_TEST_RECON_LANDMARKER", "PRINTABLE_TEST_RECON_IMAGE")),
+    "requires the segmenter and landmarker models and a photograph",
+)
+class PublishedSegmenterTests(unittest.TestCase):
+    def test_a_portrait_has_face_skin_and_hair(self):
+        image = faces.decode(Path(os.environ["PRINTABLE_TEST_RECON_IMAGE"]))
+        landmarker = faces.Landmarker(Path(os.environ["PRINTABLE_TEST_RECON_LANDMARKER"]))
+        segmenter = faces.Segmenter(Path(os.environ["PRINTABLE_TEST_RECON_SEGMENTER"]))
+        try:
+            segmentation = segmenter(image, landmarker(image))
+        finally:
+            segmenter.close()
+            landmarker.close()
+        counts = numpy.bincount(segmentation.labels.ravel(), minlength=len(faces.SEGMENT_CLASSES))
+        self.assertGreater(counts[faces.SEGMENT_CLASSES.index("face_skin")], 0.05 * segmentation.labels.size)
+        self.assertGreater(counts[faces.HAIR], 0)
+        self.assertIsNotNone(segmentation.hair_rgb)
+
+
 class _FixedLandmarker:
     def __call__(self, image):
         return synthetic_landmarks(image.shape[1], image.shape[0])

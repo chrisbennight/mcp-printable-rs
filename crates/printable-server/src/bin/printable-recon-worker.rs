@@ -78,6 +78,10 @@ async fn main() -> anyhow::Result<()> {
                 "PRINTABLE_RECON_LANDMARKER",
                 "/opt/printable/recon/face_landmarker.task",
             ),
+            segmenter: path(
+                "PRINTABLE_RECON_SEGMENTER",
+                "/opt/printable/recon/selfie_multiclass_256x256.tflite",
+            ),
             device,
             timeout: Duration::from_secs(timeout),
         },

@@ -776,6 +776,10 @@ pub(super) async fn reconstruct(
     {
         let images = request.images.clone();
         let overwrite = request.overwrite;
+        let colouring = Colouring {
+            scalp: request.scalp.unwrap_or_default(),
+            hair_colour: request.hair_colour,
+        };
         let views = field("views");
         let digests = field("image_sha256");
         let texture = blocking(move || {
@@ -799,7 +803,18 @@ pub(super) async fn reconstruct(
                     "a photograph changed while it was being reconstructed".into(),
                 ));
             }
-            colour_map(&workspace, &model, &images, &photos, &views, &path, overwrite)
+            colour_map(
+                &workspace,
+                &model,
+                ColourMapRequest {
+                    images: &images,
+                    photos: &photos,
+                    views: &views,
+                    path: &path,
+                    overwrite,
+                    colouring,
+                },
+            )
         })
         .await
         .map_err(|error| {
@@ -836,6 +851,128 @@ struct ReconView {
     camera: [f32; 3],
     crop: ReconCrop,
     image_size: [usize; 2],
+    /// What each pixel around the face shows, when the worker segmented it.
+    #[serde(default)]
+    segmentation: Option<ReconSegmentation>,
+}
+
+/// The segmenter's labels for a square around the face, as a greyscale PNG,
+/// and the hair colour it found there.
+#[derive(serde::Deserialize)]
+struct ReconSegmentation {
+    labels_png: String,
+    classes: Vec<String>,
+    crop: ReconCrop,
+    hair_rgb: Option<[u8; 3]>,
+    hair_pixels: u64,
+}
+
+/// The label numbering the colour map expects, which is the segmenter's.
+const SEGMENT_CLASSES: [&str; 6] = [
+    "background",
+    "hair",
+    "body_skin",
+    "face_skin",
+    "clothes",
+    "other",
+];
+/// Largest label image accepted from the worker, in pixels on each side and
+/// in encoded bytes.
+const MAX_LABEL_SIDE: u32 = 1024;
+const MAX_LABEL_PNG_BYTES: usize = 1024 * 1024;
+
+/// How the caller asked for the scalp to be coloured.
+#[derive(Clone, Copy)]
+struct Colouring {
+    scalp: crate::recon::ScalpChoice,
+    hair_colour: Option<[u8; 3]>,
+}
+
+/// Decode a view's labels: a square greyscale PNG whose values name the
+/// segmenter's classes.
+fn decode_labels(segmentation: &ReconSegmentation) -> Result<(usize, Vec<u8>), String> {
+    if segmentation.classes != SEGMENT_CLASSES {
+        return Err(
+            "the reconstruction worker labelled the photograph with unexpected classes".into(),
+        );
+    }
+    if segmentation.labels_png.len() > MAX_LABEL_PNG_BYTES * 4 / 3 + 4 {
+        return Err("the photograph's labels are too large".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&segmentation.labels_png)
+        .map_err(|_| "the photograph's labels are not base64".to_string())?;
+    let not_png = || "the photograph's labels are not a greyscale PNG".to_string();
+    // The header says the size, so nothing larger than a label square is
+    // ever decoded.
+    let (width, height) = ImageReader::with_format(std::io::Cursor::new(&bytes), ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|_| not_png())?;
+    if width != height || !(1..=MAX_LABEL_SIDE).contains(&width) {
+        return Err("the photograph's labels are not a square of a sensible size".into());
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_LABEL_SIDE);
+    limits.max_image_height = Some(MAX_LABEL_SIDE);
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), ImageFormat::Png);
+    reader.limits(limits);
+    let labels = reader
+        .decode()
+        .ok()
+        .and_then(|image| match image {
+            image::DynamicImage::ImageLuma8(labels) => Some(labels),
+            _ => None,
+        })
+        .ok_or_else(not_png)?;
+    if labels.dimensions() != (width, height) {
+        return Err(not_png());
+    }
+    let data = labels.into_raw();
+    if data
+        .iter()
+        .any(|&label| usize::from(label) >= SEGMENT_CLASSES.len())
+    {
+        return Err("the photograph's labels name an unknown class".into());
+    }
+    Ok((width as usize, data))
+}
+
+/// The part of the head each model triangle belongs to: the scalp and the
+/// eyeballs from the model's regions when it has them, and otherwise the
+/// eyeballs as the parts beside the head.
+fn face_kinds(model: &FlameModel) -> Vec<texture::FaceKind> {
+    let set = |names: &[&str]| -> Option<std::collections::HashSet<u32>> {
+        let mut vertices = std::collections::HashSet::new();
+        for name in names {
+            vertices.extend(model.region(name)?.iter().copied());
+        }
+        Some(vertices)
+    };
+    let within = |set: &std::collections::HashSet<u32>, face: &[u32; 3]| {
+        face.iter().all(|vertex| set.contains(vertex))
+    };
+    let scalp = set(&["scalp"]);
+    let eyes = set(&["left_eyeball", "right_eyeball"]);
+    let beside = eyes.is_none().then(|| texture::minor_parts(model.faces()));
+    model
+        .faces()
+        .iter()
+        .enumerate()
+        .map(|(index, face)| {
+            let eye = match (&eyes, &beside) {
+                (Some(eyes), _) => within(eyes, face),
+                (None, Some(beside)) => beside[index],
+                (None, None) => false,
+            };
+            if eye {
+                texture::FaceKind::Eye
+            } else if scalp.as_ref().is_some_and(|scalp| within(scalp, face)) {
+                texture::FaceKind::Scalp
+            } else {
+                texture::FaceKind::Skin
+            }
+        })
+        .collect()
 }
 
 #[derive(serde::Deserialize)]
@@ -847,15 +984,30 @@ struct ReconCrop {
 
 /// Project every photograph onto its fitted head, build the colour map and
 /// write it as an RGB PNG.
+/// The photographs to colour a head from and where the map goes.
+struct ColourMapRequest<'a> {
+    images: &'a [String],
+    photos: &'a [(Snapshot, String)],
+    views: &'a [ReconView],
+    path: &'a str,
+    overwrite: bool,
+    colouring: Colouring,
+}
+
 fn colour_map(
     workspace: &Workspace,
     model: &FlameModel,
-    images: &[String],
-    photos: &[(Snapshot, String)],
-    views: &[ReconView],
-    path: &str,
-    overwrite: bool,
+    request: ColourMapRequest<'_>,
 ) -> Result<Value, ToolError> {
+    use crate::recon::ScalpChoice;
+    let ColourMapRequest {
+        images,
+        photos,
+        views,
+        path,
+        overwrite,
+        colouring,
+    } = request;
     if views.len() != images.len() {
         return Err(ToolError::Validation(
             "the reconstruction worker described a different number of photographs".into(),
@@ -864,8 +1016,53 @@ fn colour_map(
     let layout = model
         .uv_layout()
         .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
-    let mut builder = texture::ColourMapBuilder::new(model.faces(), layout, COLOUR_MAP_TEXELS)
-        .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let kinds = face_kinds(model);
+    let knows_scalp = kinds.contains(&texture::FaceKind::Scalp);
+    // The hair colour the photographs show, weighted by how much hair each shows.
+    let (hair_pixels, hair_sum) = views
+        .iter()
+        .filter_map(|view| view.segmentation.as_ref())
+        .filter_map(|segmentation| {
+            segmentation
+                .hair_rgb
+                .map(|rgb| (segmentation.hair_pixels, rgb))
+        })
+        .fold((0u64, [0.0f64; 3]), |(count, sum), (pixels, rgb)| {
+            let weight = pixels as f64;
+            (
+                count + pixels,
+                std::array::from_fn(|channel| sum[channel] + weight * f64::from(rgb[channel])),
+            )
+        });
+    let found_hair = (hair_pixels > 0).then(|| {
+        hair_sum.map(|channel| (channel / hair_pixels as f64).round().clamp(0.0, 255.0) as u8)
+    });
+    let hair = colouring.hair_colour.or(found_hair);
+    let (scalp, applied, note) = match colouring.scalp {
+        // Without a scalp region every face is skin, which takes colour
+        // only from skin, whatever was asked for the scalp.
+        _ if !knows_scalp => (
+            texture::ScalpColour::Skin,
+            "skin",
+            Some(
+                "the model has no scalp region; convert it again with --masks to colour the scalp separately",
+            ),
+        ),
+        ScalpChoice::Photo => (texture::ScalpColour::Photo, "photo", None),
+        ScalpChoice::Skin => (texture::ScalpColour::Skin, "skin", None),
+        ScalpChoice::Hair => match hair {
+            Some(colour) => (texture::ScalpColour::Hair(colour), "hair", None),
+            None => (
+                texture::ScalpColour::Skin,
+                "skin",
+                Some("no hair was found in the photographs"),
+            ),
+        },
+    };
+    let mut builder =
+        texture::ColourMapBuilder::new(model.faces(), layout, COLOUR_MAP_TEXELS, &kinds, scalp)
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let mut segmented = 0usize;
     // One photograph at a time: each is read, decoded, projected and dropped
     // before the next.
     for ((image, (snapshot, _)), view) in images.iter().zip(photos).zip(views) {
@@ -888,6 +1085,13 @@ fn colour_map(
                 translation: [0.0; 3],
             })
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
+        let labels = view
+            .segmentation
+            .as_ref()
+            .map(|segmentation| decode_labels(segmentation).map(|labels| (segmentation, labels)))
+            .transpose()
+            .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
+        segmented += usize::from(labels.is_some());
         builder
             .add(&texture::View {
                 photo: texture::Photo {
@@ -903,6 +1107,15 @@ fn colour_map(
                     crop_top: view.crop.top,
                     crop_step: view.crop.step,
                 },
+                labels: labels
+                    .as_ref()
+                    .map(|(segmentation, (side, data))| texture::Labels {
+                        side: *side,
+                        data,
+                        left: segmentation.crop.left,
+                        top: segmentation.crop.top,
+                        step: segmentation.crop.step,
+                    }),
             })
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
     }
@@ -917,11 +1130,22 @@ fn colour_map(
         .write_to(&mut bytes, ImageFormat::Png)
         .map_err(|_| ToolError::Validation("the colour map could not be encoded".into()))?;
     let artifact = workspace.write_generated_bytes(path, &bytes.into_inner(), overwrite)?;
+    let mut scalp_report = json!({
+        "requested": colouring.scalp,
+        "applied": applied,
+        "hair_colour": if applied == "hair" { hair.map(|colour| json!(colour)) } else { None },
+        "hair_found": found_hair,
+    });
+    if let Some(note) = note {
+        scalp_report["note"] = json!(note);
+    }
     Ok(json!({
         "artifact": artifact,
         "width": side,
         "height": side,
         "seen": map.seen,
+        "skin_only": segmented == views.len(),
+        "scalp": scalp_report,
     }))
 }
 

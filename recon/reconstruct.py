@@ -5,7 +5,8 @@ Usage: reconstruct.py <request.json>
        reconstruct.py --version
 
 The request names the input images, the checkpoint directory, the face
-landmarker model, the displacement map to write and the device. One JSON
+landmarker model, optionally the person segmenter model, the displacement map
+to write and the device. One JSON
 object is printed: {"result": ...} or {"error": {"code", "message"}}.
 """
 
@@ -40,6 +41,7 @@ def main(argv: list[str]) -> int:
         directory = Path(request["checkpoints"])
         landmarker = Path(request["landmarker"])
         output = Path(request["displacement"])
+        segmenter = Path(request["segmenter"]) if request.get("segmenter") else None
         device = request.get("device", "auto")
         seed = int(request.get("seed", 0))
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -52,7 +54,7 @@ def main(argv: list[str]) -> int:
     torch.manual_seed(seed)
     torch.use_deterministic_algorithms(True)
     try:
-        reconstructor = pipeline.Reconstructor(directory, landmarker, device)
+        reconstructor = pipeline.Reconstructor(directory, landmarker, device, segmenter)
         try:
             result = reconstructor.run(images)
         finally:
