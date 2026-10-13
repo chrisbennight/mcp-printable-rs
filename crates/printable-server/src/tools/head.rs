@@ -1437,12 +1437,15 @@ fn colour_map(
         "lighting": {
             "requested": colouring.lighting,
             // Each photograph's shading in linear light, as ambient plus
-            // direction · normal per colour channel, or null where it was
-            // kept or too little skin was seen to estimate it.
-            "shading": map.shading.iter().map(|shading| shading.map(|shading| json!({
-                "ambient": shading.ambient,
-                "direction": shading.direction,
-            }))).collect::<Vec<_>>(),
+            // direction · normal per colour channel with the direction in
+            // the head's own frame, or null where it was kept or too little
+            // skin was seen to estimate it.
+            "shading": map.shading.iter().zip(views.iter()).map(|(shading, view)| {
+                shading.map(|shading| {
+                    let shading = shading.turned_back(view.head_rotation);
+                    json!({"ambient": shading.ambient, "direction": shading.direction})
+                })
+            }).collect::<Vec<_>>(),
         },
     }))
 }

@@ -761,7 +761,9 @@ clipped, which lowers that mean slightly.
 `texture.lighting.shading` reports, for each photograph, an estimate of its
 light: for each colour channel an ambient term and a direction, in linear
 light, on the map's colour scale, so that ambient + direction · normal is
-the light that photograph cast on the head's surface. A renderer can use it
+the light that photograph cast on the head's surface. Directions are in the
+head's own frame, FLAME's frame with y up and the face toward +z, whatever
+the head's rotation in each photograph. A renderer can use it
 to relight the head consistently with the photograph. It is an estimate,
 not an exact inverse of the finished map, which blends photographs and fills
 surface seen at an angle. It is null where the lighting was kept.

@@ -94,6 +94,37 @@ pub struct Shading {
 }
 
 impl Shading {
+    /// The same shading with its directions turned back by an axis-angle
+    /// rotation. Turned back by the head's rotation in its photograph, they
+    /// go from the camera's frame to the head's own.
+    pub fn turned_back(self, rotation: [f32; 3]) -> Shading {
+        let angle = rotation
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        if angle == 0.0 {
+            return self;
+        }
+        let axis = rotation.map(|value| value / angle);
+        let (sin, cos) = (-angle).sin_cos();
+        let turn = |vector: [f32; 3]| {
+            let across = [
+                axis[1] * vector[2] - axis[2] * vector[1],
+                axis[2] * vector[0] - axis[0] * vector[2],
+                axis[0] * vector[1] - axis[1] * vector[0],
+            ];
+            let along = axis[0] * vector[0] + axis[1] * vector[1] + axis[2] * vector[2];
+            std::array::from_fn(|index| {
+                vector[index] * cos + across[index] * sin + axis[index] * along * (1.0 - cos)
+            })
+        };
+        Shading {
+            ambient: self.ambient,
+            direction: self.direction.map(turn),
+        }
+    }
+
     fn at(&self, channel: usize, normal: [f32; 3]) -> f32 {
         let direction = self.direction[channel];
         self.ambient[channel]
@@ -2131,6 +2162,23 @@ mod tests {
             "{relit} of {}",
             samples.len()
         );
+    }
+
+    #[test]
+    fn shading_turns_back_into_the_head_frame() {
+        // A head turned a quarter turn about y faces the camera's +x; light
+        // from the camera's +x comes from straight in front of the head.
+        let shading = Shading {
+            ambient: [0.2; 3],
+            direction: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let back = shading.turned_back([0.0, std::f32::consts::FRAC_PI_2, 0.0]);
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-6);
+        assert!(close(back.direction[0], [0.0, 0.0, 1.0]), "{back:?}");
+        assert!(close(back.direction[1], [0.0, 1.0, 0.0]), "{back:?}");
+        assert!(close(back.direction[2], [-1.0, 0.0, 0.0]), "{back:?}");
+        assert_eq!(back.ambient, shading.ambient);
+        assert_eq!(shading.turned_back([0.0; 3]), shading);
     }
 
     #[test]
