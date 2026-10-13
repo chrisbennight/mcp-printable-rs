@@ -76,6 +76,26 @@ output lists the regions it stored, and the `models` action reports them for
 each mounted model. All FLAME releases number their vertices the same way,
 so one masks file serves every release.
 
+FLAME has no eyelid shapes, so a head's eyes stay as open as its expression
+leaves them. An eyelid basis, a displacement of each vertex that closes each
+eye, is distributed with the Max Planck Institute's metrical photometric
+tracker as `l_eyelid.npy` and `r_eyelid.npy`; SMIRK uses the same files.
+Their licence permits non-commercial research, education and artistic use
+only and forbids passing the files on, so Printable does not include them.
+Obtain them under that licence and add them with `--eyelids`:
+
+```sh
+python3 scripts/flame_model_convert.py generic_model.pkl \
+  /models/flame/flame2020_generic.safetensors --variant flame2020_generic \
+  --texture FLAME_texture.npz --masks FLAME_masks.pkl \
+  --eyelids l_eyelid.npy r_eyelid.npy
+```
+
+Each file is read as a plain NumPy array, without unpickling, and may be at
+most 1 MiB. It must hold one displacement for each model vertex, each finite
+and under 5 cm. The command's output, and the `models` action for each
+mounted model, report `eyelids` true for a model that has them.
+
 ## What the converter checks
 
 Loading a pickle can run arbitrary code. The converter resolves only the
@@ -156,8 +176,15 @@ axis-angle vectors in radians with a length of at most pi, in FLAME's frame:
 y up and the face looking along +z, so the subject's left is +x. A positive jaw
 rotation about +x opens the mouth. `variant` may be omitted when only one model
 is mounted. `expression_scale`, 0 to 1 and 1 by default, multiplies the
-expression coefficients and the jaw rotation in `create`, `update`, `export`
-and `prepare_print`, so an expression can be softened; 0 gives a neutral face.
+expression coefficients, the jaw rotation and the eyelids in `create`,
+`update`, `export` and `prepare_print`, so an expression can be softened; 0
+gives a neutral face.
+
+`eyelids` closes the eyelids in the same actions: a pair of shares for the
+left and right eye, each 0 to 1 and 0 by default, where 1 closes an eye with
+the model's eyelid basis. Shares above 0 need a model converted with
+`--eyelids`. The eyelids close on the head at rest, so they turn with the
+head.
 
 The mesh is in millimetres, like other Printable geometry, so an unscaled head
 is life size. In Blender the new head stands upright: its object is rotated 90
@@ -332,6 +359,7 @@ reported as an error and not written.
 | `displacement` | none | see [Surface detail](#surface-detail) |
 | `printer` | none | see [Printer settings](#printer-settings) |
 | `expression_scale` | 1 | 0 to 1 |
+| `eyelids` | 0, 0 | each 0 to 1; above 0 needs `--eyelids` |
 | `mouth` | `as_posed` | `as_posed`, `closed` or `recessed`; see [Mouth](#mouth) |
 | `mouth_recess_mm` | 2 with `recessed` | 0.5 to 10 |
 | `overwrite` | false | |
@@ -859,6 +887,7 @@ Arrays are little-endian. Floating-point data is stored as float32.
 | `uv_coords` | F32 | texture coordinates × 2, with `--texture` only |
 | `uv_faces` | U32 | triangles × 3, with `--texture` only |
 | `region.<name>` | U32 | sorted vertex indices, one tensor per region, with `--masks` only |
+| `eyelid.left`, `eyelid.right` | F32 | vertices × 3, with `--eyelids` only |
 
 The metadata records `format`, `variant`, `source_sha256`,
 `identity_components`, `expression_components`, `expression_source`,

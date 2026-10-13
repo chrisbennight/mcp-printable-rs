@@ -475,7 +475,7 @@ class OutputTests(unittest.TestCase):
 
 def _npy(descr, shape, values, *, fortran=False, header=None):
     """A version 1.0 .npy file holding `values` row by row."""
-    code = {"<f8": "d", "<i4": "i", "|O": "d"}[descr]
+    code = {"<f8": "d", "<f4": "f", "<i4": "i", "|O": "d"}[descr]
     text = header if header is not None else repr({"descr": descr, "fortran_order": fortran, "shape": shape})
     encoded = text.encode("latin1")
     encoded += b" " * (-(10 + len(encoded) + 1) % 64) + b"\n"
@@ -667,6 +667,65 @@ class PublishedMasksTests(unittest.TestCase):
         names = {name.removeprefix("region.") for name in tensors}
         self.assertTrue({"scalp", "face", "neck", "lips", "nose", "left_ear", "right_ear",
                          "left_eyeball", "right_eyeball"} <= names)
+
+
+
+LEFT_LID = [0.001 * (index % 3) for index in range(VERTICES * 3)]
+
+
+class EyelidTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def files(self, left, right=None):
+        paths = []
+        for name, data in (("l_eyelid.npy", left), ("r_eyelid.npy", right if right is not None else left)):
+            path = self.root / name
+            path.write_bytes(data)
+            paths.append(path)
+        return paths
+
+    def test_each_eye_gets_one_displacement_per_vertex(self):
+        left, right = self.files(_npy("<f8", (VERTICES, 3), LEFT_LID), _npy("<f4", (VERTICES, 3), [0.0] * 12))
+        tensors = convert_module.eyelid_basis(left, right, VERTICES)
+        self.assertEqual(tensors["eyelid.left"][:2], ("F32", (VERTICES, 3)))
+        rounded = list(struct.unpack("<12f", struct.pack("<12f", *LEFT_LID)))
+        self.assertEqual(_floats(tensors["eyelid.left"][2]), rounded)
+        self.assertEqual(_floats(tensors["eyelid.right"][2]), [0.0] * 12)
+
+    def test_unusable_eyelids_are_refused(self):
+        cases = [
+            (_npy("<f8", (3, 3), LEFT_LID[:9]), "each of the model's 4 vertices"),
+            (_npy("<f8", (VERTICES, 3), [0.1] + LEFT_LID[1:]), "under 5 cm"),
+            (_npy("<f8", (VERTICES, 3), [float("nan")] + LEFT_LID[1:]), "under 5 cm"),
+            (_npy("|O", (VERTICES, 3), LEFT_LID), "unsupported type"),
+            (_npy("<f8", (VERTICES, 3), LEFT_LID, fortran=True), "C-ordered"),
+            (b"not an array", "not a NumPy array"),
+            (b"\0" * (convert_module.MAX_EYELID_BYTES + 1), "exceeds"),
+        ]
+        for data, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ModelError, message):
+                convert_module.eyelid_basis(*self.files(data), VERTICES)
+
+    def test_command_adds_the_eyelids_to_the_model(self):
+        source, destination = self.root / "source.pkl", self.root / "model.safetensors"
+        source.write_bytes(model(Legacy()))
+        left, right = self.files(_npy("<f8", (VERTICES, 3), LEFT_LID))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(source), str(destination), "--variant", "lidded",
+                           "--expression-components", "2", "--eyelids", str(left), str(right)])
+        self.assertEqual(status, 0)
+        self.assertTrue(json.loads(stdout.getvalue())["eyelids"])
+        blob = destination.read_bytes()
+        (length,) = struct.unpack_from("<Q", blob)
+        header = json.loads(blob[8:8 + length])
+        for name in ("eyelid.left", "eyelid.right"):
+            self.assertEqual((header[name]["dtype"], header[name]["shape"]), ("F32", [VERTICES, 3]))
 
 
 if __name__ == "__main__":

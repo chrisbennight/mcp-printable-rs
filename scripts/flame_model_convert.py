@@ -462,30 +462,36 @@ def _npy(archive: zipfile.ZipFile, name: str):
         raise ModelError(f"texture space array {name} is too large")
     with archive.open(info) as handle:
         data = handle.read(MAX_LAYOUT_MEMBER_BYTES + 1)
+    return _parse_npy(data, f"texture space array {name}")
+
+
+def _parse_npy(data: bytes, what: str):
+    """Decode one little-endian, C-ordered two-dimensional array from the
+    bytes of an .npy file, without unpickling anything."""
     if data[:6] != b"\x93NUMPY" or len(data) < 10:
-        raise ModelError(f"texture space array {name} is not a NumPy array")
+        raise ModelError(f"{what} is not a NumPy array")
     major = data[6]
     if major == 1:
         length, start = struct.unpack("<H", data[8:10])[0], 10
     elif major in (2, 3):
         length, start = struct.unpack("<I", data[8:12])[0], 12
     else:
-        raise ModelError(f"texture space array {name} has an unknown format version")
+        raise ModelError(f"{what} has an unknown format version")
     try:
         header = ast.literal_eval(data[start:start + length].decode("latin1"))
     except (ValueError, SyntaxError, RecursionError, MemoryError):
-        raise ModelError(f"texture space array {name} has an unreadable header") from None
+        raise ModelError(f"{what} has an unreadable header") from None
     if not isinstance(header, dict) or header.get("fortran_order") is not False:
-        raise ModelError(f"texture space array {name} must be C-ordered")
+        raise ModelError(f"{what} must be C-ordered")
     code = NPY_TYPES.get(header.get("descr"))
     shape = header.get("shape")
     if code is None or not isinstance(shape, tuple) or len(shape) != 2 \
             or not all(isinstance(size, int) and 0 < size < MAX_DIMENSION for size in shape):
-        raise ModelError(f"texture space array {name} has an unsupported type or shape")
+        raise ModelError(f"{what} has an unsupported type or shape")
     body = data[start + length:]
     count = shape[0] * shape[1]
     if len(body) != count * struct.calcsize(code):
-        raise ModelError(f"texture space array {name} is truncated")
+        raise ModelError(f"{what} is truncated")
     return shape, struct.unpack(f"<{count}{code}", body)
 
 
@@ -509,6 +515,29 @@ def texture_layout(path: Path, faces: int):
         "uv_coords": ("F32", coord_shape, _payload(_float32("uv_coords", coords))),
         "uv_faces": ("U32", corner_shape, _payload(array.array("I", corners))),
     }
+
+
+# Each eyelid basis holds one displacement per vertex, about 120 KB for FLAME.
+MAX_EYELID_BYTES = 1 << 20
+# No vertex of a published eyelid basis moves more than a few millimetres;
+# this bound, in metres, refuses a basis in other units.
+MAX_EYELID_DISPLACEMENT_M = 0.05
+EYELID_TENSORS = ("eyelid.left", "eyelid.right")
+
+
+def eyelid_basis(left: Path, right: Path, vertices: int):
+    """The eyelid basis from SMIRK's l_eyelid.npy and r_eyelid.npy, the
+    per-vertex displacements that close each eye, as eyelid.left and
+    eyelid.right."""
+    tensors = {}
+    for name, path in zip(EYELID_TENSORS, (left, right)):
+        shape, values = _parse_npy(read_bounded(path, MAX_EYELID_BYTES, f"{name} file"), name)
+        if shape != (vertices, 3):
+            raise ModelError(f"{name} must hold one 3D displacement for each of the model's {vertices} vertices")
+        if not all(math.isfinite(value) and abs(value) < MAX_EYELID_DISPLACEMENT_M for value in values):
+            raise ModelError(f"{name} displacements must be finite and under 5 cm, in metres")
+        tensors[name] = ("F32", shape, _payload(_float32(name, values)))
+    return tensors
 
 
 # FLAME_masks.pkl is about 210 KB and names 14 regions.
@@ -600,6 +629,9 @@ def main(argv=None) -> int:
     parser.add_argument("--masks", type=Path,
                         help="FLAME_masks.pkl from the FLAME vertex masks, to add named regions such as "
                              "the scalp, face, ears and eyeballs")
+    parser.add_argument("--eyelids", type=Path, nargs=2, metavar=("LEFT", "RIGHT"),
+                        help="l_eyelid.npy and r_eyelid.npy, an eyelid basis obtained under its own licence, "
+                             "to let heads close their eyelids")
     args = parser.parse_args(argv)
     try:
         tensors, metadata = convert(read_bounded(args.source), args.variant, args.expression_components)
@@ -608,13 +640,15 @@ def main(argv=None) -> int:
         if args.masks is not None:
             data = read_bounded(args.masks, MAX_MASKS_BYTES, "masks file")
             tensors.update(regions(data, tensors["v_template"][1][0]))
+        if args.eyelids is not None:
+            tensors.update(eyelid_basis(*args.eyelids, tensors["v_template"][1][0]))
         digest = write_safetensors(args.destination, tensors, metadata)
     except (ModelError, OSError) as error:
         print(f"flame_model_convert: {error}", file=sys.stderr)
         return 1
     names = sorted(name.removeprefix(REGION_PREFIX) for name in tensors if name.startswith(REGION_PREFIX))
-    print(json.dumps({"destination": str(args.destination), "sha256": digest, "regions": names, **metadata},
-                     sort_keys=True))
+    print(json.dumps({"destination": str(args.destination), "sha256": digest, "regions": names,
+                      "eyelids": EYELID_TENSORS[0] in tensors, **metadata}, sort_keys=True))
     return 0
 
 

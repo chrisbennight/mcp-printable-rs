@@ -6389,6 +6389,81 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_eyelids_close_with_a_model_that_has_their_basis() {
+    let library = |eyelids: bool| {
+        let models = tempfile::tempdir().unwrap();
+        let mut left = vec![0.0; 12];
+        left[2] = 0.01; // vertex 0, 10 mm along z
+        let fixture = printable_flame::fixture::Fixture {
+            faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            eyelids: eyelids.then(|| (left, vec![0.0; 12])),
+            ..Default::default()
+        };
+        std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+        let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+        (models, library)
+    };
+    let (_models, with_basis) = library(true);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), Arc::clone(&with_basis));
+    let models = server
+        .invoke_tool(head_call(json!({"action": "models", "params": {}})))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(models["models"][0]["eyelids"], true, "{models}");
+    // The first vertex's z, in millimetres, as exported.
+    let first_z = |params: Value| {
+        let server = &server;
+        let root = root.path().to_owned();
+        async move {
+            let mut params = params;
+            params["path"] = json!("head.obj");
+            params["overwrite"] = json!(true);
+            let result = server
+                .invoke_tool(head_call(json!({"action": "export", "params": params})))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(false), "{result:?}");
+            let text = std::fs::read_to_string(root.join("head.obj")).unwrap();
+            let line = text.lines().find(|line| line.starts_with("v ")).unwrap();
+            line.split(' ').nth(3).unwrap().parse::<f64>().unwrap()
+        }
+    };
+    let open = first_z(json!({})).await;
+    let closed = first_z(json!({"eyelids": [1.0, 0.0]})).await;
+    let softened = first_z(json!({"eyelids": [1.0, 0.0], "expression_scale": 0.5})).await;
+    assert!((closed - open - 10.0).abs() < 1e-3, "{open} {closed}");
+    assert!((softened - open - 5.0).abs() < 1e-3, "{open} {softened}");
+    // Shares outside 0 to 1, or a model without the basis, are refused.
+    let refused = server
+        .invoke_tool(head_call(json!({
+            "action": "export", "params": {"path": "x.obj", "eyelids": [1.5, 0.0]}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        format!("{refused:?}").contains("between 0 and 1"),
+        "{refused:?}"
+    );
+    let (_plain_models, plain) = library(false);
+    let server = head_print_server(root.path(), plain);
+    for action in ["export", "prepare_print"] {
+        let path = if action == "export" { "y.obj" } else { "y.stl" };
+        let refused = server
+            .invoke_tool(head_call(json!({
+                "action": action, "params": {"path": path, "eyelids": [0.0, 0.5]}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(refused.is_error, Some(true), "{action}");
+        assert!(format!("{refused:?}").contains("--eyelids"), "{refused:?}");
+    }
+}
+
+#[tokio::test]
 async fn head_export_writes_the_head_as_an_obj_without_blender() {
     for textured in [true, false] {
         let (_models, library) = tetrahedron_library(textured);

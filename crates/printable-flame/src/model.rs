@@ -25,6 +25,11 @@ const MAX_LABEL_BYTES: usize = 64;
 const REGION_PREFIX: &str = "region.";
 const MAX_REGIONS: usize = 64;
 const MAX_REGION_NAME_BYTES: usize = 32;
+/// The eyelid basis: one displacement per vertex for each eye, fully closed.
+const EYELID_TENSORS: [&str; 2] = ["eyelid.left", "eyelid.right"];
+/// No vertex of a published eyelid basis moves more than a few millimetres;
+/// this bound, in metres, refuses a basis in other units.
+const MAX_EYELID_DISPLACEMENT_M: f32 = 0.05;
 
 /// Reasons a converted model cannot be used.
 #[derive(Debug, Error)]
@@ -60,6 +65,10 @@ pub enum ModelError {
     RegionName,
     #[error("model region `{0}` is not a sorted list of distinct template vertices")]
     Region(String),
+    #[error(
+        "model eyelids must be the pair eyelid.left and eyelid.right, each F32 [vertices, 3] with displacements under 5 cm"
+    )]
+    Eyelids,
 }
 
 /// Provenance and basis sizes recorded by the converter.
@@ -97,6 +106,9 @@ pub struct FlameModel {
     pub(crate) uv: Option<UvLayout>,
     /// Named vertex regions, when the converter was given FLAME's masks.
     pub(crate) regions: BTreeMap<String, Vec<u32>>,
+    /// The left and right eyelid bases, each flattened as `[vertex][axis]`,
+    /// when the converter was given them.
+    pub(crate) eyelids: Option<[Vec<f32>; 2]>,
 }
 
 /// Texture coordinates for the model's triangles. Several coordinates can
@@ -177,6 +189,7 @@ impl FlameModel {
 
         let uv = uv_layout(&tensors, faces.len())?;
         let regions = regions(&tensors, vertex_count)?;
+        let eyelids = eyelids(&tensors, vertex_count)?;
         Ok(Self {
             info,
             vertex_count,
@@ -188,6 +201,7 @@ impl FlameModel {
             regressor,
             uv,
             regions,
+            eyelids,
         })
     }
 
@@ -222,6 +236,40 @@ impl FlameModel {
     pub fn region(&self, name: &str) -> Option<&[u32]> {
         self.regions.get(name).map(Vec::as_slice)
     }
+
+    /// Whether the model carries an eyelid basis, so that
+    /// [`crate::FlameParams::eyelids`] can close the eyes.
+    pub fn has_eyelids(&self) -> bool {
+        self.eyelids.is_some()
+    }
+}
+
+/// The optional eyelid basis, which comes as a pair.
+fn eyelids(
+    tensors: &SafeTensors<'_>,
+    vertex_count: usize,
+) -> Result<Option<[Vec<f32>; 2]>, ModelError> {
+    let [left, right] = EYELID_TENSORS.map(|name| tensors.tensor(name).ok());
+    let (left, right) = match (left, right) {
+        (None, None) => return Ok(None),
+        (Some(left), Some(right)) => (left, right),
+        _ => return Err(ModelError::Eyelids),
+    };
+    let read = |view: &TensorView<'_>| {
+        if view.dtype() != Dtype::F32 || view.shape() != [vertex_count, 3] {
+            return Err(ModelError::Eyelids);
+        }
+        let values: Vec<f32> = words(view.data()).map(f32::from_bits).collect();
+        if values
+            .iter()
+            .all(|value| value.abs() < MAX_EYELID_DISPLACEMENT_M)
+        {
+            Ok(values)
+        } else {
+            Err(ModelError::Eyelids)
+        }
+    };
+    Ok(Some([read(&left)?, read(&right)?]))
 }
 
 /// The optional `uv_coords` and `uv_faces` tensors, which come as a pair.
@@ -483,6 +531,27 @@ mod tests {
                 .collect();
         });
         assert!(matches!(many, Err(ModelError::RegionName)));
+    }
+
+    #[test]
+    fn eyelids_are_an_optional_validated_pair() {
+        assert!(!Fixture::default().model().has_eyelids());
+        let lid = vec![0.001; 12];
+        let model = rebuilt(|fixture| fixture.eyelids = Some((lid.clone(), lid.clone()))).unwrap();
+        assert!(model.has_eyelids());
+        let one = rebuilt(|fixture| {
+            fixture.eyelids = Some((lid.clone(), lid.clone()));
+            fixture.omit = vec!["eyelid.right"];
+        });
+        assert!(matches!(one, Err(ModelError::Eyelids)), "{one:?}");
+        for (left, right) in [
+            (vec![0.001; 9], vec![0.001; 9]),
+            (vec![0.1; 12], lid.clone()),
+            (lid.clone(), vec![f32::NAN; 12]),
+        ] {
+            let result = rebuilt(|fixture| fixture.eyelids = Some((left, right)));
+            assert!(matches!(result, Err(ModelError::Eyelids)), "{result:?}");
+        }
     }
 
     #[test]
