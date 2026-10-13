@@ -169,9 +169,9 @@ def debian_packages(status):
         for line in stanza.splitlines():
             if line[:1].isspace() and last:
                 fields[last] += "\n" + line
-            elif ": " in line:
-                last, value = line.split(": ", 1)
-                fields[last] = value
+            elif ":" in line:
+                last, value = line.split(":", 1)
+                fields[last] = value.lstrip()
         if fields.get("Status") != "install ok installed":
             continue
         name, version = fields["Package"], fields["Version"]

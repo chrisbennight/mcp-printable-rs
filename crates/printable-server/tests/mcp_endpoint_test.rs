@@ -14,8 +14,8 @@
 //! body is rejected by the transport limit. This is what would break if a
 //! future rmcp bump silently changed the JSON wire shape or session handshake.
 //!
-//! Side-effect free: everything binds on `127.0.0.1`; no credentials, external
-//! network, or filesystem are touched.
+//! Tests use disposable workspaces and loopback fakes. They do not contact
+//! external services or use production credentials.
 
 use std::collections::BTreeSet;
 
@@ -1546,6 +1546,297 @@ async fn oversized_request_body_is_rejected_by_the_transport_limit() {
         ),
     }
 
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn retained_tool_work_stays_bounded_after_stream_headers_and_disconnects() {
+    for modern in [false, true] {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            retained_work_saturation(modern),
+        )
+        .await
+        .expect("bounded saturation lifecycle");
+    }
+}
+
+async fn admission_post(
+    http: &reqwest::Client,
+    mcp: &str,
+    session: Option<&str>,
+    mut body: Value,
+    modern: bool,
+) -> reqwest::Response {
+    if !modern {
+        return post(http, mcp, session, &body).await;
+    }
+    body["params"]["_meta"] = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "admission-client", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    let mut request = http
+        .post(mcp)
+        .header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {TEST_MCP_BEARER}"),
+        )
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", body["method"].as_str().unwrap());
+    if body["method"] == "tools/call" {
+        request = request.header("mcp-name", body["params"]["name"].as_str().unwrap());
+    }
+    request.json(&body).send().await.unwrap()
+}
+
+async fn retained_work_saturation(modern: bool) {
+    use printable_blender::fake_addon::{FakeAddon, ResponseSpec};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let released = Arc::new(AtomicBool::new(false));
+    let gate = released.clone();
+    let fake = FakeAddon::spawn({
+        let started = started.clone();
+        let release = release.clone();
+        move |command, _| {
+            assert_eq!(command, "execute_code");
+            let result = json!({"result": null, "stdout": "", "stderr": "", "elapsed_ms": 1});
+            if gate.load(Ordering::SeqCst) {
+                ResponseSpec::Success {
+                    result,
+                    addon_version: None,
+                }
+            } else {
+                ResponseSpec::SuccessWhenReleased {
+                    result,
+                    addon_version: None,
+                    started: started.clone(),
+                    release: release.clone(),
+                }
+            }
+        }
+    })
+    .await;
+    let temporary = tempfile::tempdir().unwrap();
+    let mut settings = test_settings(fake.port());
+    settings.workspace_root = Some(temporary.path().to_path_buf());
+    let server = start_with_settings(settings).await;
+    let http = reqwest::Client::new();
+    let mcp = format!("{}/mcp", server.base);
+    let mut sessions = Vec::new();
+    for id in if modern { vec![] } else { vec![1, 2] } {
+        let response = post(
+            &http,
+            &mcp,
+            None,
+            &json!({
+                "jsonrpc": "2.0", "id": id, "method": "initialize",
+                "params": {"protocolVersion": protocol_version(), "capabilities": {},
+                    "clientInfo": {"name": "admission-client", "version": "1"}}
+            }),
+        )
+        .await;
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        rpc_result(response).await;
+        post(
+            &http,
+            &mcp,
+            Some(&session),
+            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        )
+        .await;
+        sessions.push(session);
+    }
+    let code = format!("#{}\nresult = None", "retained argument ".repeat(32 * 1024));
+    let mut streams = Vec::new();
+    let mut rejected = 0;
+    let mut requests = tokio::task::JoinSet::new();
+    let offered_at = std::time::Instant::now();
+    for id in 0..40 {
+        let http = http.clone();
+        let mcp = mcp.clone();
+        let session = (!modern).then(|| sessions[id % 2].clone());
+        let body = json!({
+            "jsonrpc": "2.0", "id": id + 10, "method": "tools/call",
+            "params": {"name": "blender_execute", "arguments": {"code": code, "timeout_seconds": 1}}
+        });
+        requests.spawn(async move {
+            admission_post(&http, &mcp, session.as_deref(), body, modern).await
+        });
+    }
+    while rejected < 8 || (!modern && streams.len() < 32) {
+        if requests.is_empty() {
+            break;
+        }
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), requests.join_next())
+                .await
+                .expect("excess admission answers without waiting for backend work")
+                .expect("request result")
+                .unwrap();
+        match response.status().as_u16() {
+            200 => streams.push(response),
+            429 => {
+                assert_eq!(
+                    response.json::<Value>().await.unwrap()["error"],
+                    "server_busy"
+                );
+                rejected += 1;
+            }
+            status => panic!("unexpected admission status {status}"),
+        }
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .expect("an accepted request reaches the backend");
+    println!(
+        "ADMISSION_EVIDENCE={}",
+        json!({
+            "protocol": if modern { "2026-07-28" } else { protocol_version() },
+            "offered_calls": 40, "argument_utf8_bytes": code.len(),
+            "response_headers_received": streams.len(), "requests_waiting_for_headers": requests.len(),
+            "refused_calls": rejected, "backend_deliveries_while_blocked": fake.commands().len(),
+            "offer_and_refusal_ms": offered_at.elapsed().as_secs_f64() * 1000.0
+        })
+    );
+    assert_eq!(
+        streams.len() + requests.len(),
+        32,
+        "retained work remains counted"
+    );
+    assert_eq!(rejected, 8);
+    assert_eq!(
+        fake.commands(),
+        ["execute_code"],
+        "other admitted calls wait for the same backend"
+    );
+    // Close every response before the backend releases. Delivered effects and
+    // queued arguments still own their capacity until actual dispatch finishes.
+    drop(streams);
+    requests.abort_all();
+    while requests.join_next().await.is_some() {}
+    for id in 0..8 {
+        let response = admission_post(
+            &http,
+            &mcp,
+            (!modern).then(|| sessions[id % 2].as_str()),
+            json!({
+                "jsonrpc": "2.0", "id": id + 100, "method": "tools/call",
+                "params": {"name": "blender_execute", "arguments": {"code": "result = None"}}
+            }),
+            modern,
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), 429);
+    }
+    let observation_at = std::time::Instant::now();
+    let observation = async {
+        assert!(
+            http.get(format!("{}/healthz", server.base))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        for (name, arguments) in [
+            ("status", json!({})),
+            ("job", json!({"action": "list", "params": {}})),
+            (
+                "job",
+                json!({"action": "cancel", "params": {"job_id": "missing-job"}}),
+            ),
+            (
+                "cad_build",
+                json!({"action": "status", "params": {"project_id": "missing", "output_dir": "missing"}}),
+            ),
+            (
+                "cad_build",
+                json!({"action": "cancel", "params": {"project_id": "missing", "output_dir": "missing"}}),
+            ),
+            (
+                "slice",
+                json!({"action": "status", "params": {"project_id": "missing", "output_dir": "missing"}}),
+            ),
+            (
+                "slice",
+                json!({"action": "cancel", "params": {"project_id": "missing", "output_dir": "missing"}}),
+            ),
+            (
+                "print",
+                json!({"action": "stop", "params": {"printer_id": 1}}),
+            ),
+            (
+                "print",
+                json!({"action": "pause", "params": {"printer_id": 1}}),
+            ),
+            (
+                "printer",
+                json!({"action": "status", "params": {"printer_id": 1}}),
+            ),
+        ] {
+            let result = rpc_result(admission_post(&http, &mcp, (!modern).then(|| sessions[0].as_str()), json!({
+                "jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {"name": name, "arguments": arguments}
+            }), modern).await).await;
+            assert!(result["structuredContent"].is_object());
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), observation)
+        .await
+        .expect("health, status, and cancellation retain capacity");
+    println!(
+        "ADMISSION_CONTROL_EVIDENCE={}",
+        json!({
+            "protocol": if modern { "2026-07-28" } else { protocol_version() },
+            "observation_and_control_ms": observation_at.elapsed().as_secs_f64() * 1000.0,
+            "refused_calls_after_disconnect": 8
+        })
+    );
+    released.store(true, Ordering::SeqCst);
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fake.commands().len() < 32 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("owned work drains after disconnect");
+    let result = rpc_result(
+        admission_post(
+            &http,
+            &mcp,
+            (!modern).then(|| sessions[0].as_str()),
+            json!({
+                "jsonrpc": "2.0", "id": 300, "method": "tools/call",
+                "params": {"name": "blender_execute", "arguments": {"code": "result = None"}}
+            }),
+            modern,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        result["isError"], false,
+        "capacity is reusable after completion"
+    );
+    assert_eq!(
+        fake.commands().len(),
+        33,
+        "each accepted mutation is delivered once"
+    );
     server.shutdown().await;
 }
 

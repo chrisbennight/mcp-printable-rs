@@ -29,6 +29,10 @@ from verify_release_evidence import (verify_attestation, verify_components, veri
 REVISION = "a" * 40
 IMAGE = "sha256:" + "b" * 64
 STATUS = b"Package: libc6\nStatus: install ok installed\nArchitecture: amd64\nVersion: 2.41-12+b1\nSource: glibc (2.41-12)\n\n"
+KEYRING_STATUS = (b"Package: debian-archive-keyring\nStatus: install ok installed\nArchitecture: all\n"
+                  b"Version: 2025.1\nConffiles:\n"
+                  b" /etc/apt/trusted.gpg.d/debian-archive-trixie-stable.asc 91c5c0b4f6878239622087c64866c909\n"
+                  b"Description: Debian archive certificates\n The release signing certificates.\n\n")
 
 
 def elf(graph):
@@ -149,6 +153,17 @@ class BuildMetadataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             debian_packages(b"Package: removed\nStatus: deinstall ok config-files\n")
 
+    def test_empty_debian_field_keeps_continuations_out_of_package_identity(self):
+        removed = b"Package: removed\nStatus: deinstall ok config-files\nConffiles:\n /etc/removed.conf digest\n\n"
+        packages = debian_packages(STATUS + KEYRING_STATUS + removed)
+        self.assertEqual([item["name"] for item in packages], ["libc6", "debian-archive-keyring"])
+        keyring = packages[1]
+        self.assertEqual(keyring["version"], "2025.1")
+        self.assertEqual(keyring["source_name"], "debian-archive-keyring")
+        self.assertEqual(keyring["source_version"], "2025.1")
+        self.assertEqual(keyring["source"], "https://snapshot.debian.org/package/debian-archive-keyring/2025.1/")
+        self.assertEqual(keyring["architecture"], "all")
+
     def test_merged_usr_and_shared_copyright_paths_are_resolved_safely(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "image.tar"
@@ -195,7 +210,7 @@ class SourceLocatorTests(unittest.TestCase):
 
 
 class ImageInventoryTests(unittest.TestCase):
-    def run_collector(self, directory, change=None, components=None, recipe=None):
+    def run_collector(self, directory, change=None, components=None, recipe=None, scanner_artifacts=None):
         root = Path(directory)
         (root / "release").mkdir()
         write_json(root / "release/components.json", {"components": components or []})
@@ -232,13 +247,17 @@ class ImageInventoryTests(unittest.TestCase):
             change(files)
         fixture = root / "image.tar"
         make_archive(fixture, files, {"lib": "usr/lib"})
+        artifacts = scanner_artifacts if scanner_artifacts is not None else [
+            {"name": "libc6", "version": "2.41-12+b1"}, {"name": "used", "version": "1.0.0"}]
         def scanner(command, **kwargs):
             for value in command:
                 if value.startswith("syft-json="):
                     write_json(Path(value.split("=", 1)[1]), {"descriptor": {"version": "1.54.1"},
-                        "artifacts": [{"name": "libc6", "version": "2.41-12+b1"}, {"name": "used", "version": "1.0.0"}]})
+                        "artifacts": artifacts})
                 if value.startswith("spdx-json="):
-                    write_json(Path(value.split("=", 1)[1]), {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []})
+                    write_json(Path(value.split("=", 1)[1]), {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT",
+                        "packages": [{"SPDXID": "SPDXRef-fixture-" + str(index), "name": item["name"],
+                                      "versionInfo": item["version"]} for index, item in enumerate(artifacts)]})
         def export(image, destination):
             self.assertEqual(image, IMAGE)
             shutil.copyfile(fixture, destination)
@@ -264,6 +283,29 @@ class ImageInventoryTests(unittest.TestCase):
             self.assertEqual(material["tested_image_id"], IMAGE)
             self.assertEqual(material["unowned_native_files"], [])
             self.assertTrue(list((output / "sources").iterdir()))
+
+    def test_installed_debian_empty_field_matches_scanner_and_missing_package_still_fails(self):
+        def installed_keyring(files):
+            files["var/lib/dpkg/status"] = STATUS + KEYRING_STATUS
+            files["usr/share/doc/debian-archive-keyring/copyright"] = b"Debian keyring copyright"
+            files["var/lib/dpkg/info/debian-archive-keyring.list"] = b"/etc/apt/trusted.gpg.d/debian-archive-trixie-stable.asc\n"
+            files["etc/apt/trusted.gpg.d/debian-archive-trixie-stable.asc"] = b"archive certificate fixture"
+        artifacts = [{"name": "libc6", "version": "2.41-12+b1"}, {"name": "used", "version": "1.0.0"},
+                     {"name": "debian-archive-keyring", "version": "2025.1"}]
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_collector(directory, installed_keyring, scanner_artifacts=artifacts)
+            material = json.loads((output / "server/materials.json").read_text())
+            keyring = next(item for item in material["debian"] if item["name"] == "debian-archive-keyring")
+            self.assertEqual(keyring["version"], "2025.1")
+            self.assertEqual(keyring["source"], "https://snapshot.debian.org/package/debian-archive-keyring/2025.1/")
+            self.assertTrue((output / "server" / keyring["notice"]).is_file())
+            spdx = json.loads((output / "server/sbom.spdx.json").read_text())
+            package = next(item for item in spdx["packages"] if item["name"] == "debian-archive-keyring")
+            self.assertEqual(package["versionInfo"], "2025.1")
+            self.assertEqual(package["sourceInfo"], keyring["source"])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "installed Debian package is absent.*debian-archive-keyring"):
+                self.run_collector(directory, installed_keyring)
 
     def test_unowned_native_library_stops_publication_preparation(self):
         with tempfile.TemporaryDirectory() as directory:
