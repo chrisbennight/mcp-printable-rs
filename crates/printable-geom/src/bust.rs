@@ -605,13 +605,17 @@ fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<usize
     Ok(recessed)
 }
 
+/// A head's vertices, its triangles and the request vertices around each of
+/// its openings.
+type HeadSurface<'a> = (&'a [[f64; 3]], &'a [[u32; 3]], &'a [Vec<u32>]);
+
 /// The map to apply, the factor it was scaled by and whether that factor was
 /// limited: with `relief_mm`, the map is scaled so that its 95th-percentile
 /// magnitude over samples that carry detail reaches that depth once the head
 /// is scaled by `scale`.
 fn with_relief(
     map: &Displacement,
-    (vertices, triangles, rims): (&[[f64; 3]], &[[u32; 3]], &[Vec<u32>]),
+    (vertices, triangles, rims): HeadSurface<'_>,
     scale: f64,
     head_height: f64,
 ) -> Result<(Displacement, f64, bool), GeometryError> {
