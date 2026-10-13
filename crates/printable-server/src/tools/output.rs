@@ -280,7 +280,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             {"required": ["artifact", "units", "variant", "bust", "validation"], "properties": {
                 "artifact": artifact(), "units": {"const": "millimetres"},
                 "variant": {"type": "string"}, "bust": {"type": "object"},
-                "validation": mesh_report()
+                "validation": mesh_report(),
+                "printer": {"type": "object", "required": ["process", "layer_height_mm", "maximum_overhang_degrees"]},
+                "warnings": {"type": "array", "items": {"type": "string"}}
             }},
             {"required": ["variant", "identity", "expression", "pose", "displacement"], "properties": {
                 "variant": {"type": "string"},

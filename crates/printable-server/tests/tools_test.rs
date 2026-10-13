@@ -5854,6 +5854,192 @@ fn tetrahedron_library(
     (models, library)
 }
 
+/// A tetrahedron fixture without its lowest face, so that the bust is
+/// trimmed above that opening as above a neck. The apex, vertex 2, is the
+/// only vertex above the cut and forms the region `apex`.
+fn open_tetrahedron_library(
+    with_uv: bool,
+) -> (
+    tempfile::TempDir,
+    Arc<printable_server::flame::FlameLibrary>,
+) {
+    let models = tempfile::tempdir().unwrap();
+    let faces = vec![0, 2, 1, 0, 3, 2, 1, 2, 3];
+    let fixture = printable_flame::fixture::Fixture {
+        faces: faces.clone(),
+        uv: with_uv.then(|| (vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5], faces)),
+        regions: vec![("apex".into(), vec![2]), ("rim".into(), vec![0, 1, 3])],
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    (models, library)
+}
+
+#[tokio::test]
+async fn head_prepare_print_follows_the_printer() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |params: Value| {
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let base = json!({"height_mm": 50.0, "edge_length_mm": 2.0});
+    let with = |extra: Value| {
+        let mut params = base.clone();
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+
+    let result = run(with(
+        json!({"path": "fdm.stl", "printer": {"process": "fdm"}}),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(
+        value["printer"],
+        json!({"process": "fdm", "nozzle_diameter_mm": 0.4, "layer_height_mm": 0.2,
+            "maximum_overhang_degrees": 45.0, "minimum_wall_mm": 0.4})
+    );
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    // An FDM bust stands on a plinth 8% of its height, chamfered at the base.
+    let plinth = &value["bust"]["plinth"];
+    assert!(
+        (plinth["height_mm"].as_f64().unwrap() - 4.0).abs() < 1e-9,
+        "{value}"
+    );
+    assert_eq!(plinth["chamfer_mm"], 0.5, "{value}");
+    assert!(value["bust"]["overhang"]["area_mm2"].is_number(), "{value}");
+    assert!(value["bust"]["thin"]["area_mm2"].is_number(), "{value}");
+    assert!(value["warnings"].is_array(), "{value}");
+    assert!(value["bust"]["life_size_fraction"].as_f64().unwrap() > 0.0);
+
+    // A plinth height of zero leaves it out; a shallow overhang angle finds
+    // regions, each named after the model region nearest it.
+    let result = run(with(json!({"path": "steep.stl", "plinth_height_mm": 0.0,
+        "printer": {"process": "fdm", "maximum_overhang_degrees": 10.0}})))
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(value["bust"].get("plinth").is_none(), "{value}");
+    assert_eq!(value["validation"]["overhang"]["threshold_degrees"], 10.0);
+    let regions = value["bust"]["overhang"]["regions"].as_array().unwrap();
+    assert!(!regions.is_empty(), "{value}");
+    for region in regions {
+        assert_eq!(region["region"], "apex", "{value}");
+        assert!(region.get("nearest_vertex").is_none(), "{value}");
+    }
+
+    // Resin assumes no plinth and checks thickness only when asked.
+    let result = run(with(
+        json!({"path": "resin.stl", "printer": {"process": "resin"}}),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert_eq!(
+        value["printer"],
+        json!({"process": "resin", "layer_height_mm": 0.05, "maximum_overhang_degrees": 45.0})
+    );
+    assert!(value["bust"].get("plinth").is_none(), "{value}");
+    assert!(value["bust"].get("thin").is_none(), "{value}");
+
+    // Walls thinner than the smallest feature are reported and warned of.
+    // The closed tetrahedron hollows with drain holes through its base.
+    let (_closed_models, closed) = tetrahedron_library(false);
+    let closed_root = tempfile::tempdir().unwrap();
+    let closed_server = head_print_server(closed_root.path(), closed);
+    let params = with(json!({"path": "hollow.stl", "hollow_wall_mm": 1.0,
+        "printer": {"process": "resin", "minimum_wall_mm": 1.5}}));
+    let result = closed_server
+        .invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(
+        value["bust"]["thin"]["area_mm2"].as_f64().unwrap() > 0.0,
+        "{value}"
+    );
+    assert!(
+        value["warnings"]
+            .to_string()
+            .contains("thinner than 1.5 mm"),
+        "{value}"
+    );
+
+    // Without a printer, nothing is assumed and nothing is added.
+    let result = run(with(json!({"path": "plain.stl"}))).await.unwrap();
+    let value = result.structured_content.unwrap();
+    for key in ["printer", "warnings"] {
+        assert!(value.get(key).is_none(), "{value}");
+    }
+    for key in ["plinth", "overhang", "thin"] {
+        assert!(value["bust"].get(key).is_none(), "{value}");
+    }
+    assert!(value["bust"]["life_size_fraction"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn head_prepare_print_makes_detail_deep_enough_for_the_printer() {
+    let (_models, library) = open_tetrahedron_library(true);
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(16, 16, |x, y| ((x * 16 + y) * 200) as u16),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |path: &str, displacement: Value| {
+        let params = json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 2.0,
+            "printer": {"process": "fdm"}, "displacement": displacement
+        });
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let map = json!({"path": "detail.png", "offset_mm": -2.0, "scale_mm": 4.0});
+    // Two 0.2 mm layers, within 1% of the 46 mm above the plinth.
+    let result = run("default.stl", map.clone()).await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert_eq!(
+        value["bust"]["displacement"]["filter"]["relief_mm"], 0.4,
+        "{value}"
+    );
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+
+    // Detail the caller made shallow is kept, with a warning.
+    let mut shallow = map.clone();
+    shallow["gain"] = json!(0.01);
+    let result = run("shallow.stl", shallow).await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(
+        value["bust"]["displacement"]["filter"]["relief_mm"].is_null(),
+        "{value}"
+    );
+    assert!(
+        value["warnings"]
+            .to_string()
+            .contains("shallower than one 0.2 mm layer"),
+        "{value}"
+    );
+}
+
 #[tokio::test]
 async fn head_prepare_print_writes_the_same_bytes_with_or_without_a_texture_layout() {
     // Appearance must not change the printed shape: without a displacement
@@ -6117,7 +6303,45 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
         ),
         (
             json!({"path": "head.stl", "plinth_diameter_mm": 40.0}),
-            "requires plinth_height_mm",
+            "require a plinth",
+        ),
+        (
+            json!({"path": "head.stl", "plinth_chamfer_mm": 1.0}),
+            "require a plinth",
+        ),
+        (
+            json!({"path": "head.stl", "plinth_height_mm": 0.0, "plinth_chamfer_mm": 1.0,
+                "printer": {"process": "fdm"}}),
+            "require a plinth",
+        ),
+        (
+            json!({"path": "head.stl", "plinth_height_mm": 3.0, "plinth_chamfer_mm": 4.0}),
+            "less than the plinth's height",
+        ),
+        (
+            json!({"path": "head.stl", "plinth_height_mm": 8.0, "plinth_chamfer_mm": 6.0}),
+            "plinth_chamfer_mm",
+        ),
+        (
+            json!({"path": "head.stl", "printer": {"process": "resin", "nozzle_diameter_mm": 0.4}}),
+            "applies only to fdm",
+        ),
+        (
+            json!({"path": "head.stl", "printer": {"process": "fdm", "nozzle_diameter_mm": 0.4,
+                "layer_height_mm": 0.5}}),
+            "must not exceed printer.nozzle_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "printer": {"process": "fdm", "nozzle_diameter_mm": 3.0}}),
+            "printer.nozzle_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "printer": {"process": "fdm", "maximum_overhang_degrees": 95.0}}),
+            "printer.maximum_overhang_degrees",
+        ),
+        (
+            json!({"path": "head.stl", "printer": {"process": "resin", "minimum_wall_mm": 5.0}}),
+            "printer.minimum_wall_mm",
         ),
         (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),
