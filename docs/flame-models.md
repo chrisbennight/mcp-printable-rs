@@ -319,12 +319,17 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    placed exactly where its grid edge, followed from the outside end, first
    enters the solid. Surfaces buried inside the union, such as the hidden
    parts of the eyeballs and the folds of the lips, therefore do not pull the
-   surface inward where they meet it.
+   surface inward where they meet it. Each eyeball sits in a pocket of the
+   head's surface and touches it only where the eyelids overlap it, so it is
+   also joined to the head by a stem from its centre toward the head's,
+   hidden behind it, which holds it on at any size.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
-6. A cylindrical plinth is added under the base when requested, and by
+6. Optionally, a body is added below the head: a longer neck or a block of
+   chest and shoulders.
+7. A cylindrical plinth is added under the base when requested, and by
    default for an FDM `printer`. Its bottom edge can be chamfered.
-7. Optionally, the bust is hollowed for resin printing. Everything deeper than
+8. Optionally, the bust is hollowed for resin printing. Everything deeper than
    the wall thickness is removed, and one or two drain holes open from the
    base into the lowest part of the cavity. A pocket that no drain hole
    reaches is left solid, so no liquid resin is sealed inside.
@@ -349,10 +354,10 @@ reported as an error and not written.
 | Parameter | Default | Range |
 | --- | --- | --- |
 | `height_mm` | 100 | 20 to 500 |
-| `edge_length_mm` | 0.4 | 0.1 to 5 |
+| `edge_length_mm` | 0.4, or 0.4% of `height_mm` under 100 mm, and no less than 0.1 | 0.1 to 5 |
 | `max_triangles` | 750,000 | 10,000 to 3,000,000 |
 | `plinth_height_mm` | none; 8% of `height_mm` for an FDM `printer` | 2 to 100, counted within `height_mm`, or 0 for none |
-| `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
+| `plinth_diameter_mm` | 70% of the bust's widest extent, and at least 1 mm beyond its base | 10 to 500 |
 | `plinth_chamfer_mm` | 0; 0.5 for an FDM `printer` | 0 to 5, less than the plinth's height |
 | `hollow_wall_mm` | none (solid) | 1 to 20 |
 | `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
@@ -362,6 +367,15 @@ reported as an error and not written.
 | `eyelids` | 0, 0 | each 0 to 1; above 0 needs `--eyelids` |
 | `mouth` | `as_posed` | `as_posed`, `closed` or `recessed`; see [Mouth](#mouth) |
 | `mouth_recess_mm` | 2 with `recessed` | 0.5 to 10 |
+| `eyes` | `plain` | `plain`, `pupil` or `iris_and_pupil`; see [Eyes](#eyes) |
+| `pupil_diameter_mm` | 4 mm at life size, scaled | 0.2 to 10 |
+| `iris_diameter_mm` | 11.5 mm at life size, scaled | 0.5 to 20 |
+| `eye_detail_depth_mm` | 2 mm at life size, scaled | 0.05 to 5 |
+| `body` | `neck` | `neck`, `extended_neck` or `shoulders`; see [Body](#body) |
+| `neck_extension_mm` | 15% of the head's height | 2 to 200 |
+| `shoulder_width_mm` | 1.6 times the head's width, and at least 1.3 times the neck's | 10 to 500 |
+| `shoulder_depth_mm` | 0.9 times the head's depth, and at least 1.3 times the neck's | 5 to 300 |
+| `shoulder_height_mm` | 35% of the head's height | 2 to 200 |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -569,10 +583,10 @@ request took 7.6 seconds, about the same as without the checks. A 60 mm
 resin bust of the same head with `minimum_wall_mm` 0.5 reported 6.8 mm²
 thinner than that, at the ears and lips.
 
-A bust of that head shorter than about 37 mm above its plinth could not be
-made: its eyeballs no longer joined the head and the request failed with
-`the bust is 3 separate solids rather than one`. A 40 mm bust without a
-plinth worked. Choose a larger `height_mm` if this happens.
+Busts of that head from 20 to 70 mm, with and without its detail map, were
+each one valid solid and took about 8 seconds: a small bust's default facet
+edge is 0.4% of its height, so thin parts such as the ears stay several
+facets thick.
 
 ### Mouth
 
@@ -615,6 +629,84 @@ with a closed jaw, where it is the spacing of the vertices, and renders with
 opening showed as a dark slot. Each bust was one valid solid and took about
 7 seconds.
 
+### Eyes
+
+A single-colour print shows smooth eyes as blank spheres. `eyes` carves them
+the way sculpted busts do, centred on each eye's gaze:
+
+- `plain`, the default, leaves them smooth.
+- `pupil` drills the pupil.
+- `iris_and_pupil` also engraves a ring at the edge of the iris.
+
+`pupil_diameter_mm`, `iris_diameter_mm` and `eye_detail_depth_mm` are
+millimetres on the finished bust; the ring is half as deep as the pupil, and
+with a `printer` no shallower than two layers, and a tenth of the iris wide,
+whether the iris is given or the default. Depths are
+measured at the edge of each cut, so a shallow pupil still shows its full
+width. By default each is its life size scaled with the
+bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. A
+default iris is widened where needed to leave at least the ring's width of
+iris between the ring and the pupil. With a `printer`, the pupil is at least
+two nozzle widths across, or two `minimum_wall_mm` for resin, the ring at
+least one wide, one more such width of iris is left between the ring and the
+pupil, and the detail is at least two layers deep. Detail wider than the
+eyeball allows is refused, with the eyeball's size in the message.
+
+The eyeballs are the parts of the model separate from the head. Each eye's
+gaze leaves it through the vertex furthest forward when the head is at rest,
+which the eye's rotation carries with it, so the carving follows
+`pose.left_eye` and `pose.right_eye`. Detail is measured from the eyeball's
+surface along the gaze, and carved eyeballs take no `displacement` detail,
+so that surface is the one carved. Only the eyeball is cut, so the eyelids keep their
+shape, but where an eyelid covers part of the ring, the ring continues under
+the lid's edge and can leave the edge thinner; the `thin` report of a
+`printer` shows such places. Where the head's surface covers a cut entirely,
+it is filled back in rather than left as a sealed void. A carving that would
+cut a piece away from the bust is refused; specks are dropped and counted in
+`discarded_fragments`.
+
+The `bust` report adds `eyes` with the style, the sizes used, the smallest
+eyeball's diameter and `removed_mm3`, the volume carved away, with a `note`
+when nothing was removed.
+
+On a 100 mm FDM bust of the FLAME 2020 generic head reconstructed from one
+photograph, the defaults gave a pupil 1.4 mm across and 0.7 mm deep and an
+iris 4.0 mm across with a ring 0.4 mm wide and 0.4 mm deep, in eyeballs
+8.5 mm across. Renders showed the whole ring and the pupil centred in each
+eye. The `thin` report grew from 2.2 to 9.2 mm², most of it near the
+eyeballs where the ring passes under the eyelids. A 150 mm bust without a
+printer took 13.4 seconds; each bust was one valid solid.
+
+### Body
+
+FLAME ends at the neck, so a bust is a head on a short cut neck. `body` adds
+what stands below it, within `height_mm` above any plinth:
+
+- `neck`, the default, ends at the neck's cut.
+- `extended_neck` continues the neck down by `neck_extension_mm`.
+- `shoulders` adds a block of chest and shoulders.
+
+The head keeps at least half the height above the plinth; its scale is
+reduced to make room for the body. The neck is continued by stretching its
+lowest band, two edges tall, down to the build plate, so the body begins
+with the neck's own section and surface, with no step or seam. An extended
+neck follows the neck's lean, measured between its base and 8% of the head's
+height above it and limited to 30 degrees from vertical. The shoulders are
+centred under the neck's base: a block whose top slopes from inside the neck
+out to an elliptical shoulder line, 60% of the block's height above its
+base, and whose sides fall straight to the base. Shoulders too small to
+hold the neck's section are refused. A plinth goes under the body.
+
+The `bust` report adds `body` with the kind, its height, the shoulders' width
+and depth, and the neck's lean in degrees.
+
+On the FLAME 2020 generic head reconstructed from one photograph, 100 mm
+busts with an extended neck and with shoulders, with and without an FDM
+plinth and carved eyes, were each one valid solid and took 4 to 6 seconds.
+The neck leaned forward by the 30-degree limit, and renders showed the
+extended neck continuing that lean and the shoulders standing square under
+the neck.
+
 ## Reconstruct a head from photographs
 
 The `reconstruct` action estimates a head from 1 to 8 photographs of one
@@ -623,8 +715,8 @@ person. It runs in an optional reconstruction worker:
 - **Identity** comes from MICA, which recovers true head size. The ArcFace
   identity embeddings of all the photographs are averaged before MICA maps them
   to 300 identity coefficients.
-- **Expression and jaw** come from SMIRK, applied to the first photograph.
-- **Surface detail** comes from DECA, applied to the first photograph. Its
+- **Expression and jaw** come from SMIRK, applied to the primary photograph.
+- **Surface detail** comes from DECA, applied to the primary photograph. Its
   detail decoder writes a 16-bit displacement map in FLAME's UV layout,
   conditioned on DECA's own estimate of the expression and jaw.
 
@@ -727,6 +819,25 @@ clients subscribed to tool-list changes receive
 [MCP compatibility](architecture.md#mcp-compatibility) for subscription and
 reconnection requirements.
 
+### Choose photographs
+
+Photographs should show the face clearly, in focus and without heavy
+occlusion. The best set is:
+
+- one front view and two three-quarter views, turned about 30 to 45 degrees
+  either way, which improve the identity and let the colour map see the sides
+  of the face;
+- even, soft light, without hard shadows or strong coloured light;
+- hair off the ears and forehead where possible, so they are measured and
+  coloured as skin;
+- a relaxed expression with the mouth closed, which prints best; a smile or
+  open mouth is carried onto the head.
+
+All the photographs set the identity. The primary photograph alone sets the
+expression and surface detail. It is the first unless `primary_image` names
+another by its index in `images`, or is `most_frontal`, which chooses the
+photograph whose head SMIRK finds turned least from the camera.
+
 ### Use the result
 
 ```json
@@ -744,16 +855,13 @@ straight on.
 identity; a photograph well below the others probably shows someone else or
 an unusable view. `clamped_coefficients` counts values limited to ±5.
 
-`head_rotation` is the head's rotation in the first photograph. To keep some
-of it on a bust, `neck_tilt` and `neck_turn`, each 0 to 1 and 0 by default,
-add a suggested `pose.neck` to the response. The rotation is split into a
+`primary_image` reports the photograph that set the expression and detail,
+by its index and path. `head_rotation` is the head's rotation in that
+photograph. To keep some of it on a bust, `neck_tilt` and `neck_turn`, each
+0 to 1 and 0 by default, add a suggested `pose.neck` to the response. The rotation is split into a
 turn about the vertical axis, then a pitch and a roll; `neck_turn` scales the
 turn, which reflects where the camera stood as much as the subject, and
 `neck_tilt` scales the pitch and roll. `pose` can then be passed on whole.
-
-Photographs should show the face clearly, roughly front-on, in focus and
-without heavy occlusion. Several views improve identity; the first photograph
-alone sets the expression and detail.
 
 `displacement` describes the map: a pixel value p means
 `offset_mm + scale_mm × p / 65535` millimetres along the surface normal at life
@@ -771,8 +879,9 @@ coefficients and variant. See [Surface detail](#surface-detail).
 
 ### Colour map
 
-With `texture_path`, `reconstruct` also writes a 1024 by 1024 RGB PNG colour
-map in FLAME's texture layout. It needs the FLAME 2020 generic model converted
+With `texture_path`, `reconstruct` also writes a square RGB PNG colour map in
+FLAME's texture layout, 1024 texels on each side unless `texture_size` asks
+for 512 or 2048. It needs the FLAME 2020 generic model converted
 with `--texture`, and `overwrite` applies to it as to the displacement map. The
 colour comes from the photographs themselves:
 
@@ -786,7 +895,10 @@ colour comes from the photographs themselves:
    outline never matches the real one exactly, and the background lies just
    beyond it. Skin takes colour only from pixels labelled skin, so hair over
    the forehead or ears and clothing over the neck are left out. The eyeballs
-   take colour from anything but hair, clothing and background.
+   take colour from anything but hair, clothing and background. A point on an
+   eyeball counts as hidden when it lies more than 0.5 mm behind the nearest
+   surface, against 2 mm elsewhere, so the eyelids just in front of the
+   eyeballs do not colour them.
 4. Photographs are blended by how squarely they see each point.
 5. Surface that no photograph sees, such as the back of the head, is filled
    smoothly across the head's surface from the colour around it. Skin is
@@ -807,11 +919,37 @@ the photographs by how much hair each shows. `hair_colour`, an sRGB triple from
 the FLAME 2020 generic model must be converted with `--masks`; without its
 regions the whole head is coloured as skin, and the response says so.
 
+`eyes` chooses how the eyeballs are coloured:
+
+| Value | Eye colour |
+| --- | --- |
+| `photo` (default) | from the photographs, where they show the eyeball itself |
+| `painted` | a clean iris and pupil around each eye's gaze, and white elsewhere |
+
+Painted eyes are painted on the fitted head at rest, where each eye looks
+straight ahead, with a life-size iris 11.5 mm and pupil 4 mm across, so
+`pose.left_eye` and `pose.right_eye` turn them with the eyeballs. The iris
+darkens toward its edge, the pupil is near black, and the edges are blended.
+`iris_colour`, an sRGB triple from 0 to 255, sets the iris colour. Otherwise
+it is measured from the photographs. Each eye's iris is found where the
+darkness of its photographed eyeball is centred, which allows for a subject
+who looked aside. The colour is then the middle half, by luminance, of the
+photographed texels between about half and most of the iris's radius from
+there, which leaves out the pupil, reflections and lashes. An eye counts
+only when that ring is distinctly darker than the white of its eye. Where
+too little iris was seen, a mid brown (96, 66, 42) is used. `sclera_colour` sets
+the white, by default (240, 236, 230). Painting needs separate eyeballs: the
+model's eyeball regions, from `--masks`, or otherwise its parts beside the
+head. Without them nothing is painted, and the response says so.
+
 The response adds `texture` with the artifact, its size and `seen`, the share
-of the head's surface whose colour some photograph gave directly. `skin_only`
+of the head's surface whose colour some photograph gave directly; painted
+eyeballs do not count. `skin_only`
 says whether every photograph was segmented. `scalp` reports the colouring
 requested and applied, the hair colour used and the hair colour found, and a
-`note` when the colouring applied differs from the one requested. The server reads the
+`note` when the colouring applied differs from the one requested. `eyes`
+reports the colouring requested and applied, and for painted eyes the iris
+colour used and `iris_source`: `given`, `measured` or `default`. The server reads the
 photographs before the worker does and compares their SHA-256 digests with the
 ones the worker fitted, so a photograph replaced during the reconstruction
 stops the colour map instead of misplacing it. The server makes one colour map
@@ -859,6 +997,14 @@ skin-coloured ears and neck, the scalp in the hair colour found, and the
 photograph's centre parting as bare scalp. Renders of the textured head
 matched the photograph's eyes, brows, nose and mouth, and the filled back of
 the head showed no seams.
+
+On the same photograph, maps 512, 1024 and 2048 texels on a side took 0.7,
+1.0 and 2.0 seconds and were 0.15, 0.47 and 1.4 MB, well within the 12 MiB
+colour map that `create` accepts. With the tighter visibility test for the
+eyeballs, most of the eyelid and lash colour along the lower edge of each eye
+opening was gone. Painted eyes showed a clean iris, pupil and white in each
+eye. The measured iris colour was (138, 116, 80), the amber khaki that the
+photograph's hazel iris has in the map.
 
 On the same photograph, removing the lighting reduced the difference in
 brightness between the forehead, the cheeks and the jaw from 44 to 18 levels

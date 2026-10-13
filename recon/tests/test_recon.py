@@ -296,6 +296,45 @@ class PipelineTests(unittest.TestCase):
             uv = reconstructor.deca.displacement(jaw, expression, reconstructor.deca.detail_code(crop))
         numpy.testing.assert_allclose(baseline.displacement_mm, uv[0, 0].numpy() * 1000.0, rtol=1e-6)
 
+    def test_the_primary_photograph_gives_expression_jaw_and_detail(self):
+        reconstructor = self.reconstructor()
+        rng = numpy.random.default_rng(3)
+        found = [
+            faces.crops(rng.integers(0, 255, (400, 400, 3), dtype=numpy.uint8), synthetic_landmarks())
+            for _ in range(2)
+        ]
+        first = reconstructor.reconstruct(found)
+        second = reconstructor.reconstruct(found, 1)
+        self.assertEqual((first.primary_image, second.primary_image), (0, 1))
+        alone = reconstructor.reconstruct([found[1]])
+        numpy.testing.assert_allclose(second.expression, alone.expression, atol=1e-5)
+        numpy.testing.assert_allclose(second.jaw, alone.jaw, atol=1e-5)
+        numpy.testing.assert_allclose(second.head_rotation, alone.head_rotation, atol=1e-5)
+        numpy.testing.assert_allclose(second.displacement_mm, alone.displacement_mm, atol=1e-5)
+        self.assertGreater(numpy.abs(numpy.subtract(first.expression, second.expression)).max(), 1e-3)
+        # Identity still comes from both.
+        numpy.testing.assert_allclose(first.identity, second.identity, atol=1e-6)
+
+        # The most frontal is the one whose head is turned least.
+        smirk = reconstructor.smirk
+
+        def turned(crop):
+            output = smirk(crop)
+            rotation = torch.tensor([[0.0, 0.5, 0.0], [0.05, -0.1, 0.0]])
+            return {**output, "head_rotation": rotation}
+
+        reconstructor.smirk = turned
+        frontal = reconstructor.reconstruct(found, pipeline.MOST_FRONTAL)
+        self.assertEqual(frontal.primary_image, 1)
+        numpy.testing.assert_allclose(frontal.head_rotation, [0.05, -0.1, 0.0], atol=1e-6)
+
+    def test_a_primary_photograph_outside_the_images_is_refused(self):
+        rotation = torch.zeros((2, 3))
+        self.assertEqual(pipeline.primary_index(1, rotation), 1)
+        for primary in (2, -1, True, "first", 1.0):
+            with self.assertRaises(ValueError):
+                pipeline.primary_index(primary, rotation)
+
     def test_displacement_round_trips_through_sixteen_bit_png(self):
         values = numpy.linspace(-2.0, 3.0, 256 * 256, dtype=numpy.float32).reshape(256, 256)
         with tempfile.TemporaryDirectory() as directory:

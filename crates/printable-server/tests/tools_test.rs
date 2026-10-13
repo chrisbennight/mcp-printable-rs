@@ -5877,6 +5877,26 @@ fn open_tetrahedron_library(
 }
 
 #[tokio::test]
+async fn head_prepare_print_scales_the_default_edge_with_a_small_bust() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (height, edge) in [(25.0, 0.1), (50.0, 0.2), (150.0, 0.4)] {
+        let path = format!("bust-{height}.stl");
+        let result = server
+            .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+                "path": path, "height_mm": height, "max_triangles": 100_000
+            }})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let requested = value["bust"]["requested_edge_length_mm"].as_f64().unwrap();
+        assert!((requested - edge).abs() < 1e-9, "{height}: {value}");
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_follows_the_printer() {
     let (_models, library) = open_tetrahedron_library(false);
     let root = tempfile::tempdir().unwrap();
@@ -5990,6 +6010,53 @@ async fn head_prepare_print_follows_the_printer() {
         assert!(value["bust"].get(key).is_none(), "{value}");
     }
     assert!(value["bust"]["life_size_fraction"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn head_prepare_print_adds_a_body_below_the_head() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (path, extra, kind, height) in [
+        (
+            "neck.stl",
+            json!({"body": "extended_neck", "neck_extension_mm": 8.0}),
+            "extended_neck",
+            Some(8.0),
+        ),
+        (
+            "shoulders.stl",
+            json!({"body": "shoulders"}),
+            "shoulders",
+            None,
+        ),
+    ] {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+        assert_eq!(
+            value["validation"]["topology"]["connected_components"], 1,
+            "{value}"
+        );
+        assert!((value["bust"]["size_mm"][2].as_f64().unwrap() - 50.0).abs() < 1e-6);
+        let body = &value["bust"]["body"];
+        assert_eq!(body["kind"], kind, "{value}");
+        if let Some(height) = height {
+            assert_eq!(body["height_mm"], height, "{value}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -6596,6 +6663,38 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
             "mouth_recess_mm",
         ),
         (
+            json!({"path": "head.stl", "pupil_diameter_mm": 1.0}),
+            "need eyes pupil or iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "iris_diameter_mm": 3.0}),
+            "iris_diameter_mm needs eyes iris_and_pupil",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil", "pupil_diameter_mm": 20.0}),
+            "pupil_diameter_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "iris_and_pupil", "eye_detail_depth_mm": 0.0}),
+            "eye_detail_depth_mm",
+        ),
+        (
+            json!({"path": "head.stl", "eyes": "pupil"}),
+            "no separate eyeballs",
+        ),
+        (
+            json!({"path": "head.stl", "neck_extension_mm": 10.0}),
+            "needs body extended_neck",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "shoulder_width_mm": 80.0}),
+            "need body shoulders",
+        ),
+        (
+            json!({"path": "head.stl", "body": "extended_neck", "neck_extension_mm": 500.0}),
+            "neck_extension_mm",
+        ),
+        (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),
             "must exceed plinth_height_mm",
         ),
@@ -6761,19 +6860,28 @@ fn flame2020_library_with_regions(
     textured: bool,
     regions: Vec<(String, Vec<u32>)>,
 ) -> Arc<printable_server::flame::FlameLibrary> {
-    let models = tempfile::tempdir().unwrap();
-    // The published model's split: 300 identity and 100 expression components.
-    let mut fixture = printable_flame::fixture::Fixture {
-        shapedirs: vec![0.0; 4 * 3 * 400],
-        uv: textured.then(|| {
+    flame2020_library_edited(|fixture| {
+        fixture.uv = textured.then(|| {
             (
                 vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
                 vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             )
-        }),
-        regions,
+        });
+        fixture.regions = regions;
+    })
+}
+
+/// The FLAME 2020 fixture, changed by `edit`.
+fn flame2020_library_edited(
+    edit: impl FnOnce(&mut printable_flame::fixture::Fixture),
+) -> Arc<printable_server::flame::FlameLibrary> {
+    let models = tempfile::tempdir().unwrap();
+    // The published model's split: 300 identity and 100 expression components.
+    let mut fixture = printable_flame::fixture::Fixture {
+        shapedirs: vec![0.0; 4 * 3 * 400],
         ..Default::default()
     };
+    edit(&mut fixture);
     for (key, value) in [
         ("variant", "flame2020_generic"),
         (
@@ -7007,6 +7115,77 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
     }
     assert_eq!(seen.lock().unwrap().len(), 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_reports_the_primary_photograph() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["face.jpg", "side.jpg"] {
+        std::fs::write(root.path().join(name), b"jpeg").unwrap();
+    }
+    let params = |extra: Value| {
+        let mut params = json!({
+            "images": ["face.jpg", "side.jpg"], "displacement_path": "detail.png", "overwrite": true
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!({"action": "reconstruct", "params": params})
+    };
+    // A worker that does not report it used the first; one that does is
+    // believed; the request's choice is passed on.
+    for (answer, asked, expected) in [
+        (json!({}), json!({}), (0, "face.jpg")),
+        (
+            json!({"primary_image": 1}),
+            json!({"primary_image": "most_frontal"}),
+            (1, "side.jpg"),
+        ),
+    ] {
+        let (endpoint, seen, task) = fake_recon_worker_with(true, answer).await;
+        let server = recon_server(root.path(), &endpoint).await;
+        let result = server
+            .invoke_tool(head_call(params(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert_eq!(
+            value["primary_image"],
+            json!({"index": expected.0, "image": expected.1}),
+            "{value}"
+        );
+        assert_eq!(
+            seen.lock().unwrap()[0].get("primary_image"),
+            asked.get("primary_image"),
+        );
+        task.abort();
+    }
+    // A worker that names a photograph it was not given is not believed.
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"primary_image": 2})).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let result = server
+        .invoke_tool(head_call(params(json!({}))))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(format!("{result:?}").contains("primary photograph that was not given"));
+    // An index beyond the photographs is refused before the worker is asked.
+    let (endpoint, seen, task_two) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let result = server
+        .invoke_tool(head_call(params(json!({"primary_image": 2}))))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        format!("{result:?}").contains("not one of the 2 images"),
+        "{result:?}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    task.abort();
+    task_two.abort();
 }
 
 #[tokio::test]
@@ -7413,6 +7592,141 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(asked, 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_sizes_the_colour_map_and_paints_the_eyes() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Every vertex of the fixture's head is an eyeball.
+    let eyed = flame2020_library_with_regions(
+        true,
+        vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ],
+    );
+    let sclera = [1u8, 2, 3];
+    for (library, painted) in [(eyed, true), (flame2020_library_with_uv(true), false)] {
+        let (endpoint, seen, task) =
+            fake_recon_worker_with(true, json!({"image_sha256": [digest]})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": [10, 200, 30], "sclera_colour": sclera,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let texture = &value["texture"];
+        assert_eq!(texture["width"], 512, "{value}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(map.dimensions(), (512, 512));
+        let shows_sclera = map.pixels().any(|pixel| pixel.0 == sclera);
+        let eyes = &texture["eyes"];
+        assert_eq!(eyes["requested"], "painted", "{value}");
+        if painted {
+            assert_eq!(eyes["applied"], "painted", "{value}");
+            assert_eq!(eyes["iris_colour"], json!([10, 200, 30]), "{value}");
+            assert_eq!(eyes["iris_source"], "given", "{value}");
+            assert!(shows_sclera);
+        } else {
+            // Without separate eyeballs nothing is painted, and the response
+            // says so.
+            assert_eq!(eyes["applied"], "photo", "{value}");
+            assert!(
+                eyes["note"].as_str().unwrap().contains("eyeballs"),
+                "{value}"
+            );
+            assert!(!shows_sclera);
+        }
+        // The worker is not sent the options the server applies.
+        let sent = seen.lock().unwrap();
+        for name in ["texture_size", "eyes", "iris_colour", "sclera_colour"] {
+            assert!(sent[0].get(name).is_none(), "{name}: {sent:?}");
+        }
+        drop(sent);
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn head_reconstruct_paints_eyes_on_the_head_it_returns() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Identity component 0 scales the head about the origin; every vertex
+    // is an eyeball. The worker's views keep the metre-wide head, but the
+    // identity it returns shrinks it to a centimetre, about the size of a
+    // life-size iris.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.uv = Some((
+            vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+            vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        ));
+        fixture.regions = vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ];
+        for (index, value) in fixture.template.clone().into_iter().enumerate() {
+            fixture.shapedirs[index * 400] = value;
+        }
+    });
+    let iris = [10u8, 200, 30];
+    let mut painted = Vec::new();
+    for identity in [json!([0.0]), json!([-0.99])] {
+        let (endpoint, _, task) = fake_recon_worker_with(
+            true,
+            json!({"image_sha256": [digest], "identity": identity}),
+        )
+        .await;
+        let server = recon_server_with(root.path(), &endpoint, Arc::clone(&library)).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": iris,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        painted.push(map.pixels().filter(|pixel| pixel.0 == iris).count());
+        task.abort();
+    }
+    // On the metre-wide head the iris is a speck; on the returned head it
+    // covers much of the front.
+    assert!(painted[1] > 20 * painted[0].max(1), "{painted:?}");
 }
 
 #[tokio::test]
