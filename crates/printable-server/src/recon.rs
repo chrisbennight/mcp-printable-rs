@@ -30,9 +30,17 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReconRequest {
-    /// Workspace photographs of one person, JPEG, PNG or WebP. The first one
-    /// sets the expression and surface detail; all of them set the identity.
+    /// Workspace photographs of one person, JPEG, PNG or WebP. All of them
+    /// set the identity; the primary one, the first unless `primary_image`
+    /// says otherwise, sets the expression and surface detail. One front
+    /// view and two three-quarter views, evenly lit, with the hair off the
+    /// ears and a relaxed expression, work best.
     pub images: Vec<String>,
+    /// The photograph that sets the expression and surface detail: an index
+    /// into `images`, or `most_frontal` for the one whose head is turned
+    /// least from the camera. The first by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_image: Option<PrimaryImage>,
     /// Workspace path for the 16-bit PNG displacement map.
     pub displacement_path: String,
     /// Replace existing files at `displacement_path` and `texture_path`.
@@ -87,18 +95,33 @@ pub struct ReconRequest {
     /// photograph's camera sees it. Not made when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit_path: Option<String>,
-    /// Share, 0 to 1 (default 0), of the head's tilt in the first
+    /// Share, 0 to 1 (default 0), of the head's tilt in the primary
     /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
     /// so a bust can keep the subject's natural tilt. The server applies
     /// it; the worker never sees it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub neck_tilt: Option<f64>,
-    /// Share, 0 to 1 (default 0), of the head's turn in the first
+    /// Share, 0 to 1 (default 0), of the head's turn in the primary
     /// photograph, its yaw, to keep in a suggested `pose.neck`. A turn
     /// reflects where the camera stood as much as the subject. The server
     /// applies it; the worker never sees it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub neck_turn: Option<f64>,
+}
+
+/// Which photograph sets the expression and surface detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum PrimaryImage {
+    Index(usize),
+    Rule(PrimaryRule),
+}
+
+/// A rule for choosing the primary photograph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimaryRule {
+    MostFrontal,
 }
 
 /// What a colour map does with the photographs' lighting.
@@ -161,6 +184,14 @@ impl ReconRequest {
         {
             return Err(ToolError::Validation(format!(
                 "{image} is not a .jpg, .jpeg, .png or .webp photograph"
+            )));
+        }
+        if let Some(PrimaryImage::Index(index)) = self.primary_image
+            && index >= self.images.len()
+        {
+            return Err(ToolError::Validation(format!(
+                "primary_image {index} is not one of the {} images",
+                self.images.len()
             )));
         }
         if !self.displacement_path.ends_with(".png") {
@@ -332,7 +363,7 @@ impl ReconWorker {
             .prefix("printable-recon-")
             .tempdir()?;
         let map = staging.path().join("displacement.png");
-        let job = json!({
+        let mut job = json!({
             "images": snapshots.iter().map(|snapshot| snapshot.path()).collect::<Vec<_>>(),
             "checkpoints": self.config.checkpoints,
             "landmarker": self.config.landmarker,
@@ -341,6 +372,9 @@ impl ReconWorker {
             "device": self.config.device,
             "seed": 0,
         });
+        if let Some(primary) = request.primary_image {
+            job["primary"] = json!(primary);
+        }
         let request_path = staging.path().join("request.json");
         std::fs::write(&request_path, serde_json::to_vec(&job)?)?;
 
@@ -508,7 +542,7 @@ if "crash" in name:
     sys.exit(1)
 open(request["displacement"], "wb").write(b"\x89PNG\r\n\x1a\nfake")
 print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, "jaw": [0.1, 0.0, 0.0],
-    "images": len(request["images"]), "device": request["device"],
+    "images": len(request["images"]), "device": request["device"], "primary": request.get("primary", "absent"),
     "displacement": {"offset_mm": -1.0, "scale_mm": 2.0, "width": 256, "height": 256}}}))
 "#;
 
@@ -575,6 +609,47 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
     }
 
     #[tokio::test]
+    async fn the_primary_photograph_is_passed_to_the_runtime() {
+        let (_root, worker) = worker(Duration::from_secs(60));
+        for (primary, expected) in [
+            (None, json!("absent")),
+            (Some(PrimaryImage::Index(1)), json!(1)),
+            (
+                Some(PrimaryImage::Rule(PrimaryRule::MostFrontal)),
+                json!("most_frontal"),
+            ),
+        ] {
+            let mut asked = request(&["face.jpg", "side.png"], "map.png");
+            asked.primary_image = primary;
+            asked.overwrite = true;
+            let result = worker.reconstruct(asked).await.unwrap();
+            assert_eq!(result["primary"], expected);
+        }
+        let mut outside = request(&["face.jpg", "side.png"], "map.png");
+        outside.primary_image = Some(PrimaryImage::Index(2));
+        let error = worker.reconstruct(outside).await.unwrap_err();
+        assert!(
+            error.to_string().contains("not one of the 2 images"),
+            "{error}"
+        );
+        // The wire form is a number or the rule's name.
+        let parsed: ReconRequest = serde_json::from_value(json!({
+            "images": ["a.jpg"], "displacement_path": "d.png", "primary_image": "most_frontal"
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.primary_image,
+            Some(PrimaryImage::Rule(PrimaryRule::MostFrontal))
+        );
+        assert!(
+            serde_json::from_value::<ReconRequest>(json!({
+                "images": ["a.jpg"], "displacement_path": "d.png", "primary_image": "first"
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn failures_are_reported_with_their_cause() {
         let (_root, worker) = worker(Duration::from_secs(2));
         let code = |result: Result<Value, ToolError>| result.unwrap_err().code();
@@ -609,6 +684,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
     fn request(images: &[&str], displacement: &str) -> ReconRequest {
         ReconRequest {
             images: images.iter().map(|image| (*image).to_owned()).collect(),
+            primary_image: None,
             displacement_path: displacement.into(),
             overwrite: false,
             texture_path: None,
