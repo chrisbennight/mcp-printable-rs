@@ -655,8 +655,8 @@ neck follows the neck's lean, measured between its base and 8% of the head's
 height above it and limited to 30 degrees from vertical. The shoulders are
 centred under the neck's base: a block whose top slopes from inside the neck
 out to an elliptical shoulder line, 60% of the block's height above its
-base, and whose sides fall straight to the base. A plinth goes under the
-body.
+base, and whose sides fall straight to the base. Shoulders too small to
+hold the neck's section are refused. A plinth goes under the body.
 
 The `bust` report adds `body` with the kind, its height, the shoulders' width
 and depth, and the neck's lean in degrees.

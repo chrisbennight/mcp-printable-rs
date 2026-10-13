@@ -70,6 +70,9 @@ const SHOULDER_DEPTH_SHARE: f64 = 0.9;
 /// and their top is the neck's section reduced to this share of its size.
 const SHOULDER_LINE_SHARE: f64 = 0.6;
 const SHOULDER_TOP_SHARE: f64 = 0.9;
+/// Unsized shoulders are at least this share of the neck's span across, which
+/// holds any section of that span reduced to their top's share.
+const SHOULDER_NECK_SHARE: f64 = 1.3;
 /// The neck's direction is taken between its base and this share of the
 /// head's height above it, and a body leans at most this far from vertical.
 const NECK_DIRECTION_SHARE: f64 = 0.08;
@@ -831,8 +834,19 @@ fn add_body(
     let (solid, width, depth) = match body.kind {
         BodyKind::ExtendedNeck => (neck, None, None),
         BodyKind::Shoulders => {
-            let width = body.width_mm.unwrap_or(SHOULDER_WIDTH_SHARE * size[0]);
-            let depth = body.depth_mm.unwrap_or(SHOULDER_DEPTH_SHARE * size[1]);
+            let span = |axis: usize| {
+                let values = section.iter().flatten().map(|point| point[axis]);
+                values.clone().fold(f64::NEG_INFINITY, f64::max)
+                    - values.fold(f64::INFINITY, f64::min)
+            };
+            // Unsized, the shoulders are shares of the head, and always wide
+            // enough to hold the neck.
+            let width = body
+                .width_mm
+                .unwrap_or((SHOULDER_WIDTH_SHARE * size[0]).max(SHOULDER_NECK_SHARE * span(0)));
+            let depth = body
+                .depth_mm
+                .unwrap_or((SHOULDER_DEPTH_SHARE * size[1]).max(SHOULDER_NECK_SHARE * span(1)));
             let foot = back(0.0);
             let centre = [base[0] + foot[0], base[1] + foot[1]];
             let segments = circle_segments(width.max(depth) / 2.0);
@@ -852,7 +866,7 @@ fn add_body(
             // plate, and its sides cross the neck's rather than meeting them.
             let top = height - band.min(0.25 * height);
             let [dx, dy] = back(top);
-            let points: Vec<[f64; 3]> = section
+            let crown: Vec<[f64; 3]> = section
                 .iter()
                 .flatten()
                 .map(|point| {
@@ -862,6 +876,23 @@ fn add_body(
                         top,
                     ]
                 })
+                .collect();
+            // Shoulders that cannot contain that top would be wider at the
+            // top than their stated size, so they are refused.
+            let inside = |point: &[f64; 3]| {
+                ((point[0] - centre[0]) / (width / 2.0)).powi(2)
+                    + ((point[1] - centre[1]) / (depth / 2.0)).powi(2)
+                    <= 1.0
+            };
+            if !crown.iter().all(inside) {
+                return Err(GeometryError::InvalidOptions(format!(
+                    "shoulders {width:.1} by {depth:.1} mm cannot hold the neck, which is {:.1} by {:.1} mm across; make them wider and deeper",
+                    span(0),
+                    span(1)
+                )));
+            }
+            let points: Vec<[f64; 3]> = crown
+                .into_iter()
                 .chain(ring(SHOULDER_LINE_SHARE * height))
                 .chain(ring(0.0))
                 .collect();
@@ -3139,6 +3170,21 @@ mod tests {
             block.width_mm.unwrap() > report.size_mm[0] * 0.9,
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn shoulders_narrower_than_the_neck_are_refused() {
+        let mut narrow = request(2.0, 1_000_000);
+        narrow.body = Some(Body {
+            kind: BodyKind::Shoulders,
+            height_mm: Some(10.0),
+            width_mm: Some(10.0),
+            depth_mm: None,
+        });
+        assert!(matches!(
+            prepare_bust(&narrow),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("cannot hold the neck")
+        ));
     }
 
     #[test]
