@@ -18,7 +18,7 @@
 //! The photographs' light and shade can be removed. For each photograph, a
 //! smooth shading, an ambient term plus one direction for each colour
 //! channel in linear light, is fitted to the skin from the fitted head's
-//! surface normals and divided out. The median skin colour is kept, so the
+//! surface normals and divided out. The mean skin colour is kept, so the
 //! subject's skin tone stays as photographed, and specular highlights are
 //! limited.
 
@@ -855,8 +855,9 @@ fn accumulate(
 }
 
 /// Fit a smooth shading to the skin samples and divide it out of every
-/// sample, keeping the skin's median colour and limiting highlights.
-/// Returns the shading, or `None` when too little skin was seen to fit it.
+/// sample, keeping the skin's mean colour and limiting highlights. Returns
+/// the shading, on the corrected colours' scale, or `None` when too little
+/// skin was seen to fit it.
 fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
     // Only skin the photograph's segmentation confirms, so hair or clothing
     // over the face does not enter the fit.
@@ -951,8 +952,8 @@ fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
     let gains: [f32; 3] = std::array::from_fn(|channel| {
         (mean(&|at| linear[at][channel]) / mean(&|at| limited[at][channel]).max(1e-9)) as f32
     });
-    // Report the shading scaled to the corrected colours: multiplied by them,
-    // it gives back this photograph's, so a caller can relight the map.
+    // Report the shading on the corrected colours' scale, as the estimate of
+    // this photograph's light a caller can relight the map with.
     for (channel, gain) in gains.into_iter().enumerate() {
         shading.ambient[channel] /= gain;
         shading.direction[channel] = shading.direction[channel].map(|value| value / gain);
@@ -2109,7 +2110,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_shading_relights_the_map_to_the_photograph() {
+    fn the_reported_shading_relights_the_corrected_samples() {
         let mut samples = lit_samples();
         let photographed: Vec<f32> = samples
             .iter()

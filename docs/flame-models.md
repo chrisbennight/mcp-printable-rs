@@ -758,14 +758,13 @@ the fitted skin, in linear light, keeps its photographed value, which keeps
 the subject's skin tone; colours the correction pushes past white are
 clipped, which lowers that mean slightly.
 
-`texture.lighting.shading` reports, for each photograph, the shading removed
-from it: for each colour channel an ambient term and a direction, in linear
-light, scaled to the map's colours. Where only that photograph colours the
-map, the map's colour times ambient + direction · normal gives back the
-photograph's colour, away from the highlight and shadow limits. Where
-several photographs overlap, the map blends their colours and each shading
-describes only its own photograph's light. It is null where the lighting was
-kept.
+`texture.lighting.shading` reports, for each photograph, an estimate of its
+light: for each colour channel an ambient term and a direction, in linear
+light, on the map's colour scale, so that ambient + direction · normal is
+the light that photograph cast on the head's surface. A renderer can use it
+to relight the head consistently with the photograph. It is an estimate,
+not an exact inverse of the finished map, which blends photographs and fills
+surface seen at an angle. It is null where the lighting was kept.
 
 From one front-on photograph of a person with long dark hair, the
 reconstruction took about 30 seconds on a busy four-core CPU and the map under
