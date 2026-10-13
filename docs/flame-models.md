@@ -595,8 +595,8 @@ person. It runs in an optional reconstruction worker:
 - **Identity** comes from MICA, which recovers true head size. The ArcFace
   identity embeddings of all the photographs are averaged before MICA maps them
   to 300 identity coefficients.
-- **Expression and jaw** come from SMIRK, applied to the first photograph.
-- **Surface detail** comes from DECA, applied to the first photograph. Its
+- **Expression and jaw** come from SMIRK, applied to the primary photograph.
+- **Surface detail** comes from DECA, applied to the primary photograph. Its
   detail decoder writes a 16-bit displacement map in FLAME's UV layout,
   conditioned on DECA's own estimate of the expression and jaw.
 
@@ -699,6 +699,25 @@ clients subscribed to tool-list changes receive
 [MCP compatibility](architecture.md#mcp-compatibility) for subscription and
 reconnection requirements.
 
+### Choose photographs
+
+Photographs should show the face clearly, in focus and without heavy
+occlusion. The best set is:
+
+- one front view and two three-quarter views, turned about 30 to 45 degrees
+  either way, which improve the identity and let the colour map see the sides
+  of the face;
+- even, soft light, without hard shadows or strong coloured light;
+- hair off the ears and forehead where possible, so they are measured and
+  coloured as skin;
+- a relaxed expression with the mouth closed, which prints best; a smile or
+  open mouth is carried onto the head.
+
+All the photographs set the identity. The primary photograph alone sets the
+expression and surface detail. It is the first unless `primary_image` names
+another by its index in `images`, or is `most_frontal`, which chooses the
+photograph whose head SMIRK finds turned least from the camera.
+
 ### Use the result
 
 ```json
@@ -716,16 +735,13 @@ straight on.
 identity; a photograph well below the others probably shows someone else or
 an unusable view. `clamped_coefficients` counts values limited to ±5.
 
-`head_rotation` is the head's rotation in the first photograph. To keep some
-of it on a bust, `neck_tilt` and `neck_turn`, each 0 to 1 and 0 by default,
-add a suggested `pose.neck` to the response. The rotation is split into a
+`primary_image` reports the photograph that set the expression and detail,
+by its index and path. `head_rotation` is the head's rotation in that
+photograph. To keep some of it on a bust, `neck_tilt` and `neck_turn`, each
+0 to 1 and 0 by default, add a suggested `pose.neck` to the response. The rotation is split into a
 turn about the vertical axis, then a pitch and a roll; `neck_turn` scales the
 turn, which reflects where the camera stood as much as the subject, and
 `neck_tilt` scales the pitch and roll. `pose` can then be passed on whole.
-
-Photographs should show the face clearly, roughly front-on, in focus and
-without heavy occlusion. Several views improve identity; the first photograph
-alone sets the expression and detail.
 
 `displacement` describes the map: a pixel value p means
 `offset_mm + scale_mm × p / 65535` millimetres along the surface normal at life

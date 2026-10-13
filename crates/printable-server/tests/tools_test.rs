@@ -6935,6 +6935,77 @@ async fn head_reconstruct_returns_coefficients_for_the_flame_2020_model() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_reports_the_primary_photograph() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["face.jpg", "side.jpg"] {
+        std::fs::write(root.path().join(name), b"jpeg").unwrap();
+    }
+    let params = |extra: Value| {
+        let mut params = json!({
+            "images": ["face.jpg", "side.jpg"], "displacement_path": "detail.png", "overwrite": true
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!({"action": "reconstruct", "params": params})
+    };
+    // A worker that does not report it used the first; one that does is
+    // believed; the request's choice is passed on.
+    for (answer, asked, expected) in [
+        (json!({}), json!({}), (0, "face.jpg")),
+        (
+            json!({"primary_image": 1}),
+            json!({"primary_image": "most_frontal"}),
+            (1, "side.jpg"),
+        ),
+    ] {
+        let (endpoint, seen, task) = fake_recon_worker_with(true, answer).await;
+        let server = recon_server(root.path(), &endpoint).await;
+        let result = server
+            .invoke_tool(head_call(params(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert_eq!(
+            value["primary_image"],
+            json!({"index": expected.0, "image": expected.1}),
+            "{value}"
+        );
+        assert_eq!(
+            seen.lock().unwrap()[0].get("primary_image"),
+            asked.get("primary_image"),
+        );
+        task.abort();
+    }
+    // A worker that names a photograph it was not given is not believed.
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"primary_image": 2})).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let result = server
+        .invoke_tool(head_call(params(json!({}))))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(format!("{result:?}").contains("primary photograph that was not given"));
+    // An index beyond the photographs is refused before the worker is asked.
+    let (endpoint, seen, task_two) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let result = server
+        .invoke_tool(head_call(params(json!({"primary_image": 2}))))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        format!("{result:?}").contains("not one of the 2 images"),
+        "{result:?}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    task.abort();
+    task_two.abort();
+}
+
+#[tokio::test]
 async fn head_reconstruct_suggests_a_neck_pose_from_the_head_rotation() {
     // The fake worker reports the head turned 0.1 radians about y.
     let root = tempfile::tempdir().unwrap();

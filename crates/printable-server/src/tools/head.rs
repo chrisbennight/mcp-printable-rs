@@ -1246,6 +1246,19 @@ pub(super) async fn reconstruct(
     };
     let result = client.reconstruct(&request).await?;
     let field = |name: &str| result.get(name).cloned().unwrap_or(Value::Null);
+    // A worker that does not report the primary photograph used the first.
+    let primary = match result.get("primary_image") {
+        None => 0,
+        Some(index) => index
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|&index| index < request.images.len())
+            .ok_or_else(|| {
+                ToolError::Validation(
+                    "the reconstruction finished and wrote the displacement map, but named a primary photograph that was not given".into(),
+                )
+            })?,
+    };
     let mut response = json!({
         "variant": variant,
         "identity": field("identity"),
@@ -1255,6 +1268,7 @@ pub(super) async fn reconstruct(
         "identity_agreement": field("identity_agreement"),
         "clamped_coefficients": field("clamped_coefficients"),
         "head_rotation": field("head_rotation"),
+        "primary_image": {"index": primary, "image": request.images[primary]},
     });
     let (tilt, turn) = (
         request.neck_tilt.unwrap_or(0.0),
