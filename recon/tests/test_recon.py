@@ -306,6 +306,13 @@ class PipelineTests(unittest.TestCase):
         first = reconstructor.reconstruct(found)
         second = reconstructor.reconstruct(found, 1)
         self.assertEqual((first.primary_image, second.primary_image), (0, 1))
+        # The eyelids are the primary photograph's, each between 0 and 1.
+        with torch.inference_mode():
+            closures = reconstructor.smirk(
+                pipeline._tensor(numpy.stack([face.smirk for face in found]), reconstructor.device)
+            )["eyelids"]
+        numpy.testing.assert_allclose(second.eyelids, closures[1].tolist(), atol=1e-6)
+        self.assertTrue(all(0.0 <= value <= 1.0 for value in second.eyelids))
         alone = reconstructor.reconstruct([found[1]])
         numpy.testing.assert_allclose(second.expression, alone.expression, atol=1e-5)
         numpy.testing.assert_allclose(second.jaw, alone.jaw, atol=1e-5)

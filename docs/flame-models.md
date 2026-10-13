@@ -855,6 +855,11 @@ straight on.
 identity; a photograph well below the others probably shows someone else or
 an unusable view. `clamped_coefficients` counts values limited to ±5.
 
+For a model converted with `--eyelids`, the response also gives `eyelids`,
+how far SMIRK finds each eyelid closed in the primary photograph, left then
+right, from 0 to 1, in the form `create` and `prepare_print` accept. Other
+models get no `eyelids`, so the response can still be passed on whole.
+
 `primary_image` reports the photograph that set the expression and detail,
 by its index and path. `head_rotation` is the head's rotation in that
 photograph. To keep some of it on a bust, `neck_tilt` and `neck_turn`, each

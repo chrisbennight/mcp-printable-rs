@@ -6531,6 +6531,34 @@ async fn head_eyelids_close_with_a_model_that_has_their_basis() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_passes_the_eyelids_on_to_a_model_that_can_close_them() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    for basis in [true, false] {
+        let library = flame2020_library_edited(|fixture| {
+            fixture.eyelids = basis.then(|| (vec![0.0; 12], vec![0.0; 12]));
+        });
+        let (endpoint, _, task) =
+            fake_recon_worker_with(true, json!({"eyelids": [0.25, 0.5]})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let value = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+            }})))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        if basis {
+            assert_eq!(value["eyelids"], json!([0.25, 0.5]), "{value}");
+        } else {
+            assert!(value.get("eyelids").is_none(), "{value}");
+        }
+        task.abort();
+    }
+}
+
+#[tokio::test]
 async fn head_export_writes_the_head_as_an_obj_without_blender() {
     for textured in [true, false] {
         let (_models, library) = tetrahedron_library(textured);

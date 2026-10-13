@@ -1599,6 +1599,18 @@ pub(super) async fn reconstruct(
         "head_rotation": field("head_rotation"),
         "primary_image": {"index": primary, "image": request.images[primary]},
     });
+    // How far the eyelids were closed, only for a model that can close them,
+    // so that the response can still be passed on whole.
+    let closes_eyelids = library(settings)?
+        .select(Some(&variant))
+        .map_err(ToolError::Validation)?
+        .has_eyelids();
+    if let (true, Ok(eyelids)) = (
+        closes_eyelids,
+        serde_json::from_value::<[f32; 2]>(field("eyelids")),
+    ) {
+        response["eyelids"] = json!(eyelids);
+    }
     let (tilt, turn) = (
         request.neck_tilt.unwrap_or(0.0),
         request.neck_turn.unwrap_or(0.0),

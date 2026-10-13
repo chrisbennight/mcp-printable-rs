@@ -47,6 +47,9 @@ class Reconstruction:
     clamped_coefficients: int
     # Index of the photograph that gave the expression, jaw and detail.
     primary_image: int = 0
+    # How far SMIRK finds each eyelid closed in that photograph, left then
+    # right, from 0 to 1.
+    eyelids: list[float] = field(default_factory=lambda: [0.0, 0.0])
     faces: list[dict] = field(default_factory=list)
     # SMIRK's own fit to each photograph: the head and orthographic camera
     # that place FLAME's surface over the face, for projecting colour.
@@ -136,6 +139,7 @@ class Reconstructor:
             identity_agreement=agreement,
             clamped_coefficients=clamped_identity + clamped_expression,
             primary_image=index,
+            eyelids=smirk["eyelids"][index].tolist(),
             faces=[{"landmark_extent_px": _extent(face.landmarks)} for face in found],
             views=[_view(smirk, index, face) for index, face in enumerate(found)],
         )
