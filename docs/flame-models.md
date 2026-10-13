@@ -665,12 +665,15 @@ rendering. Printed files carry no colour.
 
 The shading is fitted in linear light, separately for each colour channel, as
 an ambient term plus one direction applied to the fitted head's surface
-normals. A photograph with fewer than 200 skin samples keeps its lighting.
-Dividing by the shading would amplify noise in deep shadow, so the shading is
-never taken as less than a quarter of its average. Each channel's median over
-the skin keeps its photographed value, which keeps the subject's skin tone.
-Luminance above the skin's 97th percentile is brought down to it, which limits
-specular highlights. `texture.lighting.shading` reports the shading removed
+normals. Only samples on the head's skin that the photograph's segmentation
+labels skin are fitted, so a photograph without segmentation, or with fewer
+than 200 such samples, keeps its lighting. Dividing by the shading would
+amplify noise in deep shadow, so the shading is never taken as less than a
+quarter of its average. Skin luminance above the skin's 97th percentile is
+brought down to it, which limits specular highlights; eyes and the scalp may
+be brighter than skin and are not limited. Finally, each channel's mean over
+the fitted skin, in linear light, keeps its photographed value, which keeps
+the subject's skin tone. `texture.lighting.shading` reports the shading removed
 from each photograph, or null where it was kept.
 
 From one front-on photograph of a person with long dark hair, the
@@ -685,10 +688,10 @@ matched the photograph's eyes, brows, nose and mouth, and the filled back of
 the head showed no seams.
 
 On the same photograph, removing the lighting reduced the difference in
-brightness between the forehead, the cheeks and the jaw from 45 to 18 levels
-of 255. The forehead, the brightest of them, came down from 220 to 198. In
-renders under the `portrait` profile, the far cheek no longer kept the
-photograph's shadow, and the head took its shading from the render's lights.
+brightness between the forehead, the cheeks and the jaw from 44 to 18 levels
+of 255. The forehead, the brightest of them, came down from 220 to 208, and
+the average colour of those patches changed by less than one level in each
+channel.
 
 On MICA's own demonstration photographs, identity from MediaPipe's keypoints
 was within 0.2 to 0.4 mm on average, and 0.9 mm at most, of identity from the

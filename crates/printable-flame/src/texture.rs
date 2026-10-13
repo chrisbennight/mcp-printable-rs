@@ -858,7 +858,11 @@ fn accumulate(
 /// sample, keeping the skin's median colour and limiting highlights.
 /// Returns the shading, or `None` when too little skin was seen to fit it.
 fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
-    let skin: Vec<usize> = (0..samples.len()).filter(|&at| samples[at].skin).collect();
+    // Only skin the photograph's segmentation confirms, so hair or clothing
+    // over the face does not enter the fit.
+    let skin: Vec<usize> = (0..samples.len())
+        .filter(|&at| samples[at].skin && samples[at].labelled_skin)
+        .collect();
     if skin.len() < MIN_LIGHTING_SAMPLES {
         return None;
     }
@@ -918,34 +922,35 @@ fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
             })
         })
         .collect();
-    // Keep the skin's typical colour as photographed: each channel's median
-    // over the skin maps to itself. A median, unlike a mean, is untouched by
-    // evening out the light, so the skin does not look paler afterwards.
-    let median = |values: &dyn Fn(usize) -> f32| -> f32 {
-        let mut chosen: Vec<f32> = skin.iter().map(|&at| values(at)).collect();
-        chosen.sort_unstable_by(f32::total_cmp);
-        chosen[chosen.len() / 2]
-    };
-    let gains: [f32; 3] = std::array::from_fn(|channel| {
-        median(&|at| linear[at][channel]) / median(&|at| corrected[at][channel]).max(1e-9)
-    });
+    // Skin brighter than its 97th percentile luminance is a highlight and is
+    // brought down to it. Eyes and the scalp may be brighter than skin
+    // without being highlights, so they are left as they are.
     let luminance = |colour: [f32; 3]| 0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2];
-    let balanced: Vec<[f32; 3]> = corrected
-        .iter()
-        .map(|colour| std::array::from_fn(|channel| colour[channel] * gains[channel]))
-        .collect();
-    let mut skin_luminance: Vec<f32> = skin.iter().map(|&at| luminance(balanced[at])).collect();
+    let mut skin_luminance: Vec<f32> = skin.iter().map(|&at| luminance(corrected[at])).collect();
     skin_luminance.sort_unstable_by(f32::total_cmp);
     let rank = (HIGHLIGHT_PERCENTILE / 100.0 * (skin_luminance.len() - 1) as f64).round();
     let ceiling = skin_luminance[rank as usize];
-    for (sample, colour) in samples.iter_mut().zip(balanced) {
-        let level = luminance(colour);
-        let limit = if level > ceiling && level > 0.0 {
-            ceiling / level
-        } else {
-            1.0
-        };
-        sample.colour = colour.map(|value| linear_to_srgb((value * limit).clamp(0.0, 1.0)) * 255.0);
+    let limited: Vec<[f32; 3]> = samples
+        .iter()
+        .zip(corrected)
+        .map(|(sample, colour)| {
+            let level = luminance(colour);
+            if sample.skin && level > ceiling && level > 0.0 {
+                colour.map(|value| value * ceiling / level)
+            } else {
+                colour
+            }
+        })
+        .collect();
+    // Keep the skin's average colour as photographed: each channel's mean
+    // over the fitted skin, in linear light, maps to itself.
+    let gains: [f32; 3] = std::array::from_fn(|channel| {
+        (average(&|at| linear[at][channel]) / average(&|at| limited[at][channel]).max(1e-9)) as f32
+    });
+    for (sample, colour) in samples.iter_mut().zip(limited) {
+        sample.colour = std::array::from_fn(|channel| {
+            linear_to_srgb((colour[channel] * gains[channel]).clamp(0.0, 1.0)) * 255.0
+        });
     }
     Some(shading)
 }
@@ -1986,7 +1991,13 @@ mod tests {
                 },
                 vertices: &vertices,
                 projection: PROJECTION,
-                labels: None,
+                labels: Some(Labels {
+                    side: 224,
+                    data: &[LABEL_FACE_SKIN; 224 * 224],
+                    left: 0.0,
+                    top: 0.0,
+                    step: 1.0,
+                }),
             })
             .unwrap();
         builder.finish().unwrap()
@@ -2029,6 +2040,105 @@ mod tests {
         assert!(
             (removed_mean - kept_mean).abs() < 0.15 * kept_mean,
             "{removed_mean} {kept_mean}"
+        );
+    }
+
+    /// Skin samples lit from +z: 60% facing away from the light and 40%
+    /// facing it, with normals spread around each direction so that the
+    /// shading can be fitted.
+    fn lit_samples() -> Vec<Sample> {
+        (0..500)
+            .map(|texel| {
+                let turn = (texel % 7) as f32 * 0.1 - 0.3;
+                let normal = if texel % 5 < 3 {
+                    normalize3([turn, 0.3, 0.2])
+                } else {
+                    normalize3([turn, -0.2, 1.0])
+                };
+                let light = 0.1 + 0.5 * normal[2].max(0.0);
+                Sample {
+                    texel,
+                    share: 1.0,
+                    colour: [light; 3].map(|value| linear_to_srgb(value) * 255.0),
+                    normal,
+                    skin: true,
+                    labelled_skin: true,
+                }
+            })
+            .collect()
+    }
+
+    fn normalize3(vector: [f32; 3]) -> [f32; 3] {
+        let length = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+        vector.map(|value| value / length)
+    }
+
+    fn linear_mean(samples: &[Sample], keep: impl Fn(&Sample) -> bool) -> f32 {
+        let chosen: Vec<f32> = samples
+            .iter()
+            .filter(|sample| keep(sample))
+            .map(|sample| srgb_to_linear(sample.colour[0] / 255.0))
+            .collect();
+        chosen.iter().sum::<f32>() / chosen.len() as f32
+    }
+
+    #[test]
+    fn removing_lighting_keeps_the_average_skin_colour() {
+        let mut samples = lit_samples();
+        let before = linear_mean(&samples, |_| true);
+        remove_lighting(&mut samples).expect("shading was estimated");
+        let after = linear_mean(&samples, |_| true);
+        assert!((after - before).abs() < 0.01 * before, "{before} {after}");
+        // The light is gone: every sample has about the same colour.
+        let spread = samples
+            .iter()
+            .map(|sample| (srgb_to_linear(sample.colour[0] / 255.0) - after).abs())
+            .fold(0.0, f32::max);
+        assert!(spread < 0.05 * after, "{spread} {after}");
+    }
+
+    #[test]
+    fn unsegmented_skin_leaves_the_lighting_alone() {
+        let mut samples = lit_samples();
+        for sample in &mut samples {
+            sample.labelled_skin = false;
+        }
+        let colours: Vec<[f32; 3]> = samples.iter().map(|sample| sample.colour).collect();
+        assert_eq!(remove_lighting(&mut samples), None);
+        assert!(
+            samples
+                .iter()
+                .zip(colours)
+                .all(|(sample, colour)| sample.colour == colour)
+        );
+    }
+
+    #[test]
+    fn eyes_brighter_than_skin_are_not_highlights() {
+        let mut samples = lit_samples();
+        // A sclera three times as bright as the skin, under the same light.
+        let skin = &samples[499];
+        let sclera = Sample {
+            texel: 500,
+            share: 1.0,
+            colour: skin
+                .colour
+                .map(|value| linear_to_srgb(3.0 * srgb_to_linear(value / 255.0)) * 255.0),
+            normal: skin.normal,
+            skin: false,
+            labelled_skin: false,
+        };
+        samples.push(sclera);
+        remove_lighting(&mut samples).expect("shading was estimated");
+        let brightest_skin = samples[..500]
+            .iter()
+            .map(|sample| sample.colour[0])
+            .fold(0.0, f32::max);
+        let sclera = samples[500].colour;
+        // Capped, it would be about as bright as the brightest skin.
+        assert!(
+            sclera[0] > 1.3 * brightest_skin,
+            "{sclera:?} {brightest_skin}"
         );
     }
 
