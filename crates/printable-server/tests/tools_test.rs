@@ -6186,6 +6186,63 @@ async fn head_prepare_print_closes_or_recesses_the_mouth_and_fades_detail_on_the
 }
 
 #[tokio::test]
+async fn head_prepare_print_closes_the_jaw_and_passes_the_recess_to_the_worker() {
+    // The open tetrahedron with vertex 3 bound to the jaw, joint 2, which
+    // sits on vertex 2: opening the jaw moves vertex 3.
+    let models = tempfile::tempdir().unwrap();
+    let mut weights = vec![0.0f32; 4 * 5];
+    for vertex in 0..3 {
+        weights[vertex * 5] = 1.0;
+    }
+    weights[3 * 5 + 2] = 1.0;
+    let fixture = printable_flame::fixture::Fixture {
+        faces: vec![0, 2, 1, 0, 3, 2, 1, 2, 3],
+        weights,
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |path: &str, extra: Value| {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let mut written = Vec::new();
+    for (path, extra) in [
+        ("still.stl", json!({})),
+        ("open.stl", json!({"pose": {"jaw": [0.3, 0.0, 0.0]}})),
+        (
+            "closed.stl",
+            json!({"pose": {"jaw": [0.3, 0.0, 0.0]}, "mouth": "closed"}),
+        ),
+    ] {
+        let result = run(path, extra).await.unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        written.push(std::fs::read(root.path().join(path)).unwrap());
+    }
+    assert_ne!(written[0], written[1], "the jaw moves the fixture");
+    assert_eq!(written[0], written[2], "closed replaces the jaw rotation");
+
+    // The fixture has no mouth opening to show a recess, but a recess too
+    // deep for a 20 mm bust reaches the worker's limit.
+    let result = run(
+        "deep.stl",
+        json!({"height_mm": 20.0, "mouth": "recessed", "mouth_recess_mm": 10.0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    assert!(format!("{result:?}").contains("mouth recess"), "{result:?}");
+}
+
+#[tokio::test]
 async fn head_prepare_print_writes_the_same_bytes_with_or_without_a_texture_layout() {
     // Appearance must not change the printed shape: without a displacement
     // map, a model converted with --texture prints exactly as one without.
