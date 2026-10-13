@@ -48,7 +48,7 @@ class BundledSkillScopeTests(unittest.TestCase):
                         "images": "true", "shell": "false", "publish": "true",
                     })
 
-    def test_reconstruction_worker_edits_select_images_and_publication(self):
+    def scope_for_changed_input(self, name):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
@@ -60,14 +60,14 @@ class BundledSkillScopeTests(unittest.TestCase):
                 ).stdout.strip()
 
             git("init", "-b", "main")
-            worker = root / "recon" / "reconstruct.py"
+            worker = root / name
             worker.parent.mkdir(parents=True)
             worker.write_text("original = True\n")
-            git("add", "recon")
+            git("add", name)
             git("commit", "-m", "Base")
             base = git("rev-parse", "HEAD")
             worker.write_text("original = False\n")
-            git("add", "recon")
+            git("add", name)
             git("commit", "-m", "Revise the worker")
             output = root / "scope-output"
             subprocess.run(
@@ -77,8 +77,18 @@ class BundledSkillScopeTests(unittest.TestCase):
                      "GITHUB_OUTPUT": str(output)},
             )
             scope = dict(line.split("=", 1) for line in output.read_text().splitlines())
-            self.assertEqual(scope["images"], "true")
-            self.assertEqual(scope["publish"], "true")
+            return scope
+
+    def test_reconstruction_worker_edits_select_images_and_publication(self):
+        scope = self.scope_for_changed_input("recon/reconstruct.py")
+        self.assertEqual(scope["images"], "true")
+        self.assertEqual(scope["publish"], "true")
+
+    def test_scanner_only_edits_do_not_publish_without_tested_images(self):
+        scope = self.scope_for_changed_input("scripts/release_security.py")
+        self.assertEqual(scope["tooling"], "true")
+        self.assertEqual(scope["images"], "false")
+        self.assertEqual(scope["publish"], "false")
 
 
 if __name__ == "__main__":
