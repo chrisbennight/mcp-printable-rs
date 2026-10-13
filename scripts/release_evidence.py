@@ -22,6 +22,7 @@ import urllib.request
 from release_build_materials import auditable_dependencies, sha256
 from release_record import ROLES
 from release_identity import ReleaseIdentity
+from release_native_materials import validate_record
 
 ROOT = Path(__file__).resolve().parents[1]
 SYFT_VERSION = "1.54.1"
@@ -443,6 +444,31 @@ def spdx_file(document, parent, path, checksum):
     contains_package(document, parent, identifier)
 
 
+def source_built_native(component, archive, members, inventory, revision, image, role_dir):
+    policy = component["source_built_native"]
+    path = policy["record_path"]
+    raw = read_member(archive, members, path)
+    if raw is None:
+        raise ValueError("source-built component build record is absent")
+    record = json.loads(raw)
+    outputs = validate_record(record, component, revision, ROOT / "Dockerfile")
+    actual = {item["path"]: item for item in inventory
+              if item.get("elf") and item["path"].startswith(component["notice_prefix"])}
+    if set(actual) != {item["path"] for item in outputs}:
+        raise ValueError("source-built component has missing or extra native outputs")
+    for item in outputs:
+        installed = actual[item["path"]]
+        if any(installed.get(field) != item[field] for field in ("sha256", "size")):
+            raise ValueError("source-built native output differs from its build record")
+    retained = role_dir / "native-build" / path
+    retained.parent.mkdir(parents=True, exist_ok=True)
+    retained.write_bytes(raw)
+    return component | {"native_files": outputs,
+                        "source_checksum": {"algorithm": "SHA256", "value": component["source_sha256"]},
+                        "native_build": record | {"tested_image_id": image, "record_sha256": hashlib.sha256(raw).hexdigest(),
+                                                  "retained": str(retained.relative_to(role_dir.parent))}}
+
+
 def identify_bundled_native(component, inventory, ownership, document, supplements, sources=None):
     """A distribution directory proves placement; exact reviewed files prove component identity."""
     parent = add_spdx_package(document, component, component["source_url"])
@@ -726,6 +752,8 @@ def collect_role(role, image, revision, output, sources):
                     if hashlib.sha256(data).hexdigest() != component["asset_sha256"]:
                         raise ValueError("distributed asset checksum mismatch")
                 source = download_source(component["source_url"], sources, component.get("source_sha256"))
+                if component.get("source_built_native"):
+                    component = source_built_native(component, archive, members, inventory, revision, image, role_dir)
                 supplements.append(component | {"source": source, "notices": component_notices})
                 add_spdx_package(spdx, component, source["url"], component.get("asset_sha256"))
                 supplements.extend(declared_build_materials(component, source, sources, spdx, role_dir / "notices"))
@@ -786,7 +814,8 @@ def collect(revision, images, output):
         collect_role(role, images[role], revision, output, sources)
     write_json(output / "tested-images.json", {"schema": 1, "revision": revision, "images": images})
     for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Dockerfile", "blender/Dockerfile", "cad/requirements.txt", "recon/requirements.txt",
-                 "LICENSE", "THIRD_PARTY_NOTICES.md", "release/components.json", "release/python-sources.json"):
+                 "LICENSE", "THIRD_PARTY_NOTICES.md", "release/components.json", "release/python-sources.json",
+                 "scripts/release_native_materials.py"):
         target = output / "build-inputs" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, target)

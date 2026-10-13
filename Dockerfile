@@ -144,6 +144,15 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
  && cmake --build /tmp/opencv-build \
  && cmake --install /tmp/opencv-build \
  && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
+COPY Dockerfile /tmp/printable-Dockerfile
+COPY release/components.json /tmp/printable-components.json
+COPY scripts/release_native_materials.py /tmp/release_native_materials.py
+ARG SOURCE_REVISION
+RUN python3 /tmp/release_native_materials.py OpenCV "${SOURCE_REVISION}" \
+      --components /tmp/printable-components.json --recipe /tmp/printable-Dockerfile \
+      --source-archive /tmp/opencv.tar.gz --install-root /opt/opencv-python \
+      --install-manifest /tmp/opencv-build/install_manifest.txt --cache /tmp/opencv-build/CMakeCache.txt \
+      --output /opt/opencv-python/printable-native-build.json
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
 ARG SOURCE_REVISION

@@ -1291,6 +1291,11 @@
       "license": "Apache-2.0",
       "source_url": "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz",
       "source_sha256": "b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c",
+      "source_built_native": {
+        "record_path": "opt/opencv-python/printable-native-build.json",
+        "recipe_stage": "recon-opencv",
+        "native_output_path": "opt/opencv-python/cv2/python-3/cv2.abi3.so"
+      },
       "description": "Statically built core, imgproc and Python modules only; exact build flags are retained in the Dockerfile."
     },
     {

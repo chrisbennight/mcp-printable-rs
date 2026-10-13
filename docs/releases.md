@@ -122,6 +122,15 @@ specifications remain available alongside the inventory; scanner output alone
 cannot recover every statically linked upstream component or determine its legal
 obligations.
 
+The source-built OpenCV extension has a build record captured after CMake
+installation. It binds the exact `cv2/python-3/cv2.abi3.so` path, size and hash to
+the verified source archive, source revision, Dockerfile hash and actual configured
+CMake settings. Collection compares that record with the tested image and retains
+it in the signed evidence. A missing or changed extension, an additional native
+output or inconsistent build identity stops publication. Its output hash is
+measured for each build; it is not an upstream binary pin or a reproducibility
+claim.
+
 The SPDX documents and materials also record Blender's upstream dependency
 declarations and Orca's external dependency specifications and vendored source
 trees as declared build material. These records retain available versions,
@@ -163,7 +172,14 @@ visible. They do not certify license compliance or byte-for-byte reproducibility
 
 ## Independent verification
 
-Install Docker and GitHub CLI 2.102.0 or newer. Obtain the expected full source
+Install Docker and GitHub CLI 2.102.0 or newer. The default online command below
+discovers signature bundles in OCI and requires GitHub CLI authentication even
+for public releases. Use your approved account or existing authenticated client
+environment. See the [attestation verification manual](https://cli.github.com/manual/gh_attestation_verify).
+Follow the registry's access
+and authentication requirements and verify that the release packages are available
+to your account. Do not put credential values in commands or saved evidence.
+Obtain the expected full source
 commit independently from the maintained repository. Use the immutable record
 reference from the `release-image` artifact or a trusted deployment change:
 
@@ -193,7 +209,9 @@ gh attestation trusted-root > trusted_root.jsonl
 Keep the downloaded record bundle with the retained evidence directory and pin
 the trusted-root file through your own trust policy. Do not automatically trust
 a root supplied by an unverified release. Verification of retained evidence uses
-the saved bundles and does not depend on Actions artifact retention:
+the saved bundles and does not depend on Actions artifact retention. This explicit
+bundle mode [does not require GitHub CLI login](https://github.com/cli/cli/issues/11803#issuecomment-3334813452);
+the independently trusted root and registry access requirements still apply:
 
 ```sh
 python3 scripts/verify_release_evidence.py "$record" "$revision" \

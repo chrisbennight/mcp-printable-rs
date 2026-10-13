@@ -20,6 +20,7 @@ from release_evidence import (archive_members, canonical_path, collect_role, deb
                               python_source, read_member, verify_component_inputs, write_json)
 from release_evidence_record import seal
 from release_identity import ReleaseIdentity
+from release_native_materials import capture, validate_record
 from release_record import ROLES
 from verify_release_evidence import (verify_attestation, verify_components, verify_directory,
                                      verify_record_index, verify_remote, PROVENANCE_TYPE)
@@ -194,12 +195,12 @@ class SourceLocatorTests(unittest.TestCase):
 
 
 class ImageInventoryTests(unittest.TestCase):
-    def run_collector(self, directory, change=None, components=None):
+    def run_collector(self, directory, change=None, components=None, recipe=None):
         root = Path(directory)
         (root / "release").mkdir()
         write_json(root / "release/components.json", {"components": components or []})
-        (root / "Dockerfile").write_text("\n".join(component["asset_sha256"] for component in components or []
-                                                  if component.get("asset_sha256")))
+        (root / "Dockerfile").write_text(recipe if recipe is not None else "\n".join(
+            component["asset_sha256"] for component in components or [] if component.get("asset_sha256")))
         write_json(root / "release/python-sources.json", {})
         (root / "crates/printable-imaging/assets").mkdir(parents=True)
         (root / "crates/printable-imaging/assets/FiraSans-Regular.ttf").write_bytes(b"font")
@@ -321,6 +322,103 @@ class ImageInventoryTests(unittest.TestCase):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
                 with self.assertRaises(ValueError):
                     self.run_collector(directory, change)
+
+
+class SourceBuiltNativeTests(unittest.TestCase):
+    def fixture(self, root):
+        source = root / "source.tar.gz"
+        source.write_bytes(b"exact reviewed source")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        component = {"name": "OpenCV", "version": "5.0.0.93", "roles": ["server"], "license": "Apache-2.0",
+                     "source_url": "https://files.pythonhosted.org/source/opencv.tar.gz", "source_sha256": digest,
+                     "notice_prefix": "opt/opencv-python/", "paths": ["opt/opencv-python/LICENSE-OpenCV"],
+                     "source_built_native": {"recipe_stage": "recon-opencv",
+                         "native_output_path": "opt/opencv-python/cv2/python-3/cv2.abi3.so",
+                         "record_path": "opt/opencv-python/printable-native-build.json"}}
+        recipe = root / "recipe.Dockerfile"
+        recipe.write_text('FROM fixture AS recon-opencv\nARG SOURCE_URL=' + component["source_url"]
+            + '\nARG SOURCE_SHA256=' + digest + '\nRUN cmake -DBUILD_LIST=core,imgproc,python3'
+            + ' -DBUILD_SHARED_LIBS=OFF -DPYTHON3_LIMITED_API=ON\nFROM fixture AS runtime\n')
+        install_root = root / "installed"
+        extension = install_root / "cv2/python-3/cv2.abi3.so"
+        extension.parent.mkdir(parents=True)
+        extension.write_bytes(b"\x7fELFactual compiled output")
+        install_manifest = root / "install_manifest.txt"
+        install_manifest.write_text(str(extension) + "\n")
+        cache = root / "CMakeCache.txt"
+        cache.write_text("BUILD_LIST:STRING=core,imgproc,python3\nBUILD_SHARED_LIBS:BOOL=OFF\nPYTHON3_LIMITED_API:BOOL=ON\n")
+        return component, recipe, source, install_root, install_manifest, cache
+
+    def test_capture_reads_real_outputs_and_cache_instead_of_assuming_an_upstream_binary_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            component, recipe, source, root, manifest, cache = self.fixture(Path(directory))
+            first = capture(component, REVISION, recipe, source, root, manifest, cache)
+            extension = root / "cv2/python-3/cv2.abi3.so"
+            extension.write_bytes(b"\x7fELFa different valid build output")
+            second = capture(component, REVISION, recipe, source, root, manifest, cache)
+            self.assertNotEqual(first["native_files"][0]["sha256"], second["native_files"][0]["sha256"])
+            self.assertEqual(first["source_sha256"], second["source_sha256"])
+            self.assertEqual(second["native_files"][0]["size"], extension.stat().st_size)
+            self.assertEqual(second["cmake_settings"]["BUILD_SHARED_LIBS"], "OFF")
+
+    def test_capture_rejects_missing_extra_uninstalled_outputs_and_actual_input_mismatches(self):
+        for change in ("missing", "extra", "uninstalled", "source", "cache"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                component, recipe, source, root, manifest, cache = self.fixture(Path(directory))
+                if change == "missing": (root / "cv2/python-3/cv2.abi3.so").unlink()
+                elif change == "extra": (root / "unknown.so").write_bytes(b"\x7fELFextra")
+                elif change == "uninstalled": manifest.write_text("/opt/elsewhere/file\n")
+                elif change == "source": source.write_bytes(b"changed source")
+                elif change == "cache": cache.write_text(cache.read_text().replace("OFF", "ON"))
+                with self.assertRaisesRegex(ValueError, "source-built"):
+                    capture(component, REVISION, recipe, source, root, manifest, cache)
+
+    def test_record_rejects_inconsistent_identity_recipe_revision_and_output_material(self):
+        for field in ("name", "version", "revision", "source_url", "source_sha256", "recipe_sha256", "cmake_settings",
+                      "empty", "extra", "path", "size", "sha256", "installed_paths", "install_manifest_sha256"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                component, recipe, source, root, manifest, cache = self.fixture(Path(directory))
+                record = capture(component, REVISION, recipe, source, root, manifest, cache)
+                if field == "empty": record["native_files"] = []
+                elif field == "extra": record["native_files"].append(dict(record["native_files"][0]))
+                elif field == "path": record["native_files"][0]["path"] = "opt/opencv-python/unknown.so"
+                elif field == "size": record["native_files"][0]["size"] = 0
+                elif field == "sha256": record["native_files"][0]["sha256"] = "invalid"
+                elif field == "installed_paths": record[field] = []
+                else: record[field] = "inconsistent"
+                with self.assertRaisesRegex(ValueError, "source-built"):
+                    validate_record(record, component, REVISION, recipe)
+
+    def test_full_collector_binds_source_build_record_to_tested_image_and_rejects_changed_files(self):
+        for change in (None, "missing", "changed", "extra", "record", "size", "source"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                component, recipe, source, root, manifest, cache = self.fixture(Path(directory))
+                record = capture(component, REVISION, recipe, source, root, manifest, cache)
+                installed = component["source_built_native"]["native_output_path"]
+                record_path = component["source_built_native"]["record_path"]
+                def modify(files):
+                    if change == "size": record["native_files"][0]["size"] += 1
+                    elif change == "source": record["source_sha256"] = "d" * 64
+                    files.update({installed: (root / "cv2/python-3/cv2.abi3.so").read_bytes(),
+                                  record_path: json.dumps(record).encode(), "opt/opencv-python/LICENSE-OpenCV": b"Apache notice"})
+                    if change == "missing": files.pop(installed)
+                    elif change == "changed": files[installed] = b"\x7fELFaltered after build"
+                    elif change == "extra": files["opt/opencv-python/unidentified.so"] = b"\x7fELFextra"
+                    elif change == "record": files.pop(record_path)
+                if change:
+                    with self.assertRaisesRegex(ValueError, "source-built"):
+                        ImageInventoryTests.run_collector(self, directory, modify, [component], recipe.read_text())
+                else:
+                    output = ImageInventoryTests.run_collector(self, directory, modify, [component], recipe.read_text())
+                    material = json.loads((output / "server/materials.json").read_text())
+                    built = next(item for item in material["supplements"] if item["name"] == "OpenCV")
+                    self.assertEqual(built["native_build"]["tested_image_id"], IMAGE)
+                    retained = output / built["native_build"]["retained"]
+                    self.assertEqual(hashlib.sha256(retained.read_bytes()).hexdigest(), built["native_build"]["record_sha256"])
+                    spdx = json.loads((output / "server/sbom.spdx.json").read_text())
+                    package = next(item for item in spdx["packages"] if item["name"] == "OpenCV")
+                    self.assertIn(component["source_sha256"], package["sourceInfo"])
+                    self.assertTrue(any(item["fileName"] == "/" + installed for item in spdx["files"]))
 
 
 class BundledComponentTests(unittest.TestCase):
