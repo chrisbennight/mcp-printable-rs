@@ -6785,19 +6785,28 @@ fn flame2020_library_with_regions(
     textured: bool,
     regions: Vec<(String, Vec<u32>)>,
 ) -> Arc<printable_server::flame::FlameLibrary> {
-    let models = tempfile::tempdir().unwrap();
-    // The published model's split: 300 identity and 100 expression components.
-    let mut fixture = printable_flame::fixture::Fixture {
-        shapedirs: vec![0.0; 4 * 3 * 400],
-        uv: textured.then(|| {
+    flame2020_library_edited(|fixture| {
+        fixture.uv = textured.then(|| {
             (
                 vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
                 vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             )
-        }),
-        regions,
+        });
+        fixture.regions = regions;
+    })
+}
+
+/// The FLAME 2020 fixture, changed by `edit`.
+fn flame2020_library_edited(
+    edit: impl FnOnce(&mut printable_flame::fixture::Fixture),
+) -> Arc<printable_server::flame::FlameLibrary> {
+    let models = tempfile::tempdir().unwrap();
+    // The published model's split: 300 identity and 100 expression components.
+    let mut fixture = printable_flame::fixture::Fixture {
+        shapedirs: vec![0.0; 4 * 3 * 400],
         ..Default::default()
     };
+    edit(&mut fixture);
     for (key, value) in [
         ("variant", "flame2020_generic"),
         (
@@ -7437,6 +7446,141 @@ async fn head_reconstruct_projects_the_photographs_into_a_colour_map() {
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(asked, 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn head_reconstruct_sizes_the_colour_map_and_paints_the_eyes() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Every vertex of the fixture's head is an eyeball.
+    let eyed = flame2020_library_with_regions(
+        true,
+        vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ],
+    );
+    let sclera = [1u8, 2, 3];
+    for (library, painted) in [(eyed, true), (flame2020_library_with_uv(true), false)] {
+        let (endpoint, seen, task) =
+            fake_recon_worker_with(true, json!({"image_sha256": [digest]})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": [10, 200, 30], "sclera_colour": sclera,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let texture = &value["texture"];
+        assert_eq!(texture["width"], 512, "{value}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(map.dimensions(), (512, 512));
+        let shows_sclera = map.pixels().any(|pixel| pixel.0 == sclera);
+        let eyes = &texture["eyes"];
+        assert_eq!(eyes["requested"], "painted", "{value}");
+        if painted {
+            assert_eq!(eyes["applied"], "painted", "{value}");
+            assert_eq!(eyes["iris_colour"], json!([10, 200, 30]), "{value}");
+            assert_eq!(eyes["iris_source"], "given", "{value}");
+            assert!(shows_sclera);
+        } else {
+            // Without separate eyeballs nothing is painted, and the response
+            // says so.
+            assert_eq!(eyes["applied"], "photo", "{value}");
+            assert!(
+                eyes["note"].as_str().unwrap().contains("eyeballs"),
+                "{value}"
+            );
+            assert!(!shows_sclera);
+        }
+        // The worker is not sent the options the server applies.
+        let sent = seen.lock().unwrap();
+        for name in ["texture_size", "eyes", "iris_colour", "sclera_colour"] {
+            assert!(sent[0].get(name).is_none(), "{name}: {sent:?}");
+        }
+        drop(sent);
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn head_reconstruct_paints_eyes_on_the_head_it_returns() {
+    let root = tempfile::tempdir().unwrap();
+    image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    // Identity component 0 scales the head about the origin; every vertex
+    // is an eyeball. The worker's views keep the metre-wide head, but the
+    // identity it returns shrinks it to a centimetre, about the size of a
+    // life-size iris.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.uv = Some((
+            vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+            vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        ));
+        fixture.regions = vec![
+            ("left_eyeball".into(), vec![0, 1, 2, 3]),
+            ("right_eyeball".into(), vec![0]),
+        ];
+        for (index, value) in fixture.template.clone().into_iter().enumerate() {
+            fixture.shapedirs[index * 400] = value;
+        }
+    });
+    let iris = [10u8, 200, 30];
+    let mut painted = Vec::new();
+    for identity in [json!([0.0]), json!([-0.99])] {
+        let (endpoint, _, task) = fake_recon_worker_with(
+            true,
+            json!({"image_sha256": [digest], "identity": identity}),
+        )
+        .await;
+        let server = recon_server_with(root.path(), &endpoint, Arc::clone(&library)).await;
+        let params = json!({
+            "images": ["face.png"], "displacement_path": "detail.png",
+            "texture_path": "colour.png", "overwrite": true, "texture_size": 512,
+            "eyes": "painted", "iris_colour": iris,
+        });
+        let result = server
+            .invoke_tool(head_call(
+                json!({"action": "reconstruct", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let map = image::open(root.path().join("colour.png"))
+            .unwrap()
+            .into_rgb8();
+        painted.push(map.pixels().filter(|pixel| pixel.0 == iris).count());
+        task.abort();
+    }
+    // On the metre-wide head the iris is a speck; on the returned head it
+    // covers much of the front.
+    assert!(painted[1] > 20 * painted[0].max(1), "{painted:?}");
 }
 
 #[tokio::test]
