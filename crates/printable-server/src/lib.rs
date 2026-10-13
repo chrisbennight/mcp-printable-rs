@@ -22,6 +22,7 @@ pub mod provenance;
 pub mod recon;
 pub mod resources;
 pub mod server;
+pub mod shutdown;
 pub mod slicing;
 pub mod tools;
 pub mod upload;
