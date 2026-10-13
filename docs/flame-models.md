@@ -593,7 +593,9 @@ the way sculpted busts do, centred on each eye's gaze:
 
 `pupil_diameter_mm`, `iris_diameter_mm` and `eye_detail_depth_mm` are
 millimetres on the finished bust; the ring is half as deep as the pupil and a
-tenth of the iris wide. By default each is its life size scaled with the
+tenth of the iris wide, whether the iris is given or the default. Depths are
+measured at the edge of each cut, so a shallow pupil still shows its full
+width. By default each is its life size scaled with the
 bust: a pupil 4 mm across and 2 mm deep in an iris 11.5 mm across. With a
 `printer`, the pupil is at least two nozzle widths across, or two
 `minimum_wall_mm` for resin, the ring at least one wide, at least one such
@@ -605,7 +607,8 @@ The eyeballs are the parts of the model separate from the head. Each eye's
 gaze leaves it through the vertex furthest forward when the head is at rest,
 which the eye's rotation carries with it, so the carving follows
 `pose.left_eye` and `pose.right_eye`. Detail is measured from the eyeball's
-surface along the gaze. Only the eyeball is cut, so the eyelids keep their
+surface along the gaze, and carved eyeballs take no `displacement` detail,
+so that surface is the one carved. Only the eyeball is cut, so the eyelids keep their
 shape, but where an eyelid covers part of the ring, the ring continues under
 the lid's edge and can leave the edge thinner; the `thin` report of a
 `printer` shows such places. Where the head's surface covers a cut entirely,
