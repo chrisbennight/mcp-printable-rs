@@ -118,8 +118,8 @@ pub struct BustRequest {
     pub eyes: Option<EyeCarving>,
     /// Set the centre of the cap closing each opening other than the neck,
     /// the mouth, this many millimetres of the finished bust back into the
-    /// head, along -z of the request's frame, so that an open mouth reads as
-    /// a shadow rather than a flat surface.
+    /// head, along the cap's inward normal, so that an open mouth reads as a
+    /// shadow rather than a flat surface.
     #[serde(default)]
     pub mouth_recess_mm: Option<f64>,
 }
@@ -792,7 +792,8 @@ fn along(solid: Manifold, base: [f64; 3], direction: [f64; 3]) -> Manifold {
 }
 
 /// Move the centre of the cap closing every opening but the lowest, the
-/// neck, `depth` back along -z, into the head.
+/// neck, `depth` into the head along the cap's inward normal, whatever the
+/// head's pose.
 fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<(), GeometryError> {
     if depth > MAX_RECESS_FRACTION * span {
         return Err(GeometryError::InvalidOptions(format!(
@@ -813,15 +814,16 @@ fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<(), G
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(place, _)| place);
     for (index, part) in parts.iter_mut().enumerate() {
-        let centres: Vec<u32> = part
+        let centres: Vec<(u32, [f64; 3])> = part
             .openings
             .iter()
             .enumerate()
             .filter(|(opening, _)| neck != Some((index, *opening)))
-            .map(|(_, opening)| opening.centre)
+            .map(|(_, opening)| (opening.centre, opening.inward))
             .collect();
-        for centre in centres {
-            part.vertices[centre as usize][2] -= depth;
+        for (centre, inward) in centres {
+            let vertex = &mut part.vertices[centre as usize];
+            *vertex = [0, 1, 2].map(|axis| vertex[axis] + inward[axis] * depth);
         }
     }
     Ok(())
@@ -1330,6 +1332,8 @@ struct Opening {
     top_height: f64,
     /// The part vertex at the centre of the fan that closes it.
     centre: u32,
+    /// The unit normal of that fan, pointing into the part.
+    inward: [f64; 3],
 }
 
 struct ClosedPart {
@@ -1457,16 +1461,24 @@ fn close_part(
             .map(|value| value / count);
         let centre_index = part_vertices.len() as u32;
         part_vertices.push(centre);
-        // Each cap triangle runs against its boundary edge, keeping orientation consistent.
+        // Each cap triangle runs against its boundary edge, keeping orientation
+        // consistent, so the cap faces out of the part.
+        let mut outward = [0.0; 3];
         for (position, &a) in boundary.iter().enumerate() {
             let b = boundary[(position + 1) % boundary.len()];
             triangles.push([local[&b], local[&a], centre_index]);
             sources.push(None);
+            let face = cross(
+                sub(vertices[a as usize], vertices[b as usize]),
+                sub(centre, vertices[b as usize]),
+            );
+            outward = [0, 1, 2].map(|axis| outward[axis] + face[axis]);
         }
         openings.push(Opening {
             mean_height: points.iter().map(|point| point[1]).sum::<f64>() / count,
             top_height: points.iter().map(|point| point[1]).fold(f64::MIN, f64::max),
             centre: centre_index,
+            inward: normalize(outward.map(|value| -value)),
         });
     }
     Ok(ClosedPart {
@@ -2334,6 +2346,27 @@ mod tests {
             prepare_bust(&recessed),
             Err(GeometryError::InvalidOptions(_))
         ));
+    }
+
+    #[test]
+    fn a_turned_mouth_is_recessed_into_the_head() {
+        // The box turned a quarter turn about its vertical axis, so that its
+        // mouth faces +x rather than +z.
+        let turned = || {
+            let mut request = box_with_a_mouth();
+            for vertex in &mut request.vertices {
+                let [x, y, z] = *vertex;
+                *vertex = [z, y, -x];
+            }
+            request
+        };
+        let (_, flat) = prepare_bust(&turned()).unwrap();
+        let mut recessed = turned();
+        recessed.mouth_recess_mm = Some(5.0);
+        let (mesh, report) = prepare_bust(&recessed).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        let removed = flat.volume_mm3 - report.volume_mm3;
+        assert!((300.0..900.0).contains(&removed), "{removed} {flat:?}");
     }
 
     #[test]
