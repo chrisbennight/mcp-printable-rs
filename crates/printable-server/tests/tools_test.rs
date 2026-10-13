@@ -6132,6 +6132,16 @@ async fn head_prepare_print_closes_or_recesses_the_mouth_and_fades_detail_on_the
         assert!(head_output_validator(&server).is_valid(&value), "{value}");
         assert_eq!(value["mouth"]["shape"], shape, "{value}");
         assert_eq!(value["mouth"]["detail_faded_over"], "lips", "{value}");
+        if shape == "recessed" {
+            // The fixture's only opening is its neck.
+            assert!(value["mouth"]["recess_mm"].is_null(), "{value}");
+            assert!(
+                value["mouth"]["note"]
+                    .as_str()
+                    .is_some_and(|note| note.contains("no mouth opening")),
+                "{value}"
+            );
+        }
         assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
         // Fading the apex leaves the even raise in full only near the rim.
         assert!(median(&value) < 0.9 * median(&posed), "{value} {posed}");

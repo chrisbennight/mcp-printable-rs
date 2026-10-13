@@ -234,6 +234,11 @@ pub struct BustReport {
     /// measured straight in from each face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thin: Option<SurfaceFinding>,
+    /// How far the mouth was set back on the finished bust: the requested
+    /// depth, which was applied before smoothing, times the height
+    /// correction that followed. Absent when no mouth was recessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouth_recess_mm: Option<f64>,
 }
 
 /// The detail that was applied, in millimetres at the finished size: the
@@ -331,9 +336,10 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     }
     // Place and scale before smoothing, so refinement works in final units.
     let scale = bust_height / (high[2] - low[2]);
-    if let Some(recess) = request.mouth_recess_mm {
-        recess_mouth(&mut parts, recess / scale, span)?;
-    }
+    let recessed = match request.mouth_recess_mm {
+        Some(recess) => (recess_mouth(&mut parts, recess / scale, span)? > 0).then_some(recess),
+        None => None,
+    };
     let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
     let place = |vertex: [f64; 3]| {
         let vertex = upright(vertex);
@@ -550,14 +556,15 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         }),
         overhang,
         thin,
+        mouth_recess_mm: recessed.map(|recess| recess * correction),
     };
     Ok(Prepared::Done(mesh, Box::new(report)))
 }
 
 /// Move the centre of the cap closing every opening but the lowest, the
 /// neck, `depth` into the head along the cap's inward normal, whatever the
-/// head's pose.
-fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<(), GeometryError> {
+/// head's pose. Returns how many caps were moved.
+fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<usize, GeometryError> {
     if depth > MAX_RECESS_FRACTION * span {
         return Err(GeometryError::InvalidOptions(format!(
             "the mouth recess would reach more than {:.0}% of the head's height into it",
@@ -576,6 +583,7 @@ fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<(), G
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(place, _)| place);
+    let mut recessed = 0;
     for (index, part) in parts.iter_mut().enumerate() {
         let centres: Vec<(u32, [f64; 3])> = part
             .openings
@@ -584,12 +592,13 @@ fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<(), G
             .filter(|(opening, _)| neck != Some((index, *opening)))
             .map(|(_, opening)| (opening.centre, opening.inward))
             .collect();
-        for (centre, inward) in centres {
-            let vertex = &mut part.vertices[centre as usize];
+        for (centre, inward) in &centres {
+            let vertex = &mut part.vertices[*centre as usize];
             *vertex = [0, 1, 2].map(|axis| vertex[axis] + inward[axis] * depth);
         }
+        recessed += centres.len();
     }
-    Ok(())
+    Ok(recessed)
 }
 
 /// The map to apply, the factor it was scaled by and whether that factor was
@@ -608,7 +617,9 @@ fn with_relief(
     // The reference is the map as the head samples it: at every triangle's
     // corners and centre, interpolated as the bust interpolates it, and
     // weighted by the triangle's area, as the refined surface spreads its
-    // points by area. Map values the head never reaches do not count.
+    // points by area. Map values the head never reaches do not count, nor do
+    // faded corners, and a centre counts by the share of its corners that are
+    // not faded, so the reference is the detail that is applied.
     let mut samples: Vec<(f64, f64)> = map
         .triangle_uvs
         .iter()
@@ -616,6 +627,13 @@ fn with_relief(
         .flat_map(|(corners, triangle)| {
             let [a, b, c] = triangle.map(|vertex| vertices[vertex as usize]);
             let area = 0.5 * norm(cross(sub(b, a), sub(c, a)));
+            let kept = triangle.map(|vertex| {
+                if map.faded.binary_search(&vertex).is_ok() {
+                    0.0
+                } else {
+                    1.0
+                }
+            });
             let centre = [0, 1].map(|axis| {
                 corners
                     .iter()
@@ -626,8 +644,10 @@ fn with_relief(
             corners
                 .iter()
                 .map(|corner| corner.map(f64::from))
-                .chain([centre])
-                .map(move |[u, v]| (map.sample(u, v).abs(), area / 4.0))
+                .zip(kept)
+                .chain([(centre, kept.iter().sum::<f64>() / 3.0)])
+                .map(move |([u, v], share)| (map.sample(u, v).abs(), share * area / 4.0))
+                .filter(|(_, weight)| *weight > 0.0)
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -636,10 +656,7 @@ fn with_relief(
         .map(|(magnitude, _)| *magnitude)
         .fold(0.0, f64::max);
     samples.retain(|(magnitude, _)| *magnitude > DETAIL_SHARE * sampled_largest);
-    let largest = map
-        .values
-        .iter()
-        .fold(0.0, |most: f64, value| most.max(f64::from(value.abs())));
+    let largest = applied_largest(map, triangles);
     let Some(reference) = weighted_percentile(&mut samples, RELIEF_PERCENTILE)
         .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
     else {
@@ -663,6 +680,44 @@ fn with_relief(
         *value = (f64::from(*value) * factor) as f32;
     }
     Ok((scaled, factor, limited))
+}
+
+/// The largest magnitude among the map's values that the head can apply:
+/// those a bilinear sample within the texture-space bounds of a triangle
+/// with a corner that is not faded can read. Bounds over-cover a triangle,
+/// so this errs toward the larger value.
+fn applied_largest(map: &Displacement, triangles: &[[u32; 3]]) -> f64 {
+    let (width, height) = (map.width, map.height);
+    let mut reached = vec![false; width * height];
+    for (corners, triangle) in map.triangle_uvs.iter().zip(triangles) {
+        if triangle
+            .iter()
+            .all(|vertex| map.faded.binary_search(vertex).is_ok())
+        {
+            continue;
+        }
+        let span = |axis: usize, side: usize, flip: bool| {
+            let at = |corner: &[f32; 2]| {
+                let value = f64::from(corner[axis]).clamp(0.0, 1.0);
+                (if flip { 1.0 - value } else { value }) * (side - 1) as f64
+            };
+            let low = corners.iter().map(at).fold(f64::INFINITY, f64::min);
+            let high = corners.iter().map(at).fold(f64::NEG_INFINITY, f64::max);
+            (low.floor() as usize)..=(high.ceil() as usize).min(side - 1)
+        };
+        for row in span(1, height, true) {
+            for column in span(0, width, false) {
+                reached[row * width + column] = true;
+            }
+        }
+    }
+    map.values
+        .iter()
+        .zip(reached)
+        .filter(|(_, reached)| *reached)
+        .fold(0.0, |most: f64, (value, _)| {
+            most.max(f64::from(value.abs()))
+        })
 }
 
 /// The applied range and, over the vertices that carry detail, its
@@ -2102,6 +2157,27 @@ mod tests {
         assert!(validated(&mesh).solid_geometry);
         let removed = flat.volume_mm3 - report.volume_mm3;
         assert!((300.0..900.0).contains(&removed), "{removed} {flat:?}");
+    }
+
+    #[test]
+    fn faded_detail_does_not_set_the_relief() {
+        // Weak detail on the box and strong detail on the part, whose
+        // islands lie beyond u = 5 / 12; the part is faded.
+        let wave = |u: f64, v: f64| {
+            let strength = if u >= 5.0 / 12.0 { 2.0 } else { 0.2 };
+            (strength * (40.0 * u).sin() * (12.0 * v).cos()) as f32
+        };
+        let mut faded = with_map(request(1.0, 1_000_000), wave);
+        let map = faded.displacement.as_mut().unwrap();
+        map.faded = (8..16).collect();
+        map.relief_mm = Some(0.3);
+        let (_, report) = prepare_bust(&faded).unwrap();
+        let depth = report
+            .displacement
+            .expect("displacement report")
+            .depth_p95_mm
+            .expect("detail depth");
+        assert!((0.15..0.45).contains(&depth), "{depth}");
     }
 
     #[test]

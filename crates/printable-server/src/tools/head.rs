@@ -940,7 +940,15 @@ pub(super) async fn prepare_print(
             response["warnings"] = json!(print_warnings(&printer, &response["bust"]));
             response["printer"] = serde_json::to_value(printer)?;
         }
-        if let Some(mouth) = mouth_report {
+        if let Some(mut mouth) = mouth_report {
+            // The depth applied on the finished bust, which the smoothing's
+            // height correction moves slightly from the request.
+            if mouth_recess_mm.is_some() {
+                mouth["recess_mm"] = response["bust"]["mouth_recess_mm"].clone();
+                if mouth["recess_mm"].is_null() {
+                    mouth["note"] = json!("the model has no mouth opening to recess");
+                }
+            }
             response["mouth"] = mouth;
         }
         Ok::<_, ToolError>(response)
