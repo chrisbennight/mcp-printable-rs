@@ -1272,6 +1272,16 @@
         "opt/VirtualGL/bin/vglrun"
       ],
       "notice_prefix": "opt/VirtualGL/",
+      "required_notices": [
+        "opt/VirtualGL/licenses/LICENSE.txt",
+        "opt/VirtualGL/licenses/LICENSE-FLTK.txt",
+        "opt/VirtualGL/licenses/COPYING-LGPL.txt"
+      ],
+      "notice_sha256": {
+        "opt/VirtualGL/licenses/LICENSE.txt": "8a510d211fb573047321a7c1d5ec2b131efee3e20f0cee4d0af76ec676835dba",
+        "opt/VirtualGL/licenses/LICENSE-FLTK.txt": "bb362458eff7b9b0365f32db37533624aa4db2cda57df1de388346fd6d3a4efa",
+        "opt/VirtualGL/licenses/COPYING-LGPL.txt": "3d600eb79af1321d91e9938961188fd8a00ad9389a212751b24dc1c2a32c1846"
+      },
       "license": "wxWindows",
       "source_url": "https://github.com/VirtualGL/virtualgl/archive/d045fcf1777e7b47913ea363d14f71b1fb26b2b9.tar.gz",
       "source_commit": "d045fcf1777e7b47913ea363d14f71b1fb26b2b9",

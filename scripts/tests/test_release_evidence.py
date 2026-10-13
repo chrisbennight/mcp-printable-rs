@@ -216,6 +216,8 @@ class ImageInventoryTests(unittest.TestCase):
         write_json(root / "release/components.json", {"components": components or []})
         (root / "Dockerfile").write_text(recipe if recipe is not None else "\n".join(
             component["asset_sha256"] for component in components or [] if component.get("asset_sha256")))
+        (root / "blender").mkdir()
+        (root / "blender/Dockerfile").write_text((root / "Dockerfile").read_text())
         write_json(root / "release/python-sources.json", {})
         (root / "crates/printable-imaging/assets").mkdir(parents=True)
         (root / "crates/printable-imaging/assets/FiraSans-Regular.ttf").write_bytes(b"font")
@@ -311,6 +313,50 @@ class ImageInventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "no inventory owner"):
                 self.run_collector(directory, lambda files: files.update({"opt/unknown.so": b"\x7fELFunknown"}))
+
+    def test_virtualgl_requires_unchanged_vendor_notices_and_package_copyright(self):
+        repository = Path(__file__).resolve().parents[2]
+        component = next(item for item in json.loads((repository / "release/components.json").read_text())["components"]
+                         if item["name"] == "VirtualGL")
+        notices = {"opt/VirtualGL/licenses/LICENSE.txt": b"VirtualGL license fixture",
+                   "opt/VirtualGL/licenses/LICENSE-FLTK.txt": b"FLTK license fixture",
+                   "opt/VirtualGL/licenses/COPYING-LGPL.txt": b"LGPL license fixture"}
+        self.assertEqual(set(component["required_notices"]), set(notices))
+        self.assertEqual(set(component["notice_sha256"]), set(notices))
+        fixture_component = component | {"roles": ["server"], "notice_sha256": {
+            path: hashlib.sha256(data).hexdigest() for path, data in notices.items()}}
+        copyright_path = "usr/share/doc/virtualgl/copyright"
+        artifacts = [{"name": "libc6", "version": "2.41-12+b1"}, {"name": "used", "version": "1.0.0"},
+                     {"name": "virtualgl", "version": "3.1.5-20260814"}]
+        changes = [None, ("missing", copyright_path)]
+        changes.extend((kind, path) for kind in ("missing", "changed") for path in notices)
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                def install_virtualgl(files):
+                    files.update(notices)
+                    files[copyright_path] = notices["opt/VirtualGL/licenses/LICENSE.txt"]
+                    files["opt/VirtualGL/bin/vglrun"] = b"#!/bin/sh\n"
+                    files["var/lib/dpkg/status"] = STATUS + (
+                        b"Package: virtualgl\nStatus: install ok installed\nArchitecture: amd64\n"
+                        b"Version: 3.1.5-20260814\n\n")
+                    files["var/lib/dpkg/info/virtualgl.list"] = b"/opt/VirtualGL/bin/vglrun\n"
+                    if change and change[0] == "missing": files.pop(change[1])
+                    elif change: files[change[1]] = b"changed license"
+                if change:
+                    error = ("no retained copyright notice: virtualgl" if change[1] == copyright_path else
+                             "license notice is absent" if change[0] == "missing" else "license notice differs")
+                    with self.assertRaisesRegex(ValueError, error):
+                        self.run_collector(directory, install_virtualgl, [fixture_component],
+                                           (repository / "blender/Dockerfile").read_text(), artifacts)
+                else:
+                    output = self.run_collector(directory, install_virtualgl, [fixture_component],
+                                                (repository / "blender/Dockerfile").read_text(), artifacts)
+                    for path, data in notices.items():
+                        self.assertEqual((output / "server/notices" / path).read_bytes(), data)
+                    material = json.loads((output / "server/materials.json").read_text())
+                    package = next(item for item in material["debian"] if item["name"] == "virtualgl")
+                    self.assertEqual((output / "server" / package["notice"]).read_bytes(),
+                                     notices["opt/VirtualGL/licenses/LICENSE.txt"])
 
     def test_approved_distribution_directory_does_not_identify_an_added_library(self):
         component = {"name": "Example bundle", "version": "1.0", "roles": ["server"],
