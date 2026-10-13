@@ -292,7 +292,10 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    placed exactly where its grid edge, followed from the outside end, first
    enters the solid. Surfaces buried inside the union, such as the hidden
    parts of the eyeballs and the folds of the lips, therefore do not pull the
-   surface inward where they meet it.
+   surface inward where they meet it. Each eyeball sits in a pocket of the
+   head's surface and touches it only where the eyelids overlap it, so it is
+   also joined to the head by a stem from its centre toward the head's,
+   hidden behind it, which holds it on at any size.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
 6. Optionally, a body is added below the head: a longer neck or a block of
@@ -324,7 +327,7 @@ reported as an error and not written.
 | Parameter | Default | Range |
 | --- | --- | --- |
 | `height_mm` | 100 | 20 to 500 |
-| `edge_length_mm` | 0.4 | 0.1 to 5 |
+| `edge_length_mm` | 0.4, or 0.4% of `height_mm` under 100 mm, and no less than 0.1 | 0.1 to 5 |
 | `max_triangles` | 750,000 | 10,000 to 3,000,000 |
 | `plinth_height_mm` | none; 8% of `height_mm` for an FDM `printer` | 2 to 100, counted within `height_mm`, or 0 for none |
 | `plinth_diameter_mm` | 70% of the bust's widest extent, and at least 1 mm beyond its base | 10 to 500 |
@@ -552,10 +555,10 @@ request took 7.6 seconds, about the same as without the checks. A 60 mm
 resin bust of the same head with `minimum_wall_mm` 0.5 reported 6.8 mm²
 thinner than that, at the ears and lips.
 
-A bust of that head shorter than about 37 mm above its plinth could not be
-made: its eyeballs no longer joined the head and the request failed with
-`the bust is 3 separate solids rather than one`. A 40 mm bust without a
-plinth worked. Choose a larger `height_mm` if this happens.
+Busts of that head from 20 to 70 mm, with and without its detail map, were
+each one valid solid and took about 8 seconds: a small bust's default facet
+edge is 0.4% of its height, so thin parts such as the ears stay several
+facets thick.
 
 ### Mouth
 

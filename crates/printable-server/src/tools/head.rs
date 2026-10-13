@@ -21,6 +21,8 @@ const DEFAULT_PRINT_HEIGHT_MM: f64 = 100.0;
 /// on a 100 mm bust, below what a 0.2 mm nozzle reproduces.
 const EDGE_LENGTH_MM: std::ops::RangeInclusive<f64> = 0.1..=5.0;
 const DEFAULT_EDGE_LENGTH_MM: f64 = 0.4;
+/// Busts under 100 mm default to facets this share of their height.
+const EDGE_LENGTH_SHARE: f64 = 0.004;
 const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
@@ -340,7 +342,8 @@ pub(super) struct HeadPreparePrintParams {
     /// (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     height_mm: Option<f64>,
-    /// Target facet edge length, 0.1 to 5 mm (default 0.4). Shorter edges
+    /// Target facet edge length, 0.1 to 5 mm. Defaults to 0.4, or to 0.4% of
+    /// `height_mm` on busts under 100 mm and no less than 0.1. Shorter edges
     /// follow the smooth surface more closely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
@@ -779,9 +782,13 @@ pub(super) async fn prepare_print(
         params.height_mm.unwrap_or(DEFAULT_PRINT_HEIGHT_MM),
         &PRINT_HEIGHT_MM,
     )?;
+    // A small bust keeps the same detail relative to its size: thin parts
+    // such as the ears stay several facets thick.
+    let default_edge =
+        (EDGE_LENGTH_SHARE * height_mm).clamp(*EDGE_LENGTH_MM.start(), DEFAULT_EDGE_LENGTH_MM);
     let edge_length_mm = in_range(
         "edge_length_mm",
-        params.edge_length_mm.unwrap_or(DEFAULT_EDGE_LENGTH_MM),
+        params.edge_length_mm.unwrap_or(default_edge),
         &EDGE_LENGTH_MM,
     )?;
     let max_triangles = in_range(
