@@ -799,14 +799,16 @@ it is measured from the photographs. Each eye's iris is found where the
 darkness of its photographed eyeball is centred, which allows for a subject
 who looked aside. The colour is then the middle half, by luminance, of the
 photographed texels between about half and most of the iris's radius from
-there, which leaves out the pupil, reflections and lashes. Where too little
-of the iris was seen, a mid brown (96, 66, 42) is used. `sclera_colour` sets
+there, which leaves out the pupil, reflections and lashes. An eye counts
+only when that ring is distinctly darker than the white of its eye. Where
+too little iris was seen, a mid brown (96, 66, 42) is used. `sclera_colour` sets
 the white, by default (240, 236, 230). Painting needs separate eyeballs: the
 model's eyeball regions, from `--masks`, or otherwise its parts beside the
 head. Without them nothing is painted, and the response says so.
 
 The response adds `texture` with the artifact, its size and `seen`, the share
-of the head's surface whose colour some photograph gave directly. `skin_only`
+of the head's surface whose colour some photograph gave directly; painted
+eyeballs do not count. `skin_only`
 says whether every photograph was segmented. `scalp` reports the colouring
 requested and applied, the hair colour used and the hair colour found, and a
 `note` when the colouring applied differs from the one requested. `eyes`

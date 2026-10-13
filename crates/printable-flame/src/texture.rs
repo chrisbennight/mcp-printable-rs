@@ -60,6 +60,10 @@ const PAINT_SOFTNESS: f32 = 0.04;
 const IRIS_SAMPLE_SHARES: [f32; 2] = [0.45, 0.85];
 /// The iris is looked for within this share of its radius of the gaze.
 const IRIS_SEARCH_SHARE: f32 = 2.0;
+/// The white of a photographed eye is taken as this share of the way up its
+/// luminances, and an iris must be at least this share darker than it.
+const WHITE_PERCENTILE: f32 = 0.9;
+const MIN_IRIS_CONTRAST: f32 = 0.15;
 /// Fewest photographed iris texels to measure an iris colour from.
 const MIN_IRIS_TEXELS: usize = 16;
 /// Iris colour used when it is neither given nor measured: a mid brown.
@@ -604,12 +608,16 @@ fn finish(
     let painted = matches!(scalp, ScalpColour::Hair(_));
     let mut on_surface = 0usize;
     let mut seen = 0usize;
+    // Painted eyes show no photograph's colour.
+    let painted_eyes = painting.is_some_and(|(_, texels)| !texels.is_empty());
     for (index, &face) in texels.face.iter().enumerate() {
         if face != NO_FACE {
             on_surface += 1;
             // Painted hair shows a photograph's colour only where it saw
             // bare scalp.
-            let shown = if painted && on_scalp(face) {
+            let shown = if painted_eyes && kinds[face as usize] == FaceKind::Eye {
+                0.0
+            } else if painted && on_scalp(face) {
                 skin.weight[index]
             } else {
                 weight[index]
@@ -787,14 +795,33 @@ fn measured_iris(
             continue;
         }
         let centre = sum.map(|value| value / total);
-        samples.extend(
-            seen.iter()
-                .filter(|texel| {
-                    let distance = (texel.offset[0] - centre[0]).hypot(texel.offset[1] - centre[1]);
-                    texel.eye == eye && (inner..=outer).contains(&distance)
-                })
-                .map(|texel| colour[texel.texel]),
+        let ring: Vec<[f32; 3]> = seen
+            .iter()
+            .filter(|texel| {
+                let distance = (texel.offset[0] - centre[0]).hypot(texel.offset[1] - centre[1]);
+                texel.eye == eye && (inner..=outer).contains(&distance)
+            })
+            .map(|texel| colour[texel.texel])
+            .collect();
+        // Small variations in a white with no iris in view would also give
+        // a centre, so only a ring distinctly darker than the white counts.
+        let percentile = |mut values: Vec<f32>, share: f32| {
+            values.sort_by(f32::total_cmp);
+            values[((values.len() - 1) as f32 * share) as usize]
+        };
+        if ring.is_empty() {
+            continue;
+        }
+        let white = percentile(
+            near.iter()
+                .map(|texel| luminance(&colour[texel.texel]))
+                .collect(),
+            WHITE_PERCENTILE,
         );
+        let middle = percentile(ring.iter().map(luminance).collect(), 0.5);
+        if middle <= (1.0 - MIN_IRIS_CONTRAST) * white {
+            samples.extend(ring);
+        }
     }
     let mut seen = samples;
     if seen.len() < MIN_IRIS_TEXELS {
@@ -2206,6 +2233,15 @@ mod tests {
         });
         assert_eq!(covered.iris, Some((DEFAULT_IRIS_RGB, IrisSource::Default)));
         assert_eq!(front(&covered, 0.33, 0.0), DEFAULT_IRIS_RGB);
+        // White with a barely darker spot is not an iris.
+        let white = painted_bake(None, |x, y| {
+            if x.hypot(y) < 0.05 {
+                ([234, 234, 234], LABEL_OTHER)
+            } else {
+                ([235, 235, 235], LABEL_OTHER)
+            }
+        });
+        assert_eq!(white.iris, Some((DEFAULT_IRIS_RGB, IrisSource::Default)));
         let unseen = {
             let (vertices, faces, layout) = eyeball();
             let kinds = vec![FaceKind::Eye; faces.len()];
@@ -2245,6 +2281,29 @@ mod tests {
             builder.finish()
         };
         assert_eq!(unseen.unwrap_err(), TextureError::NotVisible);
+    }
+
+    #[test]
+    fn painted_eyes_do_not_count_as_seen() {
+        let painted = painted_bake(Some([40, 80, 160]), |_, _| ([200, 150, 120], LABEL_OTHER));
+        assert_eq!(painted.seen, 0.0);
+        let (vertices, faces, layout) = eyeball();
+        let kinds = vec![FaceKind::Eye; faces.len()];
+        let mut builder = ColourMapBuilder::new(&faces, &layout, 64, &kinds, KEEP).unwrap();
+        let rgb = vec![120u8; 224 * 224 * 3];
+        builder
+            .add(&View {
+                photo: Photo {
+                    width: 224,
+                    height: 224,
+                    rgb: &rgb,
+                },
+                vertices: &vertices,
+                projection: PROJECTION,
+                labels: None,
+            })
+            .unwrap();
+        assert!(builder.finish().unwrap().seen > 0.5);
     }
 
     #[test]
