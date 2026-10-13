@@ -293,7 +293,8 @@ ears. `prepare_print` takes the same `variant`, `identity`, `expression` and
    surface inward where they meet it.
 5. The neck is cut flat just above its opening, so the bust rests on z = 0,
    and the height is corrected to exactly `height_mm`.
-6. Optionally, a cylindrical plinth is added under the base.
+6. A cylindrical plinth is added under the base when requested, and by
+   default for an FDM `printer`. Its bottom edge can be chamfered.
 7. Optionally, the bust is hollowed for resin printing. Everything deeper than
    the wall thickness is removed, and one or two drain holes open from the
    base into the lowest part of the cavity. A pocket that no drain hole
@@ -321,11 +322,13 @@ reported as an error and not written.
 | `height_mm` | 100 | 20 to 500 |
 | `edge_length_mm` | 0.4 | 0.1 to 5 |
 | `max_triangles` | 750,000 | 10,000 to 3,000,000 |
-| `plinth_height_mm` | none | 2 to 100, counted within `height_mm` |
+| `plinth_height_mm` | none; 8% of `height_mm` for an FDM `printer` | 2 to 100, counted within `height_mm`, or 0 for none |
 | `plinth_diameter_mm` | 70% of the bust's widest extent | 10 to 500 |
+| `plinth_chamfer_mm` | 0; 0.5 for an FDM `printer` | 0 to 5, less than the plinth's height |
 | `hollow_wall_mm` | none (solid) | 1 to 20 |
 | `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
 | `displacement` | none | see [Surface detail](#surface-detail) |
+| `printer` | none | see [Printer settings](#printer-settings) |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -341,9 +344,10 @@ nothing.
 The response contains the written artifact, a `bust` report and the mesh
 validation report. `bust` gives the triangle count, size, volume and the edge
 length used. The edge length grows above the request only when needed to
-stay within `max_triangles`. When requested, `plinth` reports the plinth's
-height and diameter, and `hollow` reports the wall thickness, the volume
-removed and the drain hole positions on the base.
+stay within `max_triangles`. `life_size_fraction` is the bust's size as a
+fraction of the life-size head. When requested, `plinth` reports the plinth's
+height, diameter and chamfer, and `hollow` reports the wall thickness, the
+volume removed and the drain hole positions on the base.
 
 `estimated_deviation_p999_mm` estimates how far the flat facets sit from the
 smooth surface they approximate, at the 99.9th percentile. It is an estimate,
@@ -439,6 +443,9 @@ The `bust` report adds `displacement`:
   applied, in millimetres at the finished size;
 - `percentiles_mm`, the 1st, 5th, 50th, 95th and 99th percentiles of the
   applied distance over the vertices where the map carries detail;
+- `depth_p95_mm`, the 95th percentile of the applied distance's magnitude
+  over those vertices, raised and recessed alike, which is what `relief_mm`
+  aims for;
 - `relief_scale`, the factor `relief_mm` multiplied the map by, or 1;
 - `filter`, the millimetres per texel used and the filter settings applied.
 
@@ -458,6 +465,81 @@ The applied detail ranged from -1.2 to +1.2 mm, and the request took about
 8 seconds on a busy four-core machine. Forehead lines and creases around the
 eyes and mouth were clearly visible in renders of the result. On an FDM
 print, expect detail shallower than the layer height to be lost.
+
+### Printer settings
+
+`printer` describes how the bust will be printed. It sets defaults suited to
+the process and adds reports of what the printer may not reproduce. Without
+it, nothing is assumed about the printer and the response is unchanged.
+
+| Field | Default | Range |
+| --- | --- | --- |
+| `process` | required | `fdm` or `resin` |
+| `nozzle_diameter_mm` | 0.4 | 0.1 to 2, FDM only |
+| `layer_height_mm` | 0.2 for FDM, 0.05 for resin | 0.01 to 1, no more than the nozzle diameter |
+| `maximum_overhang_degrees` | 45 | 0 to 90 |
+| `minimum_wall_mm` | the nozzle diameter for FDM; none for resin | 0.05 to 2 |
+
+```json
+{"action": "prepare_print", "params": {
+  "variant": "flame2020_generic",
+  "identity": [0.4, -1.1],
+  "path": "busts/fdm.stl",
+  "printer": {"process": "fdm", "nozzle_diameter_mm": 0.6, "layer_height_mm": 0.3}
+}}
+```
+
+With a printer:
+
+- An FDM bust stands on a plinth 8% of `height_mm` tall, with its bottom
+  edge chamfered by 0.5 mm, about two layers, so that the first layers,
+  which spread as they are pressed onto the build plate, stay within the
+  plinth's outline. `plinth_height_mm` 0 leaves the plinth out. A resin bust
+  has no plinth unless one is requested.
+- When `displacement` sets neither `gain` nor `relief_mm`, the detail's 95th
+  percentile is made two layers deep, but no more than 1% of the bust's
+  height above the plinth. Deeper detail on a small bust can push the
+  eyelids clear of the eyes. If that relief would raise detail beyond 5% of
+  the head's height, it is reduced to that limit.
+- The validation report's overhang analysis uses `maximum_overhang_degrees`.
+
+The `bust` report adds:
+
+- `overhang`, the area of surface facing down more steeply than
+  `maximum_overhang_degrees` from vertical, measured on the bust before the
+  plinth is added and leaving out the base resting on the build plate;
+- `thin`, when `minimum_wall_mm` applies, the area of surface where the
+  finished solid is thinner than that. Each face's thickness is measured
+  along a ray straight into the solid. The plinth's faces are not checked,
+  and a ray that leaves through the base resting on the build plate does not
+  count, because the plate holds what lies above it. A hollow bust's walls
+  are measured.
+
+Each lists up to five of its largest connected regions, largest first, with
+their area, a point on the region in the bust's coordinates and, when the
+model was converted with `--masks`, `region`: the name of the smallest FLAME
+region holding the head's vertex nearest that point, or else the region of
+the nearest vertex that has one.
+
+The response adds `printer`, the settings used with their defaults, and
+`warnings`, plain sentences about parts thinner than `minimum_wall_mm`,
+detail whose `depth_p95_mm` is shallower than one layer, and a default
+relief that was reduced to the limit.
+
+On a 100 mm FDM bust of the FLAME 2020 generic head with a map reconstructed
+from one photograph and `high_pass_mm` 15, the defaults gave an 8 mm plinth
+with a 0.5 mm chamfer and a 0.4 mm relief; the applied distance's 95th
+percentile was +0.45 mm. 675 mm² of surface overhung by more than 45 degrees, largest
+under the chin (reported as `neck`), then under the lips, the nose and both
+ears. 3.3 mm² at the nose, ears and lips was thinner than 0.4 mm. The
+request took 7.6 seconds, about the same as without the checks. A 60 mm
+resin bust of the same head with `minimum_wall_mm` 0.5 reported 6.8 mm²
+thinner than that, at the ears and lips.
+
+A bust of that head shorter than about 37 mm above its plinth could not be
+made: its eyeballs no longer joined the head and the request failed with
+`the bust is 3 separate solids rather than one`. A 40 mm bust without a
+plinth worked. Choose a larger `height_mm` if this happens.
 
 ## Reconstruct a head from photographs
 
