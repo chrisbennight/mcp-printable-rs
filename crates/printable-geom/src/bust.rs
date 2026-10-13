@@ -345,10 +345,14 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         let vertex = upright(vertex);
         [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
     };
+    let rims: Vec<Vec<u32>> = parts
+        .iter()
+        .flat_map(|part| part.openings.iter().map(|opening| opening.rim.clone()))
+        .collect();
     let relieved = match &request.displacement {
         Some(map) => Some(with_relief(
             map,
-            (&request.vertices, &request.triangles),
+            (&request.vertices, &request.triangles, &rims),
             scale,
             span,
         )?),
@@ -607,7 +611,7 @@ fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<usize
 /// is scaled by `scale`.
 fn with_relief(
     map: &Displacement,
-    (vertices, triangles): (&[[f64; 3]], &[[u32; 3]]),
+    (vertices, triangles, rims): (&[[f64; 3]], &[[u32; 3]], &[Vec<u32>]),
     scale: f64,
     head_height: f64,
 ) -> Result<(Displacement, f64, bool), GeometryError> {
@@ -618,7 +622,7 @@ fn with_relief(
     // corners and centre, interpolated as the bust interpolates it, and
     // weighted by the triangle's area, as the refined surface spreads its
     // points by area. Map values the head never reaches do not count, nor do
-    // faded corners, and a centre counts by the share of its corners that are
+    // faded corners, and a centre takes the share of its corners that are
     // not faded, so the reference is the detail that is applied.
     let mut samples: Vec<(f64, f64)> = map
         .triangle_uvs
@@ -641,13 +645,15 @@ fn with_relief(
                     .sum::<f64>()
                     / 3.0
             });
+            // Each sample enters at the magnitude it is applied with: the
+            // map's value times the share of the detail kept there.
             corners
                 .iter()
                 .map(|corner| corner.map(f64::from))
                 .zip(kept)
                 .chain([(centre, kept.iter().sum::<f64>() / 3.0)])
-                .map(move |([u, v], share)| (map.sample(u, v).abs(), share * area / 4.0))
-                .filter(|(_, weight)| *weight > 0.0)
+                .filter(|(_, share)| *share > 0.0)
+                .map(move |([u, v], share)| (share * map.sample(u, v).abs(), area / 4.0))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -656,7 +662,7 @@ fn with_relief(
         .map(|(magnitude, _)| *magnitude)
         .fold(0.0, f64::max);
     samples.retain(|(magnitude, _)| *magnitude > DETAIL_SHARE * sampled_largest);
-    let largest = applied_largest(map, triangles);
+    let largest = applied_largest(map, triangles, rims);
     let Some(reference) = weighted_percentile(&mut samples, RELIEF_PERCENTILE)
         .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
     else {
@@ -684,18 +690,14 @@ fn with_relief(
 
 /// The largest magnitude among the map's values that the head can apply:
 /// those a bilinear sample within the texture-space bounds of a triangle
-/// with a corner that is not faded can read. Bounds over-cover a triangle,
-/// so this errs toward the larger value.
-fn applied_largest(map: &Displacement, triangles: &[[u32; 3]]) -> f64 {
+/// with a corner that is not faded can read, or within the bounds of an
+/// opening's rim, whose cap takes texture coordinates between the rim's.
+/// Bounds over-cover, so this errs toward the larger value.
+fn applied_largest(map: &Displacement, triangles: &[[u32; 3]], rims: &[Vec<u32>]) -> f64 {
     let (width, height) = (map.width, map.height);
+    let faded = |vertex: &u32| map.faded.binary_search(vertex).is_ok();
     let mut reached = vec![false; width * height];
-    for (corners, triangle) in map.triangle_uvs.iter().zip(triangles) {
-        if triangle
-            .iter()
-            .all(|vertex| map.faded.binary_search(vertex).is_ok())
-        {
-            continue;
-        }
+    let mut mark = |corners: Vec<[f32; 2]>| {
         let span = |axis: usize, side: usize, flip: bool| {
             let at = |corner: &[f32; 2]| {
                 let value = f64::from(corner[axis]).clamp(0.0, 1.0);
@@ -709,6 +711,30 @@ fn applied_largest(map: &Displacement, triangles: &[[u32; 3]]) -> f64 {
             for column in span(0, width, false) {
                 reached[row * width + column] = true;
             }
+        }
+    };
+    for (corners, triangle) in map.triangle_uvs.iter().zip(triangles) {
+        if !triangle.iter().all(faded) {
+            mark(corners.to_vec());
+        }
+    }
+    for rim in rims.iter().filter(|rim| !rim.iter().all(faded)) {
+        let rim: HashSet<u32> = rim.iter().copied().collect();
+        let corners: Vec<[f32; 2]> = map
+            .triangle_uvs
+            .iter()
+            .zip(triangles)
+            .flat_map(|(corners, triangle)| {
+                corners
+                    .iter()
+                    .zip(triangle)
+                    .filter(|(_, vertex)| rim.contains(vertex))
+                    .map(|(corner, _)| *corner)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !corners.is_empty() {
+            mark(corners);
         }
     }
     map.values
@@ -1125,6 +1151,8 @@ struct Opening {
     centre: u32,
     /// The unit normal of that fan, pointing into the part.
     inward: [f64; 3],
+    /// The request vertices around the opening.
+    rim: Vec<u32>,
 }
 
 struct ClosedPart {
@@ -1270,6 +1298,7 @@ fn close_part(
             top_height: points.iter().map(|point| point[1]).fold(f64::MIN, f64::max),
             centre: centre_index,
             inward: normalize(outward.map(|value| -value)),
+            rim: boundary.clone(),
         });
     }
     Ok(ClosedPart {
@@ -2178,6 +2207,74 @@ mod tests {
             .depth_p95_mm
             .expect("detail depth");
         assert!((0.15..0.45).contains(&depth), "{depth}");
+    }
+
+    #[test]
+    fn a_partly_faded_centre_counts_at_its_applied_depth() {
+        // One triangle with two faded corners: its centre keeps a third of
+        // the map's value there. The map is 1 around the centre and 0.2 at
+        // the corners.
+        let vertices = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
+        let triangles = [[0, 1, 2]];
+        let corners = [[0.1f32, 0.1], [0.9, 0.1], [0.1, 0.9]];
+        let centre = [0.1 + 0.8 / 3.0, 0.1 + 0.8 / 3.0];
+        let side = 64;
+        let values = (0..side * side)
+            .map(|index| {
+                let u = (index % side) as f64 / (side - 1) as f64;
+                let v = 1.0 - (index / side) as f64 / (side - 1) as f64;
+                if (u - centre[0]).hypot(v - centre[1]) < 0.1 {
+                    1.0
+                } else {
+                    0.2
+                }
+            })
+            .collect();
+        let map = Displacement {
+            width: side,
+            height: side,
+            values,
+            triangle_uvs: vec![corners],
+            relief_mm: Some(0.5),
+            limit_relief: false,
+            faded: vec![1, 2],
+        };
+        let (_, factor, _) = with_relief(&map, (&vertices, &triangles, &[]), 1.0, 1000.0).unwrap();
+        // The reference is the centre's applied third, not its full value.
+        assert!((factor - 1.5).abs() < 0.05, "{factor}");
+    }
+
+    #[test]
+    fn values_a_cap_can_reach_count_toward_the_limit() {
+        // Weak detail on every face's island and strong values in the middle
+        // of the gaps between islands, beyond what samples on the islands'
+        // edges read, which only the neck cap, whose rim spans four faces,
+        // can reach.
+        // The open box alone: its islands span less than the 1/12 they are
+        // spaced by, while the stand-in eye's would reach into the gaps.
+        let mut open_box = request(1.0, 1_000_000);
+        open_box.vertices.truncate(8);
+        open_box.triangles.truncate(10);
+        let mut capped = with_map(open_box, |_, _| 0.0);
+        let side = 256;
+        let map = capped.displacement.as_mut().unwrap();
+        map.width = side;
+        map.height = side;
+        map.values = (0..side * side)
+            .map(|index| {
+                let u = (index % side) as f64 / (side - 1) as f64;
+                if (0.87..0.93).contains(&(u * 12.0).fract()) {
+                    1.0
+                } else {
+                    (0.01 * (40.0 * u).sin()) as f32
+                }
+            })
+            .collect();
+        map.relief_mm = Some(1.0);
+        assert!(matches!(
+            prepare_bust(&capped),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("relief_mm")
+        ));
     }
 
     #[test]
