@@ -6031,6 +6031,104 @@ async fn head_prepare_print_makes_detail_deep_enough_for_the_printer() {
 }
 
 #[tokio::test]
+async fn head_expression_scale_softens_the_expression_to_neutral() {
+    let (_models, library) = tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    let mut written = Vec::new();
+    for (path, params) in [
+        ("neutral.obj", json!({})),
+        (
+            "scaled.obj",
+            json!({"expression": [2.0], "expression_scale": 0.0}),
+        ),
+        (
+            "half.obj",
+            json!({"expression": [2.0], "expression_scale": 0.5}),
+        ),
+        ("one.obj", json!({"expression": [1.0]})),
+    ] {
+        let mut params = params;
+        params["path"] = json!(path);
+        let result = server
+            .invoke_tool(head_call(json!({"action": "export", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        written.push(std::fs::read(root.path().join(path)).unwrap());
+    }
+    assert_eq!(
+        written[0], written[1],
+        "a scale of 0 gives the neutral face"
+    );
+    assert_eq!(written[2], written[3], "half of 2 is 1");
+    assert_ne!(written[0], written[3]);
+}
+
+#[tokio::test]
+async fn head_prepare_print_closes_or_recesses_the_mouth_and_fades_detail_on_the_lips() {
+    let models = tempfile::tempdir().unwrap();
+    let faces = vec![0, 2, 1, 0, 3, 2, 1, 2, 3];
+    let fixture = printable_flame::fixture::Fixture {
+        faces: faces.clone(),
+        uv: Some((vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5], faces)),
+        // The apex, the only vertex above the cut, stands in for the lips.
+        regions: vec![("lips".into(), vec![2])],
+        ..Default::default()
+    };
+    std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+    let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(16, 16, |_, _| u16::MAX),
+    )
+    .unwrap();
+    let server = head_print_server(root.path(), library);
+    let run = |path: &str, extra: Value| {
+        let mut params = json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 2.0,
+            "displacement": {"path": "detail.png", "offset_mm": 0.0, "scale_mm": 10.0}
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let median = |value: &Value| {
+        value["bust"]["displacement"]["percentiles_mm"]["p50"]
+            .as_f64()
+            .unwrap()
+    };
+    let posed = run("posed.stl", json!({})).await.unwrap();
+    let posed = posed.structured_content.unwrap();
+    assert!(posed.get("mouth").is_none(), "{posed}");
+    for (shape, extra) in [
+        (
+            "closed",
+            json!({"mouth": "closed", "pose": {"jaw": [0.2, 0.0, 0.0]}}),
+        ),
+        (
+            "recessed",
+            json!({"mouth": "recessed", "mouth_recess_mm": 1.0}),
+        ),
+    ] {
+        let result = run(&format!("{shape}.stl"), extra).await.unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        assert!(head_output_validator(&server).is_valid(&value), "{value}");
+        assert_eq!(value["mouth"]["shape"], shape, "{value}");
+        assert_eq!(value["mouth"]["detail_faded_over"], "lips", "{value}");
+        assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+        // Fading the apex leaves the even raise in full only near the rim.
+        assert!(median(&value) < 0.9 * median(&posed), "{value} {posed}");
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_writes_the_same_bytes_with_or_without_a_texture_layout() {
     // Appearance must not change the printed shape: without a displacement
     // map, a model converted with --texture prints exactly as one without.
@@ -6332,6 +6430,18 @@ async fn head_prepare_print_rejects_invalid_options_before_running_the_worker() 
         (
             json!({"path": "head.stl", "printer": {"process": "resin", "minimum_wall_mm": 5.0}}),
             "printer.minimum_wall_mm",
+        ),
+        (
+            json!({"path": "head.stl", "expression_scale": 1.5}),
+            "expression_scale",
+        ),
+        (
+            json!({"path": "head.stl", "mouth_recess_mm": 2.0}),
+            "requires mouth recessed",
+        ),
+        (
+            json!({"path": "head.stl", "mouth": "recessed", "mouth_recess_mm": 20.0}),
+            "mouth_recess_mm",
         ),
         (
             json!({"path": "head.stl", "height_mm": 30.0, "plinth_height_mm": 25.0}),

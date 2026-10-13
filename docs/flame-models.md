@@ -155,7 +155,9 @@ each within ±5; omitted trailing coefficients are zero. Pose rotations are
 axis-angle vectors in radians with a length of at most pi, in FLAME's frame:
 y up and the face looking along +z, so the subject's left is +x. A positive jaw
 rotation about +x opens the mouth. `variant` may be omitted when only one model
-is mounted.
+is mounted. `expression_scale`, 0 to 1 and 1 by default, multiplies the
+expression coefficients and the jaw rotation in `create`, `update`, `export`
+and `prepare_print`, so an expression can be softened; 0 gives a neutral face.
 
 The mesh is in millimetres, like other Printable geometry, so an unscaled head
 is life size. In Blender the new head stands upright: its object is rotated 90
@@ -329,6 +331,9 @@ reported as an error and not written.
 | `drain_hole_diameter_mm` | 3.5 | 1 to 10 |
 | `displacement` | none | see [Surface detail](#surface-detail) |
 | `printer` | none | see [Printer settings](#printer-settings) |
+| `expression_scale` | 1 | 0 to 1 |
+| `mouth` | `as_posed` | `as_posed`, `closed` or `recessed`; see [Mouth](#mouth) |
+| `mouth_recess_mm` | 2 with `recessed` | 0.5 to 10 |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -540,6 +545,37 @@ A bust of that head shorter than about 37 mm above its plinth could not be
 made: its eyeballs no longer joined the head and the request failed with
 `the bust is 3 separate solids rather than one`. A 40 mm bust without a
 plinth worked. Choose a larger `height_mm` if this happens.
+
+### Mouth
+
+FLAME's mouth opening lies behind the lips, and step 1 closes it with a flat
+surface. When the lips are parted, that surface shows between them and prints
+as a thin membrane. `mouth` chooses how the mouth is printed:
+
+- `as_posed`, the default, keeps the pose.
+- `closed` sets the jaw rotation to zero, replacing `pose.jaw`. FLAME's lips
+  meet when the jaw is closed unless the expression itself parts them;
+  `expression_scale` softens such an expression.
+- `recessed` keeps the pose and sets the centre of the surface closing the
+  mouth back into the head by `mouth_recess_mm` on the finished bust, 0.5 to
+  10 and 2 by default, so an open mouth reads as a shadow. A recess deeper
+  than a fifth of the head's height is refused.
+
+With `closed` or `recessed`, surface detail from `displacement` fades out
+over FLAME's `lips` region, so the lips are not raised into a ridge where
+they meet. This needs a model converted with `--masks`. The response adds
+`mouth` with the shape, the recess and, when a displacement map was given,
+`detail_faded_over`: `lips`, or null when the model has no such region.
+
+On the FLAME 2020 generic model with a head reconstructed from one
+photograph, whose jaw was open by 0.09 radians, the largest vertical gap
+between the front-most lip vertices on the face's centre line was 5.9 mm at
+life size, and renders of a 100 mm bust showed the flat surface between the
+lips. With the jaw closed, that gap was 3.7 mm, the same as a neutral face
+with a closed jaw, where it is the spacing of the vertices, and renders with
+`closed` showed the lips meeting in a line. With `recessed` and 5 mm, the
+opening showed as a dark slot. Each bust was one valid solid and took about
+7 seconds.
 
 ## Reconstruct a head from photographs
 
