@@ -57,6 +57,9 @@ const DRAIN_OVERLAP_MM: f64 = 1.0;
 const SECTION_OFFSET_MM: f64 = 0.01;
 /// Largest displacement map side accepted, in samples.
 const MAX_DISPLACEMENT_SIDE: usize = 1024;
+/// A mouth cap's centre may be set back at most this fraction of the head's
+/// height, which keeps it well inside the head.
+const MAX_RECESS_FRACTION: f64 = 0.2;
 /// Displacement is surface detail; values beyond this fraction of the head's
 /// height are not.
 const MAX_DISPLACEMENT_FRACTION: f64 = 0.05;
@@ -99,6 +102,12 @@ pub struct BustRequest {
     /// Check the finished bust for overhangs and thin parts.
     #[serde(default)]
     pub checks: Option<PrintChecks>,
+    /// Set the centre of the cap closing each opening other than the neck,
+    /// the mouth, this many millimetres of the finished bust back into the
+    /// head, along the cap's inward normal, so that an open mouth reads as a
+    /// shadow rather than a flat surface.
+    #[serde(default)]
+    pub mouth_recess_mm: Option<f64>,
 }
 
 /// A displacement map over the head's texture coordinates.
@@ -122,6 +131,10 @@ pub struct Displacement {
     /// reduce the relief to the limit instead of refusing the request.
     #[serde(default)]
     pub limit_relief: bool,
+    /// Request vertices, in increasing order, where the detail fades to
+    /// nothing, such as the lips of a closed mouth.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faded: Vec<u32>,
 }
 
 impl Displacement {
@@ -221,6 +234,11 @@ pub struct BustReport {
     /// measured straight in from each face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thin: Option<SurfaceFinding>,
+    /// How far the mouth was set back on the finished bust: the requested
+    /// depth, which was applied before smoothing, times the height
+    /// correction that followed. Absent when no mouth was recessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouth_recess_mm: Option<f64>,
 }
 
 /// The detail that was applied, in millimetres at the finished size: the
@@ -281,7 +299,7 @@ enum Prepared {
 
 fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, GeometryError> {
     let bust_height = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
-    let parts = closed_parts(&request.vertices, &request.triangles)?;
+    let mut parts = closed_parts(&request.vertices, &request.triangles)?;
     let heights = request.vertices.iter().map(|vertex| vertex[1]);
     let span = heights.clone().fold(f64::MIN, f64::max) - heights.fold(f64::MAX, f64::min);
     // Closed parts have no openings, so the lowest opening is the neck.
@@ -318,15 +336,23 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     }
     // Place and scale before smoothing, so refinement works in final units.
     let scale = bust_height / (high[2] - low[2]);
+    let recessed = match request.mouth_recess_mm {
+        Some(recess) => (recess_mouth(&mut parts, recess / scale, span)? > 0).then_some(recess),
+        None => None,
+    };
     let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
     let place = |vertex: [f64; 3]| {
         let vertex = upright(vertex);
         [0, 1, 2].map(|axis| (vertex[axis] - centre[axis]) * scale)
     };
+    let rims: Vec<Vec<u32>> = parts
+        .iter()
+        .flat_map(|part| part.openings.iter().map(|opening| opening.rim.clone()))
+        .collect();
     let relieved = match &request.displacement {
         Some(map) => Some(with_relief(
             map,
-            (&request.vertices, &request.triangles),
+            (&request.vertices, &request.triangles, &rims),
             scale,
             span,
         )?),
@@ -534,9 +560,54 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         }),
         overhang,
         thin,
+        mouth_recess_mm: recessed.map(|recess| recess * correction),
     };
     Ok(Prepared::Done(mesh, Box::new(report)))
 }
+
+/// Move the centre of the cap closing every opening but the lowest, the
+/// neck, `depth` into the head along the cap's inward normal, whatever the
+/// head's pose. Returns how many caps were moved.
+fn recess_mouth(parts: &mut [ClosedPart], depth: f64, span: f64) -> Result<usize, GeometryError> {
+    if depth > MAX_RECESS_FRACTION * span {
+        return Err(GeometryError::InvalidOptions(format!(
+            "the mouth recess would reach more than {:.0}% of the head's height into it",
+            MAX_RECESS_FRACTION * 100.0
+        )));
+    }
+    let neck = parts
+        .iter()
+        .enumerate()
+        .flat_map(|(part, found)| {
+            found
+                .openings
+                .iter()
+                .enumerate()
+                .map(move |(opening, found)| ((part, opening), found.mean_height))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(place, _)| place);
+    let mut recessed = 0;
+    for (index, part) in parts.iter_mut().enumerate() {
+        let centres: Vec<(u32, [f64; 3])> = part
+            .openings
+            .iter()
+            .enumerate()
+            .filter(|(opening, _)| neck != Some((index, *opening)))
+            .map(|(_, opening)| (opening.centre, opening.inward))
+            .collect();
+        for (centre, inward) in &centres {
+            let vertex = &mut part.vertices[*centre as usize];
+            *vertex = [0, 1, 2].map(|axis| vertex[axis] + inward[axis] * depth);
+        }
+        recessed += centres.len();
+    }
+    Ok(recessed)
+}
+
+/// A head's vertices, its triangles and the request vertices around each of
+/// its openings.
+type HeadSurface<'a> = (&'a [[f64; 3]], &'a [[u32; 3]], &'a [Vec<u32>]);
 
 /// The map to apply, the factor it was scaled by and whether that factor was
 /// limited: with `relief_mm`, the map is scaled so that its 95th-percentile
@@ -544,7 +615,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
 /// is scaled by `scale`.
 fn with_relief(
     map: &Displacement,
-    (vertices, triangles): (&[[f64; 3]], &[[u32; 3]]),
+    (vertices, triangles, rims): HeadSurface<'_>,
     scale: f64,
     head_height: f64,
 ) -> Result<(Displacement, f64, bool), GeometryError> {
@@ -554,7 +625,9 @@ fn with_relief(
     // The reference is the map as the head samples it: at every triangle's
     // corners and centre, interpolated as the bust interpolates it, and
     // weighted by the triangle's area, as the refined surface spreads its
-    // points by area. Map values the head never reaches do not count.
+    // points by area. Map values the head never reaches do not count, nor do
+    // faded corners, and a centre takes the share of its corners that are
+    // not faded, so the reference is the detail that is applied.
     let mut samples: Vec<(f64, f64)> = map
         .triangle_uvs
         .iter()
@@ -562,6 +635,13 @@ fn with_relief(
         .flat_map(|(corners, triangle)| {
             let [a, b, c] = triangle.map(|vertex| vertices[vertex as usize]);
             let area = 0.5 * norm(cross(sub(b, a), sub(c, a)));
+            let kept = triangle.map(|vertex| {
+                if map.faded.binary_search(&vertex).is_ok() {
+                    0.0
+                } else {
+                    1.0
+                }
+            });
             let centre = [0, 1].map(|axis| {
                 corners
                     .iter()
@@ -569,11 +649,15 @@ fn with_relief(
                     .sum::<f64>()
                     / 3.0
             });
+            // Each sample enters at the magnitude it is applied with: the
+            // map's value times the share of the detail kept there.
             corners
                 .iter()
                 .map(|corner| corner.map(f64::from))
-                .chain([centre])
-                .map(move |[u, v]| (map.sample(u, v).abs(), area / 4.0))
+                .zip(kept)
+                .chain([(centre, kept.iter().sum::<f64>() / 3.0)])
+                .filter(|(_, share)| *share > 0.0)
+                .map(move |([u, v], share)| (share * map.sample(u, v).abs(), area / 4.0))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -582,10 +666,7 @@ fn with_relief(
         .map(|(magnitude, _)| *magnitude)
         .fold(0.0, f64::max);
     samples.retain(|(magnitude, _)| *magnitude > DETAIL_SHARE * sampled_largest);
-    let largest = map
-        .values
-        .iter()
-        .fold(0.0, |most: f64, value| most.max(f64::from(value.abs())));
+    let largest = applied_largest(map, triangles, rims);
     let Some(reference) = weighted_percentile(&mut samples, RELIEF_PERCENTILE)
         .filter(|reference| *reference >= MIN_RELIEF_REFERENCE_MM)
     else {
@@ -609,6 +690,64 @@ fn with_relief(
         *value = (f64::from(*value) * factor) as f32;
     }
     Ok((scaled, factor, limited))
+}
+
+/// The largest magnitude among the map's values that the head can apply:
+/// those a bilinear sample within the texture-space bounds of a triangle
+/// with a corner that is not faded can read, or within the bounds of an
+/// opening's rim, whose cap takes texture coordinates between the rim's.
+/// Bounds over-cover, so this errs toward the larger value.
+fn applied_largest(map: &Displacement, triangles: &[[u32; 3]], rims: &[Vec<u32>]) -> f64 {
+    let (width, height) = (map.width, map.height);
+    let faded = |vertex: &u32| map.faded.binary_search(vertex).is_ok();
+    let mut reached = vec![false; width * height];
+    let mut mark = |corners: Vec<[f32; 2]>| {
+        let span = |axis: usize, side: usize, flip: bool| {
+            let at = |corner: &[f32; 2]| {
+                let value = f64::from(corner[axis]).clamp(0.0, 1.0);
+                (if flip { 1.0 - value } else { value }) * (side - 1) as f64
+            };
+            let low = corners.iter().map(at).fold(f64::INFINITY, f64::min);
+            let high = corners.iter().map(at).fold(f64::NEG_INFINITY, f64::max);
+            (low.floor() as usize)..=(high.ceil() as usize).min(side - 1)
+        };
+        for row in span(1, height, true) {
+            for column in span(0, width, false) {
+                reached[row * width + column] = true;
+            }
+        }
+    };
+    for (corners, triangle) in map.triangle_uvs.iter().zip(triangles) {
+        if !triangle.iter().all(faded) {
+            mark(corners.to_vec());
+        }
+    }
+    for rim in rims.iter().filter(|rim| !rim.iter().all(faded)) {
+        let rim: HashSet<u32> = rim.iter().copied().collect();
+        let corners: Vec<[f32; 2]> = map
+            .triangle_uvs
+            .iter()
+            .zip(triangles)
+            .flat_map(|(corners, triangle)| {
+                corners
+                    .iter()
+                    .zip(triangle)
+                    .filter(|(_, vertex)| rim.contains(vertex))
+                    .map(|(corner, _)| *corner)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !corners.is_empty() {
+            mark(corners);
+        }
+    }
+    map.values
+        .iter()
+        .zip(reached)
+        .filter(|(_, reached)| *reached)
+        .fold(0.0, |most: f64, (value, _)| {
+            most.max(f64::from(value.abs()))
+        })
 }
 
 /// The applied range and, over the vertices that carry detail, its
@@ -910,6 +1049,12 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
             );
         }
     }
+    if request
+        .mouth_recess_mm
+        .is_some_and(|recess| !(recess.is_finite() && recess > 0.0))
+    {
+        return invalid("the mouth recess must be a positive number of millimetres");
+    }
     if let Some(checks) = request.checks {
         if !(checks.overhang_degrees.is_finite() && (0.0..=90.0).contains(&checks.overhang_degrees))
         {
@@ -982,6 +1127,14 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
         {
             return invalid("relief must be a positive number of millimetres");
         }
+        if !map.faded.windows(2).all(|pair| pair[0] < pair[1])
+            || map
+                .faded
+                .last()
+                .is_some_and(|&vertex| vertex as usize >= count)
+        {
+            return invalid("faded vertices must be distinct head vertices in increasing order");
+        }
         if !map
             .triangle_uvs
             .iter()
@@ -998,6 +1151,12 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
 struct Opening {
     mean_height: f64,
     top_height: f64,
+    /// The part vertex at the centre of the fan that closes it.
+    centre: u32,
+    /// The unit normal of that fan, pointing into the part.
+    inward: [f64; 3],
+    /// The request vertices around the opening.
+    rim: Vec<u32>,
 }
 
 struct ClosedPart {
@@ -1007,6 +1166,9 @@ struct ClosedPart {
     /// triangles that close an opening.
     sources: Vec<Option<usize>>,
     openings: Vec<Opening>,
+    /// The request vertex each part vertex came from, for every vertex but
+    /// the fan centres, which follow them.
+    origins: Vec<u32>,
 }
 
 /// Split the mesh into connected parts, largest first, closing every boundary
@@ -1122,15 +1284,25 @@ fn close_part(
             .map(|value| value / count);
         let centre_index = part_vertices.len() as u32;
         part_vertices.push(centre);
-        // Each cap triangle runs against its boundary edge, keeping orientation consistent.
+        // Each cap triangle runs against its boundary edge, keeping orientation
+        // consistent, so the cap faces out of the part.
+        let mut outward = [0.0; 3];
         for (position, &a) in boundary.iter().enumerate() {
             let b = boundary[(position + 1) % boundary.len()];
             triangles.push([local[&b], local[&a], centre_index]);
             sources.push(None);
+            let face = cross(
+                sub(vertices[a as usize], vertices[b as usize]),
+                sub(centre, vertices[b as usize]),
+            );
+            outward = [0, 1, 2].map(|axis| outward[axis] + face[axis]);
         }
         openings.push(Opening {
             mean_height: points.iter().map(|point| point[1]).sum::<f64>() / count,
             top_height: points.iter().map(|point| point[1]).fold(f64::MIN, f64::max),
+            centre: centre_index,
+            inward: normalize(outward.map(|value| -value)),
+            rim: boundary.clone(),
         });
     }
     Ok(ClosedPart {
@@ -1138,6 +1310,7 @@ fn close_part(
         triangles,
         sources,
         openings,
+        origins: used,
     })
 }
 
@@ -1183,6 +1356,10 @@ fn part_solid(
         for corner in 0..3 {
             let vertex = triangle[corner];
             let uv = map.triangle_uvs[source][corner];
+            let faded = map
+                .faded
+                .binary_search(&part.origins[vertex as usize])
+                .is_ok();
             indices[slot * 3 + corner] =
                 *ids.entry((vertex, uv.map(f32::to_bits)))
                     .or_insert_with(|| {
@@ -1190,7 +1367,7 @@ fn part_solid(
                             place(part.vertices[vertex as usize]),
                             vertex,
                             uv.map(f64::from),
-                            1.0,
+                            if faded { 0.0 } else { 1.0 },
                         )
                     });
         }
@@ -1596,6 +1773,7 @@ mod tests {
             hollow: None,
             displacement: None,
             checks: None,
+            mouth_recess_mm: None,
         }
     }
 
@@ -1647,6 +1825,7 @@ mod tests {
             triangle_uvs,
             relief_mm: None,
             limit_relief: false,
+            faded: Vec::new(),
         });
         request
     }
@@ -1668,6 +1847,7 @@ mod tests {
         let mesh = mesh_from(&sphere);
         let part = ClosedPart {
             sources: (0..mesh.triangles.len()).map(Some).collect(),
+            origins: (0..mesh.vertices.len() as u32).collect(),
             vertices: mesh.vertices,
             triangles: mesh.triangles,
             openings: Vec::new(),
@@ -1679,6 +1859,7 @@ mod tests {
             triangle_uvs: vec![[[0.5, 0.5]; 3]; part.triangles.len()],
             relief_mm: None,
             limit_relief: false,
+            faded: Vec::new(),
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
         let (raised, distances) = displaced(&solid, &map, 2.0);
@@ -1707,6 +1888,7 @@ mod tests {
                 .collect(),
             relief_mm: None,
             limit_relief: false,
+            faded: Vec::new(),
         };
         let solid = part_solid(head, |vertex| vertex, Some(&map)).unwrap();
         let mesh = solid.to_meshgl64();
@@ -1926,6 +2108,198 @@ mod tests {
         let (mesh, report) = prepare_bust(&tight).unwrap();
         assert!(mesh.triangles.len() <= 12_000, "{report:?}");
         assert!(validated(&mesh).solid_geometry);
+    }
+
+    /// A 40 mm box open at the bottom, its neck, with a 20 by 15 mm mouth
+    /// in its front face, which faces +z.
+    fn box_with_a_mouth() -> BustRequest {
+        let (vertices, triangles) = open_box_with_part();
+        let mut request = request(1.0, 1_000_000);
+        request.vertices = vertices[..8].to_vec();
+        request.vertices.extend([
+            [10.0, 15.0, 40.0],
+            [30.0, 15.0, 40.0],
+            [30.0, 30.0, 40.0],
+            [10.0, 30.0, 40.0],
+        ]);
+        // The open box's faces are -x, +x, +y, -z and +z, two triangles
+        // each; the front, +z, becomes a ring around the mouth.
+        request.triangles = triangles[..8].to_vec();
+        let (outer, inner) = ([4, 5, 7, 6], [8, 9, 10, 11]);
+        for side in 0..4 {
+            let next = (side + 1) % 4;
+            request
+                .triangles
+                .push([outer[side], outer[next], inner[next]]);
+            request
+                .triangles
+                .push([outer[side], inner[next], inner[side]]);
+        }
+        request
+    }
+
+    #[test]
+    fn a_recessed_mouth_cap_is_set_back_into_the_head() {
+        let (flat_mesh, flat) = prepare_bust(&box_with_a_mouth()).unwrap();
+        assert!(validated(&flat_mesh).solid_geometry);
+        let mut recessed = box_with_a_mouth();
+        recessed.mouth_recess_mm = Some(5.0);
+        let (mesh, report) = prepare_bust(&recessed).unwrap();
+        let validation = validated(&mesh);
+        assert!(validation.solid_geometry, "{validation:?}");
+        assert_eq!(validation.topology.connected_components, 1);
+        // A cone 5 mm deep over the 20 by 15 mm mouth, about 500 mm³, is
+        // taken out of the front.
+        let removed = flat.volume_mm3 - report.volume_mm3;
+        assert!((300.0..900.0).contains(&removed), "{removed} {flat:?}");
+        // The neck stays flat on the plate.
+        assert!((report.size_mm[2] - 50.0).abs() < 1e-6);
+        assert!(
+            validation.overhang.bed_contact.area_mm2 > 100.0,
+            "{validation:?}"
+        );
+
+        recessed.mouth_recess_mm = Some(20.0);
+        assert!(matches!(
+            prepare_bust(&recessed),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("mouth recess")
+        ));
+        recessed.mouth_recess_mm = Some(-1.0);
+        assert!(matches!(
+            prepare_bust(&recessed),
+            Err(GeometryError::InvalidOptions(_))
+        ));
+    }
+
+    #[test]
+    fn a_turned_mouth_is_recessed_into_the_head() {
+        // The box turned a quarter turn about its vertical axis, so that its
+        // mouth faces +x rather than +z.
+        let turned = || {
+            let mut request = box_with_a_mouth();
+            for vertex in &mut request.vertices {
+                let [x, y, z] = *vertex;
+                *vertex = [z, y, -x];
+            }
+            request
+        };
+        let (_, flat) = prepare_bust(&turned()).unwrap();
+        let mut recessed = turned();
+        recessed.mouth_recess_mm = Some(5.0);
+        let (mesh, report) = prepare_bust(&recessed).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        let removed = flat.volume_mm3 - report.volume_mm3;
+        assert!((300.0..900.0).contains(&removed), "{removed} {flat:?}");
+    }
+
+    #[test]
+    fn faded_detail_does_not_set_the_relief() {
+        // Weak detail on the box and strong detail on the part, whose
+        // islands lie beyond u = 5 / 12; the part is faded.
+        let wave = |u: f64, v: f64| {
+            let strength = if u >= 5.0 / 12.0 { 2.0 } else { 0.2 };
+            (strength * (40.0 * u).sin() * (12.0 * v).cos()) as f32
+        };
+        let mut faded = with_map(request(1.0, 1_000_000), wave);
+        let map = faded.displacement.as_mut().unwrap();
+        map.faded = (8..16).collect();
+        map.relief_mm = Some(0.3);
+        let (_, report) = prepare_bust(&faded).unwrap();
+        let depth = report
+            .displacement
+            .expect("displacement report")
+            .depth_p95_mm
+            .expect("detail depth");
+        assert!((0.15..0.45).contains(&depth), "{depth}");
+    }
+
+    #[test]
+    fn a_partly_faded_centre_counts_at_its_applied_depth() {
+        // One triangle with two faded corners: its centre keeps a third of
+        // the map's value there. The map is 1 around the centre and 0.2 at
+        // the corners.
+        let vertices = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
+        let triangles = [[0, 1, 2]];
+        let corners = [[0.1f32, 0.1], [0.9, 0.1], [0.1, 0.9]];
+        let centre = [0.1 + 0.8 / 3.0, 0.1 + 0.8 / 3.0];
+        let side = 64;
+        let values = (0..side * side)
+            .map(|index| {
+                let u = (index % side) as f64 / (side - 1) as f64;
+                let v = 1.0 - (index / side) as f64 / (side - 1) as f64;
+                if (u - centre[0]).hypot(v - centre[1]) < 0.1 {
+                    1.0
+                } else {
+                    0.2
+                }
+            })
+            .collect();
+        let map = Displacement {
+            width: side,
+            height: side,
+            values,
+            triangle_uvs: vec![corners],
+            relief_mm: Some(0.5),
+            limit_relief: false,
+            faded: vec![1, 2],
+        };
+        let (_, factor, _) = with_relief(&map, (&vertices, &triangles, &[]), 1.0, 1000.0).unwrap();
+        // The reference is the centre's applied third, not its full value.
+        assert!((factor - 1.5).abs() < 0.05, "{factor}");
+    }
+
+    #[test]
+    fn values_a_cap_can_reach_count_toward_the_limit() {
+        // Weak detail on every face's island and strong values in the middle
+        // of the gaps between islands, beyond what samples on the islands'
+        // edges read, which only the neck cap, whose rim spans four faces,
+        // can reach.
+        // The open box alone: its islands span less than the 1/12 they are
+        // spaced by, while the stand-in eye's would reach into the gaps.
+        let mut open_box = request(1.0, 1_000_000);
+        open_box.vertices.truncate(8);
+        open_box.triangles.truncate(10);
+        let mut capped = with_map(open_box, |_, _| 0.0);
+        let side = 256;
+        let map = capped.displacement.as_mut().unwrap();
+        map.width = side;
+        map.height = side;
+        map.values = (0..side * side)
+            .map(|index| {
+                let u = (index % side) as f64 / (side - 1) as f64;
+                if (0.87..0.93).contains(&(u * 12.0).fract()) {
+                    1.0
+                } else {
+                    (0.01 * (40.0 * u).sin()) as f32
+                }
+            })
+            .collect();
+        map.relief_mm = Some(1.0);
+        assert!(matches!(
+            prepare_bust(&capped),
+            Err(GeometryError::InvalidOptions(text)) if text.contains("relief_mm")
+        ));
+    }
+
+    #[test]
+    fn faded_vertices_take_no_detail() {
+        let mut faded = with_map(request(1.0, 1_000_000), |_, _| 0.5);
+        faded.displacement.as_mut().unwrap().faded = (0..16).collect();
+        let (mesh, report) = prepare_bust(&faded).unwrap();
+        let applied = report.displacement.expect("displacement report");
+        assert_eq!((applied.lowest_mm, applied.highest_mm), (0.0, 0.0));
+        assert!(validated(&mesh).solid_geometry);
+        // Only the part's vertices: the box keeps its detail.
+        faded.displacement.as_mut().unwrap().faded = (8..16).collect();
+        let applied = prepare_bust(&faded).unwrap().1.displacement.unwrap();
+        assert!(applied.highest_mm > 0.1, "{applied:?}");
+        for unusable in [vec![3, 2], vec![2, 2], vec![16]] {
+            faded.displacement.as_mut().unwrap().faded = unusable;
+            assert!(matches!(
+                prepare_bust(&faded),
+                Err(GeometryError::InvalidOptions(_))
+            ));
+        }
     }
 
     #[test]

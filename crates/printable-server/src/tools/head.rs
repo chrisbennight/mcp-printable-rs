@@ -37,6 +37,12 @@ const HIGH_PASS_MM: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 const CLIP_PERCENTILE: std::ops::RangeInclusive<f64> = 50.0..=100.0;
 const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
 const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
+const EXPRESSION_SCALE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+const MOUTH_RECESS_MM: std::ops::RangeInclusive<f64> = 0.5..=10.0;
+const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
+/// The model region over which detail fades out on a closed or recessed
+/// mouth, so that the lips are not raised into a ridge where they meet.
+const LIPS_REGION: &str = "lips";
 const PLINTH_CHAMFER_MM: std::ops::RangeInclusive<f64> = 0.0..=5.0;
 /// An FDM bust stands on a plinth this fraction of its height by default.
 const FDM_PLINTH_FRACTION: f64 = 0.08;
@@ -102,6 +108,10 @@ pub(super) struct HeadCreateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
+    /// Multiply the expression coefficients and the jaw rotation by this, 0
+    /// to 1 (default 1), to soften the expression; 0 gives a neutral face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Unique name for the new object (default `Head`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -223,6 +233,9 @@ pub(super) struct HeadUpdateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Workspace path of a PNG colour map that replaces the head's own, as for
     /// `create`. The head must have been created from a model converted with
     /// its texture layout.
@@ -246,6 +259,22 @@ pub(super) struct HeadPreparePrintParams {
     /// stands on its neck, so turn or tilt the head with `neck`.
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
+    /// How the mouth is printed. `as_posed` (the default) keeps the pose and
+    /// closes the mouth opening flat behind the lips. `closed` sets the jaw
+    /// rotation to zero, replacing `pose.jaw`, which brings the lips together
+    /// unless the expression itself parts them. `recessed` keeps the pose
+    /// and sets the centre of the surface closing the mouth back by
+    /// `mouth_recess_mm`, so an open mouth reads as a shadow. With `closed`
+    /// or `recessed`, surface detail fades out over the lips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouth: Option<MouthShape>,
+    /// How far `recessed` sets the mouth back on the finished bust, 0.5 to
+    /// 10 mm (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouth_recess_mm: Option<f64>,
     /// Workspace path for the binary STL.
     path: String,
     /// Replace an existing file at `path`.
@@ -297,6 +326,21 @@ pub(super) struct HeadPreparePrintParams {
     /// shallow to print. Without it, nothing is assumed about the printer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     printer: Option<PrinterParams>,
+}
+
+/// How the mouth of a bust is printed.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum MouthShape {
+    /// As the pose leaves it.
+    #[default]
+    AsPosed,
+    /// With the jaw closed.
+    Closed,
+    /// With the surface closing the mouth set back into the head.
+    Recessed,
 }
 
 /// How the bust will be printed.
@@ -440,6 +484,9 @@ pub(super) struct HeadExportParams {
     /// Joint rotations, as for `create`.
     #[serde(default)]
     pose: HeadPose,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expression_scale: Option<f64>,
     /// Workspace path for the Wavefront OBJ file.
     path: String,
     /// Replace an existing file at `path`.
@@ -502,8 +549,7 @@ pub(super) async fn create(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -544,8 +590,7 @@ pub(super) async fn update(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -575,8 +620,7 @@ pub(super) async fn export(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
+        (params.identity, params.expression, params.expression_scale),
         params.pose,
     )
     .await?;
@@ -751,16 +795,45 @@ pub(super) async fn prepare_print(
             }
         }
     }
+    let mouth = params.mouth.unwrap_or_default();
+    let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
+        (MouthShape::Recessed, recess) => Some(in_range(
+            "mouth_recess_mm",
+            recess.unwrap_or(DEFAULT_MOUTH_RECESS_MM),
+            &MOUTH_RECESS_MM,
+        )?),
+        (_, Some(_)) => {
+            return Err(ToolError::Validation(
+                "mouth_recess_mm requires mouth recessed".into(),
+            ));
+        }
+        (_, None) => None,
+    };
+    let mut pose = params.pose;
+    if mouth == MouthShape::Closed {
+        pose.jaw = [0.0; 3];
+    }
     let worker_bin = geometry_worker_path(settings)?;
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        params.identity,
-        params.expression,
-        params.pose,
+        (params.identity, params.expression, params.expression_scale),
+        pose,
     )
     .await?;
+    // A closed or recessed mouth takes no detail on the lips, when the model
+    // knows where they are.
+    let faded = match mouth {
+        MouthShape::AsPosed => None,
+        MouthShape::Closed | MouthShape::Recessed => model.region(LIPS_REGION),
+    };
+    let mut mouth_report = (mouth != MouthShape::AsPosed).then(|| {
+        json!({
+            "shape": mouth,
+            "recess_mm": mouth_recess_mm,
+        })
+    });
     let (displacement, detail_filter) = match params.displacement {
         Some(mut map) => {
             // With a printer, detail is made deep enough to print unless the
@@ -778,7 +851,12 @@ pub(super) async fn prepare_print(
                 }
                 _ => false,
             };
-            let (map, report) = displacement(&workspace, &model, &head, map, limit_relief).await?;
+            if let Some(report) = &mut mouth_report {
+                report["detail_faded_over"] = json!(faded.map(|_| LIPS_REGION));
+            }
+            let faded = faded.map(<[u32]>::to_vec).unwrap_or_default();
+            let (map, report) =
+                displacement(&workspace, &model, &head, map, (limit_relief, faded)).await?;
             (Some(map), Some(report))
         }
         None => (None, None),
@@ -800,6 +878,7 @@ pub(super) async fn prepare_print(
             overhang_degrees: printer.maximum_overhang_degrees,
             min_feature_mm: printer.minimum_wall_mm,
         }),
+        mouth_recess_mm,
     };
     let variant = model.info().variant.clone();
     let validation_options = ValidationOptions {
@@ -860,6 +939,17 @@ pub(super) async fn prepare_print(
         if let Some(printer) = printer {
             response["warnings"] = json!(print_warnings(&printer, &response["bust"]));
             response["printer"] = serde_json::to_value(printer)?;
+        }
+        if let Some(mut mouth) = mouth_report {
+            // The depth applied on the finished bust, which the smoothing's
+            // height correction moves slightly from the request.
+            if mouth_recess_mm.is_some() {
+                mouth["recess_mm"] = response["bust"]["mouth_recess_mm"].clone();
+                if mouth["recess_mm"].is_null() {
+                    mouth["note"] = json!("the model has no mouth opening to recess");
+                }
+            }
+            response["mouth"] = mouth;
         }
         Ok::<_, ToolError>(response)
     })
@@ -1482,13 +1572,13 @@ fn decode_photo(bytes: &[u8]) -> Result<RgbImage, String> {
 /// Read a displacement map from the workspace, filter it as requested and
 /// pair it with the model's texture coordinates. Also describes the filtering.
 /// With `limit_relief`, a relief beyond the limit for detail is reduced to it
-/// rather than refused.
+/// rather than refused. Detail fades to nothing at the `faded` vertices.
 async fn displacement(
     workspace: &Arc<Workspace>,
     model: &Arc<FlameModel>,
     head: &PosedHead,
     params: DisplacementParams,
-    limit_relief: bool,
+    (limit_relief, faded): (bool, Vec<u32>),
 ) -> Result<(Displacement, Value), ToolError> {
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
@@ -1552,6 +1642,7 @@ async fn displacement(
             triangle_uvs,
             relief_mm: params.relief_mm,
             limit_relief,
+            faded,
         },
         description,
     ))
@@ -1661,8 +1752,7 @@ fn library(settings: &Settings) -> Result<&crate::flame::FlameLibrary, ToolError
 async fn evaluate(
     settings: &Settings,
     variant: Option<&str>,
-    identity: Vec<f32>,
-    expression: Vec<f32>,
+    (identity, expression, expression_scale): (Vec<f32>, Vec<f32>, Option<f64>),
     pose: HeadPose,
 ) -> Result<(Arc<FlameModel>, PosedHead), ToolError> {
     let model = Arc::clone(
@@ -1672,10 +1762,16 @@ async fn evaluate(
     );
     check_coefficients("identity", &identity)?;
     check_coefficients("expression", &expression)?;
+    let scale = in_range(
+        "expression_scale",
+        expression_scale.unwrap_or(1.0),
+        &EXPRESSION_SCALE,
+    )? as f32;
+    let expression = expression.iter().map(|value| value * scale).collect();
     let pose = Pose {
         global: check_rotation("global", pose.global)?,
         neck: check_rotation("neck", pose.neck)?,
-        jaw: check_rotation("jaw", pose.jaw)?,
+        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
         left_eye: check_rotation("left_eye", pose.left_eye)?,
         right_eye: check_rotation("right_eye", pose.right_eye)?,
     };
