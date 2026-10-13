@@ -74,6 +74,11 @@ const SHOULDER_TOP_SHARE: f64 = 0.9;
 /// head's height above it, and a body leans at most this far from vertical.
 const NECK_DIRECTION_SHARE: f64 = 0.08;
 const MAX_LEAN_DEGREES: f64 = 30.0;
+/// A part beside the head, such as an eyeball, is joined to it by a hidden
+/// stem this share of its radius thick, reaching this share of its radius
+/// from its centre toward the head's.
+const STEM_RADIUS_SHARE: f64 = 0.35;
+const STEM_LENGTH_SHARE: f64 = 2.5;
 /// The head keeps at least this share of the height above any plinth.
 const MIN_HEAD_SHARE: f64 = 0.5;
 /// Life-size eye detail: a pupil 4 mm across, drilled 2 mm deep, in an iris
@@ -593,6 +598,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
     refined.status().map_err(|error| {
         GeometryError::Kernel(format!("the refined bust is not a valid solid: {error}"))
     })?;
+    let refined = join_parts(refined, &parts, place)?;
     // Thin gaps can leave specks of almost no volume as separate shells. They
     // cannot print, so drop them; anything larger means the parts did not join.
     let pieces = refined.decompose();
@@ -760,6 +766,74 @@ impl BodyKind {
             Self::Shoulders => SHOULDER_HEIGHT_SHARE,
         }
     }
+}
+
+/// Join each part beside the head, such as an eyeball, to the head with a
+/// stem from its centre toward the head's. An eyeball sits in a pocket of
+/// the head's surface and touches it only where the eyelids overlap it, a
+/// joint thinner than the rebuild can keep on a small bust; the stem holds
+/// it from behind, inside the head, where the eyeball hides it. The head is
+/// the part with the neck opening, or the first part without one.
+fn join_parts(
+    solid: Manifold,
+    parts: &[ClosedPart],
+    place: impl Fn([f64; 3]) -> [f64; 3],
+) -> Result<Manifold, GeometryError> {
+    if parts.len() < 2 {
+        return Ok(solid);
+    }
+    let head = parts
+        .iter()
+        .enumerate()
+        .flat_map(|(index, part)| {
+            part.openings
+                .iter()
+                .map(move |opening| (index, opening.mean_height))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(0, |(index, _)| index);
+    let placed = |part: &ClosedPart| -> Vec<[f64; 3]> {
+        part.vertices.iter().map(|vertex| place(*vertex)).collect()
+    };
+    let centre = |points: &[[f64; 3]]| {
+        let count = points.len().max(1) as f64;
+        [0, 1, 2].map(|axis| points.iter().map(|point| point[axis]).sum::<f64>() / count)
+    };
+    let head_centre = centre(&placed(&parts[head]));
+    let stems: Vec<Manifold> = parts
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != head)
+        .filter_map(|(_, part)| {
+            let points = placed(part);
+            let middle = centre(&points);
+            let radius = points
+                .iter()
+                .map(|point| norm(sub(*point, middle)))
+                .sum::<f64>()
+                / points.len().max(1) as f64;
+            let towards = sub(head_centre, middle);
+            (radius > 0.0 && norm(towards) > 0.0).then(|| {
+                let thickness = STEM_RADIUS_SHARE * radius;
+                let stem = Manifold::cylinder(
+                    STEM_LENGTH_SHARE * radius,
+                    thickness,
+                    thickness,
+                    circle_segments(thickness),
+                    false,
+                );
+                along(stem, middle, normalize(towards))
+            })
+        })
+        .collect();
+    if stems.is_empty() {
+        return Ok(solid);
+    }
+    let joined = solid.union(&Manifold::batch_union(&stems));
+    joined
+        .status()
+        .map_err(|error| GeometryError::Kernel(format!("joining the parts failed: {error}")))?;
+    Ok(joined)
 }
 
 /// Raise the head, whose base rests on z = 0, by `height` and add a body
@@ -3109,6 +3183,33 @@ mod tests {
             prepare_bust(&tall),
             Err(GeometryError::InvalidOptions(_))
         ));
+    }
+
+    #[test]
+    fn a_part_apart_from_the_head_is_joined_by_a_stem() {
+        // The open box and, 5 mm beyond its +x face, a separate cube.
+        let (mut vertices, mut triangles) = open_box_with_part();
+        vertices.truncate(8);
+        triangles.truncate(10);
+        let cube = Manifold::cube(10.0, 10.0, 10.0, false).translate(45.0, 15.0, 15.0);
+        let cube_mesh = mesh_from(&cube);
+        let offset = vertices.len() as u32;
+        vertices.extend(cube_mesh.vertices);
+        triangles.extend(
+            cube_mesh
+                .triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        let parts = closed_parts(&vertices, &triangles).unwrap();
+        let solid = parts
+            .iter()
+            .map(|part| part_solid(part, |vertex| vertex, None).unwrap())
+            .reduce(|a, b| a.union(&b))
+            .unwrap();
+        assert_eq!(solid.decompose().len(), 2);
+        let joined = join_parts(solid, &parts, |vertex| vertex).unwrap();
+        assert_eq!(joined.decompose().len(), 1);
     }
 
     #[test]

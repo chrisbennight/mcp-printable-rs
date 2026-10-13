@@ -5877,6 +5877,26 @@ fn open_tetrahedron_library(
 }
 
 #[tokio::test]
+async fn head_prepare_print_scales_the_default_edge_with_a_small_bust() {
+    let (_models, library) = open_tetrahedron_library(false);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), library);
+    for (height, edge) in [(25.0, 0.1), (50.0, 0.2), (150.0, 0.4)] {
+        let path = format!("bust-{height}.stl");
+        let result = server
+            .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+                "path": path, "height_mm": height, "max_triangles": 100_000
+            }})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let value = result.structured_content.unwrap();
+        let requested = value["bust"]["requested_edge_length_mm"].as_f64().unwrap();
+        assert!((requested - edge).abs() < 1e-9, "{height}: {value}");
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_follows_the_printer() {
     let (_models, library) = open_tetrahedron_library(false);
     let root = tempfile::tempdir().unwrap();
