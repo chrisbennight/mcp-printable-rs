@@ -7770,6 +7770,59 @@ async fn head_reconstruct_reports_and_pictures_the_fit() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_judges_the_fit_of_the_head_it_returns() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // Labels saying every pixel shows face skin, over the whole photograph.
+    let labels = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_pixel(16, 16, image::Luma([3]))
+            .write_to(&mut png, ImageFormat::Png)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let views = json!([{
+        "shape": [0.0], "expression": [0.0],
+        "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+        "camera": [1.0, -0.5, -0.5],
+        "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+        "image_size": [224, 224],
+        "segmentation": {
+            "labels_png": labels,
+            "classes": ["background", "hair", "body_skin", "face_skin", "clothes", "other"],
+            "crop": {"left": 0.0, "top": 0.0, "step": 16.0 / 224.0},
+            "hair_rgb": null, "hair_pixels": 0
+        }
+    }]);
+    // Identity component 0 scales the head about the origin.
+    let library = flame2020_library_edited(|fixture| {
+        for (index, value) in fixture.template.clone().into_iter().enumerate() {
+            fixture.shapedirs[index * 400] = value;
+        }
+    });
+    let mut covered = Vec::new();
+    for identity in [json!([0.0]), json!([-0.5])] {
+        let (endpoint, _, task) =
+            fake_recon_worker_with(true, json!({"views": views, "identity": identity})).await;
+        let server = recon_server_with(root.path(), &endpoint, Arc::clone(&library)).await;
+        let value = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+            }})))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        covered.push(value["fit"][0]["face_skin_covered"].as_f64().unwrap());
+        task.abort();
+    }
+    // The views are the same, but the returned head is half the size, so it
+    // covers much less of the skin; judged on the views' own shape, the two
+    // would be equal.
+    assert!(covered[1] < 0.6 * covered[0], "{covered:?}");
+}
+
+#[tokio::test]
 async fn head_reconstruct_makes_one_colour_map_at_a_time() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::from_pixel(224, 224, image::Rgb([90, 90, 90]))

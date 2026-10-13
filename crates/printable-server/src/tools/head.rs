@@ -1593,14 +1593,16 @@ pub(super) async fn reconstruct(
             .select(Some(&variant))
             .map_err(ToolError::Validation)?,
     );
-    {
+    // The fit is judged for the head callers build from the returned identity.
+    let identity: Option<Vec<f32>> = serde_json::from_value(field("identity")).ok();
+    if let Some(identity) = identity.clone() {
         let (model, images, views) = (Arc::clone(&model), request.images.clone(), field("views"));
         let measures = blocking(move || {
             Ok::<_, ToolError>(
                 serde_json::from_value::<Vec<ReconView>>(views)
                     .ok()
                     .filter(|views| views.len() == images.len())
-                    .map(|views| fit_measures(&model, &images, &views)),
+                    .map(|views| fit_measures(&model, &identity, &images, &views)),
             )
         })
         .await?;
@@ -1619,9 +1621,12 @@ pub(super) async fn reconstruct(
         let (views, digests) = (field("views"), field("image_sha256"));
         let picture = blocking(move || {
             let views = fitted_views(views, digests, &photos)?;
+            let identity = identity.ok_or_else(|| {
+                ToolError::Validation("the reconstruction worker returned no identity".into())
+            })?;
             fit_picture(
                 &workspace,
-                &model,
+                (&model, &identity),
                 (&images, &photos, &views),
                 &path,
                 overwrite,
@@ -1721,13 +1726,16 @@ fn fitted_views(
     Ok(views)
 }
 
-/// The head as fitted to one photograph.
+/// A head with `identity`, posed and expressed as fitted to one photograph.
+/// With the view's own shape it is the head that photograph was fitted with;
+/// with the identity `reconstruct` returns it is the head callers build.
 fn view_head(
     model: &FlameModel,
     view: &ReconView,
+    identity: &[f32],
 ) -> Result<PosedHead, printable_flame::ParamError> {
     model.evaluate(&FlameParams {
-        identity: view.shape.clone(),
+        identity: identity.to_vec(),
         expression: view.expression.clone(),
         pose: Pose {
             global: view.head_rotation,
@@ -1794,17 +1802,22 @@ fn region_coverage(model: &FlameModel, face_texels: &[[u32; 2]]) -> Value {
     Value::Object(report)
 }
 
-/// For each photograph, how the head fitted to it compares with its labels.
-/// The measures are null where the photograph was not segmented or its
-/// labels could not be read.
-fn fit_measures(model: &FlameModel, images: &[String], views: &[ReconView]) -> Value {
+/// For each photograph, how the returned head, posed as fitted to it,
+/// compares with its labels. The measures are null where the photograph was
+/// not segmented or its labels could not be read.
+fn fit_measures(
+    model: &FlameModel,
+    identity: &[f32],
+    images: &[String],
+    views: &[ReconView],
+) -> Value {
     images
         .iter()
         .zip(views)
         .map(|(image, view)| {
             let measures = view.segmentation.as_ref().and_then(|segmentation| {
                 let (side, data) = decode_labels(segmentation).ok()?;
-                let head = view_head(model, view).ok()?;
+                let head = view_head(model, view, identity).ok()?;
                 Some(printable_flame::fit::fit_measures(
                     model.faces(),
                     &head.vertices,
@@ -1870,10 +1883,11 @@ fn picture_parts(model: &FlameModel) -> Vec<u16> {
         .collect()
 }
 
-/// Write one picture of the fit to every photograph, one above another.
+/// Write one picture of the fit of the returned head to every photograph,
+/// one above another.
 fn fit_picture(
     workspace: &Workspace,
-    model: &FlameModel,
+    (model, identity): (&FlameModel, &[f32]),
     (images, photos, views): (&[String], &[(Snapshot, String)], &[ReconView]),
     path: &str,
     overwrite: bool,
@@ -1883,7 +1897,7 @@ fn fit_picture(
     for ((image, (snapshot, _)), view) in images.iter().zip(photos).zip(views) {
         let photo = decode_photo(&std::fs::read(snapshot.path())?)
             .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
-        let head = view_head(model, view)
+        let head = view_head(model, view, identity)
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
         pictures.push(printable_flame::fit::fit_picture(
             model.faces(),
@@ -2220,7 +2234,7 @@ fn colour_map(
                 "{image} does not have the size the reconstruction worker read"
             )));
         }
-        let head = view_head(model, view)
+        let head = view_head(model, view, &view.shape)
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
         let labels = view
             .segmentation

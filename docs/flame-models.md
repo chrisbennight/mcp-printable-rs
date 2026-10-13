@@ -851,9 +851,11 @@ coefficients and variant. See [Surface detail](#surface-detail).
 
 ### Judge the fit
 
-`fit` gives, for each photograph, two measures that compare the head fitted
-to it with the photograph's segmentation, each a share from 0 to 1 within the
-square the segmenter labelled:
+`fit` gives, for each photograph, two measures that compare the returned
+head, the one `create` and `prepare_print` build from `identity`, with the
+photograph's segmentation. The head takes the expression, jaw and rotation
+fitted to that photograph and is seen through its camera. Each measure is a
+share from 0 to 1 within the square the segmenter labelled:
 
 - `head_on_person`: how much of the head's projected area the segmenter
   labels as part of the person rather than background. It falls when the head
@@ -870,7 +872,7 @@ nothing about the fit.
 
 `fit_path` names a PNG to write a picture of the fit to. For each
 photograph, one above another and each at most 512 pixels high, it shows the
-photograph cropped to the head with the fitted head's outline drawn in green
+photograph cropped to the head with the returned head's outline drawn in green
 and the edges of its parts in yellow, beside the head alone, shaded grey, as
 the photograph's camera sees it. With a model converted with `--masks`, the
 parts are the lips, eyeballs, nose, ears, scalp, neck and face, so the rims
