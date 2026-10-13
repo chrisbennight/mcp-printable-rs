@@ -942,11 +942,21 @@ fn remove_lighting(samples: &mut [Sample]) -> Option<Shading> {
             }
         })
         .collect();
-    // Keep the skin's average colour as photographed: each channel's mean
-    // over the fitted skin, in linear light, maps to itself.
+    // Keep the skin's average colour as photographed: each channel's plain
+    // mean over the fitted skin, in linear light, maps to itself. Shares,
+    // which say how squarely a sample was seen, weight only the fit.
+    let mean = |value: &dyn Fn(usize) -> f32| -> f64 {
+        skin.iter().map(|&at| f64::from(value(at))).sum::<f64>() / skin.len() as f64
+    };
     let gains: [f32; 3] = std::array::from_fn(|channel| {
-        (average(&|at| linear[at][channel]) / average(&|at| limited[at][channel]).max(1e-9)) as f32
+        (mean(&|at| linear[at][channel]) / mean(&|at| limited[at][channel]).max(1e-9)) as f32
     });
+    // Report the shading that, multiplied by the map's colour, gives back the
+    // photograph's, so a caller can relight the map consistently.
+    for (channel, gain) in gains.into_iter().enumerate() {
+        shading.ambient[channel] /= gain;
+        shading.direction[channel] = shading.direction[channel].map(|value| value / gain);
+    }
     for (sample, colour) in samples.iter_mut().zip(limited) {
         sample.colour = std::array::from_fn(|channel| {
             linear_to_srgb((colour[channel] * gains[channel]).clamp(0.0, 1.0)) * 255.0
@@ -2058,7 +2068,8 @@ mod tests {
                 let light = 0.1 + 0.5 * normal[2].max(0.0);
                 Sample {
                     texel,
-                    share: 1.0,
+                    // As in a photograph, surface seen at an angle counts less.
+                    share: normal[2].max(0.05),
                     colour: [light; 3].map(|value| linear_to_srgb(value) * 255.0),
                     normal,
                     skin: true,
@@ -2095,6 +2106,30 @@ mod tests {
             .map(|sample| (srgb_to_linear(sample.colour[0] / 255.0) - after).abs())
             .fold(0.0, f32::max);
         assert!(spread < 0.05 * after, "{spread} {after}");
+    }
+
+    #[test]
+    fn the_reported_shading_relights_the_map_to_the_photograph() {
+        let mut samples = lit_samples();
+        let photographed: Vec<f32> = samples
+            .iter()
+            .map(|sample| srgb_to_linear(sample.colour[0] / 255.0))
+            .collect();
+        let shading = remove_lighting(&mut samples).expect("shading was estimated");
+        // Samples brought down as highlights cannot be relit exactly.
+        let relit = samples
+            .iter()
+            .zip(&photographed)
+            .filter(|(sample, photographed)| {
+                let relit = srgb_to_linear(sample.colour[0] / 255.0) * shading.at(0, sample.normal);
+                (relit - **photographed).abs() < 0.02 * **photographed
+            })
+            .count();
+        assert!(
+            relit > 9 * samples.len() / 10,
+            "{relit} of {}",
+            samples.len()
+        );
     }
 
     #[test]
