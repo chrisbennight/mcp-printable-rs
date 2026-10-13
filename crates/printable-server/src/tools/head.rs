@@ -866,6 +866,11 @@ pub(super) async fn prepare_print(
     .await
 }
 
+/// The largest suggested neck rotation: a half turn less a margin that
+/// rounding to single precision, in which poses are read and checked,
+/// cannot cross.
+const MAX_SUGGESTED_ANGLE: f64 = std::f64::consts::PI - 1e-5;
+
 /// A neck rotation that keeps a share of the head's rotation in a
 /// photograph. The rotation is split into a turn about y, then a pitch about
 /// x, then a roll about z; the turn is scaled by `turn` and the pitch and
@@ -888,7 +893,7 @@ fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
         axis_angle_matrix([0.0, 0.0, tilt * roll]),
     );
     // Through a unit quaternion with a non-negative scalar part, which is
-    // stable at every angle and gives an angle of at most pi.
+    // stable at every angle and gives an angle of at most a half turn.
     let [w, x, y, z] = matrix_quaternion(kept);
     let [w, x, y, z] = if w < 0.0 {
         [-w, -x, -y, -z]
@@ -899,7 +904,7 @@ fn suggested_neck(rotation: [f64; 3], tilt: f64, turn: f64) -> [f64; 3] {
     if length < 1e-12 {
         return [0.0; 3];
     }
-    let angle = 2.0 * length.atan2(w);
+    let angle = (2.0 * length.atan2(w)).min(MAX_SUGGESTED_ANGLE);
     [x, y, z].map(|value| value / length * angle)
 }
 
@@ -1892,13 +1897,33 @@ mod tests {
     }
 
     #[test]
-    fn a_half_turn_stays_within_pi() {
+    fn a_half_turn_is_accepted_as_a_pose() {
         let half = f64::from(std::f32::consts::PI);
         let neck = suggested_neck([0.0, 0.0, half], 1.0, 1.0);
         let length = neck.iter().map(|value| value * value).sum::<f64>().sqrt();
-        assert!(length <= std::f64::consts::PI, "{neck:?}");
-        assert!((length - std::f64::consts::PI).abs() < 1e-6, "{neck:?}");
+        assert!((length - std::f64::consts::PI).abs() < 1e-4, "{neck:?}");
         assert!(neck[0].abs() < 1e-6 && neck[1].abs() < 1e-6, "{neck:?}");
+        // Read in single precision, as `create` reads a pose, every
+        // suggestion near a half turn passes its check.
+        let mut rotations = vec![[1.0471975803375244, 2.094395160675049, 2.094395160675049]];
+        for step in 0..400 {
+            let (polar, around) = (f64::from(step % 20) * 0.16, f64::from(step / 20) * 0.33);
+            let axis = [
+                polar.sin() * around.cos(),
+                polar.cos(),
+                polar.sin() * around.sin(),
+            ];
+            for angle in [std::f64::consts::PI, half, std::f64::consts::PI - 1e-7] {
+                rotations.push(axis.map(|value| value * angle));
+            }
+        }
+        for rotation in rotations {
+            let neck = suggested_neck(rotation, 1.0, 1.0).map(|value| value as f32);
+            assert!(
+                check_rotation("neck", neck).is_ok(),
+                "{rotation:?} {neck:?}"
+            );
+        }
     }
 
     #[test]
