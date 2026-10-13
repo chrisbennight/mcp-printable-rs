@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "Draft measurements; final source checks, matching-image functional checks and public release qualification remain pending.",
+  "status": "accepted_with_documented_limits",
   "recorded_at_utc": "2026-10-13T01:30:44.421296+00:00",
   "epic_url": "https://github.com/chrisbennight/mcp-printable-rs/issues/136",
   "baseline_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
@@ -263,13 +263,46 @@
     "Some cleanup checks initially failed and passed unchanged reruns; their causes remain unconfirmed.",
     "Later source changes were not remeasured. Historical source identities, response sizes and timings do not qualify the final images."
   ],
-  "pending_verification": {
-    "final_source_gates": null,
-    "hosted_ci_run_url": null,
-    "tested_image_ids": null,
-    "published_image_digests": null,
-    "public_release_verification": null,
-    "public_package_access": null,
-    "final_release_revision": null
+  "release_qualification": {
+    "final_source_gates": {
+      "status": "passed",
+      "coverage": "Rust formatting, warnings-denied clippy, locked workspace tests, addon and script unit tests, Python syntax, documentation, shell and publication permissions"
+    },
+    "hosted_ci_run_url": "https://github.com/chrisbennight/mcp-printable-rs/actions/runs/38350927408",
+    "tested_image_ids": {
+      "blender": "sha256:1a93bb90f53044fafbf578e8ca668dcdf649993330dea9d95959b11b51cf6df6",
+      "cad": "sha256:8cc003c76a7bc4da2ce3813513a1579f13104352bc537b9b59e0fd1bdf3c3797",
+      "recon": "sha256:b231454409960bee69a2b87c6ded562f52b796484bc8c298a16bd614c3196c7a",
+      "server": "sha256:35d1f2489b601d3203aec69a32e772205d6bdee4550be714dc828c859a63934a",
+      "slicer": "sha256:c5a3e9e7fe9157085d46a5e20ca6f0ce0add7d7411eed344bf3620147a66819c"
+    },
+    "published_image_digests": {
+      "server": "sha256:477d02fbb207a225abbbaf5244255d3dd7af4cd42af519aa1888fa6c2625abd3",
+      "blender": "sha256:9966830a8f17cbcbab477334a50732526148345144dca620979d999971416da6",
+      "cad": "sha256:5e6f8bbd8a4c921b55f4d547b48aa6e9b4e45832d101ef32c1cace65af1ae5a7",
+      "slicer": "sha256:cb3b86e17de04568c72364da812c3edcfabbcecd60b5b2986f65b7d3907b3c90",
+      "recon": "sha256:fa8397c90ac046a0a6db77d6de9828501f8187c6b3b75c39f650816f8fc07761",
+      "pair": "sha256:fd131fd7e866d4bc2426df9673858c3628840cad3a660ba206801f21ba5db7ba"
+    },
+    "public_release_verification": {
+      "status": "passed",
+      "record_reference": "ghcr.io/chrisbennight/mcp-printable-release:sha-d56d707fb92d@sha256:fd131fd7e866d4bc2426df9673858c3628840cad3a660ba206801f21ba5db7ba",
+      "components": "Official GitHub CLI verified provenance and SPDX SBOM bundles without credentials for every component. Verified statements match the retrieved inventories.",
+      "constraints": [
+        "immutable subject digest",
+        "repository",
+        "signer workflow",
+        "full source revision",
+        "refs/heads/main",
+        "GitHub-hosted runners"
+      ],
+      "record_provenance": "Official GitHub CLI verification passed in the publication workflow before update discovery advanced.",
+      "retained_materials": "SBOMs, the declared supplement, repository notices, scan reports, policy and VEX inputs, tested IDs and component bundles were retrieved from the immutable record."
+    },
+    "public_package_access": {
+      "all_manifests": "anonymous retrieval passed",
+      "release_record": "anonymous pull and inventory retrieval passed"
+    },
+    "final_release_revision": "d56d707fb92d1317c3cbbe2e080e8d6e606d17b8"
   }
 }

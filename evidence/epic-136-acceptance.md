@@ -4,8 +4,8 @@ The goal of [epic 136](https://github.com/chrisbennight/mcp-printable-rs/issues/
 is better performance, reliability, and agent efficiency while preserving native
 modeling, inspection, assembly, retained jobs, immutable artifacts, and recovery.
 
-This is **draft acceptance evidence**. Final source checks, matching-image
-functional checks, and public release qualification remain pending. The
+Final source checks, matching-image software checks, and public release
+qualification passed with the limits described below. The
 [JSON record](epic-136-acceptance.json) retains measurement conditions, outcomes,
 source identities, limitations, and links to the child evidence.
 
@@ -77,7 +77,9 @@ excluded from completed-trial counts. Some cleanup checks initially failed and
 passed unchanged reruns; their causes remain unconfirmed.
 
 Required source gates are cargo fmt, clippy with warnings denied, locked workspace
-tests, addon and script unit tests, and docgate. Source regressions cover strict
+tests, addon and script unit tests, and docgate. These passed on the final runtime
+source in the [main-branch run](https://github.com/chrisbennight/mcp-printable-rs/actions/runs/38350927408).
+Source regressions cover strict
 errors, scene guards, unknown outcomes, one-use authority, admission, and supported
 notification lifecycles. [Shutdown evidence](service-shutdown.md) covers drain and
 restart without replay; a zero service exit does not prove job completion.
@@ -85,8 +87,8 @@ restart without replay; a zero service exit does not prove job completion.
 Existing `scripts/test-installation.py --recovery` and `scripts/smoke-release-pair`
 exercise installed modeling/inspection, native assembly/motion, retained renders,
 CAD/slicing, guarded attachment, verified delivery, restart, backup restore, and
-damaged-metadata/disk-pressure recovery. Hosted matching-image qualification is
-still required. Software and fake-backed lifecycle tests do not establish NVIDIA
+damaged-metadata/disk-pressure recovery. Hosted matching-image software checks
+passed in that run. Software and fake-backed lifecycle tests do not establish NVIDIA
 performance, physical manufacturing fitness, or real printer stop behavior.
 
 ## Optional measurement runs
@@ -107,9 +109,25 @@ These commands measure the checked-out source. The child reports describe the
 historical experiments; reproducing their baseline comparisons requires those
 recorded sources. Fresh results need their own source and environment description.
 
-## Pending release acceptance
+## Public release acceptance
 
-Follow the [release guidance](../docs/releases.md) to qualify a public image set
-with its dependency inventories and attestations. Retain the actual source,
-tested and published image identities, functional check results, and public
-access result. Final source, image, and release qualification remain pending.
+The [main-branch run](https://github.com/chrisbennight/mcp-printable-rs/actions/runs/38350927408)
+published the matching set from `d56d707fb92d1317c3cbbe2e080e8d6e606d17b8`.
+The JSON record retains its tested image IDs, published digests and immutable
+release-record reference. Anonymous manifest access passed for the record and
+every component; anonymous record pull and inventory retrieval also passed.
+
+Independent official GitHub CLI checks verified every component's retained
+provenance and SPDX SBOM bundle without credentials, enforcing the immutable
+subject digest, repository, signer workflow, full source revision, main ref
+and hosted runners. The verified SBOM statements match the retrieved inventories,
+and the tested IDs match the public manifest configuration digests. The record
+retains the supplement, repository notices, full scan reports and policy inputs.
+Its provenance passed official CLI verification in publication before update
+discovery advanced. Registry-bundle CLI verification requires GitHub login;
+the documented retained-component-bundle path works without that login.
+
+Follow the [release guidance](../docs/releases.md) for standard verification and
+retrieval. Historical releases without attestations remain explicitly distinct.
+Installed dependency notices remain in their signed component images; the
+record's repository notice copies do not establish complete license compliance.

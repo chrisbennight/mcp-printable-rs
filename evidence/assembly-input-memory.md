@@ -31,7 +31,7 @@ To compare the historical baseline, archive revision
 files into its `crates/printable-server/tests/` directory without changing its
 production source. Its preparation test is expected to fail after printing
 both size records. Run its native measurements with
-`--exact increasing_tessellation_preserves_real_worker_measurements --nocapture`
+`--exact increasing_tessellation_preserves_real_worker_measurements --ignored --nocapture`
 after Cargo's `--` separator. Retain the copied test hashes with the results.
 
 ## Workloads and measurement boundaries
