@@ -55,6 +55,22 @@ pub struct ReconRequest {
     /// of the hair colour found in the photographs. Needs `scalp` `hair`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hair_colour: Option<[u8; 3]>,
+    /// What becomes of the photographs' light and shade in the colour map
+    /// (default `remove`): `remove` estimates each photograph's smooth
+    /// shading over the skin and divides it out, keeping the typical skin
+    /// colour and limiting highlights; `keep` leaves it as photographed.
+    /// Needs `texture_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<LightingChoice>,
+}
+
+/// What a colour map does with the photographs' lighting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LightingChoice {
+    #[default]
+    Remove,
+    Keep,
 }
 
 /// How a colour map colours the scalp.
@@ -100,9 +116,9 @@ impl ReconRequest {
                     "texture_path and displacement_path must differ".into(),
                 ));
             }
-        } else if self.scalp.is_some() || self.hair_colour.is_some() {
+        } else if self.scalp.is_some() || self.hair_colour.is_some() || self.lighting.is_some() {
             return Err(ToolError::Validation(
-                "scalp and hair_colour need texture_path".into(),
+                "scalp, hair_colour and lighting need texture_path".into(),
             ));
         }
         if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
@@ -498,6 +514,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             texture_path: None,
             scalp: None,
             hair_colour: None,
+            lighting: None,
         }
     }
 
@@ -550,6 +567,17 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             let error = coloured(scalp, hair, texture).validate().unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
+        let unlit = ReconRequest {
+            lighting: Some(LightingChoice::Keep),
+            ..request(&["a.jpg"], "map.png")
+        };
+        assert!(
+            unlit
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("need texture_path")
+        );
     }
 }
 

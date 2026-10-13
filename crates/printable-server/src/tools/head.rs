@@ -1054,6 +1054,7 @@ pub(super) async fn reconstruct(
         let colouring = Colouring {
             scalp: request.scalp.unwrap_or_default(),
             hair_colour: request.hair_colour,
+            lighting: request.lighting.unwrap_or_default(),
         };
         let views = field("views");
         let digests = field("image_sha256");
@@ -1161,6 +1162,7 @@ const MAX_LABEL_PNG_BYTES: usize = 1024 * 1024;
 struct Colouring {
     scalp: crate::recon::ScalpChoice,
     hair_colour: Option<[u8; 3]>,
+    lighting: crate::recon::LightingChoice,
 }
 
 /// Decode a view's labels: a square greyscale PNG whose values name the
@@ -1334,9 +1336,20 @@ fn colour_map(
             ),
         },
     };
-    let mut builder =
-        texture::ColourMapBuilder::new(model.faces(), layout, COLOUR_MAP_TEXELS, &kinds, scalp)
-            .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let mut builder = texture::ColourMapBuilder::new(
+        model.faces(),
+        layout,
+        COLOUR_MAP_TEXELS,
+        &kinds,
+        texture::Colouring {
+            scalp,
+            lighting: match colouring.lighting {
+                crate::recon::LightingChoice::Remove => texture::Lighting::Remove,
+                crate::recon::LightingChoice::Keep => texture::Lighting::Keep,
+            },
+        },
+    )
+    .map_err(|error| ToolError::Validation(error.to_string()))?;
     let mut segmented = 0usize;
     // One photograph at a time: each is read, decoded, projected and dropped
     // before the next.
@@ -1421,6 +1434,19 @@ fn colour_map(
         "seen": map.seen,
         "skin_only": segmented == views.len(),
         "scalp": scalp_report,
+        "lighting": {
+            "requested": colouring.lighting,
+            // Each photograph's shading in linear light, as ambient plus
+            // direction · normal per colour channel with the direction in
+            // the head's own frame, or null where it was kept or too little
+            // skin was seen to estimate it.
+            "shading": map.shading.iter().zip(views.iter()).map(|(shading, view)| {
+                shading.map(|shading| {
+                    let shading = shading.turned_back(view.head_rotation);
+                    json!({"ambient": shading.ambient, "direction": shading.direction})
+                })
+            }).collect::<Vec<_>>(),
+        },
     }))
 }
 
