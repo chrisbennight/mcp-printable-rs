@@ -1,0 +1,375 @@
+{
+  "schema_version": 1,
+  "status": "accepted_with_documented_limits",
+  "recorded_at_utc": "2026-10-13T01:30:44.421296+00:00",
+  "epic_url": "https://github.com/chrisbennight/mcp-printable-rs/issues/136",
+  "baseline_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
+  "candidate_revision": "70414e47a9bbea9018888192665e03b2118cba6c",
+  "candidate_tree": "718c0338b6ce774a544cd15df1fbd815801f9938",
+  "measurement_sources": "These revisions identify the agent trials. Admission, assembly and shutdown measurements retain the sources identified in their child records; none are relabeled as final-release measurements.",
+  "child_evidence": {
+    "admission": [
+      "mcp-admission.md",
+      "mcp-admission.json"
+    ],
+    "assembly": [
+      "assembly-input-memory.md",
+      "assembly-input-memory.json"
+    ],
+    "shutdown": [
+      "service-shutdown.md",
+      "service-shutdown.json"
+    ],
+    "structured_errors": "https://github.com/chrisbennight/mcp-printable-rs/pull/143",
+    "notifications": "https://github.com/chrisbennight/mcp-printable-rs/pull/144",
+    "release": "https://github.com/chrisbennight/mcp-printable-rs/pull/147"
+  },
+  "environment": {
+    "system": "Linux",
+    "architecture": "arm64",
+    "host": "macOS",
+    "build_profile": "dev/test (unoptimized + debug information)",
+    "gpu_used": false,
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "visible_cpus": 8,
+    "vm_memory_budget_bytes": 12514275328,
+    "container_memory_cap_bytes": null
+  },
+  "agent_protocol": {
+    "protocol": "2025-11-25",
+    "validator": "jsonschema 4.26.0",
+    "transport": "Parent relays agent-chosen requests and outcomes; initialization is outside the MCP request budget.",
+    "oracle": {
+      "dimensions_mm": [
+        10,
+        20,
+        30
+      ],
+      "volume_mm3": 6000,
+      "closed_solid_required": true,
+      "artifact_size_bytes": 1477,
+      "mcp_request_limit": 10,
+      "local_command_limit": 20,
+      "uncertain_mutation_replay_permitted": false
+    },
+    "provider_usage": null,
+    "model_identity": null,
+    "actual_model_exposure_bytes": null,
+    "byte_scope": "Compact UTF-8 decoded JSON result; excludes HTTP framing and JSON-RPC envelopes."
+  },
+  "actual_agent_trials": [
+    {
+      "trial": "trial-a2",
+      "implementation": "baseline",
+      "discovery_mode": "full",
+      "task_success": true,
+      "elapsed_wall_ms": 257253.02638200004,
+      "mcp_requests_used": 5,
+      "local_commands_used": 6,
+      "discovery_requests": 1,
+      "discovery_json_bytes": 209836,
+      "failed_schema_responses": 1,
+      "schema_diagnostics": 3
+    },
+    {
+      "trial": "trial-c",
+      "implementation": "baseline",
+      "discovery_mode": "selected",
+      "task_success": true,
+      "elapsed_wall_ms": 325336.55611899996,
+      "mcp_requests_used": 7,
+      "local_commands_used": 8,
+      "discovery_requests": 3,
+      "discovery_json_bytes": 12601,
+      "failed_schema_responses": 1,
+      "schema_diagnostics": 3
+    },
+    {
+      "trial": "trial-b2",
+      "implementation": "candidate",
+      "discovery_mode": "full",
+      "task_success": true,
+      "elapsed_wall_ms": 143883.58816399978,
+      "mcp_requests_used": 5,
+      "local_commands_used": 6,
+      "discovery_requests": 1,
+      "discovery_json_bytes": 219138,
+      "failed_schema_responses": 0,
+      "schema_diagnostics": 0
+    },
+    {
+      "trial": "trial-d2",
+      "implementation": "candidate",
+      "discovery_mode": "selected",
+      "task_success": true,
+      "elapsed_wall_ms": 170316.17533299958,
+      "mcp_requests_used": 7,
+      "local_commands_used": 8,
+      "discovery_requests": 3,
+      "discovery_json_bytes": 13762,
+      "failed_schema_responses": 0,
+      "schema_diagnostics": 0
+    },
+    {
+      "trial": "trial-a",
+      "implementation": "baseline",
+      "discovery_mode": "full",
+      "task_success": false,
+      "elapsed_wall_ms": 459036.692411999,
+      "mcp_requests_used": 1,
+      "local_commands_used": 2,
+      "discovery_requests": 1,
+      "discovery_json_bytes": null,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "Two automatic approval rejections delayed local client setup. The initialized session expired before tools/list; the request returned a transport failure. No geometry, publication or download was established.",
+      "comparison_exclusion_reason": "The original direct-client transport could not run. It was replaced with parent-mediated requests for all four completed trials; this failed attempt is retained separately.",
+      "replacement_trial": "trial-a2"
+    },
+    {
+      "trial": "trial-b",
+      "implementation": "candidate",
+      "discovery_mode": "full",
+      "task_success": false,
+      "elapsed_wall_ms": 608332.5734810005,
+      "mcp_requests_used": 3,
+      "local_commands_used": 4,
+      "discovery_requests": 1,
+      "discovery_json_bytes": 219138,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "Full discovery succeeded. A 413-second parent scheduling pause exceeded the 300-second session idle lifetime; validation and the read-only status recovery attempt returned transport failures. No geometry, publication or download was established.",
+      "comparison_exclusion_reason": "Parent scheduling expired the session before task work. The failure remains recorded but is not attributed to candidate geometry or schema behavior.",
+      "replacement_trial": "trial-b2"
+    },
+    {
+      "trial": "trial-d",
+      "implementation": "candidate",
+      "discovery_mode": "selected",
+      "task_success": false,
+      "elapsed_wall_ms": 125271.16074600053,
+      "mcp_requests_used": 1,
+      "local_commands_used": 3,
+      "discovery_requests": 1,
+      "discovery_json_bytes": null,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "The parent assigned printable://contracts/v1/index instead of the implemented printable://contracts. resources/read returned -32601; a subsequent skill.list attempt was blocked locally because its contract had not been read. No geometry, publication or download was attempted.",
+      "comparison_exclusion_reason": "The operator supplied an unsupported URI. The observed error does not establish that resources/read or the canonical contract index was unavailable.",
+      "replacement_trial": "trial-d2"
+    }
+  ],
+  "agent_attempt_accounting": {
+    "completed": 4,
+    "failed": 3,
+    "source": "Retained participant summaries, allowlisted request journals and independent classifications. Implementation labels refer to the baseline_revision and candidate_revision above.",
+    "comparison_scope": "Only the four task-success records use the common mediated transport and valid assigned discovery routes. Failures are retained without a population success-rate claim; replacement trials are fresh sessions, not replay of an uncertain mutation.",
+    "setup_failures_before_agent_requests": [
+      {
+        "attempt": "setup-failure-1",
+        "observed_issue": "Initialization returned a transport failure before a usable session or agent request. Owned server cleanup was recorded.",
+        "comparison_exclusion_reason": "No model participant trial started; the underlying initialization cause is unconfirmed."
+      },
+      {
+        "attempt": "trial-a2-launch",
+        "observed_issue": "The local launcher passed the Python executable as script input and exited with SyntaxError before starting the replacement trial.",
+        "comparison_exclusion_reason": "Launcher invocation failure; no model participant or MCP task request started. The invocation was corrected before trial-a2."
+      }
+    ]
+  },
+  "common_agent_outcomes": {
+    "scope": "Completed trials only; failed attempts retain their individual outcomes above.",
+    "missing_file_recovered_through_explicit_fallback": true,
+    "geometry_matches_oracle": true,
+    "fixture_unchanged": true,
+    "verified_download_bytes": 1477,
+    "incorrect_calls": 0,
+    "avoidable_calls": 0,
+    "retries": 0,
+    "uncertain_mutation_replays": 0
+  },
+  "admission": {
+    "argument_utf8_bytes": 589839,
+    "body_limit_bytes": 1463640,
+    "capacities": {
+      "body_readers": 32,
+      "ordinary_tool_work": 32,
+      "controls": 8,
+      "notification_streams": 16
+    },
+    "memory": [
+      {
+        "offered_calls": 1,
+        "baseline_accepted": 1,
+        "baseline_refused": 0,
+        "candidate_accepted": 1,
+        "candidate_refused": 0,
+        "baseline_server_peak_kib": 38672,
+        "candidate_server_peak_kib": 37960,
+        "baseline_control_ms": 47.699506,
+        "candidate_control_ms": 45.043673
+      },
+      {
+        "offered_calls": 16,
+        "baseline_accepted": 16,
+        "baseline_refused": 0,
+        "candidate_accepted": 16,
+        "candidate_refused": 0,
+        "baseline_server_peak_kib": 73352,
+        "candidate_server_peak_kib": 72088,
+        "baseline_control_ms": 42.865005999999994,
+        "candidate_control_ms": 51.667591
+      },
+      {
+        "offered_calls": 64,
+        "baseline_accepted": 64,
+        "baseline_refused": 0,
+        "candidate_accepted": 32,
+        "candidate_refused": 32,
+        "baseline_server_peak_kib": 174244,
+        "candidate_server_peak_kib": 116876,
+        "baseline_control_ms": 49.562090000000005,
+        "candidate_control_ms": 43.364339
+      },
+      {
+        "offered_calls": 128,
+        "baseline_accepted": 128,
+        "baseline_refused": 0,
+        "candidate_accepted": 32,
+        "candidate_refused": 96,
+        "baseline_server_peak_kib": 302280,
+        "candidate_server_peak_kib": 118864,
+        "baseline_control_ms": 43.189172,
+        "candidate_control_ms": 50.922716
+      }
+    ],
+    "legacy_control_group_ms": 480.6,
+    "modern_control_group_ms": 476.9,
+    "protocols": [
+      "2025-11-25",
+      "2026-07-28"
+    ],
+    "refusal": "HTTP 429 with error server_busy before dispatch; accepted disconnect/timeouts remain uncertain and must not be blindly retried.",
+    "measurement_scope": "Fresh real server subprocess VmHWM; clients/fake bridge outside measured process. One observation per offered level; deliberate SIGKILL teardown."
+  },
+  "assembly": {
+    "large_file_trials": [
+      {
+        "input_mib_each": 8,
+        "input_bytes_each": 8388484,
+        "server_peak_growth_kib": 22480,
+        "temporary_input_bytes": 33553936,
+        "source": "baseline"
+      },
+      {
+        "input_mib_each": 64,
+        "input_bytes_each": 67108684,
+        "server_peak_growth_kib": 137156,
+        "temporary_input_bytes": 268434736,
+        "source": "baseline"
+      },
+      {
+        "input_mib_each": 8,
+        "input_bytes_each": 8388484,
+        "server_peak_growth_kib": 6536,
+        "temporary_input_bytes": 16776968,
+        "source": "candidate"
+      },
+      {
+        "input_mib_each": 64,
+        "input_bytes_each": 67108684,
+        "server_peak_growth_kib": 6536,
+        "temporary_input_bytes": 134217368,
+        "source": "candidate"
+      }
+    ],
+    "candidate_native_trials": 18,
+    "baseline_native_trials": 18,
+    "geometry_oracles": "Both cubes have volume 1 mm³; separated clearance is 1 mm with zero interference; overlapping interference is 0.5 mm³. There are 48, 768, and 12,288 triangles per cube, two arrangements, and three trials each.",
+    "worker_address_space_limit_bytes": 1073741824,
+    "largest_separated_median_ms": {
+      "baseline_worker": 407.9,
+      "candidate_worker": 761.1,
+      "baseline_total": 438.1,
+      "candidate_total": 815.2
+    },
+    "preparation_baseline_exit": 101,
+    "preparation_baseline_expected_regression_failure": true,
+    "preparation_candidate_exit": 0,
+    "native_baseline_exit": 0,
+    "native_candidate_exit": 0
+  },
+  "shutdown": {
+    "actual_docker_probes": 13,
+    "restart_observations": 4,
+    "baseline_idle_exit": 143,
+    "candidate_idle_exit": 0,
+    "candidate_foreground_exit": 0,
+    "candidate_foreground_restart": "completed; immutable bytes preserved; engine starts once",
+    "candidate_background_exit": 0,
+    "candidate_background_restart": "interrupted; no replay",
+    "candidate_forced_foreground_exit": 137,
+    "candidate_forced_foreground_restart": "interrupted; no replay",
+    "grace_seconds": {
+      "idle": 5,
+      "foreground": 8,
+      "background": 5,
+      "forced": 1
+    }
+  },
+  "limitations": [
+    "Linux/arm64 local development binaries in Docker on a macOS host; software-only, not supported Linux/amd64 NVIDIA qualification.",
+    "One completed actual-agent trial per source and discovery mode. Wall time includes parent mediation and scheduling; no causal speedup or population completion claim.",
+    "Exact inherited model name, actual provider token usage and total model exposure bytes unavailable; decoded response bytes are not token estimates.",
+    "Full catalog increased from 209,836 to 219,138 bytes. Broader candidate additions prevent attributing the change solely to error contracts.",
+    "Memory is approximate kernel high-water accounting for the defined processes/fixtures, not allocation bounds or machine sizing. Admission disposal used SIGKILL.",
+    "Reserved controls cover retained-work saturation. Shared body readers and finite control/subscription slots can themselves saturate.",
+    "Assembly batches were sequential and used different input filesystems, without CPU pinning or controlled external load; slower native candidate times remain recorded.",
+    "Native mesh/assembly oracle matches do not establish physical manufacturing, GPU rendering performance, real printer stop, or complete operator-provisioned reconstruction.",
+    "Three failed agent attempts and two pre-trial setup failures are retained with individual exclusion reasons; completed-trial comparisons do not establish overall success rates.",
+    "Some cleanup checks initially failed and passed unchanged reruns; their causes remain unconfirmed.",
+    "Later source changes were not remeasured. Historical source identities, response sizes and timings do not qualify the final images."
+  ],
+  "release_qualification": {
+    "final_source_gates": {
+      "status": "passed",
+      "coverage": "Rust formatting, warnings-denied clippy, locked workspace tests, addon and script unit tests, Python syntax, documentation, shell and publication permissions"
+    },
+    "hosted_ci_run_url": "https://github.com/chrisbennight/mcp-printable-rs/actions/runs/38350927408",
+    "tested_image_ids": {
+      "blender": "sha256:1a93bb90f53044fafbf578e8ca668dcdf649993330dea9d95959b11b51cf6df6",
+      "cad": "sha256:8cc003c76a7bc4da2ce3813513a1579f13104352bc537b9b59e0fd1bdf3c3797",
+      "recon": "sha256:b231454409960bee69a2b87c6ded562f52b796484bc8c298a16bd614c3196c7a",
+      "server": "sha256:35d1f2489b601d3203aec69a32e772205d6bdee4550be714dc828c859a63934a",
+      "slicer": "sha256:c5a3e9e7fe9157085d46a5e20ca6f0ce0add7d7411eed344bf3620147a66819c"
+    },
+    "published_image_digests": {
+      "server": "sha256:477d02fbb207a225abbbaf5244255d3dd7af4cd42af519aa1888fa6c2625abd3",
+      "blender": "sha256:9966830a8f17cbcbab477334a50732526148345144dca620979d999971416da6",
+      "cad": "sha256:5e6f8bbd8a4c921b55f4d547b48aa6e9b4e45832d101ef32c1cace65af1ae5a7",
+      "slicer": "sha256:cb3b86e17de04568c72364da812c3edcfabbcecd60b5b2986f65b7d3907b3c90",
+      "recon": "sha256:fa8397c90ac046a0a6db77d6de9828501f8187c6b3b75c39f650816f8fc07761",
+      "pair": "sha256:fd131fd7e866d4bc2426df9673858c3628840cad3a660ba206801f21ba5db7ba"
+    },
+    "public_release_verification": {
+      "status": "passed",
+      "record_reference": "ghcr.io/chrisbennight/mcp-printable-release:sha-d56d707fb92d@sha256:fd131fd7e866d4bc2426df9673858c3628840cad3a660ba206801f21ba5db7ba",
+      "components": "Official GitHub CLI verified provenance and SPDX SBOM bundles without credentials for every component. Verified statements match the retrieved inventories.",
+      "constraints": [
+        "immutable subject digest",
+        "repository",
+        "signer workflow",
+        "full source revision",
+        "refs/heads/main",
+        "GitHub-hosted runners"
+      ],
+      "record_provenance": "Official GitHub CLI verification passed in the publication workflow before update discovery advanced.",
+      "retained_materials": "SBOMs, the declared supplement, repository notices, scan reports, policy and VEX inputs, tested IDs and component bundles were retrieved from the immutable record."
+    },
+    "public_package_access": {
+      "all_manifests": "anonymous retrieval passed",
+      "release_record": "anonymous pull and inventory retrieval passed"
+    },
+    "final_release_revision": "d56d707fb92d1317c3cbbe2e080e8d6e606d17b8"
+  }
+}

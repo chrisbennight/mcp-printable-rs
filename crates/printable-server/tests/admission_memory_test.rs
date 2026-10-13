@@ -333,6 +333,7 @@ async fn observe(offered: usize) -> Result<Value, String> {
 }
 
 #[tokio::test]
+#[ignore = "opt-in Linux memory measurements; admission behavior is covered by endpoint tests"]
 async fn increasing_concurrency_records_isolated_server_peak_memory() {
     let mut records = Vec::new();
     for offered in [1, 16, 64, 128] {
