@@ -26,4 +26,9 @@ body="$(head -n 1 <<<"$readiness")"
 for file in mica.tar SMIRK_em1.pt deca_model.tar uv_face_eye_mask.png; do
   grep -q "$file" <<<"$body" || { echo "readiness does not name $file: $body" >&2; exit 1; }
 done
+# The image carries its own MediaPipe models, so readiness never names them.
+if grep -q -e "landmarker" -e "segmenter" <<<"$body"; then
+  echo "the image lacks a bundled MediaPipe model: $body" >&2
+  exit 1
+fi
 echo "reconstruction worker reports missing checkpoints as expected"

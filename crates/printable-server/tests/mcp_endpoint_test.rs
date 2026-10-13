@@ -135,6 +135,16 @@ async fn post(
     session: Option<&str>,
     body: &Value,
 ) -> reqwest::Response {
+    post_with_protocol(http, url, session, body, protocol_version()).await
+}
+
+async fn post_with_protocol(
+    http: &reqwest::Client,
+    url: &str,
+    session: Option<&str>,
+    body: &Value,
+    version: &str,
+) -> reqwest::Response {
     let mut req = http
         .post(url)
         .header(
@@ -146,8 +156,11 @@ async fn post(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {TEST_MCP_BEARER}"),
         )
-        .header("mcp-protocol-version", protocol_version())
+        .header("mcp-protocol-version", version)
         .json(body);
+    if version == ProtocolVersion::V_2026_07_28.as_str() {
+        req = req.header("mcp-method", body["method"].as_str().unwrap());
+    }
     if let Some(sid) = session {
         req = req.header("mcp-session-id", sid);
     }
@@ -1561,8 +1574,283 @@ async fn switchable_recon_worker(
     (format!("http://{address}"), task)
 }
 
+fn modern_request(id: Value, method: &str, mut params: Value) -> Value {
+    params["_meta"] = json!({
+        "io.modelcontextprotocol/protocolVersion": ProtocolVersion::V_2026_07_28,
+        "io.modelcontextprotocol/clientInfo": {"name": "subscription-contract-client", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+}
+
+async fn modern_post(http: &reqwest::Client, url: &str, body: &Value) -> reqwest::Response {
+    post_with_protocol(
+        http,
+        url,
+        None,
+        body,
+        ProtocolVersion::V_2026_07_28.as_str(),
+    )
+    .await
+}
+
+struct SubscriptionStream {
+    response: reqwest::Response,
+    pending: String,
+}
+
+impl SubscriptionStream {
+    async fn next(&mut self) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                while let Some(end) = self.pending.find("\n\n") {
+                    let frame = self.pending[..end].to_owned();
+                    self.pending.drain(..end + 2);
+                    let data = frame
+                        .lines()
+                        .filter_map(|line| line.strip_prefix("data:"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !data.trim().is_empty() {
+                        return serde_json::from_str(&data).expect("SSE message is JSON");
+                    }
+                }
+                let chunk = self
+                    .response
+                    .chunk()
+                    .await
+                    .expect("SSE read")
+                    .expect("subscription is still open");
+                self.pending.push_str(
+                    &String::from_utf8(chunk.to_vec())
+                        .expect("UTF-8 SSE")
+                        .replace("\r\n", "\n"),
+                );
+            }
+        })
+        .await
+        .expect("subscription message arrives")
+    }
+}
+
+fn reconstruction_library() -> (
+    tempfile::TempDir,
+    std::sync::Arc<printable_server::flame::FlameLibrary>,
+) {
+    let models = tempfile::tempdir().unwrap();
+    let mut fixture = printable_flame::fixture::Fixture {
+        shapedirs: vec![0.0; 4 * 3 * 400],
+        ..Default::default()
+    };
+    for (key, value) in [
+        ("variant", "flame2020_generic"),
+        (
+            "source_sha256",
+            printable_server::flame::FLAME_2020_GENERIC_SHA256,
+        ),
+        ("identity_components", "300"),
+        ("expression_components", "100"),
+    ] {
+        fixture.metadata.insert(key.into(), value.into());
+    }
+    std::fs::write(
+        models.path().join("flame2020_generic.safetensors"),
+        fixture.bytes(),
+    )
+    .unwrap();
+    let library = std::sync::Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+    assert!(library.reconstruction_variant().is_some());
+    (models, library)
+}
+
+#[tokio::test]
+async fn modern_subscriptions_acknowledge_filter_and_track_actual_catalog_changes() {
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (endpoint, worker) = switchable_recon_worker(ready.clone()).await;
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    let (_models, library) = reconstruction_library();
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.recon = Some(recon.clone());
+    settings.flame = Some(library);
+    let server = start_with_settings(settings).await;
+    let http = reqwest::Client::new();
+    let mcp = format!("{}/mcp", server.base);
+    recon.refresh().await;
+
+    let discovery_response = modern_post(
+        &http,
+        &mcp,
+        &modern_request(json!(1), "server/discover", json!({})),
+    )
+    .await;
+    assert!(discovery_response.headers().get("mcp-session-id").is_none());
+    let discovery = rpc_result(discovery_response).await;
+    assert_eq!(discovery["capabilities"]["tools"]["listChanged"], true);
+    assert_eq!(
+        discovery["supportedVersions"],
+        json!([
+            "2024-11-05",
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25",
+            "2026-07-28"
+        ])
+    );
+    let list_request = modern_request(json!(2), "tools/list", json!({}));
+    let before = rpc_result(modern_post(&http, &mcp, &list_request).await).await;
+    let head = before["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "head")
+        .unwrap();
+    assert!(!head["inputSchema"].to_string().contains("reconstruct"));
+
+    for subscription_id in [json!("first-listener"), json!(42)] {
+        let request = modern_request(
+            subscription_id.clone(),
+            "subscriptions/listen",
+            json!({
+                "notifications": {"toolsListChanged": true, "promptsListChanged": true, "resourcesListChanged": true}
+            }),
+        );
+        let response = modern_post(&http, &mcp, &request).await;
+        assert!(response.status().is_success());
+        assert!(response.headers().get("mcp-session-id").is_none());
+        let mut stream = SubscriptionStream {
+            response,
+            pending: String::new(),
+        };
+        let ack = stream.next().await;
+        assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+        assert_eq!(
+            ack["params"]["notifications"],
+            json!({"toolsListChanged": true})
+        );
+        assert_eq!(
+            ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            subscription_id
+        );
+        for available in [true, false] {
+            ready.store(available, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(recon.refresh().await, available);
+            let notification = stream.next().await;
+            assert_eq!(notification["method"], "notifications/tools/list_changed");
+            assert_eq!(
+                notification["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+                subscription_id
+            );
+            let catalog = rpc_result(modern_post(&http, &mcp, &list_request).await).await;
+            let head = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "head")
+                .unwrap();
+            assert_eq!(
+                head["inputSchema"].to_string().contains("reconstruct"),
+                available
+            );
+        }
+        // Dropping the HTTP response ends this subscription; the next request
+        // must receive a fresh acknowledgment and its own notification identity.
+        drop(stream);
+    }
+    let request = modern_request(
+        json!("no-tool-events"),
+        "subscriptions/listen",
+        json!({
+            "notifications": {"resourcesListChanged": true}
+        }),
+    );
+    let mut stream = SubscriptionStream {
+        response: modern_post(&http, &mcp, &request).await,
+        pending: String::new(),
+    };
+    let ack = stream.next().await;
+    assert_eq!(ack["params"]["notifications"], json!({}));
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(recon.refresh().await);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            stream.response.chunk()
+        )
+        .await
+        .is_err()
+    );
+    drop(stream);
+    server.shutdown().await;
+    worker.abort();
+}
+
+#[tokio::test]
+async fn every_advertised_legacy_version_can_initialize_and_list_tools() {
+    let server = start().await;
+    let mcp = format!("{}/mcp", server.base);
+    let http = reqwest::Client::new();
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        let response = post_with_protocol(
+            &http,
+            &mcp,
+            None,
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": version, "capabilities": {},
+                    "clientInfo": {"name": "legacy-contract-client", "version": "1"}}
+            }),
+            version,
+        )
+        .await;
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(rpc_result(response).await["protocolVersion"], version);
+        assert!(
+            post_with_protocol(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc": "2.0", "method": "notifications/initialized"
+                }),
+                version
+            )
+            .await
+            .status()
+            .is_success()
+        );
+        let catalog = rpc_result(
+            post_with_protocol(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+                }),
+                version,
+            )
+            .await,
+        )
+        .await;
+        assert!(!catalog["tools"].as_array().unwrap().is_empty());
+    }
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        legacy_session_hears_tool_changes(version).await;
+    }
+}
+
+async fn legacy_session_hears_tool_changes(version: &str) {
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (endpoint, worker) = switchable_recon_worker(std::sync::Arc::clone(&ready)).await;
     let recon = printable_server::recon::ReconClient::configure(&|name| {
@@ -1572,6 +1860,8 @@ async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
     .expect("endpoint is set");
     let mut settings = test_settings(closed_blender_port().await);
     settings.recon = Some(std::sync::Arc::clone(&recon));
+    let (_models, library) = reconstruction_library();
+    settings.flame = Some(library);
     let server = start_with_settings(settings).await;
     let mcp = format!("{}/mcp", server.base);
     let http = reqwest::Client::new();
@@ -1579,12 +1869,12 @@ async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
     let init = json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {
-            "protocolVersion": protocol_version(),
+            "protocolVersion": version,
             "capabilities": {},
             "clientInfo": {"name": "mcp-endpoint-test", "version": env!("CARGO_PKG_VERSION")},
         },
     });
-    let resp = post(&http, &mcp, None, &init).await;
+    let resp = post_with_protocol(&http, &mcp, None, &init, version).await;
     let session = resp
         .headers()
         .get("mcp-session-id")
@@ -1598,7 +1888,7 @@ async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
     );
     let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     assert!(
-        post(&http, &mcp, Some(&session), &initialized)
+        post_with_protocol(&http, &mcp, Some(&session), &initialized, version)
             .await
             .status()
             .is_success()
@@ -1613,7 +1903,7 @@ async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {TEST_MCP_BEARER}"),
         )
-        .header("mcp-protocol-version", protocol_version())
+        .header("mcp-protocol-version", version)
         .header("mcp-session-id", &session)
         .send()
         .await
@@ -1665,4 +1955,61 @@ async fn tools_are_fixed_without_a_reconstruction_worker() {
         "{result}"
     );
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn reconstruction_without_a_matching_model_advertises_no_catalog_changes() {
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (endpoint, worker) = switchable_recon_worker(ready.clone()).await;
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    let mut settings = test_settings(closed_blender_port().await);
+    settings.recon = Some(recon.clone());
+    let server = start_with_settings(settings).await;
+    let http = reqwest::Client::new();
+    let mcp = format!("{}/mcp", server.base);
+    let discovery = rpc_result(
+        modern_post(
+            &http,
+            &mcp,
+            &modern_request(json!(1), "server/discover", json!({})),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        discovery["capabilities"]["tools"]
+            .get("listChanged")
+            .is_none()
+    );
+    let mut stream = SubscriptionStream {
+        response: modern_post(
+            &http,
+            &mcp,
+            &modern_request(
+                json!(2),
+                "subscriptions/listen",
+                json!({"notifications": {"toolsListChanged": true}}),
+            ),
+        )
+        .await,
+        pending: String::new(),
+    };
+    assert_eq!(stream.next().await["params"]["notifications"], json!({}));
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(recon.refresh().await);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            stream.response.chunk()
+        )
+        .await
+        .is_err()
+    );
+    drop(stream);
+    server.shutdown().await;
+    worker.abort();
 }

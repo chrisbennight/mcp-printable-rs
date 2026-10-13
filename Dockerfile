@@ -151,7 +151,10 @@ RUN site="$(/opt/recon/bin/python -c 'import sysconfig; print(sysconfig.get_path
  && /opt/recon/bin/python -m pip uninstall --yes pip
 RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
- && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check
+ && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check \
+ && curl --fail --location --output /opt/printable/recon/selfie_multiclass_256x256.tflite \
+      https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite \
+ && echo 'c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0  /opt/printable/recon/selfie_multiclass_256x256.tflite' | sha256sum --check
 COPY recon/reconstruct.py /opt/printable/recon/reconstruct.py
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
