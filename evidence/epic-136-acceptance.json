@@ -109,9 +109,76 @@
       "discovery_json_bytes": 13762,
       "failed_schema_responses": 0,
       "schema_diagnostics": 0
+    },
+    {
+      "trial": "trial-a",
+      "implementation": "baseline",
+      "discovery_mode": "full",
+      "task_success": false,
+      "elapsed_wall_ms": 459036.692411999,
+      "mcp_requests_used": 1,
+      "local_commands_used": 2,
+      "discovery_requests": 1,
+      "discovery_json_bytes": null,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "Two automatic approval rejections delayed local client setup. The initialized session expired before tools/list; the request returned a transport failure. No geometry, publication or download was established.",
+      "comparison_exclusion_reason": "The original direct-client transport could not run. It was replaced with parent-mediated requests for all four completed trials; this failed attempt is retained separately.",
+      "replacement_trial": "trial-a2"
+    },
+    {
+      "trial": "trial-b",
+      "implementation": "candidate",
+      "discovery_mode": "full",
+      "task_success": false,
+      "elapsed_wall_ms": 608332.5734810005,
+      "mcp_requests_used": 3,
+      "local_commands_used": 4,
+      "discovery_requests": 1,
+      "discovery_json_bytes": 219138,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "Full discovery succeeded. A 413-second parent scheduling pause exceeded the 300-second session idle lifetime; validation and the read-only status recovery attempt returned transport failures. No geometry, publication or download was established.",
+      "comparison_exclusion_reason": "Parent scheduling expired the session before task work. The failure remains recorded but is not attributed to candidate geometry or schema behavior.",
+      "replacement_trial": "trial-b2"
+    },
+    {
+      "trial": "trial-d",
+      "implementation": "candidate",
+      "discovery_mode": "selected",
+      "task_success": false,
+      "elapsed_wall_ms": 125271.16074600053,
+      "mcp_requests_used": 1,
+      "local_commands_used": 3,
+      "discovery_requests": 1,
+      "discovery_json_bytes": null,
+      "fixture_unchanged": true,
+      "uncertain_mutation_replays": 0,
+      "observed_issue": "The parent assigned printable://contracts/v1/index instead of the implemented printable://contracts. resources/read returned -32601; a subsequent skill.list attempt was blocked locally because its contract had not been read. No geometry, publication or download was attempted.",
+      "comparison_exclusion_reason": "The operator supplied an unsupported URI. The observed error does not establish that resources/read or the canonical contract index was unavailable.",
+      "replacement_trial": "trial-d2"
     }
   ],
+  "agent_attempt_accounting": {
+    "completed": 4,
+    "failed": 3,
+    "source": "Retained participant summaries, allowlisted request journals and independent classifications. Implementation labels refer to the baseline_revision and candidate_revision above.",
+    "comparison_scope": "Only the four task-success records use the common mediated transport and valid assigned discovery routes. Failures are retained without a population success-rate claim; replacement trials are fresh sessions, not replay of an uncertain mutation.",
+    "setup_failures_before_agent_requests": [
+      {
+        "attempt": "setup-failure-1",
+        "observed_issue": "Initialization returned a transport failure before a usable session or agent request. Owned server cleanup was recorded.",
+        "comparison_exclusion_reason": "No model participant trial started; the underlying initialization cause is unconfirmed."
+      },
+      {
+        "attempt": "trial-a2-launch",
+        "observed_issue": "The local launcher passed the Python executable as script input and exited with SyntaxError before starting the replacement trial.",
+        "comparison_exclusion_reason": "Launcher invocation failure; no model participant or MCP task request started. The invocation was corrected before trial-a2."
+      }
+    ]
+  },
   "common_agent_outcomes": {
+    "scope": "Completed trials only; failed attempts retain their individual outcomes above.",
     "missing_file_recovered_through_explicit_fallback": true,
     "geometry_matches_oracle": true,
     "fixture_unchanged": true,
@@ -259,7 +326,7 @@
     "Reserved controls cover retained-work saturation. Shared body readers and finite control/subscription slots can themselves saturate.",
     "Assembly batches were sequential and used different input filesystems, without CPU pinning or controlled external load; slower native candidate times remain recorded.",
     "Native mesh/assembly oracle matches do not establish physical manufacturing, GPU rendering performance, real printer stop, or complete operator-provisioned reconstruction.",
-    "Only completed agent trials are summarized. Setup and harness failures occurred and are excluded from completed-trial counts.",
+    "Three failed agent attempts and two pre-trial setup failures are retained with individual exclusion reasons; completed-trial comparisons do not establish overall success rates.",
     "Some cleanup checks initially failed and passed unchanged reruns; their causes remain unconfirmed.",
     "Later source changes were not remeasured. Historical source identities, response sizes and timings do not qualify the final images."
   ],

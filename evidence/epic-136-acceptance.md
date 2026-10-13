@@ -63,6 +63,17 @@ Provider token usage, total model exposure, and exact inherited model identity
 are unavailable. One completed trial per source/mode and parent-mediated wall
 times do not establish population success rates or a causal latency improvement.
 
+The JSON also retains three failed participant attempts. Trial-a could not run
+its original direct-client transport after approval rejections and session expiry.
+Trial-b received the full catalog, but a parent scheduling pause expired its
+session before validation; the read-only recovery request also failed. Trial-d
+was assigned an unsupported contract URI by the parent and then could not pass
+the client's discovery guard. Each records its budget, elapsed time, observed
+failure, exclusion reason and fresh replacement trial. None established geometry
+or verified delivery, and none replayed an uncertain mutation. Two separate setup
+failures occurred before participant requests: unavailable initialization and an
+incorrect Python launcher invocation. The initialization cause remains unconfirmed.
+
 ## Source and functional qualification
 
 - Agent-trial baseline: `2e46398fb11bd99cc58dac256b82848e46b6eb0a`.
@@ -72,8 +83,8 @@ Admission, assembly, and shutdown retain the source identities in their child
 records. Measurements used Linux/arm64 development binaries in Docker without
 a GPU. Later optional head/bust changes were not exercised by the agent task;
 historical identities and timings are not relabeled as final-release measurements.
-Only completed agent trials are summarized. Setup and harness failures are
-excluded from completed-trial counts. Some cleanup checks initially failed and
+Failed attempts remain visible alongside completed trials; setup failures are
+separate from participant outcomes. Some cleanup checks initially failed and
 passed unchanged reruns; their causes remain unconfirmed.
 
 Required source gates are cargo fmt, clippy with warnings denied, locked workspace
