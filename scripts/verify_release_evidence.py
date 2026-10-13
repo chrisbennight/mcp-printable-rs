@@ -4,12 +4,13 @@
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tarfile
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from release_build_materials import sha256
 from release_identity import ReleaseIdentity
@@ -21,7 +22,8 @@ SBOM_TYPE = "https://spdx.dev/Document/v2.3"
 EVIDENCE_TYPE = "https://github.com/chrisbennight/mcp-printable-rs/attestations/release-evidence/v1"
 
 
-def verify_attestation(reference, revision, predicate_type, bundle=None, trusted_root=None):
+def verify_attestation(reference, revision, predicate_type, bundle=None, trusted_root=None,
+                       verified_bundles=None):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("verification requires a full expected source revision")
     identity = ReleaseIdentity.from_environment()
@@ -45,14 +47,19 @@ def verify_attestation(reference, revision, predicate_type, bundle=None, trusted
     if not isinstance(verified, list) or not verified:
         raise ValueError("attestation verifier returned no verified result")
     statements = []
+    bundles = []
     for item in verified:
         # Parse only the bundles returned by the verifier, rather than other lines
         # that may accompany a valid bundle in a caller-provided JSONL file.
-        envelope = item["attestation"]["bundle"]["dsseEnvelope"]
+        verified_bundle = item["attestation"]["bundle"]
+        envelope = verified_bundle["dsseEnvelope"]
         statement = json.loads(base64.b64decode(envelope["payload"], validate=True))
         if statement.get("predicateType") != predicate_type:
             raise ValueError("verified attestation has an unexpected predicate type")
         statements.append(statement)
+        bundles.append(verified_bundle)
+    if verified_bundles is not None:
+        verified_bundles.extend(bundles)
     return statements
 
 
@@ -133,26 +140,57 @@ def download_evidence(reference, destination):
                     shutil.copyfileobj(stream, output)
 
 
-def verify_remote(reference, revision, directory=None, trusted_root=None):
-    verify_attestation(reference, revision, PROVENANCE_TYPE, trusted_root=trusted_root)
-    statements = verify_attestation(reference, revision, EVIDENCE_TYPE, trusted_root=trusted_root)
-    if directory is None:
-        with TemporaryDirectory(prefix="printable-verify-") as temporary:
-            evidence = Path(temporary) / "evidence"
-            download_evidence(reference, evidence)
-            verify_record_index(statements, evidence, revision)
-            candidate = verify_directory(evidence, revision)
-            verify_components(candidate, evidence, trusted_root)
-    else:
-        # Verify the actual published layer, including its byte-for-byte evidence index.
-        with TemporaryDirectory(prefix="printable-verify-") as temporary:
-            evidence = Path(temporary) / "evidence"
-            download_evidence(reference, evidence)
-            verify_record_index(statements, evidence, revision)
-            candidate = verify_directory(evidence, revision)
+def validate_retention_paths(retain, record_bundle_output):
+    if retain is not None and (retain.exists() or retain.is_symlink()):
+        raise ValueError("retained evidence requires a new directory")
+    if retain is not None:
+        for parent in retain.parents:
+            if parent.exists() or parent.is_symlink():
+                if not parent.is_dir():
+                    raise ValueError("retained evidence requires a directory parent")
+                break
+    if record_bundle_output is not None:
+        if retain is None:
+            raise ValueError("--record-bundle-output requires --retain")
+        if record_bundle_output.exists() or record_bundle_output.is_symlink():
+            raise ValueError("record bundle output requires a new file")
+        if not record_bundle_output.parent.is_dir():
+            raise ValueError("record bundle output requires an existing parent directory")
+        evidence_path = retain.resolve()
+        bundle_path = record_bundle_output.resolve()
+        if (evidence_path == bundle_path or evidence_path in bundle_path.parents
+                or bundle_path in evidence_path.parents):
+            raise ValueError("record bundle output must be outside the retained evidence directory")
+
+
+def verify_remote(reference, revision, directory=None, trusted_root=None, retain=None,
+                  record_bundle_output=None):
+    validate_retention_paths(retain, record_bundle_output)
+    bundles = [] if record_bundle_output is not None else None
+    verify_attestation(reference, revision, PROVENANCE_TYPE, trusted_root=trusted_root,
+                       verified_bundles=bundles)
+    statements = verify_attestation(reference, revision, EVIDENCE_TYPE, trusted_root=trusted_root,
+                                    verified_bundles=bundles)
+    with TemporaryDirectory(prefix="printable-verify-") as temporary:
+        evidence = Path(temporary) / "evidence"
+        download_evidence(reference, evidence)
+        verify_record_index(statements, evidence, revision)
+        candidate = verify_directory(evidence, revision)
+        if directory is not None:
+            # Compare the published layer with the verified publication candidate.
             if (evidence / "index.json").read_bytes() != (directory / "index.json").read_bytes():
                 raise ValueError("published evidence differs from the verified publication candidate")
-            verify_components(candidate, evidence, trusted_root)
+        verify_components(candidate, evidence, trusted_root)
+        if retain is not None:
+            shutil.copytree(evidence, retain)
+        if record_bundle_output is not None:
+            with NamedTemporaryFile(mode="w", dir=record_bundle_output.parent,
+                                    prefix=".printable-record-bundles-") as output:
+                for bundle in bundles:
+                    output.write(json.dumps(bundle, separators=(",", ":")) + "\n")
+                output.flush()
+                # Publish complete verified bytes without replacing an existing file.
+                os.link(output.name, record_bundle_output)
 
 
 if __name__ == "__main__":
@@ -160,13 +198,17 @@ if __name__ == "__main__":
     parser.add_argument("reference")
     parser.add_argument("revision", help="expected full source commit, obtained independently")
     parser.add_argument("--retain", type=Path, help="save verified evidence in a new directory")
+    parser.add_argument("--record-bundle-output", type=Path,
+                        help="with --retain, save verified record bundles in a new file outside that directory")
     parser.add_argument("--evidence-directory", type=Path, help="verify an already retained evidence directory")
     parser.add_argument("--record-bundle", type=Path, help="previously saved signature bundle for the release record")
-    parser.add_argument("--trusted-root", type=Path, help="independently trusted Sigstore root for offline verification")
+    parser.add_argument("--trusted-root", type=Path, help="independently trusted Sigstore root for retained verification")
     arguments = parser.parse_args()
     if arguments.evidence_directory:
-        if not arguments.record_bundle or not arguments.trusted_root or arguments.retain:
-            parser.error("retained verification requires --record-bundle and --trusted-root, without --retain")
+        if (not arguments.record_bundle or not arguments.trusted_root or arguments.retain
+                or arguments.record_bundle_output):
+            parser.error("retained verification requires --record-bundle and --trusted-root, "
+                         "without --retain or --record-bundle-output")
         verify_attestation(arguments.reference, arguments.revision, PROVENANCE_TYPE,
                            arguments.record_bundle, arguments.trusted_root)
         statements = verify_attestation(arguments.reference, arguments.revision, EVIDENCE_TYPE,
@@ -177,9 +219,10 @@ if __name__ == "__main__":
     else:
         if arguments.record_bundle or arguments.trusted_root:
             parser.error("--record-bundle and --trusted-root require --evidence-directory")
-        verify_remote(arguments.reference, arguments.revision)
-    if arguments.retain:
-        download_evidence(arguments.reference, arguments.retain)
-        candidate = verify_directory(arguments.retain, arguments.revision)
-        verify_components(candidate, arguments.retain)
+        try:
+            validate_retention_paths(arguments.retain, arguments.record_bundle_output)
+        except ValueError as error:
+            parser.error(str(error))
+        verify_remote(arguments.reference, arguments.revision, retain=arguments.retain,
+                      record_bundle_output=arguments.record_bundle_output)
     print("Release, component provenance, SBOM signatures and evidence hashes verified.")

@@ -80,8 +80,8 @@ and component signature bundles. The index hashes every retained file. The recor
 own provenance signature and an attestation of its evidence index hash are attached
 to its immutable OCI digest; they are outside the record to avoid a circular digest.
 The index attestation binds independently retained files to that signed record.
-Component provenance and SBOM signatures
-are also attached to their OCI digests and recorded by GitHub.
+Component provenance and SBOM bundles are also attached to their OCI digests
+and retained in the record.
 
 Successful evidence is a layer of the existing release-record image, so it remains
 available independently of the short-lived Actions artifacts. Preserve the
@@ -173,9 +173,9 @@ visible. They do not certify license compliance or byte-for-byte reproducibility
 ## Independent verification
 
 Install Docker and GitHub CLI 2.102.0 or newer. The default online command below
-discovers signature bundles in OCI and requires GitHub CLI authentication even
-for public releases. Use your approved account or existing authenticated client
-environment. See the [attestation verification manual](https://cli.github.com/manual/gh_attestation_verify).
+discovers signature bundles in OCI. GitHub CLI checks for configured authentication
+in this mode even for public releases. Use your approved account or existing
+authenticated client environment. See the [attestation verification manual](https://cli.github.com/manual/gh_attestation_verify).
 Follow the registry's access
 and authentication requirements and verify that the release packages are available
 to your account. Do not put credential values in commands or saved evidence.
@@ -186,7 +186,9 @@ reference from the `release-image` artifact or a trusted deployment change:
 ```sh
 record='ghcr.io/chrisbennight/mcp-printable-release:sha-<12-character-commit>@sha256:<digest>'
 revision='<full-40-character-commit>'
-python3 scripts/verify_release_evidence.py "$record" "$revision" --retain release-evidence
+python3 scripts/verify_release_evidence.py "$record" "$revision" \
+  --retain release-evidence \
+  --record-bundle-output release-record-bundles.jsonl
 ```
 
 The helper verifies the record's OCI signatures before reading its payload, then
@@ -198,25 +200,33 @@ to its verified signed predicate. It never starts the image containers.
 An inventory, tag or self-declared source field is not a substitute for those
 signature and identity checks.
 
-For independent storage, also save the record's signature bundle and obtain
-Sigstore roots through a separately trusted GitHub CLI installation:
+The optional `--record-bundle-output` saves both the record provenance and signed
+evidence index bundles returned by successful OCI verification. It writes a new
+file only after the complete release passes verification. Keep that file outside
+the retained evidence directory: adding it inside would change the indexed files.
+The release stores these bundles in OCI, so the GitHub API-based
+`gh attestation download` command does not retrieve them.
+
+For independent storage, also obtain Sigstore roots through a separately trusted
+GitHub CLI installation:
 
 ```sh
-gh attestation download "oci://$record" --repo chrisbennight/mcp-printable-rs
 gh attestation trusted-root > trusted_root.jsonl
 ```
 
-Keep the downloaded record bundle with the retained evidence directory and pin
+Keep the saved record bundles alongside the retained evidence directory and pin
 the trusted-root file through your own trust policy. Do not automatically trust
 a root supplied by an unverified release. Verification of retained evidence uses
 the saved bundles and does not depend on Actions artifact retention. This explicit
 bundle mode [does not require GitHub CLI login](https://github.com/cli/cli/issues/11803#issuecomment-3334813452);
-the independently trusted root and registry access requirements still apply:
+the independently trusted root and registry access requirements still apply.
+Retained verification still reads OCI manifests from the registry; it is not
+an offline verification mode:
 
 ```sh
 python3 scripts/verify_release_evidence.py "$record" "$revision" \
   --evidence-directory release-evidence \
-  --record-bundle '<downloaded-record-bundle.jsonl>' \
+  --record-bundle release-record-bundles.jsonl \
   --trusted-root trusted_root.jsonl
 ```
 

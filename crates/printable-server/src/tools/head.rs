@@ -5,7 +5,7 @@
 use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
-use printable_geom::{BustRequest, Displacement, Hollow, Plinth};
+use printable_geom::{BustRequest, Displacement, Hollow, Plinth, PrintChecks};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -37,6 +37,26 @@ const HIGH_PASS_MM: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 const CLIP_PERCENTILE: std::ops::RangeInclusive<f64> = 50.0..=100.0;
 const DETAIL_GAIN: std::ops::RangeInclusive<f64> = 0.0..=10.0;
 const RELIEF_MM: std::ops::RangeInclusive<f64> = 0.01..=10.0;
+const PLINTH_CHAMFER_MM: std::ops::RangeInclusive<f64> = 0.0..=5.0;
+/// An FDM bust stands on a plinth this fraction of its height by default.
+const FDM_PLINTH_FRACTION: f64 = 0.08;
+/// A chamfer about two layers deep keeps the first layers, which spread as
+/// they are pressed onto the build plate, within the plinth's outline.
+const DEFAULT_FDM_CHAMFER_MM: f64 = 0.5;
+const NOZZLE_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.1..=2.0;
+const DEFAULT_NOZZLE_DIAMETER_MM: f64 = 0.4;
+const LAYER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 0.01..=1.0;
+const DEFAULT_FDM_LAYER_HEIGHT_MM: f64 = 0.2;
+const DEFAULT_RESIN_LAYER_HEIGHT_MM: f64 = 0.05;
+const OVERHANG_DEGREES: std::ops::RangeInclusive<f64> = 0.0..=90.0;
+const DEFAULT_OVERHANG_DEGREES: f64 = 45.0;
+const MINIMUM_WALL_MM: std::ops::RangeInclusive<f64> = 0.05..=2.0;
+/// With a printer, surface detail defaults to this many layers deep, so it
+/// shows on surfaces facing up as well as on walls, but to no more than this
+/// fraction of the bust's height above any plinth. On a small bust, detail
+/// much deeper than that can push the eyelids clear of the eyes.
+const DEFAULT_RELIEF_LAYERS: f64 = 2.0;
+const DEFAULT_RELIEF_FRACTION: f64 = 0.01;
 
 /// Joint rotations as axis-angle vectors in radians. The direction is the
 /// rotation axis and the length, at most pi, is the angle. FLAME's frame has
@@ -245,14 +265,19 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_triangles: Option<usize>,
     /// Height of a cylindrical plinth under the bust, 2 to 100 mm, counted
-    /// within `height_mm`. No plinth when omitted.
+    /// within `height_mm`, or 0 for none. Defaults to 8% of `height_mm` for an
+    /// FDM `printer` and to no plinth otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
     /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and never less than the neck section. Requires
-    /// `plinth_height_mm`.
+    /// extent and never less than the neck section. Requires a plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
+    /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
+    /// so that the first layers stay within its outline. Defaults to 0.5 for
+    /// an FDM `printer` and to 0 otherwise. Requires a plinth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plinth_chamfer_mm: Option<f64>,
     /// Hollow the bust for resin printing, leaving walls this thick, 1 to
     /// 20 mm. Drain holes open through the base. Solid when omitted, which
     /// suits FDM printing with infill.
@@ -267,6 +292,106 @@ pub(super) struct HeadPreparePrintParams {
     /// its texture layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     displacement: Option<DisplacementParams>,
+    /// The printer the bust is for. Sets the defaults for the plinth and
+    /// detail relief, and reports overhangs, thin parts and detail too
+    /// shallow to print. Without it, nothing is assumed about the printer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    printer: Option<PrinterParams>,
+}
+
+/// How the bust will be printed.
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PrinterParams {
+    process: PrintProcess,
+    /// FDM nozzle diameter, 0.1 to 2 mm (default 0.4). FDM only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nozzle_diameter_mm: Option<f64>,
+    /// Layer height, 0.01 to 1 mm and no more than the nozzle diameter.
+    /// Defaults to 0.2 for FDM and 0.05 for resin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layer_height_mm: Option<f64>,
+    /// Report surface facing down more steeply than this many degrees from
+    /// vertical, 0 to 90 (default 45).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maximum_overhang_degrees: Option<f64>,
+    /// Report parts of the bust thinner than this, 0.05 to 2 mm. Defaults to
+    /// the nozzle diameter for FDM; resin busts are not checked unless it is
+    /// given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    minimum_wall_mm: Option<f64>,
+}
+
+#[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PrintProcess {
+    /// Filament deposited through a nozzle.
+    Fdm,
+    /// Resin cured layer by layer.
+    Resin,
+}
+
+/// Printer settings with their defaults filled in.
+#[derive(Clone, Copy, serde::Serialize)]
+struct Printer {
+    process: PrintProcess,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nozzle_diameter_mm: Option<f64>,
+    layer_height_mm: f64,
+    maximum_overhang_degrees: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimum_wall_mm: Option<f64>,
+}
+
+impl PrinterParams {
+    fn resolve(&self) -> Result<Printer, ToolError> {
+        let fdm = self.process == PrintProcess::Fdm;
+        if !fdm && self.nozzle_diameter_mm.is_some() {
+            return Err(ToolError::Validation(
+                "printer.nozzle_diameter_mm applies only to fdm".into(),
+            ));
+        }
+        let nozzle = fdm
+            .then(|| {
+                in_range(
+                    "printer.nozzle_diameter_mm",
+                    self.nozzle_diameter_mm
+                        .unwrap_or(DEFAULT_NOZZLE_DIAMETER_MM),
+                    &NOZZLE_DIAMETER_MM,
+                )
+            })
+            .transpose()?;
+        let layer = in_range(
+            "printer.layer_height_mm",
+            self.layer_height_mm.unwrap_or(if fdm {
+                DEFAULT_FDM_LAYER_HEIGHT_MM
+            } else {
+                DEFAULT_RESIN_LAYER_HEIGHT_MM
+            }),
+            &LAYER_HEIGHT_MM,
+        )?;
+        if nozzle.is_some_and(|nozzle| layer > nozzle) {
+            return Err(ToolError::Validation(
+                "printer.layer_height_mm must not exceed printer.nozzle_diameter_mm".into(),
+            ));
+        }
+        Ok(Printer {
+            process: self.process,
+            nozzle_diameter_mm: nozzle,
+            layer_height_mm: layer,
+            maximum_overhang_degrees: in_range(
+                "printer.maximum_overhang_degrees",
+                self.maximum_overhang_degrees
+                    .unwrap_or(DEFAULT_OVERHANG_DEGREES),
+                &OVERHANG_DEGREES,
+            )?,
+            minimum_wall_mm: self
+                .minimum_wall_mm
+                .or(nozzle)
+                .map(|wall| in_range("printer.minimum_wall_mm", wall, &MINIMUM_WALL_MM))
+                .transpose()?,
+        })
+    }
 }
 
 /// A greyscale PNG displacement map. A pixel at fraction f of the full
@@ -533,20 +658,45 @@ pub(super) async fn prepare_print(
         params.max_triangles.unwrap_or(DEFAULT_MAX_TRIANGLES),
         &MAX_TRIANGLES,
     )?;
-    let plinth = match (params.plinth_height_mm, params.plinth_diameter_mm) {
-        (None, None) => None,
-        (None, Some(_)) => {
+    let printer = params
+        .printer
+        .as_ref()
+        .map(PrinterParams::resolve)
+        .transpose()?;
+    let fdm = printer.is_some_and(|printer| printer.process == PrintProcess::Fdm);
+    let plinth_height = match params.plinth_height_mm {
+        Some(0.0) => None,
+        Some(height) => Some(in_range("plinth_height_mm", height, &PLINTH_HEIGHT_MM)?),
+        None if fdm => Some((FDM_PLINTH_FRACTION * height_mm).max(*PLINTH_HEIGHT_MM.start())),
+        None => None,
+    };
+    let plinth = match plinth_height {
+        None if params.plinth_diameter_mm.is_some() || params.plinth_chamfer_mm.is_some() => {
             return Err(ToolError::Validation(
-                "plinth_diameter_mm requires plinth_height_mm".into(),
+                "plinth_diameter_mm and plinth_chamfer_mm require a plinth".into(),
             ));
         }
-        (Some(height), diameter) => Some(Plinth {
-            height_mm: in_range("plinth_height_mm", height, &PLINTH_HEIGHT_MM)?,
-            diameter_mm: diameter
+        None => None,
+        Some(height) => Some(Plinth {
+            height_mm: height,
+            diameter_mm: params
+                .plinth_diameter_mm
                 .map(|diameter| in_range("plinth_diameter_mm", diameter, &PLINTH_DIAMETER_MM))
                 .transpose()?,
+            chamfer_mm: match params.plinth_chamfer_mm {
+                Some(chamfer) => in_range("plinth_chamfer_mm", chamfer, &PLINTH_CHAMFER_MM)?,
+                None if fdm => DEFAULT_FDM_CHAMFER_MM,
+                None => 0.0,
+            },
         }),
     };
+    if let Some(plinth) = plinth
+        && plinth.chamfer_mm >= plinth.height_mm
+    {
+        return Err(ToolError::Validation(
+            "plinth_chamfer_mm must be less than the plinth's height".into(),
+        ));
+    }
     if let Some(plinth) = plinth
         && height_mm - plinth.height_mm < MIN_BUST_ABOVE_PLINTH_MM
     {
@@ -612,15 +762,31 @@ pub(super) async fn prepare_print(
     )
     .await?;
     let (displacement, detail_filter) = match params.displacement {
-        Some(map) => {
-            let (map, report) = displacement(&workspace, &model, &head, map).await?;
+        Some(mut map) => {
+            // With a printer, detail is made deep enough to print unless the
+            // caller chose its depth; on a small bust that depth may exceed
+            // the limit for detail, and is then reduced to it.
+            let default_relief = map.gain.is_none() && map.relief_mm.is_none();
+            let limit_relief = match printer {
+                Some(printer) if default_relief => {
+                    let bust_mm = height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm);
+                    map.relief_mm = Some(
+                        (DEFAULT_RELIEF_LAYERS * printer.layer_height_mm)
+                            .min(DEFAULT_RELIEF_FRACTION * bust_mm),
+                    );
+                    true
+                }
+                _ => false,
+            };
+            let (map, report) = displacement(&workspace, &model, &head, map, limit_relief).await?;
             (Some(map), Some(report))
         }
         None => (None, None),
     };
+    let head_vertices = millimetres(&head.vertices);
     let request = BustRequest {
-        vertices: millimetres(&head.vertices)
-            .into_iter()
+        vertices: head_vertices
+            .iter()
             .map(|point| point.map(f64::from))
             .collect(),
         triangles: model.faces().to_vec(),
@@ -630,8 +796,19 @@ pub(super) async fn prepare_print(
         plinth,
         hollow,
         displacement,
+        checks: printer.map(|printer| PrintChecks {
+            overhang_degrees: printer.maximum_overhang_degrees,
+            min_feature_mm: printer.minimum_wall_mm,
+        }),
     };
     let variant = model.info().variant.clone();
+    let validation_options = ValidationOptions {
+        overhang_angle_degrees: printer.map_or(
+            ValidationOptions::default().overhang_angle_degrees,
+            |printer| printer.maximum_overhang_degrees,
+        ),
+        ..ValidationOptions::default()
+    };
     let (path, overwrite) = (params.path, params.overwrite);
     geometry_blocking(move || {
         let staging = tempfile::Builder::new()
@@ -650,7 +827,7 @@ pub(super) async fn prepare_print(
             ],
         )?;
         let bytes = std::fs::read(&output_path)?;
-        let validation = analyze_stl(&bytes, ValidationOptions::default())?;
+        let validation = analyze_stl(&bytes, validation_options)?;
         // The bust is written only when it is known to be free of
         // self-intersections, not merely when none were found.
         if !validation.solid_geometry || validation.topology.self_intersections != Some(0) {
@@ -672,15 +849,113 @@ pub(super) async fn prepare_print(
         if let (Some(filter), Some(applied)) = (detail_filter, report.get_mut("displacement")) {
             applied["filter"] = filter;
         }
-        Ok::<_, ToolError>(json!({
+        name_regions(&model, &head_vertices, &mut report);
+        let mut response = json!({
             "artifact": artifact,
             "units": "millimetres",
             "variant": variant,
             "bust": report,
             "validation": validation,
-        }))
+        });
+        if let Some(printer) = printer {
+            response["warnings"] = json!(print_warnings(&printer, &response["bust"]));
+            response["printer"] = serde_json::to_value(printer)?;
+        }
+        Ok::<_, ToolError>(response)
     })
     .await
+}
+
+/// Replace the vertex index of each region a print check found with the name
+/// of the smallest model region that holds that vertex, or else that holds
+/// the nearest vertex in any region. Unnamed when the model has no regions.
+fn name_regions(model: &FlameModel, vertices: &[[f32; 3]], report: &mut Value) {
+    let smallest = |vertex: u32| {
+        model
+            .regions()
+            .iter()
+            .filter(|(_, members)| members.binary_search(&vertex).is_ok())
+            .min_by_key(|(_, members)| members.len())
+            .map(|(name, _)| name.clone())
+    };
+    for check in ["overhang", "thin"] {
+        let Some(regions) = report
+            .get_mut(check)
+            .and_then(|found| found.get_mut("regions"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for region in regions.iter_mut().filter_map(Value::as_object_mut) {
+            let vertex = region
+                .remove("nearest_vertex")
+                .and_then(|vertex| vertex.as_u64())
+                .and_then(|vertex| usize::try_from(vertex).ok())
+                .filter(|&vertex| vertex < vertices.len());
+            let name = vertex.and_then(|vertex| {
+                smallest(vertex as u32).or_else(|| {
+                    let at = vertices[vertex];
+                    let distance = |other: &[f32; 3]| -> f32 {
+                        (0..3).map(|axis| (other[axis] - at[axis]).powi(2)).sum()
+                    };
+                    model
+                        .regions()
+                        .values()
+                        .flatten()
+                        .min_by(|a, b| {
+                            distance(&vertices[**a as usize])
+                                .total_cmp(&distance(&vertices[**b as usize]))
+                        })
+                        .and_then(|&nearest| smallest(nearest))
+                })
+            });
+            if let Some(name) = name {
+                region.insert("region".into(), json!(name));
+            }
+        }
+    }
+}
+
+/// What the printer may fail to reproduce, from the bust report.
+fn print_warnings(printer: &Printer, bust: &Value) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let (Some(wall), Some(thin)) = (printer.minimum_wall_mm, bust.get("thin")) {
+        let area = thin["area_mm2"].as_f64().unwrap_or(0.0);
+        if area > 0.0 {
+            let mut places: Vec<&str> = Vec::new();
+            for region in thin["regions"].as_array().into_iter().flatten() {
+                if let Some(name) = region["region"].as_str()
+                    && !places.contains(&name)
+                {
+                    places.push(name);
+                }
+            }
+            let near = if places.is_empty() {
+                String::new()
+            } else {
+                format!(", mostly near {}", places.join(", "))
+            };
+            warnings.push(format!(
+                "{area:.1} mm² of the surface is on parts thinner than {wall} mm{near}; they may not print"
+            ));
+        }
+    }
+    if let Some(detail) = bust.get("displacement") {
+        if detail["relief_limited"].as_bool() == Some(true) {
+            warnings.push(
+                "the default detail relief was reduced to keep the detail within 5% of the head's height".into(),
+            );
+        }
+        if let Some(depth) = detail["depth_p95_mm"].as_f64()
+            && depth < printer.layer_height_mm
+        {
+            warnings.push(format!(
+                "95% of the surface detail is less than {depth:.2} mm deep, shallower than one {} mm layer, so little of it will show; raise displacement.relief_mm",
+                printer.layer_height_mm
+            ));
+        }
+    }
+    warnings
 }
 
 /// Estimate a head from photographs with the reconstruction worker. The
@@ -1180,11 +1455,14 @@ fn decode_photo(bytes: &[u8]) -> Result<RgbImage, String> {
 
 /// Read a displacement map from the workspace, filter it as requested and
 /// pair it with the model's texture coordinates. Also describes the filtering.
+/// With `limit_relief`, a relief beyond the limit for detail is reduced to it
+/// rather than refused.
 async fn displacement(
     workspace: &Arc<Workspace>,
     model: &Arc<FlameModel>,
     head: &PosedHead,
     params: DisplacementParams,
+    limit_relief: bool,
 ) -> Result<(Displacement, Value), ToolError> {
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
@@ -1247,6 +1525,7 @@ async fn displacement(
             values,
             triangle_uvs,
             relief_mm: params.relief_mm,
+            limit_relief,
         },
         description,
     ))

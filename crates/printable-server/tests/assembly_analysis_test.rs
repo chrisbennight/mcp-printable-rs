@@ -5,8 +5,9 @@
 use std::{
     io::{BufWriter, Write},
     os::unix::fs::PermissionsExt,
+    os::unix::process::CommandExt,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -273,6 +274,52 @@ print(json.dumps(envelope))
 
 #[tokio::test]
 async fn cancelled_waiter_keeps_assembly_snapshots_and_lane_owned() {
+    const CHILD_FLAG: &str = "PRINTABLE_TEST_ASSEMBLY_CANCELLATION_CHILD";
+    if std::env::var(CHILD_FLAG).ok().as_deref() != Some("1") {
+        // Create scratch only after exec so unrelated tests' child launches
+        // cannot inherit these leases during the automatic cleanup assertion.
+        let logs = tempfile::tempdir().unwrap();
+        let stdout_path = logs.path().join("stdout");
+        let stderr_path = logs.path().join("stderr");
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "cancelled_waiter_keeps_assembly_snapshots_and_lane_owned",
+                "--nocapture",
+            ])
+            .env(CHILD_FLAG, "1")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&stdout_path).unwrap())
+            .stderr(std::fs::File::create(&stderr_path).unwrap())
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut child = command
+            .spawn()
+            .expect("start isolated cancellation fixture");
+        let pid = child.id().expect("live cancellation fixture");
+        let status = tokio::time::timeout(Duration::from_secs(30), child.wait()).await;
+        let teardown = if matches!(&status, Ok(Ok(_))) {
+            None
+        } else {
+            if child.id().is_some() {
+                // The unreaped child owns its process group, including any
+                // fake worker still alive when the fixture stops responding.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            Some(tokio::time::timeout(Duration::from_secs(5), child.wait()).await)
+        };
+        let stdout = std::fs::read_to_string(stdout_path).unwrap();
+        let stderr = std::fs::read_to_string(stderr_path).unwrap();
+        assert!(
+            matches!(&status, Ok(Ok(status)) if status.success()),
+            "isolated cancellation fixture failed: {status:?}; teardown: {teardown:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        return;
+    }
+
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("workspace");
     std::fs::create_dir(&root).unwrap();

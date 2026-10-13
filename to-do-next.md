@@ -61,6 +61,24 @@ and deployment-specific control systems out of documentation and evidence.
   that update automation runs or that native and bundled components are covered.
   Success is evidence of active coverage, known gaps, and a maintenance owner.
   Coordinate with [dependency update coverage #49](https://github.com/chrisbennight/mcp-printable-rs/issues/49).
+- [ ] **Resolve the published multidict memory-exhaustion advisory in CAD.** The
+  dependency assessment during epic #136 found `multidict` 6.8.0 in the CAD
+  requirements, within the affected range of
+  [GHSA-54p9-h82j-f925](https://github.com/aio-libs/multidict/security/advisories/GHSA-54p9-h82j-f925).
+  The maintainer identifies 6.9.1 as fixed. Direct use of the affected operations
+  was not found in the checked-in CAD scripts; transitive reachability remains
+  unconfirmed. Success is a resolved advisory exposure, compatible dependency
+  installation and CAD workflows, and tested-image inventory and scan evidence
+  confirming the remediation. Keep the dependency alert open until resolved.
+- [ ] **Resolve the published rustls TLS-boundary advisory.** The same assessment
+  found locked `rustls` 0.23.42, within the affected range of
+  [GHSA-2mjx-qc3c-rqvc](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)
+  and [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
+  The maintainer identifies 0.23.45 as fixed. Configured HTTPS clients use this
+  dependency. Success is a resolved advisory exposure, passing required Rust
+  checks, preserved HTTPS client behavior, and runtime inventory and scan
+  evidence confirming the remediation. Medium severity alone does not establish
+  safety; the existing release policy and release-time KEV evidence still apply.
 - [ ] **Let a new user install a published image set from public instructions.**
   The existing local-build path is more concrete than the published-image path.
   Success is an independent installation using a verified complete image set,

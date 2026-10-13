@@ -1,0 +1,809 @@
+{
+  "schema_version": 1,
+  "status": "Draft evidence; final integrated gates, exact-image CI and current/older/retained published-release verification pending. Epic completion is not asserted.",
+  "recorded_at_utc": "2026-10-13T01:30:44.421296+00:00",
+  "epic_url": "https://github.com/chrisbennight/mcp-printable-rs/issues/136",
+  "baseline_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
+  "candidate_revision": "70414e47a9bbea9018888192665e03b2118cba6c",
+  "candidate_tree": "718c0338b6ce774a544cd15df1fbd815801f9938",
+  "criteria": [
+    {
+      "contract": "final source and matching images",
+      "criterion": "All required source checks and existing exact-image installation and paired-smoke checks pass; retain exact source/image identity and skips.",
+      "status": "pending final gate and hosted exact-image evidence"
+    },
+    {
+      "contract": "strict discovered result contracts",
+      "criterion": "Representative success and execution errors validate against full and selected output contracts; preserve isError, scene guards, immutable identity and unknown outcomes.",
+      "status": "child regressions and completed actual-agent error/recovery pass; final combined gate evidence pending"
+    },
+    {
+      "contract": "retained MCP work",
+      "criterion": "At most 32 ordinary calls admitted in the declared blocked-work fixture; excess refused. Controls complete within 2,000 ms; capacity retained to actual completion and stream closure. Separate body, control and subscription bounds retained.",
+      "status": "measured child pass"
+    },
+    {
+      "contract": "assembly inputs",
+      "criterion": "Below 16 MiB server peak growth for 8/64 MiB per-part fixtures; one immutable snapshot pair; all 18 native candidate trials match volume/clearance/interference oracles. Cancellation preserves ownership until actual worker exit.",
+      "status": "measured child pass; slower native timings retained"
+    },
+    {
+      "contract": "notification lifecycle",
+      "criterion": "Every advertised revision supports truthful discovery/change behavior; modern supported filters acknowledge, preserve request IDs, cancel/drop, and reconnect with fresh discovery. Fixed catalogs omit change capability.",
+      "status": "child raw-HTTP regressions pass; final combined gate evidence pending"
+    },
+    {
+      "contract": "stop and restart",
+      "criterion": "Four affected entrypoints handle SIGTERM/SIGINT; close new admission and drain finite foreground work. Actual Docker normal/forced outcomes and restart preserve completed/interrupted distinctions without replay.",
+      "status": "completed child process and actual Docker evidence"
+    },
+    {
+      "contract": "actual blind agents",
+      "criterion": "Within 10 post-init MCP requests and 20 local commands, inspect the required missing file, recover through explicitly assigned fallback, match native solid/dimension/volume oracle, publish and digest-verify 1,477 bytes without changing fixture or replaying uncertain mutations.",
+      "status": "baseline A2/C and candidate B2/D2 pass task; only candidate also passes missing-file strict output contract"
+    },
+    {
+      "contract": "durable public release verification",
+      "criterion": "Verify all five matching signed image subjects and trusted source/workflow origin for a current and older evidence-capable release and an independently retained copy. Reject changed bytes, wrong origins and subjects; verify public access before distribution.",
+      "status": "pending actual published-release consumer verification"
+    }
+  ],
+  "children": [
+    {
+      "issue": 137,
+      "pull_request": 150,
+      "implementation_revision": "f070e4cc87e9059b85173447972155a9da00f830",
+      "merged_revision": "97087824b012b1f1def47400ca5fe7d3f206fce3",
+      "evidence": [
+        "mcp-admission.md",
+        "mcp-admission.json"
+      ]
+    },
+    {
+      "issue": 138,
+      "pull_request": 148,
+      "implementation_revision": "ad4b7f3cd0aee9a0bd963e4d4680fe006cb7e224",
+      "merged_revision": "29628e0db44d852235b9156cc1ebabff362b20ca",
+      "evidence": [
+        "assembly-input-memory.md",
+        "assembly-input-memory.json"
+      ]
+    },
+    {
+      "issue": 139,
+      "pull_request": 143,
+      "implementation_revision": "59f680f23d61c0ca9d795ddbdea5a638d354f8f5",
+      "merged_revision": "ee629e20e2380f4f6f876acc16deb0dd12ccc8b4"
+    },
+    {
+      "issue": 140,
+      "pull_request": 144,
+      "implementation_revision": "11e152091cf478a6071e8fa899365b889b03728e",
+      "merged_revision": "b9915c4a83755e492b3a66e01a3760cebe579417"
+    },
+    {
+      "issue": 141,
+      "pull_request": 151,
+      "implementation_revision": "5a77fe0258362daa31f55ad92f5d06d6f301ca43",
+      "merged_revision": null,
+      "measured_runtime_subtree": "f26b387ea26e743977b217b7e423be8bbdaca9ed",
+      "evidence": [
+        "service-shutdown.md",
+        "service-shutdown.json"
+      ]
+    },
+    {
+      "issue": 142,
+      "pull_request": 147,
+      "implementation_revision": null,
+      "disposition": "Revised inventory source included in the integrated candidate. Final reviewed merge/publication identity and independent current/older/retained release consumption pending."
+    }
+  ],
+  "environment": {
+    "system": "Linux",
+    "architecture": "arm64",
+    "host": "macOS",
+    "build_profile": "dev/test (unoptimized + debug information)",
+    "gpu_used": false,
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "visible_cpus": 8,
+    "vm_memory_budget_bytes": 12514275328,
+    "container_memory_cap_bytes": null,
+    "toolchain_image_id": "sha256:7f86f402306e669aaa302392b72df885cf854c013eee4fbb08dfd6afd89d6f55",
+    "toolchain_base_image": "rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
+  },
+  "agent_protocol": {
+    "protocol": "2025-11-25",
+    "validator": "jsonschema 4.26.0",
+    "transport": "Parent relays agent-chosen requests verbatim and unchanged outcomes; initializes at first discovery request. Full discovery projects all returned tool names/descriptions then requested already-returned schemas without additional MCP calls.",
+    "oracle": {
+      "dimensions_mm": [
+        10,
+        20,
+        30
+      ],
+      "volume_mm3": 6000,
+      "closed_solid_required": true,
+      "artifact_size_bytes": 1477,
+      "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "mcp_request_limit": 10,
+      "local_command_limit": 20,
+      "uncertain_mutation_replay_permitted": false
+    },
+    "provider_usage": null,
+    "provider_usage_reason": "Not reported by orchestration runtime.",
+    "model_identity": null,
+    "actual_model_exposure_bytes": null,
+    "byte_scope": "Compact UTF-8 decoded JSON result; excludes HTTP framing and JSON-RPC envelopes.",
+    "identities": {
+      "baseline": {
+        "source_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
+        "server_sha256": "449070536db5624d355a847d18872ce1375d1eafc01d83c4bc0182f5430e9873",
+        "geometry_worker_sha256": "32510cc86c1d84cb2457d38376ca0b7a0a82f39f4f3582ef90b94d8cac7e68ed",
+        "client_source_sha256": "e024979174ba17051957abfbb6a6a99ee157cebab215ce3b9de794ebcbad81a5",
+        "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e"
+      },
+      "candidate": {
+        "source_revision": "70414e47a9bbea9018888192665e03b2118cba6c",
+        "server_sha256": "d93b8ce6695a8179a83a57fbd564c3ba900b3c284d8d3d5036d3c80a4e12e9be",
+        "geometry_worker_sha256": "051e6ee74448992addd120436ee74f9907dac7e1a3c307e0e79f8564a7228487",
+        "client_source_sha256": "e024979174ba17051957abfbb6a6a99ee157cebab215ce3b9de794ebcbad81a5",
+        "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e"
+      }
+    }
+  },
+  "actual_agent_trials": [
+    {
+      "trial": "trial-a2",
+      "discovery_mode": "full",
+      "task_success": true,
+      "budget": {
+        "local_commands_used": 6,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 5,
+        "mcp_requests_limit": 10
+      },
+      "incorrect_calls": 0,
+      "avoidable_calls": 0,
+      "retries": 0,
+      "uncertain_mutation_replays": 0,
+      "discovery": {
+        "requests": 1,
+        "responses_received": 1,
+        "decoded_result_json_bytes": 209836,
+        "per_request": [
+          {
+            "event_sequence": 3,
+            "method": "tools/list",
+            "decoded_result_json_bytes": 209836,
+            "outcome": "received"
+          }
+        ],
+        "bytes_are_tokens": false
+      },
+      "strict_client_schema_failures": {
+        "failed_responses": 1,
+        "required_field_diagnostics": 3
+      },
+      "native_geometry": {
+        "dimensions_mm": [
+          10.0,
+          20.0,
+          30.0
+        ],
+        "volume_mm3": 6000.0,
+        "solid_geometry": true,
+        "watertight": true,
+        "consistently_oriented": true,
+        "manifold": true,
+        "manufacturing_assessment": "incomplete"
+      },
+      "elapsed_wall_ms": 257253.02638200004,
+      "review_coverage": {
+        "journal_events": 16,
+        "full_allowlisted_journal_observed": true,
+        "raw_artifact_sha256": {
+          "metadata.json": "feac1d8dd639565d431b6042645133a543af6964a3147a01b430ce8fb2a1524e",
+          "calls.jsonl": "ac007a2c1e01f601c4178cb2d052e9ca1d129714ccc4e7cb341920a74243b345",
+          "summary.json": "5ba044220f06fd84a5295aa25c609f14c509c7d9b56e7776a8ff93f1055161df"
+        }
+      },
+      "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "fixture_unchanged": true,
+      "verified_download_bytes": 1477,
+      "download_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "required_error_recovery": {
+        "missing_file_isError": "not_found",
+        "required_missing_probes": 1,
+        "fallback_calls": 1
+      },
+      "implementation": "baseline",
+      "source_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a"
+    },
+    {
+      "trial": "trial-c",
+      "discovery_mode": "selected",
+      "task_success": true,
+      "budget": {
+        "local_commands_used": 8,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 7,
+        "mcp_requests_limit": 10
+      },
+      "incorrect_calls": 0,
+      "avoidable_calls": 0,
+      "retries": 0,
+      "uncertain_mutation_replays": 0,
+      "discovery": {
+        "requests": 3,
+        "responses_received": 3,
+        "decoded_result_json_bytes": 12601,
+        "per_request": [
+          {
+            "event_sequence": 3,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts",
+            "decoded_result_json_bytes": 2876,
+            "outcome": "received"
+          },
+          {
+            "event_sequence": 5,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts/validate_mesh",
+            "decoded_result_json_bytes": 5322,
+            "outcome": "received"
+          },
+          {
+            "event_sequence": 11,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts/artifact/publish",
+            "decoded_result_json_bytes": 4403,
+            "outcome": "received"
+          }
+        ],
+        "bytes_are_tokens": false
+      },
+      "strict_client_schema_failures": {
+        "failed_responses": 1,
+        "required_field_diagnostics": 3
+      },
+      "native_geometry": {
+        "dimensions_mm": [
+          10.0,
+          20.0,
+          30.0
+        ],
+        "volume_mm3": 6000.0,
+        "solid_geometry": true,
+        "watertight": true,
+        "consistently_oriented": true,
+        "manifold": true,
+        "manufacturing_assessment": "incomplete"
+      },
+      "elapsed_wall_ms": 325336.55611899996,
+      "review_coverage": {
+        "journal_events": 20,
+        "full_allowlisted_journal_observed": true,
+        "raw_artifact_sha256": {
+          "metadata.json": "dfe29d98a32811344858e261ed9d0cb948ff0a22559a0739752b5f361248e1ef",
+          "calls.jsonl": "2d4bc4870bba3a4b9fc03aa65ee5349afc795a72b7c5fd4c22a2292cc1887d01",
+          "summary.json": "5fe370aee5b603c365c6c9086042441fbe8a8a8ef538f541a90daca56f204b6e"
+        }
+      },
+      "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "fixture_unchanged": true,
+      "verified_download_bytes": 1477,
+      "download_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "required_error_recovery": {
+        "missing_file_isError": "not_found",
+        "required_missing_probes": 1,
+        "fallback_calls": 1
+      },
+      "implementation": "baseline",
+      "source_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a"
+    },
+    {
+      "trial": "trial-b2",
+      "discovery_mode": "full",
+      "task_success": true,
+      "budget": {
+        "local_commands_used": 6,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 5,
+        "mcp_requests_limit": 10
+      },
+      "incorrect_calls": 0,
+      "avoidable_calls": 0,
+      "retries": 0,
+      "uncertain_mutation_replays": 0,
+      "discovery": {
+        "requests": 1,
+        "responses_received": 1,
+        "decoded_result_json_bytes": 219138,
+        "per_request": [
+          {
+            "event_sequence": 3,
+            "method": "tools/list",
+            "decoded_result_json_bytes": 219138,
+            "wire_response_bytes": 219215,
+            "outcome": "received"
+          }
+        ],
+        "bytes_are_tokens": false
+      },
+      "strict_client_schema_failures": {
+        "failed_responses": 0,
+        "required_field_diagnostics": 0
+      },
+      "native_geometry": {
+        "dimensions_mm": [
+          10.0,
+          20.0,
+          30.0
+        ],
+        "volume_mm3": 6000.0,
+        "solid_geometry": true,
+        "watertight": true,
+        "consistently_oriented": true,
+        "manifold": true,
+        "manufacturing_assessment": "incomplete"
+      },
+      "elapsed_wall_ms": 143883.58816399978,
+      "review_coverage": {
+        "journal_events": 16,
+        "full_allowlisted_journal_observed": true,
+        "raw_artifact_sha256": {
+          "metadata.json": "a022265fd8a3a6541f01bbee6329ba11959d2a48d8dfb15c0ae4b0fd950e8e22",
+          "calls.jsonl": "d6bd250a73184453dca8f98f928ff7558b87b6850c7bcfacc20e98c99d35e5f5",
+          "summary.json": "2cc26f4e22afcce3e33694fd63ca0a551c3f7308fd366a5b1fdee0035864147d"
+        }
+      },
+      "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "fixture_unchanged": true,
+      "verified_download_bytes": 1477,
+      "download_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "required_error_recovery": {
+        "missing_file_isError": "not_found",
+        "required_missing_probes": 1,
+        "fallback_calls": 1
+      },
+      "implementation": "candidate",
+      "source_revision": "70414e47a9bbea9018888192665e03b2118cba6c"
+    },
+    {
+      "trial": "trial-d2",
+      "discovery_mode": "selected",
+      "task_success": true,
+      "budget": {
+        "local_commands_used": 8,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 7,
+        "mcp_requests_limit": 10
+      },
+      "incorrect_calls": 0,
+      "avoidable_calls": 0,
+      "retries": 0,
+      "uncertain_mutation_replays": 0,
+      "discovery": {
+        "requests": 3,
+        "responses_received": 3,
+        "decoded_result_json_bytes": 13762,
+        "per_request": [
+          {
+            "event_sequence": 3,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts",
+            "decoded_result_json_bytes": 2876,
+            "wire_response_bytes": 2954,
+            "outcome": "received"
+          },
+          {
+            "event_sequence": 5,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts/validate_mesh",
+            "decoded_result_json_bytes": 5905,
+            "wire_response_bytes": 5983,
+            "outcome": "received"
+          },
+          {
+            "event_sequence": 11,
+            "method": "resources/read",
+            "contract_uri": "printable://contracts/artifact/publish",
+            "decoded_result_json_bytes": 4981,
+            "wire_response_bytes": 5059,
+            "outcome": "received"
+          }
+        ],
+        "bytes_are_tokens": false
+      },
+      "strict_client_schema_failures": {
+        "failed_responses": 0,
+        "required_field_diagnostics": 0
+      },
+      "native_geometry": {
+        "dimensions_mm": [
+          10.0,
+          20.0,
+          30.0
+        ],
+        "volume_mm3": 6000.0,
+        "solid_geometry": true,
+        "watertight": true,
+        "consistently_oriented": true,
+        "manifold": true,
+        "manufacturing_assessment": "incomplete"
+      },
+      "elapsed_wall_ms": 170316.17533299958,
+      "review_coverage": {
+        "journal_events": 20,
+        "full_allowlisted_journal_observed": true,
+        "raw_artifact_sha256": {
+          "metadata.json": "817fc827e1d07e58a4d71464a47216ef9a25597a79374386e3cf1ef098381029",
+          "calls.jsonl": "62aeaa847989377e5e35a13eba9bb83075288aa67c47957c7a3a119815d5c119",
+          "summary.json": "5377c310b9c4b1e54f0069b5aad861240ecbdfdf08337259883908d39e170ab0"
+        }
+      },
+      "fixture_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "fixture_unchanged": true,
+      "verified_download_bytes": 1477,
+      "download_sha256": "25c840bb4e70aa530cebada1df9d89ae7838ef48b1954343165d35e4307baa1e",
+      "required_error_recovery": {
+        "missing_file_isError": "not_found",
+        "required_missing_probes": 1,
+        "fallback_calls": 1
+      },
+      "implementation": "candidate",
+      "source_revision": "70414e47a9bbea9018888192665e03b2118cba6c"
+    }
+  ],
+  "actual_agent_setup_failures": [
+    {
+      "trial": "trial-a",
+      "task_success": false,
+      "classification": "initial execution/setup and expired-session failure",
+      "journal_events": 7,
+      "mcp_requests": 1,
+      "local_commands_including_finish": 2,
+      "discovery_result_bytes": null,
+      "strict_schema_failed_responses": 0,
+      "geometry_oracle_reached": false,
+      "disposition": "Retained outside completed geometry comparisons. Requests thereafter were relayed verbatim by the authorized parent; initialization moved to the first discovery request.",
+      "raw_artifact_sha256": {
+        "metadata.json": "0c9067af33eb382b1db680402f74c3d5f04b1569aeb140eafbd9353dfccffbc5",
+        "calls.jsonl": "cf9bcf506e5f78c17320367089e536e16462c960ec746aee3c27885073fa7687",
+        "summary.json": "0bcdbfd4cbebda1b0f68385ba1744c4c3ba081733509d582d249db138a71f2c5"
+      }
+    },
+    {
+      "trial": "trial-b",
+      "task_success": false,
+      "classification": "operator setup/scheduling failure; retained and excluded from completed geometry comparisons",
+      "journal_events": 11,
+      "budget": {
+        "local_commands_used": 4,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 3,
+        "mcp_requests_limit": 10
+      },
+      "geometry_oracle_reached": false,
+      "strict_schema_failed_responses": 0,
+      "agent_incorrect_mcp_calls": 0,
+      "discovery": {
+        "requests": 1,
+        "received_decoded_result_json_bytes": 219138,
+        "bytes_are_tokens": false
+      },
+      "elapsed_wall_ms": 608332.5734810005,
+      "cause": "Parent mediation/compaction delay exceeded the initialized session idle lifetime; root confirmed the session expired. Full discovery itself succeeded.",
+      "disposition": "Preserve the trial and parent scheduling failure. Repeat with a fresh initialized session and prompt relay without the long parent pause; no product edit or uncertain mutation replay.",
+      "raw_artifact_sha256": {
+        "metadata.json": "618cf3e083e6215f2fb4770367329b98d75536f9eb740d5f36e00091d32e009f",
+        "calls.jsonl": "0b0728c9a92b962bccfbf5e501b4268afd33d349861d99fd6e5c515598c0ca59",
+        "summary.json": "87bf855708e3678025b6f2f0d0e5c6a3a7fa5a61a948eadd241a72384a796f2e"
+      }
+    },
+    {
+      "trial": "trial-d",
+      "task_success": false,
+      "classification": "operator setup/scheduling failure; retained and excluded from completed geometry comparisons",
+      "journal_events": 8,
+      "budget": {
+        "local_commands_used": 3,
+        "local_commands_limit": 20,
+        "mcp_requests_used": 1,
+        "mcp_requests_limit": 10
+      },
+      "geometry_oracle_reached": false,
+      "strict_schema_failed_responses": 0,
+      "agent_incorrect_mcp_calls": 0,
+      "discovery": {
+        "requests": 1,
+        "received_decoded_result_json_bytes": null,
+        "bytes_are_tokens": false
+      },
+      "elapsed_wall_ms": 125271.16074600053,
+      "cause": "Root supplied the invented index URI printable://contracts/v1/index after compaction. It was assigned to the agent, not inferred by the agent.",
+      "disposition": "Preserve the failed trial and correct the assigned URI from the implementation/public contract constant. Repeat as fresh trial-d2 with the same source, client, oracle, and budgets. Leave production unchanged.",
+      "raw_artifact_sha256": {
+        "metadata.json": "2c28d0184ab2488dccf8eb7eb806a6c1da59772c11d4e196a510e9a460ca698f",
+        "calls.jsonl": "61d6dda472b45325bc5b9d0ec26b5890a0cee106c00726ee31025cefc46066d5",
+        "summary.json": "9f55165b56187f944befdaf892a06528b181a1f7922ca431fec5b1290625a4a3"
+      },
+      "operator_invalid_setup_requests": 1,
+      "client_guard_rejected_read_only_recovery_attempts": 1,
+      "incorrect_agent_mcp_calls": 0,
+      "avoidability_classification": {
+        "architecture": null,
+        "security": 1,
+        "scope": "One client-only skill/list attempt was rejected before MCP dispatch. Both interpretations retained; excluded from completed-task efficiency."
+      },
+      "agent_report_disposition": "The broad inference that resources/read had no working route was unsupported; the operator-supplied URI was wrong. Canonical index succeeded in fresh D2."
+    }
+  ],
+  "admission": {
+    "argument_utf8_bytes": 589839,
+    "body_limit_bytes": 1463640,
+    "capacities": {
+      "body_readers": 32,
+      "ordinary_tool_work": 32,
+      "controls": 8,
+      "notification_streams": 16
+    },
+    "memory": [
+      {
+        "offered_calls": 1,
+        "baseline_accepted": 1,
+        "baseline_refused": 0,
+        "candidate_accepted": 1,
+        "candidate_refused": 0,
+        "baseline_server_peak_kib": 38672,
+        "candidate_server_peak_kib": 37960,
+        "baseline_control_ms": 47.699506,
+        "candidate_control_ms": 45.043673
+      },
+      {
+        "offered_calls": 16,
+        "baseline_accepted": 16,
+        "baseline_refused": 0,
+        "candidate_accepted": 16,
+        "candidate_refused": 0,
+        "baseline_server_peak_kib": 73352,
+        "candidate_server_peak_kib": 72088,
+        "baseline_control_ms": 42.865005999999994,
+        "candidate_control_ms": 51.667591
+      },
+      {
+        "offered_calls": 64,
+        "baseline_accepted": 64,
+        "baseline_refused": 0,
+        "candidate_accepted": 32,
+        "candidate_refused": 32,
+        "baseline_server_peak_kib": 174244,
+        "candidate_server_peak_kib": 116876,
+        "baseline_control_ms": 49.562090000000005,
+        "candidate_control_ms": 43.364339
+      },
+      {
+        "offered_calls": 128,
+        "baseline_accepted": 128,
+        "baseline_refused": 0,
+        "candidate_accepted": 32,
+        "candidate_refused": 96,
+        "baseline_server_peak_kib": 302280,
+        "candidate_server_peak_kib": 118864,
+        "baseline_control_ms": 43.189172,
+        "candidate_control_ms": 50.922716
+      }
+    ],
+    "legacy_control_group_ms": 480.6,
+    "modern_control_group_ms": 476.9,
+    "protocols": [
+      "2025-11-25",
+      "2026-07-28"
+    ],
+    "refusal": "HTTP 429 with error server_busy before dispatch; accepted disconnect/timeouts remain uncertain and must not be blindly retried.",
+    "measurement_scope": "Fresh real server subprocess VmHWM; clients/fake bridge outside measured process. One observation per offered level; deliberate SIGKILL teardown."
+  },
+  "assembly": {
+    "large_file_trials": [
+      {
+        "input_mib_each": 8,
+        "input_bytes_each": 8388484,
+        "server_peak_growth_kib": 22480,
+        "temporary_input_bytes": 33553936,
+        "source": "baseline"
+      },
+      {
+        "input_mib_each": 64,
+        "input_bytes_each": 67108684,
+        "server_peak_growth_kib": 137156,
+        "temporary_input_bytes": 268434736,
+        "source": "baseline"
+      },
+      {
+        "input_mib_each": 8,
+        "input_bytes_each": 8388484,
+        "server_peak_growth_kib": 6536,
+        "temporary_input_bytes": 16776968,
+        "source": "candidate"
+      },
+      {
+        "input_mib_each": 64,
+        "input_bytes_each": 67108684,
+        "server_peak_growth_kib": 6536,
+        "temporary_input_bytes": 134217368,
+        "source": "candidate"
+      }
+    ],
+    "candidate_native_trials": 18,
+    "baseline_native_trials": 18,
+    "geometry_oracles": "Both cubes have volume 1 mm\u00b3; separated clearance is 1 mm with zero interference; overlapping interference is 0.5 mm\u00b3. There are 48, 768, and 12,288 triangles per cube, two arrangements, and three trials each.",
+    "worker_address_space_limit_bytes": 1073741824,
+    "largest_separated_median_ms": {
+      "baseline_worker": 407.9,
+      "candidate_worker": 761.1,
+      "baseline_total": 438.1,
+      "candidate_total": 815.2
+    },
+    "preparation_baseline_exit": 101,
+    "preparation_baseline_expected_regression_failure": true,
+    "preparation_candidate_exit": 0,
+    "native_baseline_exit": 0,
+    "native_candidate_exit": 0
+  },
+  "shutdown": {
+    "actual_docker_probes": 13,
+    "restart_observations": 4,
+    "baseline_idle_exit": 143,
+    "candidate_idle_exit": 0,
+    "candidate_foreground_exit": 0,
+    "candidate_foreground_restart": "completed; immutable bytes preserved; engine starts once",
+    "candidate_background_exit": 0,
+    "candidate_background_restart": "interrupted; no replay",
+    "candidate_forced_foreground_exit": 137,
+    "candidate_forced_foreground_restart": "interrupted; no replay",
+    "grace_seconds": {
+      "idle": 5,
+      "foreground": 8,
+      "background": 5,
+      "forced": 1
+    },
+    "remaining_task_containers": 0,
+    "validation_skips": {
+      "rust_model_dependent": 8,
+      "script_published_model_fixtures": 2,
+      "addon": 0
+    }
+  },
+  "child_raw_evidence_sha256": {
+    "mcp-admission.json": "be1a99996296fb50327577c20e7241965e62f64bd91b224935a8f0a97f6a908c",
+    "assembly-input-memory.json": "4abb7d0ea1d571e053bef616a4afca2779bea3b05714d6850c2d357adc70022a",
+    "service-shutdown.json": "fde461c87f707fc536ddda023406ed646a3b1947b5bd1bea590d016f0502786d"
+  },
+  "independent_architecture_classification_sha256": {
+    "baseline": "8cec067a79cdc5a675fcab5485ff1aad3bfdea55ce4995401a24f14ef37159ac",
+    "candidate": "cc9b4ad1ef05a9962d181f82f10127d7d89de858e255dbe6a053b23fdcd42ca0",
+    "candidate_failures": "460cd45057fd6730276b02219769fb99c8ebf8d7ad6b658bb75217dd5e2cb8b9"
+  },
+  "pending_verification": {
+    "final_source_gates": null,
+    "hosted_ci_run_url": null,
+    "tested_image_ids": null,
+    "published_image_digests": null,
+    "current_release": null,
+    "older_evidence_capable_release": null,
+    "independently_retained_release": null,
+    "public_package_access": null,
+    "final_release_revision": null
+  },
+  "limitations": [
+    "Linux/arm64 local development binaries in Docker on a macOS host; software-only, not supported Linux/amd64 NVIDIA qualification.",
+    "One completed actual-agent trial per source and discovery mode. Wall time includes parent mediation and scheduling; no causal speedup or population completion claim.",
+    "Exact inherited model name, actual provider token usage and total model exposure bytes unavailable; decoded response bytes are not token estimates.",
+    "Full catalog increased from 209,836 to 219,138 bytes. Broader candidate additions prevent attributing the change solely to error contracts.",
+    "Memory is approximate kernel high-water accounting for the defined processes/fixtures, not allocation bounds or machine sizing. Admission disposal used SIGKILL.",
+    "Reserved controls cover retained-work saturation. Shared body readers and finite control/subscription slots can themselves saturate.",
+    "Assembly batches were sequential and used different input filesystems, without CPU pinning or controlled external load; slower native candidate times remain recorded.",
+    "Native mesh/assembly oracle matches do not establish physical manufacturing, GPU rendering performance, real printer stop, or complete operator-provisioned reconstruction.",
+    "Child source identities and uncommitted production blob/runtime identities are measurement authority; successful child checks do not alone qualify a later integrated image set.",
+    "Private runtime authority, transfer headers, environment dumps and scratch paths are excluded. Original redacted journals remain retained with hashes. Completed candidate metrics agree across two independent readers; one failed setup interpretation remains recorded.",
+    "Later main25ef4fb and integration tree82072ca change optional head/bust compiler inputs. The task execution/contracts are source-identical in inspected sections and head was absent from trial catalogs, but measured candidate70414e is not a final-release measurement."
+  ],
+  "independent_reader_reconciliation": {
+    "completed_candidate_metrics_and_raw_hashes_agree": true,
+    "failed_trial_d_difference_retained": true,
+    "reconciliation_sha256": "bd95984eecff0cd8de6c41e61383f65e45301f34714f5eaa0ec25d1f2e22e925"
+  },
+  "predeclared_agent_plan_sha256": "df13f42a3ab5d0eb144fe01a39df6b87405626e0b837d7d37dc37358374fa94b",
+  "source_qualification": {
+    "status": "Partial local qualification; final source gates, hosted images and published-release consumption pending.",
+    "main_revision": "25ef4fb57e3fb68ffe88ebb0e62dae35cdccfdcd",
+    "release_source_revision": "ab48013e4b6e333e9890841d2a0c7d0e0f13aa93",
+    "release_source_tree": "d7359520bf93007f25300564198748893486fac1",
+    "current_source_tree": "6580123e9a073d06a0c11d53997f6a3107323bd0",
+    "current_source_checks": {
+      "format_exit": 0,
+      "clippy_exit": 0,
+      "workspace_exit": 0
+    },
+    "retained_failure_disposition": "Initial CAD and assembly cleanup assertions failed; unchanged reruns passed. The assembly fixture was subsequently isolated from unrelated measurement-test forks with its body and assertions preserved. Original causes remain unconfirmed; failed runs and detailed receipts remain retained.",
+    "python_reuse": "Existing successful scripts and addon qualification is reused because tracked Python inputs are unchanged from the inspected source through the current tree; existing skips remain recorded in the retained receipts.",
+    "limits": "Package-only Rust runs can differ from workspace runs through Cargo feature unification; focused success does not explain a workspace failure. Historical binaries and agent metrics remain bound to the measured candidate. Final source, image and consumer acceptance are not asserted."
+  },
+  "later_source_integration": {
+    "main_revision": "25ef4fb57e3fb68ffe88ebb0e62dae35cdccfdcd",
+    "inspected_tree": "82072ca3654f22cea2593f6c1b3f4fda6b2280c0",
+    "scope": "Optional FDM/resin bust printer preparation and reporting from pull request149, plus forthcoming release parser/retention fixes. Source inspection only.",
+    "measured_candidate_revision_remains": "70414e47a9bbea9018888192665e03b2118cba6c",
+    "compiler_inputs_identical": false,
+    "actual_agent_head_tool_advertised": false,
+    "unchanged_files": [
+      {
+        "path": "Cargo.lock",
+        "git_blob": "d994c169068f1d27456732a0014818fcf096e84a"
+      },
+      {
+        "path": "crates/printable-server/src/mcp.rs",
+        "git_blob": "9311393d2b3f9285d7b08d2917fcff1dcd6b9665"
+      },
+      {
+        "path": "crates/printable-server/src/resources/contracts.rs",
+        "git_blob": "0209a2bbc28d7cbf1e9ba6504846a0fb9e984cf4"
+      },
+      {
+        "path": "crates/printable-server/src/tools.rs",
+        "git_blob": "a629cd0f5eaf04d06fc1740db5ee054a213a35a9"
+      },
+      {
+        "path": "crates/printable-server/src/file_transfer.rs",
+        "git_blob": "59007937267395e0467d72cf6683d4063a604250"
+      },
+      {
+        "path": "crates/printable-server/src/server.rs",
+        "git_blob": "a2babc588dda5a780213ff2fbd5d2aabe68a4abc"
+      },
+      {
+        "path": "crates/printable-server/src/error.rs",
+        "git_blob": "02df28420964c3350126e330ff2e9e21ad1890c2"
+      },
+      {
+        "path": "crates/printable-server/src/printers/schema.rs",
+        "git_blob": "d8aa3b11c73cf69f82c374d0d6c2152fd30010e9"
+      },
+      {
+        "path": "crates/printable-geom/src/intersect.rs",
+        "git_blob": "dcd96a45e17e0bd1bbcc55f8102cba50cc77843b"
+      },
+      {
+        "path": "crates/printable-geom/src/assessment.rs",
+        "git_blob": "17f346b50b5946502f7a7cee29cd1d3d7172632a"
+      },
+      {
+        "path": "crates/printable-geom/src/assembly.rs",
+        "git_blob": "e02b61d726bf7172ec2544cb3b309c5bf8475d49"
+      },
+      {
+        "path": "crates/printable-workspace/src/workspace.rs",
+        "git_blob": "6e5ac71629f0d703b5e4e21fb92b8ea33a5de72c"
+      },
+      {
+        "path": "crates/printable-workspace/src/workspace/storage.rs",
+        "git_blob": "3ecde18d47a499924449f7610f47fe259c89d4b3"
+      }
+    ],
+    "unchanged_sections": [
+      "printable-geom analyze_stl, STL decode, analyze_mesh, topology/overhang/mass code remain byte-identical; lib.rs changes only module declaration and exports.",
+      "Workflow input/dispatch types before HEAD_DESCRIPTION, Availability filter, and non-head tool entries remain unchanged.",
+      "Output schema helpers, validate_mesh and artifact schema branches, and error wrapper remain unchanged."
+    ],
+    "changed_unmeasured_paths": [
+      "crates/printable-geom/src/bust.rs",
+      "crates/printable-geom/src/print_check.rs",
+      "crates/printable-geom/src/lib.rs",
+      "crates/printable-server/src/tools/head.rs",
+      "crates/printable-server/src/tools/output.rs",
+      "crates/printable-server/src/tools/workflows.rs"
+    ],
+    "limits": "Historical actual-agent and child measurements keep their recorded source. Later source needs combined Rust/source and matching-image gates. Its binary hashes, response bytes and timing are unavailable until actually measured; head-ready catalog/bust behavior was not exercised by the completed agent task."
+  }
+}
