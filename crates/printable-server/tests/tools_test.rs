@@ -7766,6 +7766,12 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
             json!({"print": {"path": "x.stl"}, "blender": {"texture": "t.png"}}),
             "blender.texture",
         ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"appearance": {
+                "bump": {"path": "detail.png", "scale_mm": 1.0}
+            }}}),
+            "needs a colour map",
+        ),
         // Fields are refused when given, whatever their value.
         (
             json!({"print": {"path": "x.stl", "pose": {"jaw": [0.0, 0.0, 0.0]}}}),

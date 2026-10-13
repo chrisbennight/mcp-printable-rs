@@ -880,6 +880,12 @@ pub(super) async fn photo_to_bust(
         checked_scale_and_pose(head.expression_scale, head.pose)?;
         if let Some(appearance) = &head.appearance {
             appearance.validate()?;
+            if appearance.bump.is_some() && request.texture_path.is_none() {
+                return Err(ToolError::Validation(
+                    "blender.appearance.bump needs a colour map; give reconstruct.texture_path"
+                        .into(),
+                ));
+            }
         }
     }
     let detail = detail.unwrap_or(PhotoDetailParams {

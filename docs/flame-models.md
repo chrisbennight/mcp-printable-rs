@@ -877,9 +877,14 @@ the map itself, and `"apply": false` leaves the detail off. `blender` takes
 the `create` options, under the same rule, and the head is coloured with the
 colour map when the reconstruction makes one.
 
-Every option that can be checked without the reconstruction is checked
-before it starts, including the expression scale and joint rotations of
-`print` and `blender`, so such a mistake costs no reconstruction. A request
+Before the reconstruction starts, `print` gets every check `prepare_print`
+makes on its options, along with the expression scale, joint rotations and
+the share of the height a body leaves the head; `blender` gets its
+expression scale, rotations and appearance checked, and a bump needs
+`reconstruct.texture_path`. Such mistakes cost no reconstruction. The
+geometry worker applies some rules of its own while it makes the bust, such
+as how wide a plinth's chamfer may be for its diameter; those are reported
+after the reconstruction, with its result. A request
 the reconstructed head cannot satisfy reports the reconstruction's result
 with the error, so `prepare_print` or `create` can use it without
 reconstructing again. Errors from Blender, such as a stale `expected_scene`
