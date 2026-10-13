@@ -558,8 +558,9 @@ as a thin membrane. `mouth` chooses how the mouth is printed:
   `expression_scale` softens such an expression.
 - `recessed` keeps the pose and sets the centre of the surface closing the
   mouth back into the head by `mouth_recess_mm` on the finished bust, 0.5 to
-  10 and 2 by default, so an open mouth reads as a shadow. A recess deeper
-  than a fifth of the head's height is refused.
+  10 and 2 by default, along that surface's inward normal whatever the
+  head's pose, so an open mouth reads as a shadow. A recess deeper than a
+  fifth of the head's height is refused.
 
 With `closed` or `recessed`, surface detail from `displacement` fades out
 over FLAME's `lips` region, so the lips are not raised into a ridge where
