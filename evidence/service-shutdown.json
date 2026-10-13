@@ -1,0 +1,699 @@
+{
+  "format_version": 1,
+  "completed_at_utc": "2026-10-12T23:48:44.277862+00:00",
+  "environment": {
+    "docker": {
+      "server_version": "29.5.2",
+      "os": "linux",
+      "architecture": "aarch64",
+      "cpus": 8,
+      "memory_budget_bytes": 12514275328
+    },
+    "image": {
+      "id": "sha256:7f86f402306e669aaa302392b72df885cf854c013eee4fbb08dfd6afd89d6f55",
+      "os": "linux",
+      "architecture": "arm64"
+    },
+    "runtime": {
+      "kernel": "6.8.0-117-generic",
+      "machine": "aarch64",
+      "python": "3.11.2",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "visible_cpus": 8,
+      "per_container_memory_cap_bytes": null,
+      "gpu_used": false
+    }
+  },
+  "base_image": "rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97",
+  "build_profile": "dev (unoptimized + debuginfo)",
+  "container_controls": {
+    "init": true,
+    "published_ports": "loopback-only, dynamically assigned",
+    "user": "host non-root UID/GID",
+    "capabilities_dropped": "ALL",
+    "no_new_privileges": true,
+    "mounts": [
+      "frozen binaries read-only",
+      "disposable fixture directory"
+    ],
+    "docker_socket_mounted": false,
+    "host_pid_namespace": false,
+    "gpu_used": false
+  },
+  "sources": {
+    "baseline": {
+      "source_revision": "2e46398fb11bd99cc58dac256b82848e46b6eb0a",
+      "overlay": [
+        "crates/printable-server/tests/admission_memory_test.rs"
+      ],
+      "overlay_scope": "integration test only; production files match frozen revision",
+      "architecture": "linux/arm64",
+      "build_profile": "dev (unoptimized + debuginfo)",
+      "build_command": [
+        "cargo",
+        "build",
+        "-p",
+        "printable-server",
+        "--bin",
+        "printable-server",
+        "--bin",
+        "printable-cad-worker",
+        "--bin",
+        "printable-recon-worker",
+        "--bin",
+        "printable-slicer-worker",
+        "--locked"
+      ],
+      "build_exit_code": 0,
+      "toolchain_image": {
+        "id": "sha256:7f86f402306e669aaa302392b72df885cf854c013eee4fbb08dfd6afd89d6f55",
+        "os": "linux",
+        "architecture": "arm64"
+      },
+      "binaries": [
+        {
+          "name": "printable-server",
+          "sha256": "449070536db5624d355a847d18872ce1375d1eafc01d83c4bc0182f5430e9873",
+          "size_bytes": 435567320
+        },
+        {
+          "name": "printable-cad-worker",
+          "sha256": "4806cad9b1f45b737daf5c818bc63e0912d37e5674257ff689de7775cc832d87",
+          "size_bytes": 347869272
+        },
+        {
+          "name": "printable-recon-worker",
+          "sha256": "fdff35ea12db43785617164db9802faaaa50857f9833bfc8dddf447b4082e3c6",
+          "size_bytes": 343164208
+        },
+        {
+          "name": "printable-slicer-worker",
+          "sha256": "381a6476e2674e6ceead96941eb9991b1303cc7439c5cedfef126479a6edb3a4",
+          "size_bytes": 367236208
+        },
+        {
+          "name": "printable-geometry-worker",
+          "sha256": "32510cc86c1d84cb2457d38376ca0b7a0a82f39f4f3582ef90b94d8cac7e68ed",
+          "size_bytes": 29565984,
+          "build_origin": "cargo test -p printable-server --test admission_memory_test --locked; integration tests compile package binaries"
+        }
+      ],
+      "source_tree": "9544aa289fb67e164b46cde6f701a0e91153a447",
+      "source_files": {
+        "crates/printable-server/src/main.rs": {
+          "sha256": "82e7ddc326e2183d722f54122f43d79452a57dede6fe0f7f264c20d52965a023",
+          "git_blob": "aff099c9453e26f0917f4523e05dd6613f12a427"
+        },
+        "crates/printable-server/src/bin/printable-cad-worker.rs": {
+          "sha256": "bd1bfdbf89f187f37ca1aa1d733944263be399df1c7072b05e0650ba6314020a",
+          "git_blob": "103d093b4bc22606c9a2c946dc50e5f7eb629d4c"
+        },
+        "crates/printable-server/src/bin/printable-recon-worker.rs": {
+          "sha256": "ef031fb83160e535e5faba69f362db14dec22a5d29d2e1bcdd73c46faba45457",
+          "git_blob": "b61646918d436b9ccc2b3cd36ca247a9b1fe4f9d"
+        },
+        "crates/printable-server/src/bin/printable-slicer-worker.rs": {
+          "sha256": "be622f6433399fe36bd661711985c53c744a3121ff8ffcc8b7303d29970cd3b2",
+          "git_blob": "1bff418f1cf272f60dba4ea70f471d300a82c24b"
+        },
+        "crates/printable-server/src/lib.rs": {
+          "sha256": "69a3077391339c45c5cac9b6eb44cc4894c9a7ed65b8b4c7cf310efcda82beec",
+          "git_blob": "43bf40a0f0ed6a7307b9228010b995844ea2b396"
+        },
+        "crates/printable-server/src/shutdown.rs": null,
+        "crates/printable-server/tests/shutdown_test.rs": null,
+        "Cargo.lock": {
+          "sha256": "ee1025312b4ad5a6275208392b37ca420b7905b1c8a282dfe94034face9b8d4b",
+          "git_blob": "d994c169068f1d27456732a0014818fcf096e84a"
+        }
+      }
+    },
+    "candidate": {
+      "parent_revision": "ac86e5f7bd666577723f1ae69edde3c6b19ba89d",
+      "source_files": {
+        "crates/printable-server/src/main.rs": {
+          "sha256": "05560689d478125478c43b111d5e08fe1f5acac54a2de6b99c1674bb7c30e2d6",
+          "git_blob": "2c1ec8715ea0c33648e10d6d25a8e8db3bd66e97"
+        },
+        "crates/printable-server/src/bin/printable-cad-worker.rs": {
+          "sha256": "cb76fdc636d8271ccdbb10cc65809551468fcc89a7cb416cb3ee7fe08683cdf6",
+          "git_blob": "a4f3c686526d0a3174004759f7b7c26a6956ded6"
+        },
+        "crates/printable-server/src/bin/printable-recon-worker.rs": {
+          "sha256": "4d33d5b32fdbf8ce22140bfecb77383ce640b3332cc377de54a3159e2b517e49",
+          "git_blob": "7a176069c0d9c60ab01fd0ae2970753ec4770a6f"
+        },
+        "crates/printable-server/src/bin/printable-slicer-worker.rs": {
+          "sha256": "ef043826e716bf18814c1e24b6e7fcb4c6469eb9944e0c715ee3022778c9f980",
+          "git_blob": "658888eb48c434efa4ff5291990e3a77b2bdb037"
+        },
+        "crates/printable-server/src/lib.rs": {
+          "sha256": "7d404c7d5925e36d41ed4c72a5da74a31aa5590b6c035f8d552284ea6dc9ecef",
+          "git_blob": "5dcc8a99acb2ce87b390836f16d7254a3e749aa5"
+        },
+        "crates/printable-server/src/shutdown.rs": {
+          "sha256": "a4aab9045d0ed882944abbd4786e9aef061c6c1c895f6469b8f6bbc3ddd22db2",
+          "git_blob": "f9ff2ec9c9067b660a9ff2417c78b91d0f0c8bfc"
+        },
+        "crates/printable-server/tests/shutdown_test.rs": {
+          "sha256": "04831d97a6691c88f30d234b91dc1ad111fb8c687e23b0a8aaede10a702c464f",
+          "git_blob": "253ff9bd8e5fc90d3856122fa54ef95c77c2c1cf"
+        },
+        "Cargo.lock": {
+          "sha256": "ee1025312b4ad5a6275208392b37ca420b7905b1c8a282dfe94034face9b8d4b",
+          "git_blob": "d994c169068f1d27456732a0014818fcf096e84a"
+        }
+      },
+      "architecture": "linux/arm64",
+      "build_profile": "dev (unoptimized + debuginfo)",
+      "build_command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--locked"
+      ],
+      "build_exit_code": 0,
+      "toolchain_image": {
+        "id": "sha256:7f86f402306e669aaa302392b72df885cf854c013eee4fbb08dfd6afd89d6f55",
+        "os": "linux",
+        "architecture": "arm64"
+      },
+      "binaries": [
+        {
+          "name": "printable-server",
+          "sha256": "5cb6311b24deedbf21dfdd1a6e7d3186aed985543ac1dbab96572d2b93ec3f01",
+          "size_bytes": 449460072
+        },
+        {
+          "name": "printable-cad-worker",
+          "sha256": "70e1b20ef776cdf7eba5705a94dbefb619886adb29c07d0da113fa289d678481",
+          "size_bytes": 361484184
+        },
+        {
+          "name": "printable-recon-worker",
+          "sha256": "faeaa3e37816c4b144ac12fb79209b8cfe13644b0e750b727d6d214102778d56",
+          "size_bytes": 356732776
+        },
+        {
+          "name": "printable-slicer-worker",
+          "sha256": "9d9e91e74a67892aa8a2835aee90831e1170a44089c58ce93da46649b5bbf460",
+          "size_bytes": 381732496
+        },
+        {
+          "name": "printable-geometry-worker",
+          "sha256": "3aad072f9ec30d1e037bc9756b5f62fbca0ce8612b288b3a850ceb4048500427",
+          "size_bytes": 30089280
+        }
+      ],
+      "runtime_subtree": {
+        "path": "crates/printable-server",
+        "git_tree": "f26b387ea26e743977b217b7e423be8bbdaca9ed"
+      },
+      "identity_method": "Public parent revision, immutable runtime subtree, and per-file Git blobs plus SHA-256; the measured candidate was uncommitted."
+    }
+  },
+  "protocol": {
+    "stop_signal": "SIGTERM",
+    "idle_grace_seconds": 5,
+    "foreground_grace_seconds": 8,
+    "background_grace_seconds": 5,
+    "forced_foreground_grace_seconds": 1,
+    "restart_stop_grace_seconds": 5,
+    "work_handle": {
+      "project_id": "part",
+      "output_dir": "result",
+      "source": "source.py"
+    },
+    "native_engine": "Disposable Python CAD fixture waits for explicit release before writing fake artifacts.",
+    "timing_definition": "Wall time around docker stop and its following docker inspect, including CLI overhead; excludes later log reads and is not native-engine or application-only latency.",
+    "forced_case": "Leave accepted foreground CAD request blocked until Docker stop --time 1 forces termination.",
+    "shutdown_logged_definition": "Container retained logs contain the shutdown/drain marker; earlier messages remain visible after a restart.",
+    "probe_run2_sha256": "90c510d9be36f43847651c78dbdb50f8a56f9b5f4f815ef0433e57b83bfefcc9"
+  },
+  "raw_probes": [
+    {
+      "source": "baseline",
+      "service": "printable-server",
+      "work": "idle",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 157.0702919998439,
+      "shutdown_logged": false,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "baseline",
+      "service": "printable-cad-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 135.8948330016574,
+      "shutdown_logged": false,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "baseline",
+      "service": "printable-recon-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 140.39262499136385,
+      "shutdown_logged": false,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "baseline",
+      "service": "printable-slicer-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 126.33108299633022,
+      "shutdown_logged": false,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "baseline",
+      "service": "printable-cad-worker",
+      "work": "foreground",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 8,
+      "stop_elapsed_ms": 145.25616698665544,
+      "shutdown_logged": false,
+      "engine_starts": 1,
+      "namespace_stopped": true,
+      "request_completion": "connection_ended",
+      "completed_report": false,
+      "retained_status_before_stop": "running",
+      "retained_status_after_stop": "running",
+      "engine_active_before_stop": true
+    },
+    {
+      "source": "baseline",
+      "service": "printable-cad-worker",
+      "work": "background",
+      "running": false,
+      "exit_code": 143,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 141.21641700330656,
+      "shutdown_logged": false,
+      "engine_starts": 1,
+      "namespace_stopped": true,
+      "admission_status": "admitted",
+      "engine_active_before_stop": true,
+      "retained_status_before_stop": "running",
+      "retained_status_after_stop": "running",
+      "restart": {
+        "status": "interrupted",
+        "engine_starts": 1,
+        "no_replay": true,
+        "retained_inputs_unchanged": true,
+        "completed_report": false,
+        "published_port_changed": true,
+        "restart_stop": {
+          "running": false,
+          "exit_code": 143,
+          "oom_killed": false,
+          "pid": 0,
+          "stop_signal": "SIGTERM",
+          "grace_seconds": 5,
+          "stop_elapsed_ms": 121.2220419984078,
+          "shutdown_logged": false,
+          "engine_starts": 1,
+          "namespace_stopped": true
+        }
+      }
+    },
+    {
+      "source": "candidate",
+      "service": "printable-server",
+      "work": "idle",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 136.3334589987062,
+      "shutdown_logged": true,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "candidate",
+      "service": "printable-cad-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 134.5677500066813,
+      "shutdown_logged": true,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "candidate",
+      "service": "printable-recon-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 145.04950000264216,
+      "shutdown_logged": true,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "candidate",
+      "service": "printable-slicer-worker",
+      "work": "idle",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 126.22708300477825,
+      "shutdown_logged": true,
+      "engine_starts": 0,
+      "namespace_stopped": true
+    },
+    {
+      "source": "candidate",
+      "service": "printable-cad-worker",
+      "work": "foreground",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 8,
+      "stop_elapsed_ms": 179.00833301246166,
+      "shutdown_logged": true,
+      "engine_starts": 1,
+      "namespace_stopped": true,
+      "request_completion": "completed",
+      "completed_report": true,
+      "retained_status_before_stop": "running",
+      "retained_status_after_stop": "completed",
+      "engine_active_before_stop": true,
+      "new_connections_rejected_during_drain": true,
+      "restart": {
+        "status": "completed",
+        "engine_starts": 1,
+        "no_replay": true,
+        "retained_inputs_unchanged": true,
+        "completed_report": true,
+        "completed_artifacts_unchanged": true,
+        "published_port_changed": true,
+        "restart_stop": {
+          "running": false,
+          "exit_code": 0,
+          "oom_killed": false,
+          "pid": 0,
+          "stop_signal": "SIGTERM",
+          "grace_seconds": 5,
+          "stop_elapsed_ms": 123.42158400861081,
+          "shutdown_logged": true,
+          "engine_starts": 1,
+          "namespace_stopped": true
+        }
+      }
+    },
+    {
+      "source": "candidate",
+      "service": "printable-cad-worker",
+      "work": "background",
+      "running": false,
+      "exit_code": 0,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 5,
+      "stop_elapsed_ms": 127.0175840036245,
+      "shutdown_logged": true,
+      "engine_starts": 1,
+      "namespace_stopped": true,
+      "admission_status": "admitted",
+      "engine_active_before_stop": true,
+      "retained_status_before_stop": "running",
+      "retained_status_after_stop": "running",
+      "restart": {
+        "status": "interrupted",
+        "engine_starts": 1,
+        "no_replay": true,
+        "retained_inputs_unchanged": true,
+        "completed_report": false,
+        "published_port_changed": true,
+        "restart_stop": {
+          "running": false,
+          "exit_code": 0,
+          "oom_killed": false,
+          "pid": 0,
+          "stop_signal": "SIGTERM",
+          "grace_seconds": 5,
+          "stop_elapsed_ms": 122.98445899796207,
+          "shutdown_logged": true,
+          "engine_starts": 1,
+          "namespace_stopped": true
+        }
+      }
+    },
+    {
+      "source": "candidate",
+      "service": "printable-cad-worker",
+      "work": "forced_foreground",
+      "running": false,
+      "exit_code": 137,
+      "oom_killed": false,
+      "pid": 0,
+      "stop_signal": "SIGTERM",
+      "grace_seconds": 1,
+      "stop_elapsed_ms": 1158.0174999980954,
+      "shutdown_logged": true,
+      "engine_starts": 1,
+      "namespace_stopped": true,
+      "request_completion": "connection_ended",
+      "completed_report": false,
+      "retained_status_before_stop": "running",
+      "retained_status_after_stop": "running",
+      "engine_active_before_stop": true,
+      "restart": {
+        "status": "interrupted",
+        "engine_starts": 1,
+        "no_replay": true,
+        "retained_inputs_unchanged": true,
+        "completed_report": false,
+        "published_port_changed": true,
+        "restart_stop": {
+          "running": false,
+          "exit_code": 0,
+          "oom_killed": false,
+          "pid": 0,
+          "stop_signal": "SIGTERM",
+          "grace_seconds": 5,
+          "stop_elapsed_ms": 133.5694169974886,
+          "shutdown_logged": true,
+          "engine_starts": 1,
+          "namespace_stopped": true
+        }
+      }
+    }
+  ],
+  "complete_probe_count": 13,
+  "restart_probe_count": 4,
+  "validation": [
+    {
+      "check": "refresh-server",
+      "argv": [
+        "cargo",
+        "clean",
+        "-p",
+        "printable-server"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "focused-shutdown",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "printable-server",
+        "--test",
+        "shutdown_test",
+        "--all-features",
+        "--locked",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "rust-tests",
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--locked"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python-environment",
+      "argv": [
+        "python3",
+        "-m",
+        "venv",
+        "/tmp/tooling"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python-requirements",
+      "argv": [
+        "/tmp/tooling/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-r",
+        "requirements-tooling.txt"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "addon-tests",
+      "argv": [
+        "/tmp/tooling/bin/python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "addon/tests",
+        "-v"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "script-tests",
+      "argv": [
+        "/tmp/tooling/bin/python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-v"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "documentation",
+      "argv": [
+        "/tmp/docgate-tooling/bin/python",
+        "scripts/docgate"
+      ],
+      "exit_code": 0,
+      "environment": "source-only Docker container; no shared Cargo-cache mounts"
+    }
+  ],
+  "initial_harness_failure": {
+    "exit_code": 1,
+    "phase": "baseline background CAD restart readiness",
+    "cause": "The probe reused the previous dynamically published port after restart.",
+    "service_remained_running": true,
+    "completed_probes_reused": 5,
+    "resume_exit_code": 0,
+    "all_observed_restart_ports_changed": true,
+    "production_or_test_source_changed": false
+  },
+  "cleanup": {
+    "each_probe_container_removal_confirmed": true,
+    "each_probe_fixture_removed_after_confirmed_container_removal": true,
+    "post_run_aggregate_query": "The local Docker endpoint was initially unavailable after completion. After the saved local VM was restored, a prefix-scoped query confirmed zero remaining task containers.",
+    "final_remaining_task_containers": 0,
+    "final_query_exit_code": 0
+  },
+  "retained_artifact_sha256": {
+    "container-stop-evidence-run1.json": "1b62ea295db5fc4a2b151210b705f32702dd0a1dcf6091e23186416a24cacaa1",
+    "container-stop-evidence-run2.json": "3106429508b8397f269080366fdcd7fe0481260fa01066ddcc8c9d456cb3039e",
+    "container-stop-evidence-run1.log": "24430da72866368bd65f31d94ff9e8252fd39850c8b0dedd03d333bf1408f211",
+    "container-stop-evidence-run2.log": "fa826a1ec67ecb02fa329cded8651ad1efef7a38eff0ddcc87440dc9048419e2",
+    "focused-shutdown-required-linux.log": "058f84b196a50c7dc57bb09e9f22b5f70242aa8b31f2eacd1568f3856f12df16",
+    "post-run-cleanup-socket-diagnostic.json": "d02e3427c57bcdc606b5d0f903a14b89a6078247981369b56887c4d310083a7d"
+  },
+  "limitations": [
+    "One completed observation per role/work variant, with four restart probes; not a statistical benchmark.",
+    "Linux/arm64 development binaries in a local toolchain image, rather than the supported Linux/amd64 NVIDIA release image set.",
+    "Native CAD is a disposable fake engine; no Blender mutation, real native CAD completion, physical printer, user workspace, or GPU workload was exercised.",
+    "Docker stops the enclosing container; host-process forced-stop regressions explicitly remove identified fake children and do not establish container-wide cleanup.",
+    "SIGINT, active reconstruction drain, and interrupted slicer restart are covered by Linux process regressions, rather than these Docker probes.",
+    "A service exit code of zero is not proof that background work completed. Real interrupted operations may retain partial outputs or an unknown external mutation."
+  ],
+  "validation_skips": {
+    "rust_model_dependent": 8,
+    "script_published_model_fixtures": 2,
+    "addon": 0
+  }
+}

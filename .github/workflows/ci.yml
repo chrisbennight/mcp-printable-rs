@@ -251,6 +251,22 @@ jobs:
       - name: Verify and record tested image IDs
         if: steps.scope.outputs.images == 'true'
         run: python3 scripts/publish_images.py record "$GITHUB_SHA" target/release/image-ids.json
+      - name: Install the pinned SBOM generator
+        if: steps.scope.outputs.images == 'true'
+        env:
+          SYFT_VERSION: "1.54.1"
+          SYFT_CHECKSUM: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 10 --max-time 120 \
+            --output "${RUNNER_TEMP}/syft.tar.gz" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SYFT_CHECKSUM" "${RUNNER_TEMP}/syft.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "$RUNNER_TEMP" syft
+          printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Inventory tested images and retain exact source and notice materials
+        if: steps.scope.outputs.images == 'true'
+        run: python3 scripts/release_evidence.py "$GITHUB_SHA" target/release/image-ids.json target/release/evidence
       - name: Save tested images
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
@@ -262,6 +278,7 @@ jobs:
           path: |
             target/release/images.tar.gz
             target/release/image-ids.json
+            target/release/evidence
           compression-level: 0
           if-no-files-found: error
           retention-days: 2
@@ -279,6 +296,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -304,21 +323,93 @@ jobs:
           printf '%s  %s\n' "$GRYPE_CHECKSUM" "${RUNNER_TEMP}/grype.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/grype.tar.gz" -C "$RUNNER_TEMP" grype
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Install the pinned attestation verifier
+        env:
+          GH_VERSION: "2.102.0"
+          GH_CHECKSUM: bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 10 --max-time 120 \
+            --output "${RUNNER_TEMP}/gh.tar.gz" \
+            "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$GH_CHECKSUM" "${RUNNER_TEMP}/gh.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/gh.tar.gz" -C "$RUNNER_TEMP" "gh_${GH_VERSION}_linux_amd64/bin/gh"
+          printf '%s\n' "${RUNNER_TEMP}/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Scan and publish tested images
-        run: python3 scripts/publish_images.py publish "$GITHUB_SHA" target/release/image-ids.json
+      - name: Scan and push tested component images
+        id: components
+        run: python3 scripts/publish_images.py push "$GITHUB_SHA" target/release/image-ids.json
+      - uses: ./.github/actions/attest-runtime
+        with:
+          role: server
+          name: ${{ steps.components.outputs.server_name }}
+          digest: ${{ steps.components.outputs.server_digest }}
+      - uses: ./.github/actions/attest-runtime
+        with:
+          role: blender
+          name: ${{ steps.components.outputs.blender_name }}
+          digest: ${{ steps.components.outputs.blender_digest }}
+      - uses: ./.github/actions/attest-runtime
+        with:
+          role: cad
+          name: ${{ steps.components.outputs.cad_name }}
+          digest: ${{ steps.components.outputs.cad_digest }}
+      - uses: ./.github/actions/attest-runtime
+        with:
+          role: slicer
+          name: ${{ steps.components.outputs.slicer_name }}
+          digest: ${{ steps.components.outputs.slicer_digest }}
+      - uses: ./.github/actions/attest-runtime
+        with:
+          role: recon
+          name: ${{ steps.components.outputs.recon_name }}
+          digest: ${{ steps.components.outputs.recon_digest }}
+      - name: Verify signatures and publish the durable evidence record
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish_images.py record-evidence "$GITHUB_SHA" target/release/evidence/candidate.json
+      - name: Sign the completed evidence record
+        id: record_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.record.outputs.name }}
+          subject-digest: ${{ steps.record.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Sign the evidence index for independent retained verification
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.record.outputs.name }}
+          subject-digest: ${{ steps.record.outputs.digest }}
+          predicate-type: https://github.com/chrisbennight/mcp-printable-rs/attestations/release-evidence/v1
+          predicate-path: target/release/record-evidence.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify the published evidence and advance update discovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish_images.py complete "$GITHUB_SHA" release-image.txt
       - name: Retain image scan evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-security-scans
-          path: target/release/scans/*.json
+          path: target/release/evidence/scans/*.json
           if-no-files-found: ignore
           retention-days: 2
+      - name: Retain candidate evidence for diagnosis
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-candidate-evidence
+          path: target/release/evidence
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-image

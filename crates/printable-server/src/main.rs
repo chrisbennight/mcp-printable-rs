@@ -99,6 +99,7 @@ fn init_tracing() {
 }
 
 async fn run_server(mut settings: Settings, host: String, port: u16) -> anyhow::Result<ExitCode> {
+    let signal = printable_server::shutdown::signal().context("register shutdown signals")?;
     // Bind first, then report the *actual* bound endpoint. Binding through
     // `ToSocketAddrs` resolves a hostname (`localhost`) or IPv6 literal (`::1`)
     // correctly; reading `local_addr()` back captures an OS-assigned ephemeral
@@ -118,7 +119,7 @@ async fn run_server(mut settings: Settings, host: String, port: u16) -> anyhow::
 
     tracing::info!(%addr, "printable-server listening");
     let shutdown = async move {
-        let _ = tokio::signal::ctrl_c().await;
+        signal.await;
         cancel.cancel();
     };
     axum::serve(listener, app)

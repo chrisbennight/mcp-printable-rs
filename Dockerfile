@@ -8,10 +8,19 @@ ARG SOURCE_REVISION=unknown
 # compiles its C++ library from source on first build, so the builder needs
 # cmake + a C++ toolchain + git (the same deps the CI installs).
 FROM rust:1.97-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f AS build
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 WORKDIR /app
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake g++ git \
+ && apt-get install -y --no-install-recommends cmake g++ git curl xz-utils python3 \
  && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output /tmp/cargo-auditable.tar.xz \
+      https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.7/cargo-auditable-x86_64-unknown-linux-gnu.tar.xz \
+ && echo '4c8d3b08c3c34e9f2333367224dbbfb4aab68067698b43de59fe19aded3416dd  /tmp/cargo-auditable.tar.xz' | sha256sum --check --strict \
+ && tar -xJf /tmp/cargo-auditable.tar.xz --strip-components=1 -C /usr/local/bin \
+      cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable \
+ && rm /tmp/cargo-auditable.tar.xz
 
 # Where crates come from. Cargo reads no environment variable for a mirror, so
 # unlike pip or npm it cannot simply be told: the redirect has to be a config
@@ -38,8 +47,9 @@ RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
-RUN cargo build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
+RUN cargo auditable build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
+RUN python3 scripts/release_build_materials.py "${SOURCE_REVISION}" --source "${SOURCE_REPOSITORY}"
 
 # CI exports the MCP smoke driver from the same Trixie build environment as
 # the runtime image. It is never copied into the production stage.
@@ -63,7 +73,9 @@ RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisb
  && rm -rf /opt/orca/resources/web \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
+COPY --from=build /release-materials /usr/share/doc/printable/build
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
+COPY release/notices/orca /opt/orca/licenses
 ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
@@ -86,6 +98,7 @@ COPY cad/requirements.txt /opt/printable/cad/requirements.txt
 RUN /opt/cad/bin/pip install --no-cache-dir -r /opt/printable/cad/requirements.txt
 COPY cad/build.py cad/step.py /opt/printable/cad/
 COPY --from=build /app/target/release/printable-cad-worker /usr/local/bin/printable-cad-worker
+COPY --from=build /release-materials /usr/share/doc/printable/build
 COPY LICENSE /usr/share/doc/printable/LICENSE
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
@@ -131,6 +144,15 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
  && cmake --build /tmp/opencv-build \
  && cmake --install /tmp/opencv-build \
  && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
+COPY Dockerfile /tmp/printable-Dockerfile
+COPY release/components.json /tmp/printable-components.json
+COPY scripts/release_native_materials.py /tmp/release_native_materials.py
+ARG SOURCE_REVISION
+RUN python3 /tmp/release_native_materials.py OpenCV "${SOURCE_REVISION}" \
+      --components /tmp/printable-components.json --recipe /tmp/printable-Dockerfile \
+      --source-archive /tmp/opencv.tar.gz --install-root /opt/opencv-python \
+      --install-manifest /tmp/opencv-build/install_manifest.txt --cache /tmp/opencv-build/CMakeCache.txt \
+      --output /opt/opencv-python/printable-native-build.json
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
 ARG SOURCE_REVISION
@@ -158,6 +180,7 @@ RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
 COPY recon/reconstruct.py /opt/printable/recon/reconstruct.py
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
+COPY --from=build /release-materials /usr/share/doc/printable/build
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
@@ -194,6 +217,7 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
 
 COPY --from=build /app/target/release/printable-server /usr/local/bin/printable-server
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
+COPY --from=build /release-materials /usr/share/doc/printable/build
 COPY scripts/openscad-headless /usr/local/bin/openscad-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY crates/printable-imaging/assets/LICENSE-Fira-OFL.txt /usr/share/doc/printable/LICENSE-Fira-OFL.txt

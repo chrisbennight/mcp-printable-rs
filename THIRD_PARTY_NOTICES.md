@@ -28,7 +28,8 @@ The server image carries the first-party MIT text and Fira notice under
 `/usr/share/doc/printable/`. The Blender, CAD, slicer, and reconstruction images carry the first-party MIT
 text at the same location and retain their dependencies' own license material.
 The reconstruction image also carries `NOTICE-recon`, which records the source
-and license of the bundled face landmarker model and of its OpenCV build.
+and license of the bundled face landmarker and multiclass selfie segmenter models
+and of its OpenCV build.
 Do not strip upstream documentation directories when reducing image size.
 
 ## Binary release obligations
@@ -49,3 +50,22 @@ used by Rust crates where their license requires them.
 Provide these materials for the exact images distributed. GPU tests do not
 establish license compliance. These notes describe component boundaries and
 distribution requirements, not a blanket legal certification.
+
+Completed release records retain the inventories, notices, checksummed source
+locators and native source material described in
+[the release evidence guide](docs/releases.md#signed-evidence-and-retention).
+Debian sources use the installed source package version and distribution patches;
+Rust crate locators use lockfile checksums and compiled dependency metadata.
+Wheel-only Python distributions have reviewed upstream source revisions. The
+Blender and Orca bundles retain their file inventories, notices and exact upstream
+source material, including dependency build specifications. Their native files
+have individual component and source records in `release/components.json`.
+Orca's copied Ubuntu libraries retain their matching package copyright notices
+under `/opt/orca/licenses/`, together with its AGPL notice. Checksummed source
+descriptors identify the corresponding distribution sources and patches. The
+Blender bridge, supervisor and launcher retain first-party source, version and MIT
+license records. Bundle ownership and scanner metadata do not establish the
+license of every static library; preserve
+the upstream material and investigate gaps when a bundled component changes.
+Use [independent verification](docs/releases.md#independent-verification) before
+trusting downloaded evidence.
