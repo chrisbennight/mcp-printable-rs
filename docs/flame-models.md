@@ -740,7 +740,9 @@ and `thickness_mm`, the thickness applied; the `bust` report gives the same
 as `raised_mm`.
 
 `hair_vertices` covers the listed model vertices instead of the scalp
-region, with the same sloping edge; it needs no `--masks`. A cap that covers
+region, with the same sloping edge; it needs no `--masks`. An empty list,
+which `reconstruct` gives for a head its photographs show bald all over,
+raises nothing. A cap that covers
 the scalp reports `covers` `scalp` in `hair`, and one over given vertices
 `hair_vertices`. `reconstruct` returns a hairline that follows the
 photographs; see [Use the result](#use-the-result).
