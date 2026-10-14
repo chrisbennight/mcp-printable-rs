@@ -249,6 +249,9 @@ pub struct EyeReport {
     pub removed_mm3: f64,
 }
 
+/// A raised layer stands out at most this share of the bust's height.
+const MAX_RAISED_SHARE: f64 = 0.2;
+
 /// A displacement map over the head's texture coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,6 +277,23 @@ pub struct Displacement {
     /// nothing, such as the lips of a closed mouth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faded: Vec<u32>,
+    /// Layers raised over parts of the head, such as hair, on top of the
+    /// detail and unaffected by `relief_mm` or fading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raised: Vec<Raised>,
+}
+
+/// A layer raised over part of the head, such as a cap of hair: for each
+/// request vertex, from 0 where the layer is absent to 1 where it is at full
+/// height. The refined surface between vertices takes their blend, so the
+/// layer has no seams where the texture layout is cut apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Raised {
+    pub values: Vec<f32>,
+    /// How far the layer stands out from the surface where it is 1, in
+    /// millimetres on the finished bust.
+    pub height_mm: f64,
 }
 
 impl Displacement {
@@ -287,6 +307,15 @@ impl Displacement {
         let top = at(row, column) * (1.0 - across) + at(row, column + 1) * across;
         let bottom = at(row + 1, column) * (1.0 - across) + at(row + 1, column + 1) * across;
         top * (1.0 - down) + bottom * down
+    }
+
+    /// How far the raised layers stand out at a request vertex, in
+    /// millimetres.
+    fn raised_at(&self, vertex: u32) -> f64 {
+        self.raised
+            .iter()
+            .map(|layer| layer.height_mm * f64::from(layer.values[vertex as usize]))
+            .sum()
     }
 }
 
@@ -1913,6 +1942,21 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
         {
             return invalid("faded vertices must be distinct head vertices in increasing order");
         }
+        for layer in &map.raised {
+            if layer.values.len() != count {
+                return invalid("a raised layer must give a value for every head vertex");
+            }
+            if !layer.values.iter().all(|value| (0.0..=1.0).contains(value)) {
+                return invalid("a raised layer's values must be from 0 to 1");
+            }
+            let tallest = MAX_RAISED_SHARE * request.height_mm;
+            if !(layer.height_mm > 0.0 && layer.height_mm <= tallest) {
+                return invalid(&format!(
+                    "a raised layer must stand out more than 0 and at most {tallest:.1} mm, {:.0}% of the bust's height",
+                    MAX_RAISED_SHARE * 100.0
+                ));
+            }
+        }
         if !map
             .triangle_uvs
             .iter()
@@ -2092,9 +2136,61 @@ fn close_part(
     })
 }
 
-/// Vertex properties of a displaced part: position, texture coordinates and
-/// the weight given to the map.
-const DISPLACED_PROPERTIES: usize = 6;
+/// How far, in millimetres on the bust, a raised layer's height is blended
+/// across the refined surface. The layer is interpolated linearly within the
+/// head's triangles, which would leave creases along their edges where it
+/// slopes.
+const RAISED_BLEND_MM: f64 = 4.0;
+/// The most blending passes made, whatever the edge length.
+const MAX_RAISED_PASSES: usize = 200;
+
+/// The raised layers' height at each merged vertex, blended with its
+/// neighbours over about `RAISED_BLEND_MM`. Untouched when nothing is raised.
+fn smoothed_raise(
+    offsets: &[(f64, f64, u32)],
+    triangles: &[[usize; 3]],
+    position: impl Fn(usize) -> [f64; 3],
+) -> Vec<f64> {
+    let mut raised: Vec<f64> = offsets
+        .iter()
+        .map(|(_, raised, copies)| raised / f64::from((*copies).max(1)))
+        .collect();
+    if raised.iter().all(|&value| value == 0.0) || triangles.is_empty() {
+        return raised;
+    }
+    let mut neighbours = vec![Vec::new(); raised.len()];
+    let mut length = 0.0;
+    for &[a, b, c] in triangles {
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            neighbours[from].push(to);
+            neighbours[to].push(from);
+            length += norm(sub(position(from), position(to)));
+        }
+    }
+    // Each pass spreads a value about one edge, and n passes about the
+    // square root of n edges.
+    let edge = length / (3 * triangles.len()) as f64;
+    let passes =
+        ((RAISED_BLEND_MM / edge.max(1e-9)).powi(2).ceil() as usize).min(MAX_RAISED_PASSES);
+    for _ in 0..passes {
+        raised = (0..raised.len())
+            .map(|vertex| {
+                let around = &neighbours[vertex];
+                if around.is_empty() {
+                    return raised[vertex];
+                }
+                let mean =
+                    around.iter().map(|&other| raised[other]).sum::<f64>() / around.len() as f64;
+                (raised[vertex] + mean) / 2.0
+            })
+            .collect();
+    }
+    raised
+}
+
+/// Vertex properties of a displaced part: position, texture coordinates, the
+/// weight given to the map and how far raised layers stand out there.
+const DISPLACED_PROPERTIES: usize = 7;
 
 /// A placed part as a solid. With a displacement map, each vertex carries its
 /// texture coordinates and a weight as properties, which smoothing and
@@ -2145,7 +2241,10 @@ fn part_solid(
                             place(part.vertices[vertex as usize]),
                             vertex,
                             uv.map(f64::from),
-                            if faded { 0.0 } else { 1.0 },
+                            (
+                                if faded { 0.0 } else { 1.0 },
+                                map.raised_at(part.origins[vertex as usize]),
+                            ),
                         )
                     });
         }
@@ -2175,7 +2274,12 @@ fn part_solid(
     centres.sort_by_key(|(vertex, _)| *vertex);
     for (vertex, (sum, count)) in centres {
         let mean = sum.map(|value| value / count.max(1) as f64);
-        built.add(place(part.vertices[vertex as usize]), vertex, mean, 0.0);
+        built.add(
+            place(part.vertices[vertex as usize]),
+            vertex,
+            mean,
+            (0.0, 0.0),
+        );
     }
     for (slot, (triangle, source)) in part.triangles.iter().zip(&part.sources).enumerate() {
         if source.is_none() {
@@ -2210,10 +2314,16 @@ struct PropertyMesh {
 }
 
 impl PropertyMesh {
-    fn add(&mut self, position: [f64; 3], vertex: u32, uv: [f64; 2], weight: f64) -> u64 {
+    fn add(
+        &mut self,
+        position: [f64; 3],
+        vertex: u32,
+        uv: [f64; 2],
+        (weight, raised): (f64, f64),
+    ) -> u64 {
         let id = (self.properties.len() / DISPLACED_PROPERTIES) as u64;
         self.properties.extend(position);
-        self.properties.extend([uv[0], uv[1], weight]);
+        self.properties.extend([uv[0], uv[1], weight, raised]);
         match self.first[vertex as usize] {
             Some(original) => {
                 self.merge_from.push(id);
@@ -2261,14 +2371,18 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
         .chunks_exact(3)
         .map(|triangle| [0, 1, 2].map(|corner| canonical[triangle[corner] as usize]))
         .collect();
-    let mut offsets = vec![(0.0, 0u32); count];
+    // Detail, faded by each point's share, and the raised layers, which are
+    // already in millimetres on the bust.
+    let mut offsets = vec![(0.0, 0.0, 0u32); count];
     for index in 0..count {
         let at = index * width;
-        let value = properties[at + 5] * map.sample(properties[at + 3], properties[at + 4]);
+        let (u, v) = (properties[at + 3], properties[at + 4]);
         let entry = &mut offsets[canonical[index]];
-        entry.0 += value;
-        entry.1 += 1;
+        entry.0 += properties[at + 5] * map.sample(u, v);
+        entry.1 += properties[at + 6];
+        entry.2 += 1;
     }
+    let raised = smoothed_raise(&offsets, &triangles, position);
     // Area-weighted normals.
     let mut normals = vec![[0.0; 3]; count];
     for &[a, b, c] in &triangles {
@@ -2289,9 +2403,11 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
             triangle.map(|index| {
                 if remap[index] == u32::MAX {
                     remap[index] = vertices.len() as u32;
-                    let (sum, copies) = offsets[index];
-                    let distance = sum / f64::from(copies.max(1)) * scale;
-                    distances.push(distance);
+                    let (detail, _, copies) = offsets[index];
+                    let detail = detail / f64::from(copies.max(1)) * scale;
+                    // The detail report counts the detail alone.
+                    distances.push(detail);
+                    let distance = detail + raised[index];
                     let normal = normals[index];
                     let length = norm(normal);
                     let point = position(index);
@@ -2606,6 +2722,7 @@ mod tests {
             relief_mm: None,
             limit_relief: false,
             faded: Vec::new(),
+            raised: Vec::new(),
         });
         request
     }
@@ -2640,6 +2757,7 @@ mod tests {
             relief_mm: None,
             limit_relief: false,
             faded: Vec::new(),
+            raised: Vec::new(),
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
         let (raised, distances) = displaced(&solid, &map, 2.0);
@@ -2669,6 +2787,7 @@ mod tests {
             relief_mm: None,
             limit_relief: false,
             faded: Vec::new(),
+            raised: Vec::new(),
         };
         let solid = part_solid(head, |vertex| vertex, Some(&map)).unwrap();
         let mesh = solid.to_meshgl64();
@@ -3022,6 +3141,7 @@ mod tests {
             relief_mm: Some(0.5),
             limit_relief: false,
             faded: vec![1, 2],
+            raised: Vec::new(),
         };
         let (_, factor, _) = with_relief(&map, (&vertices, &triangles, &[]), 1.0, 1000.0).unwrap();
         // The reference is the centre's applied third, not its full value.
@@ -3059,6 +3179,53 @@ mod tests {
             prepare_bust(&capped),
             Err(GeometryError::InvalidOptions(text)) if text.contains("relief_mm")
         ));
+    }
+
+    #[test]
+    fn a_raised_layer_stands_out_by_its_height() {
+        let plain = with_map(request(1.0, 1_000_000), |_, _| 0.0);
+        let (_, flat) = prepare_bust(&plain).unwrap();
+        // The front of the part jutting from the box, at z = 49, raised 2 mm.
+        // It is the bust's deepest point and away from its top, so the depth
+        // grows by the layer's height and the height stays as asked.
+        let values: Vec<f32> = plain
+            .vertices
+            .iter()
+            .map(|vertex| if vertex[2] > 45.0 { 1.0 } else { 0.0 })
+            .collect();
+        let mut raised = plain.clone();
+        raised.displacement.as_mut().unwrap().raised = vec![Raised {
+            values: values.clone(),
+            height_mm: 2.0,
+        }];
+        let (mesh, report) = prepare_bust(&raised).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        // Upright, the head's depth is the bust's y.
+        let grown = report.size_mm[1] - flat.size_mm[1];
+        assert!((grown - 2.0).abs() < 0.5, "{grown}");
+        // The layer is not detail.
+        let detail = report.displacement.expect("displacement report");
+        assert!(
+            detail.highest_mm.abs() < 1e-9 && detail.lowest_mm.abs() < 1e-9,
+            "{detail:?}"
+        );
+        // Values outside 0 to 1, a value missing, and layers too tall or not
+        // raised at all are refused.
+        let mut outside = values.clone();
+        outside[0] = 1.5;
+        for (values, height_mm) in [
+            (outside, 2.0),
+            (values[1..].to_vec(), 2.0),
+            (values.clone(), 0.0),
+            (values.clone(), 11.0),
+        ] {
+            let mut bad = plain.clone();
+            bad.displacement.as_mut().unwrap().raised = vec![Raised { values, height_mm }];
+            assert!(matches!(
+                prepare_bust(&bad),
+                Err(GeometryError::InvalidOptions(text)) if text.contains("raised layer")
+            ));
+        }
     }
 
     #[test]

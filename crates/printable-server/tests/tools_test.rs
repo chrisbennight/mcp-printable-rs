@@ -6456,6 +6456,83 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
+    let library = |scalp: bool| {
+        let models = tempfile::tempdir().unwrap();
+        let fixture = printable_flame::fixture::Fixture {
+            faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            uv: Some((
+                vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            )),
+            // The top vertex is the scalp.
+            regions: if scalp {
+                vec![("scalp".into(), vec![2])]
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+        let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+        (models, library)
+    };
+    let (_models, with_scalp) = library(true);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), with_scalp);
+    let print = |path: &str, extra: Value| {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server.invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": params}),
+        ))
+    };
+    let plain = print("plain.stl", json!({})).await.unwrap();
+    assert_eq!(plain.is_error, Some(false), "{plain:?}");
+    let capped = print("cap.stl", json!({"hair": "cap", "hair_thickness_mm": 3.0}))
+        .await
+        .unwrap();
+    assert_eq!(capped.is_error, Some(false), "{capped:?}");
+    let value = capped.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["hair"], json!({"style": "cap", "thickness_mm": 3.0}));
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    // A cap alone carries no detail to report.
+    assert!(value["bust"].get("displacement").is_none(), "{value}");
+    assert_ne!(
+        std::fs::read(root.path().join("plain.stl")).unwrap(),
+        std::fs::read(root.path().join("cap.stl")).unwrap()
+    );
+    // A default thickness is 3% of the height above the plinth.
+    let default = print("default.stl", json!({"hair": "cap"}))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!((default["hair"]["thickness_mm"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    // A thickness without a cap, and a model without a scalp, are refused.
+    let refused = print("x.stl", json!({"hair_thickness_mm": 2.0}))
+        .await
+        .unwrap();
+    assert!(
+        format!("{refused:?}").contains("needs hair cap"),
+        "{refused:?}"
+    );
+    let (_bare_models, bare) = library(false);
+    let server = head_print_server(root.path(), bare);
+    let refused = server
+        .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+            "path": "y.stl", "height_mm": 50.0, "hair": "cap"
+        }})))
+        .await
+        .unwrap();
+    assert!(format!("{refused:?}").contains("--masks"), "{refused:?}");
+}
+
+#[tokio::test]
 async fn head_export_writes_the_head_as_an_obj_without_blender() {
     for textured in [true, false] {
         let (_models, library) = tetrahedron_library(textured);
