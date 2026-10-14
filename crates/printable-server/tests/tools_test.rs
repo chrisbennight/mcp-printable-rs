@@ -6456,6 +6456,150 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
+    // Vertex 1 is the eyeball; the triangle through vertices 0, 2 and 3 is
+    // the brow area, above the eyeball's top at height 0.
+    let library = |textured: bool, regions: bool| {
+        let models = tempfile::tempdir().unwrap();
+        let fixture = printable_flame::fixture::Fixture {
+            faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            uv: textured.then(|| {
+                (
+                    vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                    vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+                )
+            }),
+            regions: if regions {
+                vec![
+                    ("eye_region".into(), vec![0, 2, 3]),
+                    ("left_eyeball".into(), vec![1]),
+                    ("right_eyeball".into(), vec![1]),
+                ]
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+        let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+        (models, library)
+    };
+    let root = tempfile::tempdir().unwrap();
+    // Light skin with a dark patch inside the brow triangle's layout, whose
+    // corners lie at (0.1, 0.1), (0.5, 0.5) and (0.5, 0.9).
+    let map = |dark: bool| {
+        image::RgbImage::from_fn(64, 64, |column, row| {
+            let (u, v) = (
+                (column as f32 + 0.5) / 64.0,
+                1.0 - (row as f32 + 0.5) / 64.0,
+            );
+            if dark && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
+                image::Rgb([40, 30, 25])
+            } else {
+                image::Rgb([220, 180, 160])
+            }
+        })
+    };
+    map(true).save(root.path().join("colour.png")).unwrap();
+    map(false).save(root.path().join("bare.png")).unwrap();
+    let (_models, full) = library(true, true);
+    let server = head_print_server(root.path(), full);
+    async fn print(
+        server: &PrintableServer,
+        path: &str,
+        extra: Value,
+    ) -> rmcp::model::CallToolResult {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap()
+    }
+    let plain = print(&server, "plain.stl", json!({})).await;
+    assert_eq!(plain.is_error, Some(false), "{plain:?}");
+    let browed = print(
+        &server,
+        "brows.stl",
+        json!({"brows": "raised", "brow_map": "colour.png"}),
+    )
+    .await;
+    assert_eq!(browed.is_error, Some(false), "{browed:?}");
+    let value = browed.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["brows"]["style"], "raised");
+    // By default 1% of the height.
+    assert_eq!(value["brows"]["requested_mm"], 0.5);
+    assert!(
+        value["brows"]["height_mm"].as_f64().unwrap() > 0.0,
+        "{value}"
+    );
+    let share = value["brows"]["share"].as_f64().unwrap();
+    assert!(share > 0.0 && share < 0.5, "{value}");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    assert!(value["bust"].get("displacement").is_none(), "{value}");
+    assert_ne!(
+        std::fs::read(root.path().join("plain.stl")).unwrap(),
+        std::fs::read(root.path().join("brows.stl")).unwrap()
+    );
+    // A printer sets a floor of two layers.
+    let printed = print(
+        &server,
+        "printed.stl",
+        json!({"brows": "raised", "brow_map": "colour.png", "plinth_height_mm": 0.0,
+            "printer": {"process": "fdm", "layer_height_mm": 0.4, "nozzle_diameter_mm": 0.6}}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(printed["brows"]["requested_mm"], 0.8, "{printed}");
+    for (extra, message) in [
+        (json!({"brows": "raised"}), "brows raised needs brow_map"),
+        (json!({"brow_map": "colour.png"}), "need brows raised"),
+        (json!({"brow_height_mm": 1.0}), "need brows raised"),
+        (
+            json!({"brows": "raised", "brow_map": "colour.jpg"}),
+            "must be a .png",
+        ),
+        (
+            json!({"brows": "raised", "brow_map": "colour.png", "brow_height_mm": 9.0}),
+            "brow_height_mm",
+        ),
+        (
+            json!({"brows": "raised", "brow_map": "bare.png"}),
+            "shows no brows",
+        ),
+    ] {
+        let refused = print(&server, "x.stl", extra).await;
+        assert_eq!(refused.is_error, Some(true), "{refused:?}");
+        assert!(
+            format!("{refused:?}").contains(message),
+            "{message}: {refused:?}"
+        );
+    }
+    // The model needs its texture layout and its eye regions.
+    for (textured, regions, message) in [(false, true, "--texture"), (true, false, "--masks")] {
+        let (_models, partial) = library(textured, regions);
+        let server = head_print_server(root.path(), partial);
+        let refused = print(
+            &server,
+            "y.stl",
+            json!({"brows": "raised", "brow_map": "colour.png"}),
+        )
+        .await;
+        assert!(
+            format!("{refused:?}").contains(message),
+            "{message}: {refused:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     let library = |scalp: bool| {
         let models = tempfile::tempdir().unwrap();
@@ -8320,6 +8464,14 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         (
             json!({"print": {"path": "x.stl"}, "detail": {"gain": 99.0}}),
             "gain",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "brows": "raised"}}),
+            "needs a colour map; give reconstruct.texture_path",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "brow_map": "c.png"}}),
+            "print.brow_map comes from the reconstruction",
         ),
         (
             json!({"print": {

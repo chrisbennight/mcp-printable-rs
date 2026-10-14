@@ -7,7 +7,7 @@ use super::*;
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
 use printable_geom::{
     Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
-    Raised,
+    Raised, RaisedMap,
 };
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
@@ -338,6 +338,22 @@ pub(super) struct HeadPreparePrintParams {
     /// region, such as a hairline found in photographs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair_vertices: Option<Vec<u32>>,
+    /// Eyebrows on the bust: `none` (the default) or `raised`, raised where
+    /// `brow_map` shows them. Needs a model converted with `--texture` and
+    /// `--masks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    brows: Option<BrowStyle>,
+    /// How far `raised` brows stand out, 0.05 to 5 mm on the finished bust.
+    /// Defaults to 1% of the height above the plinth, and to no less than
+    /// two layers with a `printer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    brow_height_mm: Option<f64>,
+    /// Workspace path of a PNG colour map in the model's texture layout,
+    /// such as one made from photographs: the brows are the parts above the
+    /// eyes much darker than the skin around them. A map painted with dark
+    /// brows on light skin works the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    brow_map: Option<String>,
     /// How far a `cap` stands out from the scalp, 0.2 to 40 mm on the finished
     /// bust (default 3% of the height above the plinth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,6 +471,19 @@ pub(super) enum HairStyle {
     None,
     /// A layer raised over the scalp.
     Cap,
+}
+
+/// Eyebrows on a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BrowStyle {
+    /// No brows beyond the head's own shape.
+    #[default]
+    None,
+    /// Brows raised where a colour map shows them.
+    Raised,
 }
 
 /// How the eyes of a bust are carved.
@@ -888,7 +917,7 @@ pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
     let share = |name: &str| arguments["reconstruct"][name].as_f64().unwrap_or(0.0);
     let suggests_neck = share("neck_tilt") > 0.0 || share("neck_turn") > 0.0;
     for (request, own) in [
-        ("print", &["displacement", "hair_vertices"][..]),
+        ("print", &["displacement", "hair_vertices", "brow_map"][..]),
         ("blender", &["texture"][..]),
     ] {
         let Some(given) = arguments.get(request).and_then(Value::as_object) else {
@@ -967,8 +996,17 @@ pub(super) async fn photo_to_bust(
         relief_mm: None,
     });
     let apply_detail = detail.apply.unwrap_or(true);
+    // Raised brows are found in the reconstruction's colour map.
+    if print.brows == Some(BrowStyle::Raised) && request.texture_path.is_none() {
+        return Err(ToolError::Validation(
+            "print.brows raised needs a colour map; give reconstruct.texture_path".into(),
+        ));
+    }
     // Check the bust's options, with the detail's, before reconstructing.
     let mut checked = print.clone();
+    if checked.brows == Some(BrowStyle::Raised) {
+        checked.brow_map.clone_from(&request.texture_path);
+    }
     if apply_detail {
         checked.displacement = Some(DisplacementParams {
             path: request.displacement_path.clone(),
@@ -1017,6 +1055,11 @@ pub(super) async fn photo_to_bust(
     print.identity = identity.clone();
     print.expression = expression.clone();
     print.eyelids = eyelids;
+    if print.brows == Some(BrowStyle::Raised) {
+        print.brow_map = reconstructed["texture"]["artifact"]["path"]
+            .as_str()
+            .map(str::to_owned);
+    }
     // A cap follows the hairline the photographs show, when they show one.
     if print.hair == Some(HairStyle::Cap) {
         print.hair_vertices =
@@ -1324,6 +1367,46 @@ async fn print_bust(
     if params.hair_vertices.is_some() && hair != HairStyle::Cap {
         return Err(ToolError::Validation("hair_vertices needs hair cap".into()));
     }
+    let brows = params.brows.unwrap_or_default();
+    let brow_height_mm = match brows {
+        BrowStyle::Raised => {
+            let Some(map) = &params.brow_map else {
+                return Err(ToolError::Validation(
+                    "brows raised needs brow_map, a colour map in the model's texture layout"
+                        .into(),
+                ));
+            };
+            if !map.ends_with(".png") {
+                return Err(ToolError::Validation(
+                    "brow_map must be a .png colour map".into(),
+                ));
+            }
+            let fallback = (BROW_HEIGHT_SHARE
+                * (height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm)))
+            .max(printer.map_or(0.0, |printer| BROW_LAYERS * printer.layer_height_mm));
+            let raised = in_range(
+                "brow_height_mm",
+                params.brow_height_mm.unwrap_or(fallback),
+                &BROW_HEIGHT_MM,
+            )?;
+            let tallest = printable_geom::MAX_RAISED_SHARE * height_mm;
+            if raised > tallest {
+                return Err(ToolError::Validation(format!(
+                    "brow_height_mm must be at most {tallest:.1} mm, {:.0}% of height_mm",
+                    printable_geom::MAX_RAISED_SHARE * 100.0
+                )));
+            }
+            Some(raised)
+        }
+        BrowStyle::None => {
+            if params.brow_height_mm.is_some() || params.brow_map.is_some() {
+                return Err(ToolError::Validation(
+                    "brow_height_mm and brow_map need brows raised".into(),
+                ));
+            }
+            None
+        }
+    };
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -1351,6 +1434,7 @@ async fn print_bust(
         return Ok(Value::Null);
     }
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
+    let brow_identity = brow_height_mm.map(|_| params.identity.clone());
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
@@ -1417,6 +1501,16 @@ async fn print_bust(
     };
     let detail_requested = displacement.is_some();
     let given_hair_vertices = params.hair_vertices.is_some();
+    // Brows come before a cap, so that a map made for them alone carries
+    // the texture layout they need.
+    let (displacement, brow_report) = match (brow_height_mm, &params.brow_map, brow_identity) {
+        (Some(raised), Some(path), Some(identity)) => {
+            let (map, report) =
+                with_brows(&workspace, &model, displacement, (path, &identity), raised).await?;
+            (Some(map), Some(report))
+        }
+        _ => (displacement, None),
+    };
     let displacement = match hair_thickness_mm {
         Some(thickness) => Some(with_hair_cap(
             &model,
@@ -1545,9 +1639,159 @@ async fn print_bust(
                 "covers": if given_hair_vertices { "hair_vertices" } else { "scalp" },
             });
         }
+        if let (Some(raised), Some((layer, share))) = (brow_height_mm, brow_report) {
+            response["brows"] = json!({
+                "style": brows,
+                "requested_mm": raised,
+                "height_mm": response["bust"]["raised_mm"][layer].clone(),
+                "share": share,
+            });
+        }
         Ok::<_, ToolError>(response)
     })
     .await
+}
+
+/// Raised brows' height, by default as a share of the height above the
+/// plinth and at least this many printer layers, and its range in
+/// millimetres.
+const BROW_HEIGHT_SHARE: f64 = 0.01;
+const BROW_LAYERS: f64 = 2.0;
+const BROW_HEIGHT_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
+/// The region the brows are looked for in, above the eyeballs.
+const BROW_REGION: &str = "eye_region";
+const EYEBALL_REGIONS: [&str; 2] = ["left_eyeball", "right_eyeball"];
+
+/// The detail map with a layer raised where the colour map at `path` shows
+/// brows, or a map carrying only the brows. Returns the layer's place among
+/// the raised layers and the share of the brow area found to be brow.
+async fn with_brows(
+    workspace: &Arc<Workspace>,
+    model: &Arc<FlameModel>,
+    displacement: Option<Displacement>,
+    (path, identity): (&str, &[f32]),
+    height_mm: f64,
+) -> Result<(Displacement, (usize, f64)), ToolError> {
+    let variant = &model.info().variant;
+    let layout = model.uv_layout().ok_or_else(|| {
+        ToolError::Validation(format!(
+            "the {variant} model has no texture layout; convert it again with --texture for raised brows"
+        ))
+    })?;
+    let regions = std::iter::once(BROW_REGION)
+        .chain(EYEBALL_REGIONS)
+        .map(|name| model.region(name))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            ToolError::Validation(format!(
+                "the {variant} model has no eye regions; convert it again with --masks for raised brows"
+            ))
+        })?;
+    let (search, eyeballs): (
+        std::collections::HashSet<u32>,
+        std::collections::HashSet<u32>,
+    ) = (
+        regions[0].iter().copied().collect(),
+        regions[1..]
+            .iter()
+            .flat_map(|region| region.iter().copied())
+            .collect(),
+    );
+    // The brows are found on the returned head at rest, above its eyes.
+    let rest = model
+        .evaluate(&FlameParams {
+            identity: identity.to_vec(),
+            expression: Vec::new(),
+            pose: Pose::default(),
+            eyelids: [0.0; 2],
+            translation: [0.0; 3],
+        })
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let above = eyeballs
+        .iter()
+        .map(|&vertex| rest.vertices[vertex as usize][1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let area: Vec<bool> = model
+        .faces()
+        .iter()
+        .map(|face| {
+            face.iter()
+                .all(|vertex| search.contains(vertex) && !eyeballs.contains(vertex))
+        })
+        .collect();
+    let triangle_uvs: Vec<[[f32; 2]; 3]> = layout
+        .faces
+        .iter()
+        .map(|face| face.map(|index| layout.coords[index as usize]))
+        .collect();
+    let (workspace, model, path) = (Arc::clone(workspace), Arc::clone(model), path.to_owned());
+    let found = blocking(move || {
+        let (size, rgb) = read_colour_map(&workspace, &path)?;
+        let layout = model
+            .uv_layout()
+            .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
+        texture::brows(
+            model.faces(),
+            layout,
+            &rest.vertices,
+            (&area, above),
+            &rgb,
+            size,
+        )
+        .map_err(|error| ToolError::Validation(error.to_string()))
+    })
+    .await?;
+    if found.share == 0.0 {
+        return Err(ToolError::Validation(
+            "brow_map shows no brows: nothing above the eyes is much darker than the skin around it"
+                .into(),
+        ));
+    }
+    let mut map = displacement.unwrap_or_else(|| Displacement {
+        width: 2,
+        height: 2,
+        values: vec![0.0; 4],
+        triangle_uvs,
+        relief_mm: None,
+        limit_relief: false,
+        faded: Vec::new(),
+        raised: Vec::new(),
+    });
+    let layer = map.raised.len();
+    map.raised.push(Raised {
+        values: Vec::new(),
+        map: Some(RaisedMap {
+            size: found.size,
+            values: found.values,
+        }),
+        height_mm,
+    });
+    Ok((map, (layer, found.share)))
+}
+
+/// A square workspace PNG colour map of a sensible size, as RGB.
+fn read_colour_map(workspace: &Workspace, path: &str) -> Result<(usize, Vec<u8>), ToolError> {
+    let snapshot = workspace.snapshot_artifact_bounded(path, MAX_COLOUR_MAP_BYTES)?;
+    let bytes = std::fs::read(snapshot.path())?;
+    let not_png = || ToolError::Validation(format!("{path} is not a PNG image"));
+    let (width, height) = ImageReader::with_format(std::io::Cursor::new(&bytes), ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|_| not_png())?;
+    if width != height || !(2..=MAX_COLOUR_MAP_PIXELS).contains(&width) {
+        return Err(ToolError::Validation(format!(
+            "{path} must be a square colour map, 2 to {MAX_COLOUR_MAP_PIXELS} pixels on a side"
+        )));
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_COLOUR_MAP_PIXELS);
+    limits.max_image_height = Some(MAX_COLOUR_MAP_PIXELS);
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(&bytes), ImageFormat::Png);
+    reader.limits(limits);
+    let rgb = reader.decode().map_err(|_| not_png())?.into_rgb8();
+    if rgb.dimensions() != (width, height) {
+        return Err(not_png());
+    }
+    Ok((width as usize, rgb.into_raw()))
 }
 
 /// A hair cap's thickness, by default as a share of the height above the
@@ -1601,6 +1845,7 @@ fn with_hair_cap(
         raised: Vec::new(),
     });
     map.raised.push(Raised {
+        map: None,
         values: sloped_region(
             model.faces(),
             model.vertex_count(),

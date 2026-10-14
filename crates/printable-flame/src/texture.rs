@@ -357,6 +357,8 @@ pub enum TextureError {
     EyeSizes,
     #[error("a photograph's labels do not match their size")]
     Labels,
+    #[error("a colour map's pixels do not match its size")]
+    MapPixels,
 }
 
 /// Project the photographs onto the head and fill what they do not show.
@@ -1570,6 +1572,135 @@ fn bilinear(colour: &[[f32; 3]], side: usize, x: f32, y: f32) -> [f32; 3] {
         top * (1.0 - down) + bottom * down
     });
     value
+}
+
+/// Shares of the brow area's median brightness: a texel this dark or darker
+/// is wholly brow, and one this light or lighter is not brow at all.
+const BROW_DARK: f32 = 0.55;
+const BROW_LIGHT: f32 = 0.75;
+
+/// Eyebrows found in a colour map: a map of the same size, from 0 where
+/// there is no brow to 1.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Brows {
+    pub size: usize,
+    pub values: Vec<f32>,
+    /// Share of the brow area's texels that are at least half brow.
+    pub share: f64,
+}
+
+/// Find the eyebrows in a square RGB colour map in `layout`. The brow area
+/// is the texels on triangles `area` marks whose point on the head `rest`
+/// lies at or above the height `above`; brows are the texels there much
+/// darker than the area's median brightness. Brightness is averaged over a
+/// few texels first, so that stray dark texels, such as lashes, count less.
+pub fn brows(
+    faces: &[[u32; 3]],
+    layout: &UvLayout,
+    rest: &[[f32; 3]],
+    (area, above): (&[bool], f32),
+    rgb: &[u8],
+    size: usize,
+) -> Result<Brows, TextureError> {
+    if size < 2 {
+        return Err(TextureError::Size);
+    }
+    if rgb.len() != size * size * 3 {
+        return Err(TextureError::MapPixels);
+    }
+    if area.len() != faces.len() {
+        return Err(TextureError::Kinds);
+    }
+    if faces
+        .iter()
+        .flatten()
+        .any(|&vertex| vertex as usize >= rest.len())
+    {
+        return Err(TextureError::Vertices);
+    }
+    let texels = TexelMap::new(faces, layout, size);
+    let in_area: Vec<bool> = texels
+        .face
+        .iter()
+        .zip(&texels.barycentric)
+        .map(|(&face, &[wa, wb])| {
+            if face == NO_FACE || !area[face as usize] {
+                return false;
+            }
+            let [a, b, c] = faces[face as usize].map(|vertex| rest[vertex as usize][1]);
+            wa * a + wb * b + (1.0 - wa - wb) * c >= above
+        })
+        .collect();
+    let brightness: Vec<f32> = rgb
+        .chunks_exact(3)
+        .map(|pixel| {
+            0.2126 * f32::from(pixel[0])
+                + 0.7152 * f32::from(pixel[1])
+                + 0.0722 * f32::from(pixel[2])
+        })
+        .collect();
+    let blurred = box_blur(&brightness, size, (size / 512).max(1));
+    let mut inside: Vec<f32> = blurred
+        .iter()
+        .zip(&in_area)
+        .filter(|(_, inside)| **inside)
+        .map(|(&value, _)| value)
+        .collect();
+    let counted = inside.len();
+    if counted == 0 {
+        return Ok(Brows {
+            size,
+            values: vec![0.0; size * size],
+            share: 0.0,
+        });
+    }
+    let middle = counted / 2;
+    let median = *inside.select_nth_unstable_by(middle, f32::total_cmp).1;
+    let values: Vec<f32> = blurred
+        .iter()
+        .zip(&in_area)
+        .map(|(&value, &inside)| {
+            if inside && median > 0.0 {
+                ((BROW_LIGHT * median - value) / ((BROW_LIGHT - BROW_DARK) * median))
+                    .clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let brow = values.iter().filter(|&&value| value >= 0.5).count();
+    Ok(Brows {
+        size,
+        values,
+        share: brow as f64 / counted as f64,
+    })
+}
+
+/// The mean of each value and those within `radius` rows and columns of
+/// it, in a square grid, with the edges repeated beyond it.
+fn box_blur(values: &[f32], size: usize, radius: usize) -> Vec<f32> {
+    let span = (2 * radius + 1) as f32;
+    let reach = radius as isize;
+    let clamp = |position: isize| position.clamp(0, size as isize - 1) as usize;
+    let mut rows = vec![0.0; values.len()];
+    for row in 0..size {
+        for column in 0..size {
+            let sum: f32 = (-reach..=reach)
+                .map(|offset| values[row * size + clamp(column as isize + offset)])
+                .sum();
+            rows[row * size + column] = sum / span;
+        }
+    }
+    let mut blurred = vec![0.0; values.len()];
+    for row in 0..size {
+        for column in 0..size {
+            let sum: f32 = (-reach..=reach)
+                .map(|offset| rows[clamp(row as isize + offset) * size + column])
+                .sum();
+            blurred[row * size + column] = sum / span;
+        }
+    }
+    blurred
 }
 
 #[cfg(test)]
@@ -2956,6 +3087,57 @@ mod tests {
                 })
                 .unwrap_err(),
             TextureError::Labels
+        );
+    }
+
+    #[test]
+    fn brows_are_the_dark_texels_above_the_given_height() {
+        // A square of two triangles over the whole layout, its height on the
+        // head rising from 0 at v = 0 to 1 at v = 1.
+        let faces = vec![[0, 1, 2], [0, 2, 3]];
+        let layout = UvLayout {
+            coords: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            faces: faces.clone(),
+        };
+        let rest = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        // Skin, with dark bands at rows 10 to 19, high on the head, and 50
+        // to 59, low on it.
+        let size = 64;
+        let rgb: Vec<u8> = (0..size * size)
+            .flat_map(|index| {
+                let row = index / size;
+                let dark = (10..20).contains(&row) || (50..60).contains(&row);
+                if dark { [40, 30, 25] } else { [220, 180, 160] }
+            })
+            .collect();
+        let found = brows(&faces, &layout, &rest, (&[true, true], 0.5), &rgb, size).unwrap();
+        let at = |row: usize| found.values[row * size + size / 2];
+        assert_eq!(at(15), 1.0, "{:?}", &found.values[..size]);
+        assert_eq!(at(40), 0.0);
+        // The low band lies below the given height.
+        assert_eq!(at(55), 0.0);
+        // About ten rows of the thirty-two above the height.
+        assert!((found.share - 10.0 / 32.0).abs() < 0.05, "{}", found.share);
+        // Outside the marked triangles there are no brows.
+        let none = brows(&faces, &layout, &rest, (&[false, false], 0.5), &rgb, size).unwrap();
+        assert!(none.values.iter().all(|&value| value == 0.0));
+        assert_eq!(none.share, 0.0);
+        assert_eq!(
+            brows(
+                &faces,
+                &layout,
+                &rest,
+                (&[true, true], 0.5),
+                &rgb[3..],
+                size
+            )
+            .unwrap_err(),
+            TextureError::MapPixels
         );
     }
 }
