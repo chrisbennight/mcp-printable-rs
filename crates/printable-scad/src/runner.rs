@@ -396,6 +396,10 @@ mod tests {
 
     const TEST_OUTPUT_LIMIT: u64 = 1024 * 1024;
 
+    /// Time allowed for runs that are expected to finish. These tests do not
+    /// test the timeout, so it is long enough for a heavily loaded machine.
+    const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
     fn script(body: &str) -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("fake-openscad");
@@ -450,7 +454,7 @@ mod tests {
         let (_, output) = permit
             .run(
                 vec![script_path.display().to_string(), argument.clone()],
-                Duration::from_secs(1),
+                RUN_TIMEOUT,
                 TEST_OUTPUT_LIMIT,
             )
             .await
@@ -588,7 +592,7 @@ mod tests {
                 .expect("first permit")
                 .run(
                     vec![first_script, first_lock],
-                    Duration::from_secs(1),
+                    RUN_TIMEOUT,
                     TEST_OUTPUT_LIMIT,
                 )
                 .await;
@@ -604,15 +608,15 @@ mod tests {
                 .expect("second permit")
                 .run(
                     vec![second_script, second_lock],
-                    Duration::from_secs(1),
+                    RUN_TIMEOUT,
                     TEST_OUTPUT_LIMIT,
                 )
                 .await;
             result.map(|(_, output)| output)
         };
         let (first, second) = tokio::join!(first, second);
-        assert!(first.is_ok());
-        assert!(second.is_ok());
+        assert!(first.is_ok(), "{:?}", first.as_ref().err());
+        assert!(second.is_ok(), "{:?}", second.as_ref().err());
     }
 
     #[tokio::test]
@@ -625,7 +629,7 @@ mod tests {
             .expect("permit")
             .run(
                 vec![script_path.display().to_string()],
-                Duration::from_secs(1),
+                RUN_TIMEOUT,
                 TEST_OUTPUT_LIMIT,
             )
             .await
@@ -644,7 +648,7 @@ mod tests {
             .expect("permit")
             .run(
                 vec![script_path.display().to_string()],
-                Duration::from_secs(1),
+                RUN_TIMEOUT,
                 TEST_OUTPUT_LIMIT,
             )
             .await
@@ -670,7 +674,7 @@ mod tests {
                     script_path.display().to_string(),
                     output_path.display().to_string(),
                 ],
-                Duration::from_secs(1),
+                RUN_TIMEOUT,
                 1024,
             )
             .await
@@ -703,7 +707,7 @@ mod tests {
             .expect("permit")
             .run(
                 vec![script_path.display().to_string()],
-                Duration::from_secs(1),
+                RUN_TIMEOUT,
                 TEST_OUTPUT_LIMIT,
             )
             .await
