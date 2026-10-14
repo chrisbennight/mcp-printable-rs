@@ -602,7 +602,7 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
             let refined = part.refine_to_length(edge);
             let mesh = match displacement {
                 Some(map) => {
-                    let (mesh, applied) = displaced(&refined, map, scale, coarse.triangles.len());
+                    let (mesh, applied) = displaced(&refined, map, scale, coarse.triangles.len())?;
                     distances.extend(applied);
                     mesh
                 }
@@ -2153,6 +2153,11 @@ fn close_part(
 /// it slopes.
 const RAISED_BLEND_TRIANGLES: f64 = 1.5;
 
+/// Most smoothing passes a raised layer may take. The passes grow with the
+/// number of refined triangles in each of the head's own, so a model with a
+/// few large triangles, refined finely, would take a very long time.
+const MAX_RAISED_BLEND_PASSES: usize = 1_000;
+
 /// The raised layers' height at each merged vertex, blended with its
 /// neighbours over about `RAISED_BLEND_TRIANGLES` widths of the part's
 /// `coarse_triangles`. Untouched when nothing is raised.
@@ -2160,13 +2165,26 @@ fn smoothed_raise(
     offsets: &[(f64, f64, u32)],
     triangles: &[[usize; 3]],
     coarse_triangles: usize,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, GeometryError> {
     let mut raised: Vec<f64> = offsets
         .iter()
         .map(|(_, raised, copies)| raised / f64::from((*copies).max(1)))
         .collect();
     if raised.iter().all(|&value| value == 0.0) || triangles.is_empty() {
-        return raised;
+        return Ok(raised);
+    }
+    // A pass spreads a value about one refined edge, and n passes about the
+    // square root of n edges. Over the same area, a coarse triangle is as
+    // wide as the square root of the ratio of triangle counts in refined
+    // edges, so the passes follow that ratio, and the blend is as wide on a
+    // fine mesh as on a coarse one.
+    let ratio = triangles.len() as f64 / coarse_triangles.max(1) as f64;
+    let passes = (RAISED_BLEND_TRIANGLES.powi(2) * ratio).ceil() as usize;
+    if passes > MAX_RAISED_BLEND_PASSES {
+        return Err(GeometryError::InvalidOptions(format!(
+            "the model's triangles are too large to blend a raised layer across {} refined ones; raise edge_length_mm or lower max_triangles",
+            triangles.len()
+        )));
     }
     let mut neighbours = vec![Vec::new(); raised.len()];
     for &[a, b, c] in triangles {
@@ -2175,13 +2193,6 @@ fn smoothed_raise(
             neighbours[to].push(from);
         }
     }
-    // A pass spreads a value about one refined edge, and n passes about the
-    // square root of n edges. Over the same area, a coarse triangle is as
-    // wide as the square root of the ratio of triangle counts in refined
-    // edges, so the passes follow that ratio, which the triangle limit
-    // bounds, and the blend is as wide on a fine mesh as on a coarse one.
-    let ratio = triangles.len() as f64 / coarse_triangles.max(1) as f64;
-    let passes = (RAISED_BLEND_TRIANGLES.powi(2) * ratio).ceil() as usize;
     for _ in 0..passes {
         raised = (0..raised.len())
             .map(|vertex| {
@@ -2195,7 +2206,7 @@ fn smoothed_raise(
             })
             .collect();
     }
-    raised
+    Ok(raised)
 }
 
 /// Vertex properties of a displaced part: position, texture coordinates, the
@@ -2359,7 +2370,7 @@ fn displaced(
     map: &Displacement,
     scale: f64,
     coarse_triangles: usize,
-) -> (TriangleMesh, Vec<f64>) {
+) -> Result<(TriangleMesh, Vec<f64>), GeometryError> {
     let mesh = solid.to_meshgl64();
     let width = mesh.num_prop();
     let properties = mesh.vert_properties();
@@ -2397,7 +2408,7 @@ fn displaced(
         entry.1 += properties[at + 6];
         entry.2 += 1;
     }
-    let raised = smoothed_raise(&offsets, &triangles, coarse_triangles);
+    let raised = smoothed_raise(&offsets, &triangles, coarse_triangles)?;
     // Area-weighted normals.
     let mut normals = vec![[0.0; 3]; count];
     for &[a, b, c] in &triangles {
@@ -2436,13 +2447,13 @@ fn displaced(
             })
         })
         .collect();
-    (
+    Ok((
         TriangleMesh {
             vertices,
             triangles,
         },
         distances,
-    )
+    ))
 }
 
 /// The mesh as an STL stores it, checked to still be a closed solid.
@@ -2775,7 +2786,7 @@ mod tests {
             raised: Vec::new(),
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
-        let (raised, distances) = displaced(&solid, &map, 2.0, part.triangles.len());
+        let (raised, distances) = displaced(&solid, &map, 2.0, part.triangles.len()).unwrap();
         assert!(distances.iter().all(|&distance| distance == 0.5));
         for vertex in &raised.vertices {
             let radius = norm(*vertex);
@@ -3280,7 +3291,7 @@ mod tests {
                     (0.0, ((x - 0.4) / 0.2).clamp(0.0, 1.0), 1)
                 })
                 .collect();
-            let raised = smoothed_raise(&offsets, &triangles, 2 * 4 * 4);
+            let raised = smoothed_raise(&offsets, &triangles, 2 * 4 * 4).unwrap();
             // Along the middle row, where the ramp starts and ends.
             let row = n / 2;
             [0.4, 0.6].map(|x| raised[at(row, (x * n as f64).round() as usize)])
@@ -3291,6 +3302,15 @@ mod tests {
         }
         // The ramp's ends are blended: neither is still at 0 or 1.
         assert!(fine[0] > 0.02 && fine[1] < 0.98, "{fine:?}");
+        // A model whose triangles are far larger than the refined ones would
+        // take too many passes, and is refused before any runs.
+        let triangles = vec![[0, 1, 2]; 2_000];
+        let offsets = vec![(0.0, 1.0, 1); 3];
+        assert!(smoothed_raise(&offsets, &triangles, 8).is_ok());
+        assert!(matches!(
+            smoothed_raise(&offsets, &triangles, 1),
+            Err(GeometryError::InvalidOptions(message)) if message.contains("edge_length_mm")
+        ));
     }
 
     #[test]

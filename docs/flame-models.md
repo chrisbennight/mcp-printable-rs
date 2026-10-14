@@ -694,6 +694,13 @@ own triangles, whatever the edge length, so the cap's surface is smooth
 rather than following those triangles. The cap is raised on top of any
 surface detail and is not scaled by `relief_mm`.
 
+The blend takes more passes the more refined triangles fall in each of the
+model's own. A cap that would take more than 1,000 is refused before it
+starts; raise `edge_length_mm` or lower `max_triangles`. A model with a few
+large triangles, refined finely, reaches this limit. On the FLAME 2020 head
+at the default 750,000 triangles, the blend took about 200 passes and 1.5
+seconds.
+
 The bust is scaled to `height_mm` after the cap is raised, and the cap lifts
 the crown, so the thickness applied is a little less than asked, about 3%
 for a default cap. The response adds `hair` with the style, `requested_mm`

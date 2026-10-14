@@ -6481,7 +6481,7 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     let root = tempfile::tempdir().unwrap();
     let server = head_print_server(root.path(), with_scalp);
     let print = |path: &str, extra: Value| {
-        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 5.0});
         params
             .as_object_mut()
             .unwrap()
@@ -6518,6 +6518,16 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .structured_content
         .unwrap();
     assert!((default["hair"]["requested_mm"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    // Blending the cap over a model with a few large triangles, refined
+    // finely, would take too long, and is refused.
+    let refused = print("fine.stl", json!({"hair": "cap", "edge_length_mm": 1.0}))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        format!("{refused:?}").contains("raise edge_length_mm"),
+        "{refused:?}"
+    );
     // A thickness without a cap, and a model without a scalp, are refused.
     let refused = print("x.stl", json!({"hair_thickness_mm": 2.0}))
         .await
