@@ -80,6 +80,7 @@ def main(argv: list[str]) -> int:
                     "jaw": result.jaw,
                     "head_rotation": result.head_rotation,
                     "primary_image": result.primary_image,
+                    "eyelids": result.eyelids,
                     "identity_agreement": result.identity_agreement,
                     "clamped_coefficients": result.clamped_coefficients,
                     "faces": result.faces,

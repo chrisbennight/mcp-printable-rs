@@ -121,10 +121,16 @@ pub(super) struct HeadCreateParams {
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
-    /// Multiply the expression coefficients and the jaw rotation by this, 0
-    /// to 1 (default 1), to soften the expression; 0 gives a neutral face.
+    /// Multiply the expression coefficients, the jaw rotation and the
+    /// eyelids by this, 0 to 1 (default 1), to soften the expression; 0
+    /// gives a neutral face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expression_scale: Option<f64>,
+    /// How far each eyelid is closed, left then right, each 0 (as the model
+    /// shapes it, the default) to 1 (closed). Needs a model converted with
+    /// an eyelid basis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyelids: Option<[f32; 2]>,
     /// Unique name for the new object (default `Head`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -249,6 +255,9 @@ pub(super) struct HeadUpdateParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expression_scale: Option<f64>,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyelids: Option<[f32; 2]>,
     /// Workspace path of a PNG colour map that replaces the head's own, as for
     /// `create`. The head must have been created from a model converted with
     /// its texture layout.
@@ -275,6 +284,9 @@ pub(super) struct HeadPreparePrintParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expression_scale: Option<f64>,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyelids: Option<[f32; 2]>,
     /// How the mouth is printed. `as_posed` (the default) keeps the pose and
     /// closes the mouth opening flat behind the lips. `closed` sets the jaw
     /// rotation to zero, replacing `pose.jaw`, which brings the lips together
@@ -577,6 +589,9 @@ pub(super) struct HeadExportParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expression_scale: Option<f64>,
+    /// As for `create`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eyelids: Option<[f32; 2]>,
     /// Workspace path for the Wavefront OBJ file.
     path: String,
     /// Replace an existing file at `path`.
@@ -639,7 +654,12 @@ pub(super) async fn create(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        (params.identity, params.expression, params.expression_scale),
+        (
+            params.identity,
+            params.expression,
+            params.expression_scale,
+            params.eyelids,
+        ),
         params.pose,
     )
     .await?;
@@ -680,7 +700,12 @@ pub(super) async fn update(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        (params.identity, params.expression, params.expression_scale),
+        (
+            params.identity,
+            params.expression,
+            params.expression_scale,
+            params.eyelids,
+        ),
         params.pose,
     )
     .await?;
@@ -710,7 +735,12 @@ pub(super) async fn export(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        (params.identity, params.expression, params.expression_scale),
+        (
+            params.identity,
+            params.expression,
+            params.expression_scale,
+            params.eyelids,
+        ),
         params.pose,
     )
     .await?;
@@ -835,7 +865,7 @@ pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
             continue;
         };
         let pose = given.get("pose").and_then(Value::as_object);
-        let named = ["variant", "identity", "expression", own]
+        let named = ["variant", "identity", "expression", "eyelids", own]
             .into_iter()
             .find(|field| given.contains_key(*field))
             .or_else(|| {
@@ -949,9 +979,12 @@ pub(super) async fn photo_to_bust(
     let variant = reconstructed["variant"].as_str().map(str::to_owned);
     let (identity, expression) = (coefficients("identity")?, coefficients("expression")?);
     let (jaw, neck) = (rotation("jaw").unwrap_or_default(), rotation("neck"));
+    // Only a model that can close the eyelids reports them.
+    let eyelids: Option<[f32; 2]> = serde_json::from_value(reconstructed["eyelids"].clone()).ok();
     print.variant = variant.clone();
     print.identity = identity.clone();
     print.expression = expression.clone();
+    print.eyelids = eyelids;
     print.pose.jaw = jaw;
     if let Some(neck) = neck {
         print.pose.neck = neck;
@@ -980,6 +1013,7 @@ pub(super) async fn photo_to_bust(
         head.variant = variant;
         head.identity = identity;
         head.expression = expression;
+        head.eyelids = eyelids;
         head.pose.jaw = jaw;
         if let Some(neck) = neck {
             head.pose.neck = neck;
@@ -1253,7 +1287,12 @@ async fn print_bust(
     let (model, head) = evaluate(
         settings,
         params.variant.as_deref(),
-        (params.identity, params.expression, params.expression_scale),
+        (
+            params.identity,
+            params.expression,
+            params.expression_scale,
+            params.eyelids,
+        ),
         pose,
     )
     .await?;
@@ -1824,6 +1863,18 @@ pub(super) async fn reconstruct(
         "head_rotation": field("head_rotation"),
         "primary_image": {"index": primary, "image": request.images[primary]},
     });
+    // How far the eyelids were closed, only for a model that can close them,
+    // so that the response can still be passed on whole.
+    let closes_eyelids = library(settings)?
+        .select(Some(&variant))
+        .map_err(ToolError::Validation)?
+        .has_eyelids();
+    if let (true, Ok(eyelids)) = (
+        closes_eyelids,
+        serde_json::from_value::<[f32; 2]>(field("eyelids")),
+    ) {
+        response["eyelids"] = json!(eyelids);
+    }
     let (tilt, turn) = (
         request.neck_tilt.unwrap_or(0.0),
         request.neck_turn.unwrap_or(0.0),
@@ -1993,6 +2044,12 @@ fn view_head(
             jaw: view.jaw,
             ..Pose::default()
         },
+        // With an eyelid basis, the lids close as photographed, so colour
+        // lands on them and the fit is judged with them.
+        eyelids: view
+            .eyelids
+            .filter(|_| model.has_eyelids())
+            .unwrap_or_default(),
         translation: [0.0; 3],
     })
 }
@@ -2216,6 +2273,9 @@ struct ReconView {
     expression: Vec<f32>,
     jaw: [f32; 3],
     head_rotation: [f32; 3],
+    /// How far SMIRK finds each eyelid closed in this photograph.
+    #[serde(default)]
+    eyelids: Option<[f32; 2]>,
     camera: [f32; 3],
     crop: ReconCrop,
     image_size: [usize; 2],
@@ -2459,6 +2519,7 @@ fn colour_map(
                 identity: identity.to_vec(),
                 expression: Vec::new(),
                 pose: Pose::default(),
+                eyelids: [0.0; 2],
                 translation: [0.0; 3],
             })
             .map_err(|error| ToolError::Validation(error.to_string()))?;
@@ -2811,7 +2872,12 @@ fn checked_scale_and_pose(
 async fn evaluate(
     settings: &Settings,
     variant: Option<&str>,
-    (identity, expression, expression_scale): (Vec<f32>, Vec<f32>, Option<f64>),
+    (identity, expression, expression_scale, eyelids): (
+        Vec<f32>,
+        Vec<f32>,
+        Option<f64>,
+        Option<[f32; 2]>,
+    ),
     pose: HeadPose,
 ) -> Result<(Arc<FlameModel>, PosedHead), ToolError> {
     let model = Arc::clone(
@@ -2823,10 +2889,24 @@ async fn evaluate(
     check_coefficients("expression", &expression)?;
     let (scale, pose) = checked_scale_and_pose(expression_scale, pose)?;
     let expression = expression.iter().map(|value| value * scale).collect();
+    let eyelids = eyelids.unwrap_or_default();
+    if !eyelids.iter().all(|share| (0.0..=1.0).contains(share)) {
+        return Err(ToolError::Validation(
+            "eyelids must each be between 0 and 1".into(),
+        ));
+    }
+    if eyelids.iter().any(|&share| share > 0.0) && !model.has_eyelids() {
+        return Err(ToolError::Validation(format!(
+            "the {} model has no eyelid basis; convert it again with --eyelids to close the eyelids",
+            model.info().variant
+        )));
+    }
+    let eyelids = eyelids.map(|share| share * scale);
     let params = FlameParams {
         identity,
         expression,
         pose,
+        eyelids,
         translation: [0.0; 3],
     };
     let evaluated = Arc::clone(&model);

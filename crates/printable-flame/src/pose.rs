@@ -42,6 +42,10 @@ pub struct FlameParams {
     /// Expression coefficients in basis order. Omitted trailing coefficients are zero.
     pub expression: Vec<f32>,
     pub pose: Pose,
+    /// How far each eyelid is closed, left then right, from 0 (as the model
+    /// shapes it) to 1 (closed by the model's eyelid basis). Needs a model
+    /// with the basis unless both are 0.
+    pub eyelids: [f32; 2],
     /// Offset applied after posing, in metres.
     pub translation: [f32; 3],
 }
@@ -68,6 +72,10 @@ pub enum ParamError {
     NonFinite(&'static str),
     #[error("the evaluated head has coordinates outside the float32 range")]
     OutOfRange,
+    #[error("eyelids must each be between 0 and 1")]
+    EyelidRange,
+    #[error("the model has no eyelid basis to close the eyelids with")]
+    NoEyelids,
 }
 
 impl FlameModel {
@@ -86,9 +94,30 @@ impl FlameModel {
         if !params.translation.iter().all(|value| value.is_finite()) {
             return Err(ParamError::NonFinite("translation"));
         }
+        if !params
+            .eyelids
+            .iter()
+            .all(|share| (0.0..=1.0).contains(share))
+        {
+            return Err(ParamError::EyelidRange);
+        }
+        let closing = params.eyelids.iter().any(|&share| share > 0.0);
+        if closing && self.eyelids.is_none() {
+            return Err(ParamError::NoEyelids);
+        }
 
-        let shaped = self.blend_shapes(params);
+        let mut shaped = self.blend_shapes(params);
         let rest_joints = self.regress_joints(&shaped);
+        // The eyelids close on the head at rest, after the joints are found,
+        // so they move with the head and leave the joints where they were.
+        if let Some(bases) = self.eyelids.as_ref().filter(|_| closing) {
+            for (basis, share) in bases.iter().zip(params.eyelids) {
+                let share = f64::from(share);
+                for (value, offset) in shaped.iter_mut().zip(basis) {
+                    *value += share * f64::from(*offset);
+                }
+            }
+        }
         let rotations = pose.map(|rotation| rodrigues(rotation.map(f64::from)));
         let posed = self.add_pose_correctives(shaped, &rotations);
 
@@ -347,6 +376,82 @@ mod tests {
         // Joints 0-3 sit on vertices 0-3; joint 4 is the midpoint of vertices 1 and 2.
         close(head.joints[2], template(&fixture, 2));
         close(head.joints[4], [0.5, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn eyelids_close_on_the_head_at_rest_and_turn_with_it() {
+        let mut fixture = Fixture::default();
+        let mut left = vec![0.0; 12];
+        let mut right = vec![0.0; 12];
+        left[2] = 0.01; // vertex 0 along z
+        right[3] = 0.02; // vertex 1 along x
+        fixture.eyelids = Some((left, right));
+        let model = fixture.model();
+        let open = model.evaluate(&FlameParams::default()).unwrap();
+        let closed = model
+            .evaluate(&FlameParams {
+                eyelids: [0.5, 1.0],
+                ..FlameParams::default()
+            })
+            .unwrap();
+        close(
+            closed.vertices[0],
+            std::array::from_fn(|axis| f64::from(open.vertices[0][axis]) + [0.0, 0.0, 0.005][axis]),
+        );
+        close(
+            closed.vertices[1],
+            std::array::from_fn(|axis| f64::from(open.vertices[1][axis]) + [0.02, 0.0, 0.0][axis]),
+        );
+        assert_eq!(closed.vertices[2], open.vertices[2]);
+        assert_eq!(closed.joints, open.joints, "the joints do not move");
+        // Turned a quarter about z, the eyelid's +x displacement turns to +y.
+        let turn = |eyelids| {
+            model
+                .evaluate(&FlameParams {
+                    pose: Pose {
+                        global: [0.0, 0.0, FRAC_PI_2 as f32],
+                        ..Pose::default()
+                    },
+                    eyelids,
+                    ..FlameParams::default()
+                })
+                .unwrap()
+        };
+        let (turned_open, turned_closed) = (turn([0.0, 0.0]), turn([0.0, 1.0]));
+        close(
+            turned_closed.vertices[1],
+            std::array::from_fn(|axis| {
+                f64::from(turned_open.vertices[1][axis]) + [0.0, 0.02, 0.0][axis]
+            }),
+        );
+    }
+
+    #[test]
+    fn eyelids_need_a_basis_and_shares_from_0_to_1() {
+        let plain = Fixture::default().model();
+        assert!(plain.evaluate(&FlameParams::default()).is_ok());
+        assert_eq!(
+            plain.evaluate(&FlameParams {
+                eyelids: [0.0, 0.2],
+                ..FlameParams::default()
+            }),
+            Err(ParamError::NoEyelids)
+        );
+        let model = Fixture {
+            eyelids: Some((vec![0.0; 12], vec![0.0; 12])),
+            ..Fixture::default()
+        }
+        .model();
+        for eyelids in [[1.5, 0.0], [0.0, -0.1], [f32::NAN, 0.0]] {
+            assert_eq!(
+                model.evaluate(&FlameParams {
+                    eyelids,
+                    ..FlameParams::default()
+                }),
+                Err(ParamError::EyelidRange),
+                "{eyelids:?}"
+            );
+        }
     }
 
     #[test]

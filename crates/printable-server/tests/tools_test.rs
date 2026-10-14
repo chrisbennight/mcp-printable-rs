@@ -6456,6 +6456,168 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_eyelids_close_with_a_model_that_has_their_basis() {
+    let library = |eyelids: bool| {
+        let models = tempfile::tempdir().unwrap();
+        let mut left = vec![0.0; 12];
+        left[2] = 0.01; // vertex 0, 10 mm along z
+        let fixture = printable_flame::fixture::Fixture {
+            faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            eyelids: eyelids.then(|| (left, vec![0.0; 12])),
+            ..Default::default()
+        };
+        std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+        let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+        (models, library)
+    };
+    let (_models, with_basis) = library(true);
+    let root = tempfile::tempdir().unwrap();
+    let server = head_print_server(root.path(), Arc::clone(&with_basis));
+    let models = server
+        .invoke_tool(head_call(json!({"action": "models", "params": {}})))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(models["models"][0]["eyelids"], true, "{models}");
+    // The first vertex's z, in millimetres, as exported.
+    let first_z = |params: Value| {
+        let server = &server;
+        let root = root.path().to_owned();
+        async move {
+            let mut params = params;
+            params["path"] = json!("head.obj");
+            params["overwrite"] = json!(true);
+            let result = server
+                .invoke_tool(head_call(json!({"action": "export", "params": params})))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(false), "{result:?}");
+            let text = std::fs::read_to_string(root.join("head.obj")).unwrap();
+            let line = text.lines().find(|line| line.starts_with("v ")).unwrap();
+            line.split(' ').nth(3).unwrap().parse::<f64>().unwrap()
+        }
+    };
+    let open = first_z(json!({})).await;
+    let closed = first_z(json!({"eyelids": [1.0, 0.0]})).await;
+    let softened = first_z(json!({"eyelids": [1.0, 0.0], "expression_scale": 0.5})).await;
+    assert!((closed - open - 10.0).abs() < 1e-3, "{open} {closed}");
+    assert!((softened - open - 5.0).abs() < 1e-3, "{open} {softened}");
+    // Shares outside 0 to 1, or a model without the basis, are refused.
+    let refused = server
+        .invoke_tool(head_call(json!({
+            "action": "export", "params": {"path": "x.obj", "eyelids": [1.5, 0.0]}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        format!("{refused:?}").contains("between 0 and 1"),
+        "{refused:?}"
+    );
+    let (_plain_models, plain) = library(false);
+    let server = head_print_server(root.path(), plain);
+    for action in ["export", "prepare_print"] {
+        let path = if action == "export" { "y.obj" } else { "y.stl" };
+        let refused = server
+            .invoke_tool(head_call(json!({
+                "action": action, "params": {"path": path, "eyelids": [0.0, 0.5]}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(refused.is_error, Some(true), "{action}");
+        assert!(format!("{refused:?}").contains("--eyelids"), "{refused:?}");
+    }
+}
+
+#[tokio::test]
+async fn head_reconstruct_passes_the_eyelids_on_to_a_model_that_can_close_them() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    for basis in [true, false] {
+        let library = flame2020_library_edited(|fixture| {
+            fixture.eyelids = basis.then(|| (vec![0.0; 12], vec![0.0; 12]));
+        });
+        let (endpoint, _, task) =
+            fake_recon_worker_with(true, json!({"eyelids": [0.25, 0.5]})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let value = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+            }})))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        if basis {
+            assert_eq!(value["eyelids"], json!([0.25, 0.5]), "{value}");
+        } else {
+            assert!(value.get("eyelids").is_none(), "{value}");
+        }
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn head_reconstruct_projects_each_photograph_with_its_eyelids() {
+    let root = tempfile::tempdir().unwrap();
+    // Red rises across the photograph, so a moved surface takes another red.
+    image::RgbImage::from_fn(224, 224, |x, _| image::Rgb([x as u8, 40, 10]))
+        .save(root.path().join("face.png"))
+        .unwrap();
+    let digest: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(std::fs::read(root.path().join("face.png")).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    let view = |eyelids: [f32; 2]| {
+        json!([{
+            "shape": [0.0], "expression": [0.0],
+            "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+            "eyelids": eyelids,
+            "camera": [1.0, -0.5, -0.5],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "image_size": [224, 224]
+        }])
+    };
+    let map = |basis: bool, eyelids: [f32; 2]| {
+        let root = root.path().to_owned();
+        let digest = digest.clone();
+        let changes = json!({"image_sha256": [digest], "views": view(eyelids)});
+        async move {
+            // Closing the left eye moves vertex 1 by 4 cm along x.
+            let mut left = vec![0.0; 12];
+            left[3] = 0.04;
+            let library = flame2020_library_edited(|fixture| {
+                fixture.uv = Some((
+                    vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                    vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+                ));
+                fixture.eyelids = basis.then(|| (left, vec![0.0; 12]));
+            });
+            let (endpoint, _, task) = fake_recon_worker_with(true, changes).await;
+            let server = recon_server_with(&root, &endpoint, library).await;
+            let result = server
+                .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                    "images": ["face.png"], "displacement_path": "detail.png",
+                    "texture_path": "colour.png", "overwrite": true, "lighting": "keep"
+                }})))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(false), "{result:?}");
+            task.abort();
+            std::fs::read(root.join("colour.png")).unwrap()
+        }
+    };
+    // With the basis, a photograph's closed lid moves where colour lands.
+    assert_ne!(map(true, [0.0, 0.0]).await, map(true, [1.0, 0.0]).await);
+    // Without it, the closure is ignored.
+    assert_eq!(map(false, [0.0, 0.0]).await, map(false, [1.0, 0.0]).await);
+}
+
+#[tokio::test]
 async fn head_export_writes_the_head_as_an_obj_without_blender() {
     for textured in [true, false] {
         let (_models, library) = tetrahedron_library(textured);
@@ -8047,6 +8209,80 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         text.contains("result follows") && text.contains("identity"),
         "{text}"
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_closes_the_eyelids_as_reconstructed() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(64, 64, |_, _| 0),
+    )
+    .unwrap();
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        let mut left = vec![0.0; 12];
+        left[2] = 0.01; // vertex 0, 10 mm along z
+        fixture.eyelids = Some((left, vec![0.0; 12]));
+    });
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"eyelids": [1.0, 0.0]})).await;
+    let server = recon_server_with(root.path(), &endpoint, library).await;
+    let reconstruct = json!({
+        "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+    });
+    let print = |path: &str| json!({"path": path, "height_mm": 50.0, "edge_length_mm": 4.0, "overwrite": true});
+    let combined = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct, "print": print("combined.stl"), "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(combined.is_error, Some(false), "{combined:?}");
+    let reconstructed = combined.structured_content.unwrap()["reconstruct"].clone();
+    assert_eq!(
+        reconstructed["eyelids"],
+        json!([1.0, 0.0]),
+        "{reconstructed}"
+    );
+    // The same bust from prepare_print with the reconstruction's eyelids, and
+    // a different one without them.
+    for (path, eyelids) in [("closed.stl", true), ("open.stl", false)] {
+        let mut separate = print(path);
+        for key in ["variant", "identity", "expression", "pose"] {
+            separate[key] = reconstructed[key].clone();
+        }
+        if eyelids {
+            separate["eyelids"] = reconstructed["eyelids"].clone();
+        }
+        let made = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": separate}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(made.is_error, Some(false), "{made:?}");
+    }
+    let read = |path: &str| std::fs::read(root.path().join(path)).unwrap();
+    assert_eq!(read("combined.stl"), read("closed.stl"));
+    assert_ne!(read("combined.stl"), read("open.stl"));
+    // The eyelids come from the reconstruction, in print and in blender.
+    for request in ["print", "blender"] {
+        let mut params = json!({"reconstruct": reconstruct, "print": print("x.stl")});
+        params[request]["eyelids"] = json!([0.0, 0.0]);
+        let refused = server
+            .invoke_tool(head_call(
+                json!({"action": "photo_to_bust", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            format!("{refused:?}")
+                .contains(&format!("{request}.eyelids comes from the reconstruction")),
+            "{refused:?}"
+        );
+    }
     task.abort();
 }
 
