@@ -286,14 +286,49 @@ pub struct Displacement {
 /// A layer raised over part of the head, such as a cap of hair: for each
 /// request vertex, from 0 where the layer is absent to 1 where it is at full
 /// height. The refined surface between vertices takes their blend, so the
-/// layer has no seams where the texture layout is cut apart.
+/// layer has no seams where the texture layout is cut apart. A layer given
+/// by `map` instead follows the texture layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Raised {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<RaisedMap>,
     /// How far the layer stands out from the surface where it is 1, in
     /// millimetres on the finished bust.
     pub height_mm: f64,
+}
+
+/// Most texels on a side of a raised layer's map.
+const MAX_RAISED_MAP_TEXELS: usize = 4096;
+
+/// A raised layer over the texture layout: a square grid of values from 0 to
+/// 1, row 0 at v = 1 and column 0 at u = 0, with texel centres placed as in
+/// a colour map. The refined surface samples it at its own texture
+/// coordinates, so the layer can follow shapes finer than the head's
+/// triangles, such as eyebrows. It is not blended, so it suits parts of the
+/// head away from where the layout is cut apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaisedMap {
+    pub size: usize,
+    pub values: Vec<f32>,
+}
+
+impl RaisedMap {
+    fn sample(&self, u: f64, v: f64) -> f64 {
+        let side = self.size as f64;
+        let x = (u * side - 0.5).clamp(0.0, side - 1.0);
+        let y = ((1.0 - v) * side - 0.5).clamp(0.0, side - 1.0);
+        let column = (x as usize).min(self.size - 2);
+        let row = (y as usize).min(self.size - 2);
+        let (across, down) = (x - column as f64, y - row as f64);
+        let at = |row: usize, column: usize| f64::from(self.values[row * self.size + column]);
+        let top = at(row, column) * (1.0 - across) + at(row, column + 1) * across;
+        let bottom = at(row + 1, column) * (1.0 - across) + at(row + 1, column + 1) * across;
+        top * (1.0 - down) + bottom * down
+    }
 }
 
 impl Displacement {
@@ -309,12 +344,22 @@ impl Displacement {
         top * (1.0 - down) + bottom * down
     }
 
-    /// How far the raised layers stand out at a request vertex, in
-    /// millimetres.
+    /// How far the raised layers given by vertex stand out at a request
+    /// vertex, in millimetres.
     fn raised_at(&self, vertex: u32) -> f64 {
         self.raised
             .iter()
+            .filter(|layer| layer.map.is_none())
             .map(|layer| layer.height_mm * f64::from(layer.values[vertex as usize]))
+            .sum()
+    }
+
+    /// How far the raised layers given by map stand out at texture
+    /// coordinates, in millimetres.
+    fn mapped_at(&self, u: f64, v: f64) -> f64 {
+        self.raised
+            .iter()
+            .filter_map(|layer| Some(layer.height_mm * layer.map.as_ref()?.sample(u, v)))
             .sum()
     }
 }
@@ -1968,10 +2013,28 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
             return invalid("faded vertices must be distinct head vertices in increasing order");
         }
         for layer in &map.raised {
-            if layer.values.len() != count {
-                return invalid("a raised layer must give a value for every head vertex");
+            match &layer.map {
+                None if layer.values.len() != count => {
+                    return invalid("a raised layer must give a value for every head vertex");
+                }
+                Some(_) if !layer.values.is_empty() => {
+                    return invalid("a raised layer takes values by vertex or a map, not both");
+                }
+                Some(texels)
+                    if !(2..=MAX_RAISED_MAP_TEXELS).contains(&texels.size)
+                        || texels.values.len() != texels.size * texels.size =>
+                {
+                    return invalid(&format!(
+                        "a raised layer's map must be square and 2 to {MAX_RAISED_MAP_TEXELS} texels on a side"
+                    ));
+                }
+                _ => {}
             }
-            if !layer.values.iter().all(|value| (0.0..=1.0).contains(value)) {
+            let values = layer
+                .map
+                .as_ref()
+                .map_or(&layer.values, |texels| &texels.values);
+            if !values.iter().all(|value| (0.0..=1.0).contains(value)) {
                 return invalid("a raised layer's values must be from 0 to 1");
             }
             let tallest = MAX_RAISED_SHARE * request.height_mm;
@@ -2412,8 +2475,10 @@ fn displaced(
         .map(|triangle| [0, 1, 2].map(|corner| canonical[triangle[corner] as usize]))
         .collect();
     // Detail, faded by each point's share, and the raised layers, which are
-    // already in millimetres on the bust.
+    // already in millimetres on the bust. Layers given by map are sampled at
+    // each copy's texture coordinates and averaged over the copies.
     let mut offsets = vec![(0.0, 0.0, 0u32); count];
+    let mut mapped = vec![0.0; count];
     for index in 0..count {
         let at = index * width;
         let (u, v) = (properties[at + 3], properties[at + 4]);
@@ -2421,6 +2486,7 @@ fn displaced(
         entry.0 += properties[at + 5] * map.sample(u, v);
         entry.1 += properties[at + 6];
         entry.2 += 1;
+        mapped[canonical[index]] += map.mapped_at(u, v);
     }
     let raised = smoothed_raise(&offsets, &triangles, coarse_triangles)?;
     // Area-weighted normals.
@@ -2447,7 +2513,8 @@ fn displaced(
                     let detail = detail / f64::from(copies.max(1)) * scale;
                     // The detail report counts the detail alone.
                     distances.push(detail);
-                    let distance = detail + raised[index];
+                    let distance =
+                        detail + raised[index] + mapped[index] / f64::from(copies.max(1));
                     let normal = normals[index];
                     let length = norm(normal);
                     let point = position(index);
@@ -3236,6 +3303,7 @@ mod tests {
         let mut raised = plain.clone();
         raised.displacement.as_mut().unwrap().raised = vec![Raised {
             values: values.clone(),
+            map: None,
             height_mm: 2.0,
         }];
         let (mesh, report) = prepare_bust(&raised).unwrap();
@@ -3266,7 +3334,52 @@ mod tests {
             (values.clone(), 11.0),
         ] {
             let mut bad = plain.clone();
-            bad.displacement.as_mut().unwrap().raised = vec![Raised { values, height_mm }];
+            bad.displacement.as_mut().unwrap().raised = vec![Raised {
+                values,
+                map: None,
+                height_mm,
+            }];
+            assert!(matches!(
+                prepare_bust(&bad),
+                Err(GeometryError::InvalidOptions(text)) if text.contains("raised layer")
+            ));
+        }
+    }
+
+    #[test]
+    fn a_raised_map_stands_out_where_it_is_one() {
+        let plain = with_map(request(1.0, 1_000_000), |_, _| 0.0);
+        let layer = |values: Vec<f32>| {
+            let mut raised = plain.clone();
+            raised.displacement.as_mut().unwrap().raised = vec![Raised {
+                values: Vec::new(),
+                map: Some(RaisedMap { size: 4, values }),
+                height_mm: 2.0,
+            }];
+            raised
+        };
+        // A map of ones raises the whole head, so the bust, scaled to the same
+        // height, is wider; a map of zeros raises none of it.
+        let (flat_mesh, flat) = prepare_bust(&plain).unwrap();
+        let (mesh, report) = prepare_bust(&layer(vec![1.0; 16])).unwrap();
+        assert!(validated(&mesh).solid_geometry);
+        let applied = report.raised_mm[0];
+        assert!((0.5..=2.0).contains(&applied), "{applied}");
+        assert!(report.size_mm[0] > flat.size_mm[0] + 0.5, "{report:?}");
+        let (unraised, _) = prepare_bust(&layer(vec![0.0; 16])).unwrap();
+        assert_eq!(unraised.vertices, flat_mesh.vertices);
+        // Maps of the wrong size, values outside 0 to 1, and values given
+        // with a map are refused.
+        let mut both = layer(vec![1.0; 16]);
+        both.displacement.as_mut().unwrap().raised[0].values = vec![1.0; plain.vertices.len()];
+        // A side whose square overflows is refused before it is squared.
+        let mut huge = layer(Vec::new());
+        huge.displacement.as_mut().unwrap().raised[0]
+            .map
+            .as_mut()
+            .unwrap()
+            .size = 1 << 32;
+        for bad in [layer(vec![1.0; 15]), layer(vec![1.5; 16]), both, huge] {
             assert!(matches!(
                 prepare_bust(&bad),
                 Err(GeometryError::InvalidOptions(text)) if text.contains("raised layer")

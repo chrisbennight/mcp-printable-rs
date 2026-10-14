@@ -6456,6 +6456,228 @@ async fn head_prepare_print_rejects_unusable_displacement_maps() {
 }
 
 #[tokio::test]
+async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
+    // Vertex 1 is the eyeball; the triangle through vertices 0, 2 and 3 is
+    // the brow area, above the eyeball's top at height 0.
+    let library = |textured: bool, regions: bool| {
+        let models = tempfile::tempdir().unwrap();
+        let fixture = printable_flame::fixture::Fixture {
+            faces: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            uv: textured.then(|| {
+                (
+                    vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+                    vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+                )
+            }),
+            regions: if regions {
+                vec![
+                    ("eye_region".into(), vec![0, 2, 3]),
+                    ("left_eyeball".into(), vec![1]),
+                    ("right_eyeball".into(), vec![1]),
+                ]
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        std::fs::write(models.path().join("test.safetensors"), fixture.bytes()).unwrap();
+        let library = Arc::new(printable_server::flame::FlameLibrary::load(models.path()));
+        (models, library)
+    };
+    let root = tempfile::tempdir().unwrap();
+    // Light skin with a dark patch inside the brow triangle's layout, whose
+    // corners lie at (0.1, 0.1), (0.5, 0.5) and (0.5, 0.9).
+    let map = |dark: bool, faint: bool, side: u32| {
+        image::RgbImage::from_fn(side, side, |column, row| {
+            let (u, v) = (
+                (column as f32 + 0.5) / side as f32,
+                1.0 - (row as f32 + 0.5) / side as f32,
+            );
+            if dark && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
+                image::Rgb([40, 30, 25])
+            } else if faint && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
+                // 70% of the skin's brightness: partly raised, never halfway.
+                image::Rgb([154, 126, 112])
+            } else {
+                image::Rgb([220, 180, 160])
+            }
+        })
+    };
+    map(true, false, 64)
+        .save(root.path().join("colour.png"))
+        .unwrap();
+    map(true, false, 1024)
+        .save(root.path().join("large.png"))
+        .unwrap();
+    map(false, false, 64)
+        .save(root.path().join("bare.png"))
+        .unwrap();
+    map(false, true, 64)
+        .save(root.path().join("faint.png"))
+        .unwrap();
+    let (_models, full) = library(true, true);
+    let server = head_print_server(root.path(), full);
+    async fn print(
+        server: &PrintableServer,
+        path: &str,
+        extra: Value,
+    ) -> rmcp::model::CallToolResult {
+        let mut params = json!({"path": path, "height_mm": 50.0, "edge_length_mm": 2.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": params}),
+            ))
+            .await
+            .unwrap()
+    }
+    let plain = print(&server, "plain.stl", json!({})).await;
+    assert_eq!(plain.is_error, Some(false), "{plain:?}");
+    let browed = print(
+        &server,
+        "brows.stl",
+        json!({"brows": "raised", "brow_map": "colour.png"}),
+    )
+    .await;
+    assert_eq!(browed.is_error, Some(false), "{browed:?}");
+    let value = browed.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["brows"]["style"], "raised");
+    // By default 1% of the height.
+    assert_eq!(value["brows"]["requested_mm"], 0.5);
+    assert!(
+        value["brows"]["height_mm"].as_f64().unwrap() > 0.0,
+        "{value}"
+    );
+    let share = value["brows"]["share"].as_f64().unwrap();
+    assert!(share > 0.0 && share < 0.5, "{value}");
+    // A larger map is reduced first and finds the same brows.
+    let large = print(
+        &server,
+        "large.stl",
+        json!({"brows": "raised", "brow_map": "large.png"}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    let found = large["brows"]["share"].as_f64().unwrap();
+    assert!((found - share).abs() < 0.05, "{found} {share}");
+    assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
+    assert!(value["bust"].get("displacement").is_none(), "{value}");
+    assert_ne!(
+        std::fs::read(root.path().join("plain.stl")).unwrap(),
+        std::fs::read(root.path().join("brows.stl")).unwrap()
+    );
+    // A map that shows no brows raises nothing, and says so.
+    let bare = print(
+        &server,
+        "bare.stl",
+        json!({"brows": "raised", "brow_map": "bare.png"}),
+    )
+    .await;
+    assert_eq!(bare.is_error, Some(false), "{bare:?}");
+    let bare = bare.structured_content.unwrap();
+    assert_eq!(bare["brows"]["share"], 0.0, "{bare}");
+    assert_eq!(bare["brows"]["height_mm"], 0.0, "{bare}");
+    assert!(bare["bust"].get("raised_mm").is_none(), "{bare}");
+    assert!(
+        bare["brows"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("shows no brows"),
+        "{bare}"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("bare.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
+    // With a cap as well, each report reads its own layer.
+    let both = print(
+        &server,
+        "both.stl",
+        json!({"brows": "raised", "brow_map": "colour.png", "brow_height_mm": 0.5,
+            "hair": "cap", "hair_thickness_mm": 2.0, "hair_vertices": [2],
+            "edge_length_mm": 5.0}),
+    )
+    .await;
+    assert_eq!(both.is_error, Some(false), "{both:?}");
+    let both = both.structured_content.unwrap();
+    let raised = both["bust"]["raised_mm"].as_array().unwrap();
+    assert_eq!(raised.len(), 2, "{both}");
+    assert_eq!(both["brows"]["height_mm"], raised[0], "{both}");
+    assert_eq!(both["hair"]["thickness_mm"], raised[1], "{both}");
+    assert!(
+        raised[0].as_f64().unwrap() < raised[1].as_f64().unwrap(),
+        "{both}"
+    );
+    // Faint brows are raised partly; no texel reaches halfway, but the
+    // response does not say there are none.
+    let faint = print(
+        &server,
+        "faint.stl",
+        json!({"brows": "raised", "brow_map": "faint.png"}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(faint["brows"]["share"], 0.0, "{faint}");
+    assert!(faint["brows"].get("note").is_none(), "{faint}");
+    assert_ne!(
+        std::fs::read(root.path().join("faint.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
+    // A printer sets a floor of two layers.
+    let printed = print(
+        &server,
+        "printed.stl",
+        json!({"brows": "raised", "brow_map": "colour.png", "plinth_height_mm": 0.0,
+            "printer": {"process": "fdm", "layer_height_mm": 0.4, "nozzle_diameter_mm": 0.6}}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(printed["brows"]["requested_mm"], 0.8, "{printed}");
+    for (extra, message) in [
+        (json!({"brows": "raised"}), "brows raised needs brow_map"),
+        (json!({"brow_map": "colour.png"}), "need brows raised"),
+        (json!({"brow_height_mm": 1.0}), "need brows raised"),
+        (
+            json!({"brows": "raised", "brow_map": "colour.jpg"}),
+            "must be a .png",
+        ),
+        (
+            json!({"brows": "raised", "brow_map": "colour.png", "brow_height_mm": 9.0}),
+            "brow_height_mm",
+        ),
+    ] {
+        let refused = print(&server, "x.stl", extra).await;
+        assert_eq!(refused.is_error, Some(true), "{refused:?}");
+        assert!(
+            format!("{refused:?}").contains(message),
+            "{message}: {refused:?}"
+        );
+    }
+    // The model needs its texture layout and its eye regions.
+    for (textured, regions, message) in [(false, true, "--texture"), (true, false, "--masks")] {
+        let (_models, partial) = library(textured, regions);
+        let server = head_print_server(root.path(), partial);
+        let refused = print(
+            &server,
+            "y.stl",
+            json!({"brows": "raised", "brow_map": "colour.png"}),
+        )
+        .await;
+        assert!(
+            format!("{refused:?}").contains(message),
+            "{message}: {refused:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     let library = |scalp: bool| {
         let models = tempfile::tempdir().unwrap();
@@ -6567,6 +6789,9 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .await
         .unwrap();
     assert_eq!(bald.is_error, Some(false), "{bald:?}");
+    let bald = bald.structured_content.unwrap();
+    assert_eq!(bald["hair"]["thickness_mm"], 0.0, "{bald}");
+    assert!(bald["bust"].get("raised_mm").is_none(), "{bald}");
     assert_eq!(
         std::fs::read(root.path().join("bald.stl")).unwrap(),
         std::fs::read(root.path().join("plain.stl")).unwrap()
@@ -8325,6 +8550,19 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         (
             json!({"print": {"path": "x.stl"}, "detail": {"gain": 99.0}}),
             "gain",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "brows": "raised"}}),
+            "needs a colour map; give reconstruct.texture_path",
+        ),
+        (
+            json!({"reconstruct": {"texture_path": "colour.jpg"},
+                "print": {"path": "x.stl", "brows": "raised"}}),
+            "texture_path must end in .png",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "brow_map": "c.png"}}),
+            "print.brow_map comes from the reconstruction",
         ),
         (
             json!({"print": {

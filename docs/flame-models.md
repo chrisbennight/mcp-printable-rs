@@ -379,6 +379,9 @@ reported as an error and not written.
 | `hair` | `none` | `none` or `cap`; see [Hair](#hair) |
 | `hair_thickness_mm` | 3% of the height above the plinth with `cap` | 0.2 to 40, and at most 20% of `height_mm` |
 | `hair_vertices` | the scalp region with `cap` | model vertex indices the cap covers |
+| `brows` | `none` | `none` or `raised`; see [Brows](#brows) |
+| `brow_height_mm` | 1% of the height above the plinth with `raised`, and at least two layers with a `printer` | 0.05 to 5, and at most 20% of `height_mm` |
+| `brow_map` | none; needed with `raised` | workspace path of a square PNG colour map in the model's texture layout |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -739,7 +742,7 @@ as `raised_mm`.
 `hair_vertices` covers the listed model vertices instead of the scalp
 region, with the same sloping edge; it needs no `--masks`. An empty list,
 which `reconstruct` gives for a head its photographs show bald all over,
-raises nothing. A cap that covers
+raises nothing, and `hair` reports a `thickness_mm` of 0. A cap that covers
 the scalp reports `covers` `scalp` in `hair`, and one over given vertices
 `hair_vertices`. `reconstruct` returns a hairline that follows the
 photographs; see [Use the result](#use-the-result).
@@ -754,6 +757,46 @@ the head fuller, with a soft hairline in front and above the ears and no
 seams. The `thin` report grew from 2.2 to 5.5 mm², near the ears, where the
 cap's edge passes close to their tops. A 150 mm bust with a 6 mm cap, 5.77 mm
 applied, was one valid solid and took 23 seconds.
+
+### Brows
+
+A single-colour print loses the eyebrows, which are colour rather than
+shape. `brows` `raised` raises them `brow_height_mm` on the finished bust,
+where `brow_map` shows them:
+
+```json
+{"action": "prepare_print", "params": {
+  "path": "busts/head.stl", "height_mm": 100,
+  "identity": [0.3, -1.2], "brows": "raised", "brow_map": "photos/colour.png"
+}}
+```
+
+`brow_map` is a colour map in the model's texture layout, such as the one
+`reconstruct` writes to `texture_path`. The brows are looked for in FLAME's
+eye region, above the tops of the eyeballs on the head at rest: they are the
+parts there much darker than the region's median brightness, fully raised
+at 55% of it or darker and not raised at 75% or lighter. A map painted with
+dark brows on light skin works the same way. Hair falling within that area,
+or heavy makeup, counts as brow too. The model must be converted with
+`--texture` and `--masks`. A map that shows nothing dark enough, such as
+one of a head with light brows, raises nothing: the response's `brows`
+reports a `height_mm` of 0 and says so in a `note`.
+
+The brows follow the map rather than the model's triangles: the refined
+surface samples it at its own texture coordinates, so their outline is as
+fine as `edge_length_mm` allows. A map larger than 512 pixels on a side is
+reduced to 512 first, about half a millimetre per pixel across a life-size
+face. The response adds `brows` with the style,
+`requested_mm`, `height_mm`, the height applied, and `share`, the share of
+the brow area raised at least halfway; the `bust` report lists the same
+height in `raised_mm`.
+
+On the FLAME 2020 generic head reconstructed from one photograph, with the
+colour map made from it, a 100 mm bust with default brows, 1 mm, was one
+valid solid and took about 8 seconds, as without them. The brows took 15% of
+the brow area. Renders showed two raised brows over the eyes with the
+photographed brows' arches, thinning toward their outer ends, where the
+photographed brows are lighter.
 
 ## Reconstruct a head from photographs
 
@@ -974,18 +1017,21 @@ jaw, any suggested neck rotation and surface detail on:
 
 `reconstruct` takes every `reconstruct` option. `print` takes every
 `prepare_print` option except those the reconstruction supplies: `variant`,
-`identity`, `expression`, `eyelids`, `pose.jaw`, `displacement` and
-`hair_vertices`, and `pose.neck` when `neck_tilt` or `neck_turn` suggests
-one. Naming any of them is refused, whatever its value, rather than silently
-replaced. With `hair` `cap`, the cap covers the reconstruction's `hairline`
-when it gives one, and the scalp region otherwise. `detail` takes the
+`identity`, `expression`, `eyelids`, `pose.jaw`, `displacement`,
+`hair_vertices` and `brow_map`, and `pose.neck` when `neck_tilt` or
+`neck_turn` suggests one. Naming any of them is refused, whatever its value,
+rather than silently replaced. With `hair` `cap`, the cap covers the
+reconstruction's `hairline` when it gives one, and the scalp region
+otherwise. `brows` `raised` finds the brows in the reconstruction's colour
+map, so it needs `reconstruct.texture_path`. `detail` takes the
 `displacement` options other than the map itself, and `"apply": false`
 leaves the detail off. `blender` takes the `create` options, under the same
 rule, and the head is coloured with the colour map when the reconstruction
 makes one.
 
-Before the reconstruction starts, `print` gets every check `prepare_print`
-makes on its options, along with the expression scale, joint rotations and
+Before the reconstruction starts, `reconstruct` gets the checks
+`reconstruct` makes on its options, then `print` gets every check
+`prepare_print` makes on its options, along with the expression scale, joint rotations and
 the share of the height a body leaves the head; `blender` gets its
 expression scale, rotations and appearance checked, and a bump needs
 `reconstruct.texture_path` and a `.png` path. Such mistakes cost no
