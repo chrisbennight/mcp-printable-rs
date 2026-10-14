@@ -966,6 +966,9 @@ pub(super) async fn photo_to_bust(
         blender: blender_head,
     } = params;
     let mut print = *print;
+    // The reconstruction's own options come first, so that a mistake there
+    // is named as such rather than through the maps it would pass on.
+    request.validate()?;
     // The fields the reconstruction supplies were refused before parsing.
     if let Some(head) = &blender_head {
         checked_scale_and_pose(head.expression_scale, head.pose)?;

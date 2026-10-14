@@ -1026,8 +1026,9 @@ leaves the detail off. `blender` takes the `create` options, under the same
 rule, and the head is coloured with the colour map when the reconstruction
 makes one.
 
-Before the reconstruction starts, `print` gets every check `prepare_print`
-makes on its options, along with the expression scale, joint rotations and
+Before the reconstruction starts, `reconstruct` gets the checks
+`reconstruct` makes on its options, then `print` gets every check
+`prepare_print` makes on its options, along with the expression scale, joint rotations and
 the share of the height a body leaves the head; `blender` gets its
 expression scale, rotations and appearance checked, and a bump needs
 `reconstruct.texture_path` and a `.png` path. Such mistakes cost no

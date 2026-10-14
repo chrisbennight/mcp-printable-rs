@@ -8482,6 +8482,11 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
             "needs a colour map; give reconstruct.texture_path",
         ),
         (
+            json!({"reconstruct": {"texture_path": "colour.jpg"},
+                "print": {"path": "x.stl", "brows": "raised"}}),
+            "texture_path must end in .png",
+        ),
+        (
             json!({"print": {"path": "x.stl", "brow_map": "c.png"}}),
             "print.brow_map comes from the reconstruction",
         ),
