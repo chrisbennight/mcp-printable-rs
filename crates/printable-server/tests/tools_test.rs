@@ -6581,6 +6581,8 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     assert_eq!(bare.is_error, Some(false), "{bare:?}");
     let bare = bare.structured_content.unwrap();
     assert_eq!(bare["brows"]["share"], 0.0, "{bare}");
+    assert_eq!(bare["brows"]["height_mm"], 0.0, "{bare}");
+    assert!(bare["bust"].get("raised_mm").is_none(), "{bare}");
     assert!(
         bare["brows"]["note"]
             .as_str()
@@ -6591,6 +6593,25 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     assert_eq!(
         std::fs::read(root.path().join("bare.stl")).unwrap(),
         std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
+    // With a cap as well, each report reads its own layer.
+    let both = print(
+        &server,
+        "both.stl",
+        json!({"brows": "raised", "brow_map": "colour.png", "brow_height_mm": 0.5,
+            "hair": "cap", "hair_thickness_mm": 2.0, "hair_vertices": [2],
+            "edge_length_mm": 5.0}),
+    )
+    .await;
+    assert_eq!(both.is_error, Some(false), "{both:?}");
+    let both = both.structured_content.unwrap();
+    let raised = both["bust"]["raised_mm"].as_array().unwrap();
+    assert_eq!(raised.len(), 2, "{both}");
+    assert_eq!(both["brows"]["height_mm"], raised[0], "{both}");
+    assert_eq!(both["hair"]["thickness_mm"], raised[1], "{both}");
+    assert!(
+        raised[0].as_f64().unwrap() < raised[1].as_f64().unwrap(),
+        "{both}"
     );
     // Faint brows are raised partly; no texel reaches halfway, but the
     // response does not say there are none.
@@ -6768,6 +6789,9 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .await
         .unwrap();
     assert_eq!(bald.is_error, Some(false), "{bald:?}");
+    let bald = bald.structured_content.unwrap();
+    assert_eq!(bald["hair"]["thickness_mm"], 0.0, "{bald}");
+    assert!(bald["bust"].get("raised_mm").is_none(), "{bald}");
     assert_eq!(
         std::fs::read(root.path().join("bald.stl")).unwrap(),
         std::fs::read(root.path().join("plain.stl")).unwrap()

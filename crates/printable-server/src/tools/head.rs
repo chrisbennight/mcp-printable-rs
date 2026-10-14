@@ -1507,22 +1507,23 @@ async fn print_bust(
     let given_hair_vertices = params.hair_vertices.is_some();
     // Brows come before a cap, so that a map made for them alone carries
     // the texture layout they need.
+    // Each raised layer's place among the layers, when it raises anything.
     let (displacement, brow_report) = match (brow_height_mm, &params.brow_map, brow_identity) {
         (Some(raised), Some(path), Some(identity)) => {
-            let (map, report) =
+            let (map, layer, share) =
                 with_brows(&workspace, &model, displacement, (path, &identity), raised).await?;
-            (Some(map), Some(report))
+            (map, Some((layer, share)))
         }
         _ => (displacement, None),
     };
-    let displacement = match hair_thickness_mm {
-        Some(thickness) => Some(with_hair_cap(
+    let (displacement, hair_layer) = match hair_thickness_mm {
+        Some(thickness) => with_hair_cap(
             &model,
             displacement,
             thickness,
             params.hair_vertices.as_deref(),
-        )?),
-        None => displacement,
+        )?,
+        None => (displacement, None),
     };
     let head_vertices = millimetres(&head.vertices);
     let request = BustRequest {
@@ -1627,15 +1628,15 @@ async fn print_bust(
             }
             response["mouth"] = mouth;
         }
+        // The bust is scaled to its height after the layers are raised, so a
+        // layer's applied height can be a little less than the requested one.
+        let raised_mm = response["bust"]["raised_mm"].clone();
+        let applied = |layer: Option<usize>| match layer {
+            Some(layer) => raised_mm[layer].clone(),
+            None => json!(0.0),
+        };
         if let Some(thickness) = hair_thickness_mm {
-            // The cap is the last raised layer; the bust is scaled to its
-            // height after the cap is raised, so the applied thickness can
-            // be a little less than the requested one.
-            let applied = response["bust"]["raised_mm"]
-                .as_array()
-                .and_then(|layers| layers.last())
-                .cloned()
-                .unwrap_or(Value::Null);
+            let applied = applied(hair_layer);
             response["hair"] = json!({
                 "style": hair,
                 "requested_mm": thickness,
@@ -1643,14 +1644,14 @@ async fn print_bust(
                 "covers": if given_hair_vertices { "hair_vertices" } else { "scalp" },
             });
         }
-        if let (Some(raised), Some((layer, share, any))) = (brow_height_mm, brow_report) {
+        if let (Some(raised), Some((layer, share))) = (brow_height_mm, brow_report) {
             response["brows"] = json!({
                 "style": brows,
                 "requested_mm": raised,
-                "height_mm": response["bust"]["raised_mm"][layer].clone(),
+                "height_mm": applied(layer),
                 "share": share,
             });
-            if !any {
+            if layer.is_none() {
                 response["brows"]["note"] = json!(
                     "brow_map shows no brows: nothing above the eyes is much darker than the skin around it"
                 );
@@ -1675,16 +1676,16 @@ const BROW_MAP_TEXELS: u32 = 512;
 const EYEBALL_REGIONS: [&str; 2] = ["left_eyeball", "right_eyeball"];
 
 /// The detail map with a layer raised where the colour map at `path` shows
-/// brows, or a map carrying only the brows. Returns the layer's place among
-/// the raised layers, the share of the brow area found to be brow, and
-/// whether anything is raised at all.
+/// brows, or a map carrying only the brows. Returns the map, the layer's
+/// place among the raised layers, unless the map shows no brows and nothing
+/// is added, and the share of the brow area found to be brow.
 async fn with_brows(
     workspace: &Arc<Workspace>,
     model: &Arc<FlameModel>,
     displacement: Option<Displacement>,
     (path, identity): (&str, &[f32]),
     height_mm: f64,
-) -> Result<(Displacement, (usize, f64, bool)), ToolError> {
+) -> Result<(Option<Displacement>, Option<usize>, f64), ToolError> {
     let variant = &model.info().variant;
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
@@ -1755,7 +1756,10 @@ async fn with_brows(
     })
     .await?;
     // A map that shows no brows, such as one of a head with light brows,
-    // raises nothing; the response says so.
+    // adds no layer; the response says so.
+    if found.values.iter().all(|&value| value == 0.0) {
+        return Ok((displacement, None, found.share));
+    }
     let mut map = displacement.unwrap_or_else(|| Displacement {
         width: 2,
         height: 2,
@@ -1767,7 +1771,6 @@ async fn with_brows(
         raised: Vec::new(),
     });
     let layer = map.raised.len();
-    let any = found.values.iter().any(|&value| value > 0.0);
     map.raised.push(Raised {
         values: Vec::new(),
         map: Some(RaisedMap {
@@ -1776,7 +1779,7 @@ async fn with_brows(
         }),
         height_mm,
     });
-    Ok((map, (layer, found.share, any)))
+    Ok((Some(map), Some(layer), found.share))
 }
 
 /// A square workspace PNG colour map of a sensible size, as RGB, reduced to
@@ -1826,13 +1829,14 @@ const HAIR_THICKNESS_MM: std::ops::RangeInclusive<f64> = 0.2..=40.0;
 const HAIR_EDGE_RINGS: usize = 2;
 
 /// The detail map with a cap of hair raised over the scalp, or over the
-/// given vertices, or a flat map carrying only the cap.
+/// given vertices, or a flat map carrying only the cap, and the cap's place
+/// among the raised layers. A cap over no vertices adds nothing.
 fn with_hair_cap(
     model: &FlameModel,
     displacement: Option<Displacement>,
     thickness_mm: f64,
     vertices: Option<&[u32]>,
-) -> Result<Displacement, ToolError> {
+) -> Result<(Option<Displacement>, Option<usize>), ToolError> {
     let covered = match vertices {
         Some(vertices) => {
             // An empty list, as for a head photographed bald all over,
@@ -1853,6 +1857,9 @@ fn with_hair_cap(
             ))
         })?,
     };
+    if covered.is_empty() {
+        return Ok((displacement, None));
+    }
     // A cap alone needs no texture layout: a flat map with every corner at
     // the same place carries it.
     let mut map = displacement.unwrap_or_else(|| Displacement {
@@ -1865,6 +1872,7 @@ fn with_hair_cap(
         faded: Vec::new(),
         raised: Vec::new(),
     });
+    let layer = map.raised.len();
     map.raised.push(Raised {
         map: None,
         values: sloped_region(
@@ -1875,7 +1883,7 @@ fn with_hair_cap(
         ),
         height_mm: thickness_mm,
     });
-    Ok(map)
+    Ok((Some(map), Some(layer)))
 }
 
 /// 1 on a region's vertices and 0 elsewhere, blended with each vertex's

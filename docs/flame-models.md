@@ -742,7 +742,7 @@ as `raised_mm`.
 `hair_vertices` covers the listed model vertices instead of the scalp
 region, with the same sloping edge; it needs no `--masks`. An empty list,
 which `reconstruct` gives for a head its photographs show bald all over,
-raises nothing. A cap that covers
+raises nothing, and `hair` reports a `thickness_mm` of 0. A cap that covers
 the scalp reports `covers` `scalp` in `hair`, and one over given vertices
 `hair_vertices`. `reconstruct` returns a hairline that follows the
 photographs; see [Use the result](#use-the-result).
@@ -779,8 +779,8 @@ at 55% of it or darker and not raised at 75% or lighter. A map painted with
 dark brows on light skin works the same way. Hair falling within that area,
 or heavy makeup, counts as brow too. The model must be converted with
 `--texture` and `--masks`. A map that shows nothing dark enough, such as
-one of a head with light brows, raises nothing, and the response's `brows`
-says so in a `note`.
+one of a head with light brows, raises nothing: the response's `brows`
+reports a `height_mm` of 0 and says so in a `note`.
 
 The brows follow the map rather than the model's triangles: the refined
 surface samples it at its own texture coordinates, so their outline is as
