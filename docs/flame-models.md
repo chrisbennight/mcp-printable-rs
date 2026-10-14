@@ -781,14 +781,16 @@ refused.
 
 The brows follow the map rather than the model's triangles: the refined
 surface samples it at its own texture coordinates, so their outline is as
-fine as `edge_length_mm` allows. The response adds `brows` with the style,
+fine as `edge_length_mm` allows. A map larger than 512 pixels on a side is
+reduced to 512 first, about half a millimetre per pixel across a life-size
+face. The response adds `brows` with the style,
 `requested_mm`, `height_mm`, the height applied, and `share`, the share of
 the brow area raised at least halfway; the `bust` report lists the same
 height in `raised_mm`.
 
 On the FLAME 2020 generic head reconstructed from one photograph, with the
 colour map made from it, a 100 mm bust with default brows, 1 mm, was one
-valid solid and took about 8 seconds, as without them. The brows took 16% of
+valid solid and took about 8 seconds, as without them. The brows took 15% of
 the brow area. Renders showed two raised brows over the eyes with the
 photographed brows' arches, thinning toward their outer ends, where the
 photographed brows are lighter.

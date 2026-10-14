@@ -1660,6 +1660,9 @@ const BROW_LAYERS: f64 = 2.0;
 const BROW_HEIGHT_MM: std::ops::RangeInclusive<f64> = 0.05..=5.0;
 /// The region the brows are looked for in, above the eyeballs.
 const BROW_REGION: &str = "eye_region";
+/// Brows are found, and raised, on a map of at most this many texels on a
+/// side, which resolves them well below a millimetre on a life-size head.
+const BROW_MAP_TEXELS: u32 = 512;
 const EYEBALL_REGIONS: [&str; 2] = ["left_eyeball", "right_eyeball"];
 
 /// The detail map with a layer raised where the colour map at `path` shows
@@ -1726,7 +1729,7 @@ async fn with_brows(
         .collect();
     let (workspace, model, path) = (Arc::clone(workspace), Arc::clone(model), path.to_owned());
     let found = blocking(move || {
-        let (size, rgb) = read_colour_map(&workspace, &path)?;
+        let (size, rgb) = read_colour_map(&workspace, &path, BROW_MAP_TEXELS)?;
         let layout = model
             .uv_layout()
             .ok_or_else(|| ToolError::Validation("the model has no texture layout".into()))?;
@@ -1769,8 +1772,13 @@ async fn with_brows(
     Ok((map, (layer, found.share)))
 }
 
-/// A square workspace PNG colour map of a sensible size, as RGB.
-fn read_colour_map(workspace: &Workspace, path: &str) -> Result<(usize, Vec<u8>), ToolError> {
+/// A square workspace PNG colour map of a sensible size, as RGB, reduced to
+/// at most `largest` pixels on a side.
+fn read_colour_map(
+    workspace: &Workspace,
+    path: &str,
+    largest: u32,
+) -> Result<(usize, Vec<u8>), ToolError> {
     let snapshot = workspace.snapshot_artifact_bounded(path, MAX_COLOUR_MAP_BYTES)?;
     let bytes = std::fs::read(snapshot.path())?;
     let not_png = || ToolError::Validation(format!("{path} is not a PNG image"));
@@ -1791,7 +1799,16 @@ fn read_colour_map(workspace: &Workspace, path: &str) -> Result<(usize, Vec<u8>)
     if rgb.dimensions() != (width, height) {
         return Err(not_png());
     }
-    Ok((width as usize, rgb.into_raw()))
+    if width <= largest {
+        return Ok((width as usize, rgb.into_raw()));
+    }
+    let reduced = image::imageops::resize(
+        &rgb,
+        largest,
+        largest,
+        image::imageops::FilterType::Triangle,
+    );
+    Ok((largest as usize, reduced.into_raw()))
 }
 
 /// A hair cap's thickness, by default as a share of the height above the

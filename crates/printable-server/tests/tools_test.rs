@@ -6487,11 +6487,11 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     let root = tempfile::tempdir().unwrap();
     // Light skin with a dark patch inside the brow triangle's layout, whose
     // corners lie at (0.1, 0.1), (0.5, 0.5) and (0.5, 0.9).
-    let map = |dark: bool| {
-        image::RgbImage::from_fn(64, 64, |column, row| {
+    let map = |dark: bool, side: u32| {
+        image::RgbImage::from_fn(side, side, |column, row| {
             let (u, v) = (
-                (column as f32 + 0.5) / 64.0,
-                1.0 - (row as f32 + 0.5) / 64.0,
+                (column as f32 + 0.5) / side as f32,
+                1.0 - (row as f32 + 0.5) / side as f32,
             );
             if dark && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
                 image::Rgb([40, 30, 25])
@@ -6500,8 +6500,9 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
             }
         })
     };
-    map(true).save(root.path().join("colour.png")).unwrap();
-    map(false).save(root.path().join("bare.png")).unwrap();
+    map(true, 64).save(root.path().join("colour.png")).unwrap();
+    map(true, 1024).save(root.path().join("large.png")).unwrap();
+    map(false, 64).save(root.path().join("bare.png")).unwrap();
     let (_models, full) = library(true, true);
     let server = head_print_server(root.path(), full);
     async fn print(
@@ -6541,6 +6542,17 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     );
     let share = value["brows"]["share"].as_f64().unwrap();
     assert!(share > 0.0 && share < 0.5, "{value}");
+    // A larger map is reduced first and finds the same brows.
+    let large = print(
+        &server,
+        "large.stl",
+        json!({"brows": "raised", "brow_map": "large.png"}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    let found = large["brows"]["share"].as_f64().unwrap();
+    assert!((found - share).abs() < 0.05, "{found} {share}");
     assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
     assert!(value["bust"].get("displacement").is_none(), "{value}");
     assert_ne!(
