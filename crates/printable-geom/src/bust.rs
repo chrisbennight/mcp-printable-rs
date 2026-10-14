@@ -440,10 +440,17 @@ enum Prepared {
     OverLimit { triangles: usize, edge: f64 },
 }
 
-fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, GeometryError> {
-    let available = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
-    // The head's own height; any body takes the rest above the plinth.
-    let bust_height = match request.body {
+/// The head's own height in a bust `height_mm` tall: what the plinth leaves,
+/// less any body. Refused when the body would leave the head less than half
+/// of the height above the plinth. It depends on the options alone, so they
+/// can be checked before a head is made.
+pub fn head_height_mm(
+    height_mm: f64,
+    plinth: Option<Plinth>,
+    body: Option<Body>,
+) -> Result<f64, GeometryError> {
+    let available = height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm);
+    let head = match body {
         Some(Body {
             height_mm: Some(height),
             ..
@@ -451,12 +458,19 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         Some(body) => available / (1.0 + body.kind.default_share()),
         None => available,
     };
-    if bust_height < MIN_HEAD_SHARE * available {
+    if head < MIN_HEAD_SHARE * available {
         return Err(GeometryError::InvalidOptions(format!(
             "the body would leave the head less than {:.0}% of the height above the plinth",
             MIN_HEAD_SHARE * 100.0
         )));
     }
+    Ok(head)
+}
+
+fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, GeometryError> {
+    let available = request.height_mm - request.plinth.map_or(0.0, |plinth| plinth.height_mm);
+    // The head's own height; any body takes the rest above the plinth.
+    let bust_height = head_height_mm(request.height_mm, request.plinth, request.body)?;
     let mut parts = closed_parts(&request.vertices, &request.triangles)?;
     let heights = request.vertices.iter().map(|vertex| vertex[1]);
     let span = heights.clone().fold(f64::MIN, f64::max) - heights.fold(f64::MAX, f64::min);
