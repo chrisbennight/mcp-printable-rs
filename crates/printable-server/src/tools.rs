@@ -10,7 +10,8 @@ mod native;
 pub mod output;
 pub mod workflows;
 use head::{
-    HeadCreateParams, HeadExportParams, HeadModelsParams, HeadPreparePrintParams, HeadUpdateParams,
+    HeadCreateParams, HeadExportParams, HeadModelsParams, HeadPhotoToBustParams,
+    HeadPreparePrintParams, HeadUpdateParams,
 };
 use native::NativeViewParams;
 
@@ -2102,6 +2103,10 @@ async fn dispatch_value(
         "printable_flame_export" => head::export(Arc::clone(workspace), settings, de(args)?).await,
         "printable_flame_reconstruct" => {
             head::reconstruct(Arc::clone(workspace), settings, de(args)?).await
+        }
+        "printable_flame_photo_to_bust" => {
+            let params: Box<HeadPhotoToBustParams> = de(args)?;
+            head::photo_to_bust(Arc::clone(workspace), blender, settings, *params).await
         }
         "printable_primitive_create" => {
             let p: PrimitiveCreateParams = de(args)?;

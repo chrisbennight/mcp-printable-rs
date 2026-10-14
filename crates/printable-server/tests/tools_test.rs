@@ -8102,6 +8102,390 @@ async fn head_reconstruct_judges_the_fit_of_the_head_it_returns() {
 }
 
 #[tokio::test]
+async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // The fake worker reports this map without writing it.
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(64, 64, |x, y| ((x * 1000 + y * 37) % 65_535) as u16),
+    )
+    .unwrap();
+    // A closed tetrahedron with a texture layout, as the FLAME 2020 model.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        fixture.uv = Some((
+            vec![0.1, 0.1, 0.9, 0.1, 0.5, 0.9, 0.5, 0.5],
+            vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+        ));
+    });
+    let (endpoint, seen, task) = fake_recon_worker(true).await;
+    let server = recon_server_with(root.path(), &endpoint, library).await;
+    let reconstruct = json!({
+        "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true,
+        "neck_turn": 1.0
+    });
+    let print = json!({"height_mm": 50.0, "edge_length_mm": 2.0, "overwrite": true});
+    let detail = json!({"relief_mm": 0.3});
+
+    let mut combined_print = print.clone();
+    combined_print["path"] = json!("combined.stl");
+    let combined = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct, "print": combined_print, "detail": detail
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(combined.is_error, Some(false), "{combined:?}");
+    let combined = combined.structured_content.unwrap();
+    assert!(
+        head_output_validator(&server).is_valid(&combined),
+        "{combined}"
+    );
+
+    // The same steps, one at a time.
+    let reconstructed = server
+        .invoke_tool(head_call(
+            json!({"action": "reconstruct", "params": reconstruct}),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let mut separate_print = print.clone();
+    for key in ["variant", "identity", "expression", "pose"] {
+        separate_print[key] = reconstructed[key].clone();
+    }
+    separate_print["path"] = json!("separate.stl");
+    separate_print["displacement"] = json!({
+        "path": reconstructed["displacement"]["artifact"]["path"],
+        "offset_mm": reconstructed["displacement"]["offset_mm"],
+        "scale_mm": reconstructed["displacement"]["scale_mm"],
+        "relief_mm": 0.3
+    });
+    let separate = server
+        .invoke_tool(head_call(
+            json!({"action": "prepare_print", "params": separate_print}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(separate.is_error, Some(false), "{separate:?}");
+    assert_eq!(combined["reconstruct"], reconstructed);
+    assert!(
+        combined["reconstruct"]["pose"]["neck"].is_array(),
+        "{combined}"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("combined.stl")).unwrap(),
+        std::fs::read(root.path().join("separate.stl")).unwrap(),
+        "the same bust"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // What the reconstruction supplies, and options that are wrong, are
+    // refused before the worker is asked.
+    for (params, message) in [
+        (
+            json!({"print": {"path": "x.stl", "identity": [1.0]}}),
+            "print.identity",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "pose": {"jaw": [0.1, 0.0, 0.0]}}}),
+            "print.pose.jaw",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "pose": {"neck": [0.1, 0.0, 0.0]}}}),
+            "print.pose.neck",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "displacement": {"path": "d.png", "offset_mm": 0.0, "scale_mm": 1.0}}}),
+            "print.displacement",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "height_mm": 5.0}}),
+            "height_mm",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "detail": {"gain": 99.0}}),
+            "gain",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"texture": "t.png"}}),
+            "blender.texture",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"appearance": {
+                "bump": {"path": "detail.png", "scale_mm": 1.0}
+            }}}),
+            "needs a colour map",
+        ),
+        (
+            json!({"reconstruct": {"texture_path": "colour.png"}, "print": {"path": "x.stl"},
+            "blender": {"appearance": {
+                "bump": {"path": "detail.jpg", "scale_mm": 1.0}
+            }}}),
+            "must be a .png map",
+        ),
+        // Fields are refused when given, whatever their value.
+        (
+            json!({"print": {"path": "x.stl", "pose": {"jaw": [0.0, 0.0, 0.0]}}}),
+            "print.pose.jaw",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "identity": []}}),
+            "print.identity",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"pose": {"jaw": [0.0, 0.0, 0.0]}}}),
+            "blender.pose.jaw",
+        ),
+        // Head options that need no reconstruction are checked before it.
+        (
+            json!({"print": {"path": "x.stl", "expression_scale": 2.0}}),
+            "expression_scale",
+        ),
+        (
+            json!({"print": {"path": "x.stl", "pose": {"left_eye": [4.0, 0.0, 0.0]}}}),
+            "left_eye",
+        ),
+        (
+            json!({"print": {"path": "x.stl"}, "blender": {"expression_scale": 2.0}}),
+            "expression_scale",
+        ),
+        (
+            json!({"print": {
+                "path": "x.stl", "height_mm": 100.0, "body": "extended_neck",
+                "neck_extension_mm": 60.0
+            }}),
+            "less than 50%",
+        ),
+    ] {
+        let mut params = params;
+        let mut request = reconstruct.clone();
+        if let Some(extra) = params.get("reconstruct").and_then(Value::as_object) {
+            for (key, value) in extra {
+                request[key] = value.clone();
+            }
+        }
+        params["reconstruct"] = request;
+        let refused = server
+            .invoke_tool(head_call(
+                json!({"action": "photo_to_bust", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.is_error, Some(true), "{params}");
+        assert!(
+            format!("{refused:?}").contains(message),
+            "{message}: {refused:?}"
+        );
+    }
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // What only the head can refuse comes after the reconstruction, from the
+    // geometry worker with its own code, and carries the reconstruction's
+    // result so that it can be used again.
+    let refused = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct,
+            "print": {"path": "thin.stl", "height_mm": 50.0, "edge_length_mm": 2.0,
+                "hollow_wall_mm": 20.0},
+            "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    let text = format!("{refused:?}");
+    assert!(text.contains("geometry worker failed"), "{text}");
+    assert!(
+        text.contains("result follows") && text.contains("identity"),
+        "{text}"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_closes_the_eyelids_as_reconstructed() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    std::fs::write(
+        root.path().join("detail.png"),
+        displacement_png(64, 64, |_, _| 0),
+    )
+    .unwrap();
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        let mut left = vec![0.0; 12];
+        left[2] = 0.01; // vertex 0, 10 mm along z
+        fixture.eyelids = Some((left, vec![0.0; 12]));
+    });
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"eyelids": [1.0, 0.0]})).await;
+    let server = recon_server_with(root.path(), &endpoint, library).await;
+    let reconstruct = json!({
+        "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+    });
+    let print = |path: &str| json!({"path": path, "height_mm": 50.0, "edge_length_mm": 4.0, "overwrite": true});
+    let combined = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct, "print": print("combined.stl"), "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(combined.is_error, Some(false), "{combined:?}");
+    let reconstructed = combined.structured_content.unwrap()["reconstruct"].clone();
+    assert_eq!(
+        reconstructed["eyelids"],
+        json!([1.0, 0.0]),
+        "{reconstructed}"
+    );
+    // The same bust from prepare_print with the reconstruction's eyelids, and
+    // a different one without them.
+    for (path, eyelids) in [("closed.stl", true), ("open.stl", false)] {
+        let mut separate = print(path);
+        for key in ["variant", "identity", "expression", "pose"] {
+            separate[key] = reconstructed[key].clone();
+        }
+        if eyelids {
+            separate["eyelids"] = reconstructed["eyelids"].clone();
+        }
+        let made = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": separate}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(made.is_error, Some(false), "{made:?}");
+    }
+    let read = |path: &str| std::fs::read(root.path().join(path)).unwrap();
+    assert_eq!(read("combined.stl"), read("closed.stl"));
+    assert_ne!(read("combined.stl"), read("open.stl"));
+    // The eyelids come from the reconstruction, in print and in blender.
+    for request in ["print", "blender"] {
+        let mut params = json!({"reconstruct": reconstruct, "print": print("x.stl")});
+        params[request]["eyelids"] = json!([0.0, 0.0]);
+        let refused = server
+            .invoke_tool(head_call(
+                json!({"action": "photo_to_bust", "params": params}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            format!("{refused:?}")
+                .contains(&format!("{request}.eyelids comes from the reconstruction")),
+            "{refused:?}"
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_can_also_create_the_head_in_blender() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+    });
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let (fake, captured) = recording_addon().await;
+    let mut cfg = settings(&fake.host(), fake.port());
+    cfg.flame = Some(library);
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    recon.refresh().await;
+    cfg.recon = Some(recon);
+    let server = PrintableServer::new(
+        workspace(Some(root.path())),
+        Arc::new(client(&fake.host(), fake.port())),
+        Arc::new(cfg),
+    );
+    let result = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": {"images": ["face.jpg"], "displacement_path": "detail.png"},
+            "print": {"path": "bust.stl", "height_mm": 50.0, "edge_length_mm": 2.0},
+            "detail": {"apply": false},
+            "blender": {"name": "Photographed"}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(head_output_validator(&server).is_valid(&value), "{value}");
+    assert_eq!(value["blender"]["name"], "Photographed", "{value}");
+    assert_eq!(value["print"]["artifact"]["path"], "bust.stl", "{value}");
+    // Without detail the bust takes no displacement.
+    assert!(
+        value["print"]["bust"].get("displacement").is_none(),
+        "{value}"
+    );
+    let calls = captured.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1["name"], "Photographed");
+    assert!(calls[0].1.get("texture").is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_keeps_blenders_own_errors() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+    });
+    let generation = "00000000-0000-4000-8000-000000000001";
+    // Blender's scene has moved on since the caller looked.
+    let fake = FakeAddon::spawn(move |_, _| {
+        ResponseSpec::RawWithId(json!({
+            "status": "error", "error": "scene changed", "error_code": "stale_scene_state",
+            "scene_state": {"generation": generation, "revision": 7},
+            "bridge_instance_id": generation,
+            "addon_version": printable_blender::BRIDGE_PROTOCOL_VERSION,
+        }))
+    })
+    .await;
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let mut cfg = settings(&fake.host(), fake.port());
+    cfg.flame = Some(library);
+    let recon = printable_server::recon::ReconClient::configure(&|name| {
+        (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
+    })
+    .unwrap()
+    .unwrap();
+    recon.refresh().await;
+    cfg.recon = Some(recon);
+    let server = PrintableServer::new(
+        workspace(Some(root.path())),
+        Arc::new(client(&fake.host(), fake.port())),
+        Arc::new(cfg),
+    );
+    let result = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": {"images": ["face.jpg"], "displacement_path": "detail.png"},
+            "print": {"path": "bust.stl", "height_mm": 50.0, "edge_length_mm": 2.0},
+            "detail": {"apply": false},
+            "blender": {"expected_scene": {"generation": generation, "revision": 3}}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    // The same typed error create gives, with the scene state to recover from.
+    let structured = result.structured_content.expect("structured error");
+    assert_eq!(
+        structured["error"]["code"], "stale_scene_state",
+        "{structured}"
+    );
+    assert_eq!(
+        structured["error"]["scene_state"]["revision"], 7,
+        "{structured}"
+    );
+    // The bust was written before Blender was asked.
+    assert!(root.path().join("bust.stl").is_file());
+    task.abort();
+}
+
+#[tokio::test]
 async fn head_reconstruct_makes_one_colour_map_at_a_time() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::from_pixel(224, 224, image::Rgb([90, 90, 90]))

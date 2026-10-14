@@ -258,6 +258,11 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             &["scene_state"],
         ),
         "head" => json!({"type": "object", "anyOf": [
+            {"required": ["reconstruct", "print"], "properties": {
+                "reconstruct": {"type": "object", "required": ["variant", "identity", "expression", "pose", "displacement"]},
+                "print": {"type": "object", "required": ["artifact", "bust", "validation"]},
+                "blender": {"type": "object", "required": ["scene_state", "name", "head"]}
+            }},
             {"required": ["models", "skipped"], "properties": {
                 "models": {"type": "array"}, "skipped": {"type": "array"}
             }},

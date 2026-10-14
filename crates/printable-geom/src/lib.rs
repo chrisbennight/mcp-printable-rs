@@ -33,7 +33,7 @@ pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, Mes
 pub use bust::{
     Body, BodyKind, BodyReport, BustReport, BustRequest, DetailPercentiles, Displacement,
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, Plinth, PlinthReport,
-    Raised, bust_stl, prepare_bust,
+    Raised, bust_stl, head_height_mm, prepare_bust,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 

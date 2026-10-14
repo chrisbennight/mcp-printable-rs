@@ -266,7 +266,7 @@ pub(super) struct HeadUpdateParams {
     texture: Option<String>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadPreparePrintParams {
     /// Model variant from the `models` action. Optional when one model is mounted.
@@ -468,7 +468,7 @@ pub(super) enum EyeStyle {
 }
 
 /// How the bust will be printed.
-#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PrinterParams {
     process: PrintProcess,
@@ -568,7 +568,7 @@ impl PrinterParams {
 /// with the bust. Row 0 is v = 1 and column 0 is u = 0. The optional filters
 /// apply in this order: `high_pass_mm`, `clip_percentile`, then `gain` or
 /// `relief_mm`.
-#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DisplacementParams {
     /// Workspace path of the PNG, at most 1024 pixels on each side.
@@ -828,6 +828,249 @@ pub(super) async fn prepare_print(
     settings: &Settings,
     params: HeadPreparePrintParams,
 ) -> Result<Value, ToolError> {
+    print_bust(workspace, settings, params, PrintStage::Make).await
+}
+
+/// Reconstruct a head from photographs and prepare its bust in one step.
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HeadPhotoToBustParams {
+    /// The `reconstruct` request.
+    reconstruct: crate::recon::ReconRequest,
+    /// The `prepare_print` request. Its `variant`, `identity`, `expression`,
+    /// `pose.jaw` and `displacement` come from the reconstruction and must be
+    /// left out, as must `pose.neck` when the reconstruction suggests one.
+    print: Box<HeadPreparePrintParams>,
+    /// How the reconstructed surface detail is raised on the bust: the
+    /// options of `prepare_print`'s `displacement`, without its map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    detail: Option<PhotoDetailParams>,
+    /// Also create the head in Blender with these `create` options, coloured
+    /// by the colour map when the reconstruction makes one. Its `variant`,
+    /// `identity`, `expression`, `pose.jaw` and `texture` come from the
+    /// reconstruction and must be left out, as must `pose.neck` when the
+    /// reconstruction suggests one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blender: Option<Box<HeadCreateParams>>,
+}
+
+/// How `photo_to_bust` raises the reconstructed surface detail.
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PhotoDetailParams {
+    /// Raise the detail on the bust (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apply: Option<bool>,
+    /// As for `prepare_print`'s `displacement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    high_pass_mm: Option<f64>,
+    /// As for `prepare_print`'s `displacement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clip_percentile: Option<f64>,
+    /// As for `prepare_print`'s `displacement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gain: Option<f64>,
+    /// As for `prepare_print`'s `displacement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relief_mm: Option<f64>,
+}
+
+/// Refuse every field of a `photo_to_bust` request that the reconstruction
+/// supplies, whatever value it is given, so that nothing a caller names is
+/// silently replaced. Looks at the request before it is parsed, where a
+/// field given its default value is still present.
+pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
+    let share = |name: &str| arguments["reconstruct"][name].as_f64().unwrap_or(0.0);
+    let suggests_neck = share("neck_tilt") > 0.0 || share("neck_turn") > 0.0;
+    for (request, own) in [("print", "displacement"), ("blender", "texture")] {
+        let Some(given) = arguments.get(request).and_then(Value::as_object) else {
+            continue;
+        };
+        let pose = given.get("pose").and_then(Value::as_object);
+        let named = ["variant", "identity", "expression", "eyelids", own]
+            .into_iter()
+            .find(|field| given.contains_key(*field))
+            .or_else(|| {
+                pose.and_then(|pose| {
+                    (pose.contains_key("jaw").then_some("pose.jaw"))
+                        .or((suggests_neck && pose.contains_key("neck")).then_some("pose.neck"))
+                })
+            });
+        if let Some(field) = named {
+            let advice = if field == "displacement" {
+                "give its options in detail"
+            } else {
+                "leave it out"
+            };
+            return Err(ToolError::Validation(format!(
+                "{request}.{field} comes from the reconstruction; {advice}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Run `reconstruct` and `prepare_print` together, and optionally `create`,
+/// passing the reconstruction's coefficients, pose and surface detail on.
+/// Every option that can be checked without the reconstruction is checked
+/// before it starts.
+pub(super) async fn photo_to_bust(
+    workspace: Arc<Workspace>,
+    blender: &BlenderClient,
+    settings: &Settings,
+    params: HeadPhotoToBustParams,
+) -> Result<Value, ToolError> {
+    let HeadPhotoToBustParams {
+        reconstruct: request,
+        print,
+        detail,
+        blender: blender_head,
+    } = params;
+    let mut print = *print;
+    // The fields the reconstruction supplies were refused before parsing.
+    if let Some(head) = &blender_head {
+        checked_scale_and_pose(head.expression_scale, head.pose)?;
+        if let Some(appearance) = &head.appearance {
+            appearance.validate()?;
+            if let Some(bump) = &appearance.bump {
+                if request.texture_path.is_none() {
+                    return Err(ToolError::Validation(
+                        "blender.appearance.bump needs a colour map; give reconstruct.texture_path"
+                            .into(),
+                    ));
+                }
+                // The map may be one the reconstruction writes, so whether it
+                // is a readable PNG is checked when the head is created.
+                if !bump.path.ends_with(".png") {
+                    return Err(ToolError::Validation(
+                        "blender.appearance.bump.path must be a .png map".into(),
+                    ));
+                }
+            }
+        }
+    }
+    let detail = detail.unwrap_or(PhotoDetailParams {
+        apply: None,
+        high_pass_mm: None,
+        clip_percentile: None,
+        gain: None,
+        relief_mm: None,
+    });
+    let apply_detail = detail.apply.unwrap_or(true);
+    // Check the bust's options, with the detail's, before reconstructing.
+    let mut checked = print.clone();
+    if apply_detail {
+        checked.displacement = Some(DisplacementParams {
+            path: request.displacement_path.clone(),
+            offset_mm: 0.0,
+            scale_mm: 1.0,
+            high_pass_mm: detail.high_pass_mm,
+            clip_percentile: detail.clip_percentile,
+            gain: detail.gain,
+            relief_mm: detail.relief_mm,
+        });
+    }
+    print_bust(Arc::clone(&workspace), settings, checked, PrintStage::Check).await?;
+
+    let reconstructed = reconstruct(Arc::clone(&workspace), settings, request).await?;
+    // Past here the reconstruction's outputs exist. A request the head
+    // cannot satisfy says so and returns the reconstruction's result, which
+    // `prepare_print` and `create` can use. Typed errors, such as Blender's,
+    // keep their code, scene state and any unknown outcome unchanged.
+    let with_result = |step: &str, message: &str| {
+        format!(
+            "the reconstruction finished, but {step} failed: {message}. The reconstruction's result follows, for prepare_print and create: {reconstructed}"
+        )
+    };
+    let after = |step: &str, error: ToolError| match error {
+        ToolError::Validation(message) => ToolError::Validation(with_result(step, &message)),
+        // The geometry worker's failures keep their code.
+        ToolError::GeometryWorker { code, message } => ToolError::GeometryWorker {
+            code,
+            message: with_result(step, &message),
+        },
+        other => other,
+    };
+    let coefficients = |name: &str| -> Result<Vec<f32>, ToolError> {
+        serde_json::from_value(reconstructed[name].clone())
+            .map_err(|_| ToolError::Validation(format!("the reconstruction returned no {name}")))
+    };
+    let rotation = |name: &str| -> Option<[f32; 3]> {
+        serde_json::from_value(reconstructed["pose"][name].clone()).ok()
+    };
+    let variant = reconstructed["variant"].as_str().map(str::to_owned);
+    let (identity, expression) = (coefficients("identity")?, coefficients("expression")?);
+    let (jaw, neck) = (rotation("jaw").unwrap_or_default(), rotation("neck"));
+    // Only a model that can close the eyelids reports them.
+    let eyelids: Option<[f32; 2]> = serde_json::from_value(reconstructed["eyelids"].clone()).ok();
+    print.variant = variant.clone();
+    print.identity = identity.clone();
+    print.expression = expression.clone();
+    print.eyelids = eyelids;
+    print.pose.jaw = jaw;
+    if let Some(neck) = neck {
+        print.pose.neck = neck;
+    }
+    if apply_detail {
+        let map = &reconstructed["displacement"];
+        print.displacement = Some(DisplacementParams {
+            path: map["artifact"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            offset_mm: map["offset_mm"].as_f64().unwrap_or(f64::NAN),
+            scale_mm: map["scale_mm"].as_f64().unwrap_or(f64::NAN),
+            high_pass_mm: detail.high_pass_mm,
+            clip_percentile: detail.clip_percentile,
+            gain: detail.gain,
+            relief_mm: detail.relief_mm,
+        });
+    }
+    let bust = prepare_print(Arc::clone(&workspace), settings, print)
+        .await
+        .map_err(|error| after("preparing the bust", error))?;
+    let mut response = json!({"reconstruct": reconstructed, "print": bust});
+    if let Some(head) = blender_head {
+        let mut head = *head;
+        head.variant = variant;
+        head.identity = identity;
+        head.expression = expression;
+        head.eyelids = eyelids;
+        head.pose.jaw = jaw;
+        if let Some(neck) = neck {
+            head.pose.neck = neck;
+        }
+        head.texture = reconstructed["texture"]["artifact"]["path"]
+            .as_str()
+            .map(str::to_owned);
+        let made = create(Arc::clone(&workspace), blender, settings, head)
+            .await
+            .map_err(|error| {
+                after(
+                    "creating the head in Blender, after the bust was written,",
+                    error,
+                )
+            })?;
+        response["blender"] = made;
+    }
+    Ok(response)
+}
+
+/// How far `print_bust` goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrintStage {
+    /// Check every option that can be checked without the head, and stop.
+    Check,
+    /// Make the bust.
+    Make,
+}
+
+async fn print_bust(
+    workspace: Arc<Workspace>,
+    settings: &Settings,
+    params: HeadPreparePrintParams,
+    stage: PrintStage,
+) -> Result<Value, ToolError> {
     validate_scad_destination(&workspace, &params.path, ".stl", params.overwrite)?;
     let height_mm = in_range(
         "height_mm",
@@ -1070,7 +1313,14 @@ pub(super) async fn prepare_print(
     if mouth == MouthShape::Closed {
         pose.jaw = [0.0; 3];
     }
+    // The head must keep its share of the height beside any body.
+    printable_geom::head_height_mm(height_mm, plinth, body)
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
     let worker_bin = geometry_worker_path(settings)?;
+    if stage == PrintStage::Check {
+        checked_scale_and_pose(params.expression_scale, pose)?;
+        return Ok(Value::Null);
+    }
     let worker_memory_bytes = settings.geometry_worker_memory_bytes;
     let (model, head) = evaluate(
         settings,
@@ -2733,6 +2983,27 @@ fn library(settings: &Settings) -> Result<&crate::flame::FlameLibrary, ToolError
         .ok_or_else(|| ToolError::Validation("no FLAME head models are mounted".into()))
 }
 
+/// The expression scale and the pose with the jaw softened by it, once both
+/// are checked. They need no model, so they can be checked early.
+fn checked_scale_and_pose(
+    expression_scale: Option<f64>,
+    pose: HeadPose,
+) -> Result<(f32, Pose), ToolError> {
+    let scale = in_range(
+        "expression_scale",
+        expression_scale.unwrap_or(1.0),
+        &EXPRESSION_SCALE,
+    )? as f32;
+    let pose = Pose {
+        global: check_rotation("global", pose.global)?,
+        neck: check_rotation("neck", pose.neck)?,
+        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
+        left_eye: check_rotation("left_eye", pose.left_eye)?,
+        right_eye: check_rotation("right_eye", pose.right_eye)?,
+    };
+    Ok((scale, pose))
+}
+
 /// Validate every input before evaluating, so nothing reaches Blender unless
 /// the whole request is acceptable.
 async fn evaluate(
@@ -2753,11 +3024,7 @@ async fn evaluate(
     );
     check_coefficients("identity", &identity)?;
     check_coefficients("expression", &expression)?;
-    let scale = in_range(
-        "expression_scale",
-        expression_scale.unwrap_or(1.0),
-        &EXPRESSION_SCALE,
-    )? as f32;
+    let (scale, pose) = checked_scale_and_pose(expression_scale, pose)?;
     let expression = expression.iter().map(|value| value * scale).collect();
     let eyelids = eyelids.unwrap_or_default();
     if !eyelids.iter().all(|share| (0.0..=1.0).contains(share)) {
@@ -2772,13 +3039,6 @@ async fn evaluate(
         )));
     }
     let eyelids = eyelids.map(|share| share * scale);
-    let pose = Pose {
-        global: check_rotation("global", pose.global)?,
-        neck: check_rotation("neck", pose.neck)?,
-        jaw: check_rotation("jaw", pose.jaw)?.map(|value| value * scale),
-        left_eye: check_rotation("left_eye", pose.left_eye)?,
-        right_eye: check_rotation("right_eye", pose.right_eye)?,
-    };
     let params = FlameParams {
         identity,
         expression,
