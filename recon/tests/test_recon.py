@@ -269,8 +269,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(fused.views), 2)
         view = fused.views[1]
         self.assertEqual(
-            [len(view[name]) for name in ("shape", "expression", "jaw", "head_rotation", "camera")],
-            [300, 50, 3, 3, 3],
+            [len(view[name]) for name in ("shape", "expression", "jaw", "head_rotation", "eyelids", "camera")],
+            [300, 50, 3, 3, 2, 3],
         )
         self.assertEqual(set(view["crop"]), {"left", "top", "step"})
         self.assertEqual(view["image_size"], [400, 400])
@@ -306,6 +306,13 @@ class PipelineTests(unittest.TestCase):
         first = reconstructor.reconstruct(found)
         second = reconstructor.reconstruct(found, 1)
         self.assertEqual((first.primary_image, second.primary_image), (0, 1))
+        # The eyelids are the primary photograph's, each between 0 and 1.
+        with torch.inference_mode():
+            closures = reconstructor.smirk(
+                pipeline._tensor(numpy.stack([face.smirk for face in found]), reconstructor.device)
+            )["eyelids"]
+        numpy.testing.assert_allclose(second.eyelids, closures[1].tolist(), atol=1e-6)
+        self.assertTrue(all(0.0 <= value <= 1.0 for value in second.eyelids))
         alone = reconstructor.reconstruct([found[1]])
         numpy.testing.assert_allclose(second.expression, alone.expression, atol=1e-5)
         numpy.testing.assert_allclose(second.jaw, alone.jaw, atol=1e-5)

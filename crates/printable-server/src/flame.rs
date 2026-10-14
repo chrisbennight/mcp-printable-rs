@@ -163,6 +163,7 @@ impl FlameLibrary {
                     "vertices": model.vertex_count(),
                     "triangles": model.faces().len(),
                     "texture_layout": model.uv_layout().is_some(),
+                    "eyelids": model.has_eyelids(),
                     "regions": model.regions().keys().collect::<Vec<_>>(),
                     "source_sha256": info.source_sha256,
                 })
@@ -241,6 +242,7 @@ mod tests {
         let report = library.report();
         assert_eq!(report["models"][0]["variant"], "alpha");
         assert_eq!(report["models"][0]["texture_layout"], false);
+        assert_eq!(report["models"][0]["eyelids"], false);
         assert_eq!(report["models"][0]["regions"], json!([]));
         assert_eq!(report["models"].as_array().unwrap().len(), 1);
         let skipped: Vec<_> = report["skipped"]
