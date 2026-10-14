@@ -951,6 +951,54 @@ To raise this detail on a printed bust, pass the map's `artifact.path`,
 `offset_mm` and `scale_mm` as `prepare_print`'s `displacement`, with the same
 coefficients and variant. See [Surface detail](#surface-detail).
 
+### From photographs to a bust in one step
+
+`photo_to_bust` runs `reconstruct` and `prepare_print` together, and
+optionally `create`, passing the reconstruction's variant, coefficients,
+jaw, any suggested neck rotation and surface detail on:
+
+```json
+{"action": "photo_to_bust", "params": {
+  "reconstruct": {
+    "images": ["photos/front.jpg", "photos/left.jpg", "photos/right.jpg"],
+    "displacement_path": "photos/detail.png",
+    "texture_path": "photos/colour.png"
+  },
+  "print": {"path": "busts/photo.stl", "printer": {"process": "fdm"}},
+  "detail": {"relief_mm": 0.3},
+  "blender": {"name": "Photographed"}
+}}
+```
+
+`reconstruct` takes every `reconstruct` option. `print` takes every
+`prepare_print` option except those the reconstruction supplies: `variant`,
+`identity`, `expression`, `eyelids`, `pose.jaw` and `displacement`, and `pose.neck` when
+`neck_tilt` or `neck_turn` suggests one. Naming any of them is refused,
+whatever its value, rather than silently replaced. `detail` takes the `displacement` options other than
+the map itself, and `"apply": false` leaves the detail off. `blender` takes
+the `create` options, under the same rule, and the head is coloured with the
+colour map when the reconstruction makes one.
+
+Before the reconstruction starts, `print` gets every check `prepare_print`
+makes on its options, along with the expression scale, joint rotations and
+the share of the height a body leaves the head; `blender` gets its
+expression scale, rotations and appearance checked, and a bump needs
+`reconstruct.texture_path` and a `.png` path. Such mistakes cost no
+reconstruction. A bump may name a map the reconstruction writes, so whether
+its file is a readable PNG is checked when Blender creates the head. The
+geometry worker applies some rules of its own while it makes the bust, such
+as how wide a plinth's chamfer may be for its diameter; those are reported
+after the reconstruction, with its result. A request
+the reconstructed head cannot satisfy reports the reconstruction's result
+with the error, so `prepare_print` or `create` can use it without
+reconstructing again. Errors from Blender, such as a stale `expected_scene`
+or a command whose outcome is unknown, come back exactly as `create` returns
+them, with their code and scene state; the reconstruction's maps and the bust
+are written by then. The response holds `reconstruct`,
+`print` and, when asked for, `blender`, each as its own action returns it.
+With the same options, the bust is the one the separate calls make, byte for
+byte.
+
 ### Judge the fit
 
 `fit` gives, for each photograph, two measures that compare the returned
