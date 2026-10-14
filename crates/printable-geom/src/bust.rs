@@ -250,7 +250,7 @@ pub struct EyeReport {
 }
 
 /// A raised layer stands out at most this share of the bust's height.
-const MAX_RAISED_SHARE: f64 = 0.2;
+pub const MAX_RAISED_SHARE: f64 = 0.2;
 
 /// A displacement map over the head's texture coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize)]

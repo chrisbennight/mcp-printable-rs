@@ -6529,6 +6529,14 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         format!("{refused:?}").contains("raise edge_length_mm"),
         "{refused:?}"
     );
+    // A cap thicker than 20% of the height is refused.
+    let refused = print("x.stl", json!({"hair": "cap", "hair_thickness_mm": 11.0}))
+        .await
+        .unwrap();
+    assert!(
+        format!("{refused:?}").contains("at most 10.0 mm"),
+        "{refused:?}"
+    );
     // A thickness without a cap, and a model without a scalp, are refused.
     let refused = print("x.stl", json!({"hair_thickness_mm": 2.0}))
         .await
@@ -8312,6 +8320,12 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         (
             json!({"print": {"path": "x.stl"}, "detail": {"gain": 99.0}}),
             "gain",
+        ),
+        (
+            json!({"print": {
+                "path": "x.stl", "height_mm": 100.0, "hair": "cap", "hair_thickness_mm": 30.0
+            }}),
+            "at most 20.0 mm",
         ),
         (
             json!({"print": {"path": "x.stl"}, "blender": {"texture": "t.png"}}),

@@ -1296,13 +1296,24 @@ async fn print_bust(
     };
     let hair = params.hair.unwrap_or_default();
     let hair_thickness_mm = match (hair, params.hair_thickness_mm) {
-        (HairStyle::Cap, thickness) => Some(in_range(
-            "hair_thickness_mm",
-            thickness.unwrap_or(
-                HAIR_THICKNESS_SHARE * (height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm)),
-            ),
-            &HAIR_THICKNESS_MM,
-        )?),
+        (HairStyle::Cap, thickness) => {
+            let thickness = in_range(
+                "hair_thickness_mm",
+                thickness.unwrap_or(
+                    HAIR_THICKNESS_SHARE
+                        * (height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm)),
+                ),
+                &HAIR_THICKNESS_MM,
+            )?;
+            let thickest = printable_geom::MAX_RAISED_SHARE * height_mm;
+            if thickness > thickest {
+                return Err(ToolError::Validation(format!(
+                    "hair_thickness_mm must be at most {thickest:.1} mm, {:.0}% of height_mm",
+                    printable_geom::MAX_RAISED_SHARE * 100.0
+                )));
+            }
+            Some(thickness)
+        }
         (HairStyle::None, Some(_)) => {
             return Err(ToolError::Validation(
                 "hair_thickness_mm needs hair cap".into(),
