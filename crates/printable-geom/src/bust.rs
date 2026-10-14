@@ -300,6 +300,9 @@ pub struct Raised {
     pub height_mm: f64,
 }
 
+/// Most texels on a side of a raised layer's map.
+const MAX_RAISED_MAP_TEXELS: usize = 4096;
+
 /// A raised layer over the texture layout: a square grid of values from 0 to
 /// 1, row 0 at v = 1 and column 0 at u = 0, with texel centres placed as in
 /// a colour map. The refined surface samples it at its own texture
@@ -2018,11 +2021,12 @@ fn validate(request: &BustRequest) -> Result<(), GeometryError> {
                     return invalid("a raised layer takes values by vertex or a map, not both");
                 }
                 Some(texels)
-                    if texels.size < 2 || texels.values.len() != texels.size * texels.size =>
+                    if !(2..=MAX_RAISED_MAP_TEXELS).contains(&texels.size)
+                        || texels.values.len() != texels.size * texels.size =>
                 {
-                    return invalid(
-                        "a raised layer's map must be square and at least 2 texels on a side",
-                    );
+                    return invalid(&format!(
+                        "a raised layer's map must be square and 2 to {MAX_RAISED_MAP_TEXELS} texels on a side"
+                    ));
                 }
                 _ => {}
             }
@@ -3368,7 +3372,14 @@ mod tests {
         // with a map are refused.
         let mut both = layer(vec![1.0; 16]);
         both.displacement.as_mut().unwrap().raised[0].values = vec![1.0; plain.vertices.len()];
-        for bad in [layer(vec![1.0; 15]), layer(vec![1.5; 16]), both] {
+        // A side whose square overflows is refused before it is squared.
+        let mut huge = layer(Vec::new());
+        huge.displacement.as_mut().unwrap().raised[0]
+            .map
+            .as_mut()
+            .unwrap()
+            .size = 1 << 32;
+        for bad in [layer(vec![1.0; 15]), layer(vec![1.5; 16]), both, huge] {
             assert!(matches!(
                 prepare_bust(&bad),
                 Err(GeometryError::InvalidOptions(text)) if text.contains("raised layer")

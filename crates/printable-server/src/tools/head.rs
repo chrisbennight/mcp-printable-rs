@@ -1643,14 +1643,14 @@ async fn print_bust(
                 "covers": if given_hair_vertices { "hair_vertices" } else { "scalp" },
             });
         }
-        if let (Some(raised), Some((layer, share))) = (brow_height_mm, brow_report) {
+        if let (Some(raised), Some((layer, share, any))) = (brow_height_mm, brow_report) {
             response["brows"] = json!({
                 "style": brows,
                 "requested_mm": raised,
                 "height_mm": response["bust"]["raised_mm"][layer].clone(),
                 "share": share,
             });
-            if share == 0.0 {
+            if !any {
                 response["brows"]["note"] = json!(
                     "brow_map shows no brows: nothing above the eyes is much darker than the skin around it"
                 );
@@ -1676,14 +1676,15 @@ const EYEBALL_REGIONS: [&str; 2] = ["left_eyeball", "right_eyeball"];
 
 /// The detail map with a layer raised where the colour map at `path` shows
 /// brows, or a map carrying only the brows. Returns the layer's place among
-/// the raised layers and the share of the brow area found to be brow.
+/// the raised layers, the share of the brow area found to be brow, and
+/// whether anything is raised at all.
 async fn with_brows(
     workspace: &Arc<Workspace>,
     model: &Arc<FlameModel>,
     displacement: Option<Displacement>,
     (path, identity): (&str, &[f32]),
     height_mm: f64,
-) -> Result<(Displacement, (usize, f64)), ToolError> {
+) -> Result<(Displacement, (usize, f64, bool)), ToolError> {
     let variant = &model.info().variant;
     let layout = model.uv_layout().ok_or_else(|| {
         ToolError::Validation(format!(
@@ -1766,6 +1767,7 @@ async fn with_brows(
         raised: Vec::new(),
     });
     let layer = map.raised.len();
+    let any = found.values.iter().any(|&value| value > 0.0);
     map.raised.push(Raised {
         values: Vec::new(),
         map: Some(RaisedMap {
@@ -1774,7 +1776,7 @@ async fn with_brows(
         }),
         height_mm,
     });
-    Ok((map, (layer, found.share)))
+    Ok((map, (layer, found.share, any)))
 }
 
 /// A square workspace PNG colour map of a sensible size, as RGB, reduced to

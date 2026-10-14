@@ -6487,7 +6487,7 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     let root = tempfile::tempdir().unwrap();
     // Light skin with a dark patch inside the brow triangle's layout, whose
     // corners lie at (0.1, 0.1), (0.5, 0.5) and (0.5, 0.9).
-    let map = |dark: bool, side: u32| {
+    let map = |dark: bool, faint: bool, side: u32| {
         image::RgbImage::from_fn(side, side, |column, row| {
             let (u, v) = (
                 (column as f32 + 0.5) / side as f32,
@@ -6495,14 +6495,26 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
             );
             if dark && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
                 image::Rgb([40, 30, 25])
+            } else if faint && (0.38..0.48).contains(&u) && (0.55..0.75).contains(&v) {
+                // 70% of the skin's brightness: partly raised, never halfway.
+                image::Rgb([154, 126, 112])
             } else {
                 image::Rgb([220, 180, 160])
             }
         })
     };
-    map(true, 64).save(root.path().join("colour.png")).unwrap();
-    map(true, 1024).save(root.path().join("large.png")).unwrap();
-    map(false, 64).save(root.path().join("bare.png")).unwrap();
+    map(true, false, 64)
+        .save(root.path().join("colour.png"))
+        .unwrap();
+    map(true, false, 1024)
+        .save(root.path().join("large.png"))
+        .unwrap();
+    map(false, false, 64)
+        .save(root.path().join("bare.png"))
+        .unwrap();
+    map(false, true, 64)
+        .save(root.path().join("faint.png"))
+        .unwrap();
     let (_models, full) = library(true, true);
     let server = head_print_server(root.path(), full);
     async fn print(
@@ -6578,6 +6590,22 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
     );
     assert_eq!(
         std::fs::read(root.path().join("bare.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
+    // Faint brows are raised partly; no texel reaches halfway, but the
+    // response does not say there are none.
+    let faint = print(
+        &server,
+        "faint.stl",
+        json!({"brows": "raised", "brow_map": "faint.png"}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(faint["brows"]["share"], 0.0, "{faint}");
+    assert!(faint["brows"].get("note").is_none(), "{faint}");
+    assert_ne!(
+        std::fs::read(root.path().join("faint.stl")).unwrap(),
         std::fs::read(root.path().join("plain.stl")).unwrap()
     );
     // A printer sets a floor of two layers.
