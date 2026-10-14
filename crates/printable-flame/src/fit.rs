@@ -6,9 +6,11 @@
 //! head. The measures compare the head's projection with the photograph's
 //! labels: how much of the head lands on the person rather than the
 //! background, and how much of the photographed face skin the head covers.
+//! The same comparison tells where the photographed head has hair.
 
 use crate::texture::{
-    LABEL_BACKGROUND, LABEL_FACE_SKIN, Labels, Photo, Projection, edge, sample, vertex_normals,
+    LABEL_BACKGROUND, LABEL_BODY_SKIN, LABEL_FACE_SKIN, LABEL_HAIR, Labels, MIN_FACING, Photo,
+    Projection, edge, sample, vertex_normals,
 };
 
 /// Share of the head's projected size added on every side when cropping.
@@ -252,21 +254,7 @@ pub fn fit_measures(
     projection: Projection,
     labels: &Labels<'_>,
 ) -> FitMeasures {
-    // Label pixel p lies at photograph pixel p / step + (left, top).
-    let placed: Vec<([f64; 2], f32)> = vertices
-        .iter()
-        .map(|vertex| {
-            let (pixel, depth) = projection.project(*vertex);
-            (
-                [
-                    (pixel[0] - labels.left) * labels.step,
-                    (pixel[1] - labels.top) * labels.step,
-                ],
-                depth,
-            )
-        })
-        .collect();
-    let coverage = Coverage::render(faces, &placed, labels.side, labels.side);
+    let coverage = label_coverage(faces, vertices, projection, labels);
     let (mut head, mut head_on_person, mut skin, mut skin_covered) =
         (0usize, 0usize, 0usize, 0usize);
     for (at, &label) in labels.data.iter().enumerate() {
@@ -285,6 +273,85 @@ pub fn fit_measures(
         head_on_person: share(head_on_person, head),
         face_skin_covered: share(skin_covered, skin),
     }
+}
+
+/// Add one photograph's votes on where the head has hair to `votes`, which
+/// holds `[hair, skin]` for each vertex. Each label pixel the head covers
+/// that is labelled hair or skin votes for the corners of the triangle
+/// nearest the camera there, by their shares of the pixel's position.
+/// Pixels labelled anything else, such as background where the fit spills
+/// past the person, do not vote. Nor do pixels where that triangle faces
+/// away, which show the inside of the head through an opening such as the
+/// neck, or is seen at a grazing angle, as the colour map leaves it: there
+/// the fitted head's outline need not match the person's.
+pub fn hair_votes(
+    faces: &[[u32; 3]],
+    vertices: &[[f32; 3]],
+    projection: Projection,
+    labels: &Labels<'_>,
+    votes: &mut [[f64; 2]],
+) {
+    let coverage = label_coverage(faces, vertices, projection, labels);
+    // The camera looks along -z, so a triangle facing it has a positive z
+    // normal.
+    let facing: Vec<bool> = faces
+        .iter()
+        .map(|face| {
+            let [a, b, c] = face.map(|vertex| vertices[vertex as usize]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let normal = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let length = normal.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+            length > 0.0 && normal[2] / length > MIN_FACING
+        })
+        .collect();
+    for (at, &label) in labels.data.iter().enumerate() {
+        let face = coverage.face[at];
+        if face == NO_FACE || !facing[face as usize] {
+            continue;
+        }
+        let side = match label {
+            LABEL_HAIR => 0,
+            LABEL_FACE_SKIN | LABEL_BODY_SKIN => 1,
+            _ => continue,
+        };
+        let [wa, wb] = coverage.weights[at];
+        for (&vertex, share) in faces[face as usize].iter().zip([wa, wb, 1.0 - wa - wb]) {
+            if let Some(entry) = votes.get_mut(vertex as usize) {
+                entry[side] += f64::from(share);
+            }
+        }
+    }
+}
+
+/// The triangle nearest the camera at each pixel of a photograph's labels.
+fn label_coverage(
+    faces: &[[u32; 3]],
+    vertices: &[[f32; 3]],
+    projection: Projection,
+    labels: &Labels<'_>,
+) -> Coverage {
+    // Label pixel p lies at photograph pixel p / step + (left, top).
+    let placed: Vec<([f64; 2], f32)> = vertices
+        .iter()
+        .map(|vertex| {
+            let (pixel, depth) = projection.project(*vertex);
+            (
+                [
+                    (pixel[0] - labels.left) * labels.step,
+                    (pixel[1] - labels.top) * labels.step,
+                ],
+                depth,
+            )
+        })
+        .collect();
+    Coverage::render(faces, &placed, labels.side, labels.side)
 }
 
 #[cfg(test)]
@@ -440,5 +507,70 @@ mod tests {
         let measures = fit_measures(&faces, &vertices, PROJECTION, &labels);
         assert_eq!(measures.face_skin_covered, Some(0.0));
         assert_eq!(measures.head_on_person, None);
+    }
+
+    #[test]
+    fn hair_votes_go_to_the_corners_of_what_each_label_covers() {
+        let (vertices, faces) = squares();
+        // The photograph's own pixels, hair over the left half of the head
+        // and face skin over the right, with background above the head.
+        let data: Vec<u8> = (0..224 * 224)
+            .map(|index| match (index % 224, index / 224) {
+                (_, row) if row < 60 => LABEL_BACKGROUND,
+                (column, _) if column < 112 => LABEL_HAIR,
+                _ => LABEL_FACE_SKIN,
+            })
+            .collect();
+        let labels = Labels {
+            side: 224,
+            data: &data,
+            left: 0.0,
+            top: 0.0,
+            step: 1.0,
+        };
+        let mut votes = vec![[0.0; 2]; vertices.len()];
+        hair_votes(&faces, &vertices, PROJECTION, &labels, &mut votes);
+        // The left square's outer corners are hair alone, the right's skin
+        // alone, and the shared edge has both.
+        for vertex in [0, 3] {
+            assert!(
+                votes[vertex][0] > 100.0 && votes[vertex][1] == 0.0,
+                "{votes:?}"
+            );
+        }
+        for vertex in [4, 5] {
+            assert!(
+                votes[vertex][1] > 100.0 && votes[vertex][0] == 0.0,
+                "{votes:?}"
+            );
+        }
+        for vertex in [1, 2] {
+            assert!(
+                votes[vertex][0] > 100.0 && votes[vertex][1] > 100.0,
+                "{votes:?}"
+            );
+        }
+        // Background does not vote: the top corners (y = 1, rows 56 to 60)
+        // get fewer votes than the bottom ones.
+        let total = |vertex: usize| votes[vertex][0] + votes[vertex][1];
+        assert!(total(3) < total(0), "{votes:?}");
+        // Votes add up over photographs.
+        let once = votes.clone();
+        hair_votes(&faces, &vertices, PROJECTION, &labels, &mut votes);
+        assert!((votes[0][0] - 2.0 * once[0][0]).abs() < 1e-9);
+        // Triangles facing away, the inside of a head, do not vote, nor do
+        // those seen at a grazing angle.
+        let inside: Vec<[u32; 3]> = faces.iter().map(|&[a, b, c]| [a, c, b]).collect();
+        let mut votes = vec![[0.0; 2]; vertices.len()];
+        hair_votes(&inside, &vertices, PROJECTION, &labels, &mut votes);
+        assert!(votes.iter().all(|vote| *vote == [0.0; 2]), "{votes:?}");
+        // Turned 75 degrees about the vertical axis.
+        let (sine, cosine) = 75f32.to_radians().sin_cos();
+        let turned: Vec<[f32; 3]> = vertices
+            .iter()
+            .map(|&[x, y, z]| [x * cosine + z * sine, y, z * cosine - x * sine])
+            .collect();
+        hair_votes(&faces, &turned, PROJECTION, &labels, &mut votes);
+        assert!(votes.iter().all(|vote| *vote == [0.0; 2]), "{votes:?}");
     }
 }

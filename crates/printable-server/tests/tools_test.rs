@@ -6500,6 +6500,7 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     assert!(head_output_validator(&server).is_valid(&value), "{value}");
     assert_eq!(value["hair"]["style"], "cap");
     assert_eq!(value["hair"]["requested_mm"], 3.0);
+    assert_eq!(value["hair"]["covers"], "scalp");
     // The thickness applied, after the bust is scaled to its height.
     let applied = value["hair"]["thickness_mm"].as_f64().unwrap();
     assert!(applied > 0.0 && applied <= 3.0 * 1.05, "{value}");
@@ -6536,6 +6537,40 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         format!("{refused:?}").contains("needs hair cap"),
         "{refused:?}"
     );
+    // Vertices given in place of the scalp: the same vertex gives the same
+    // cap, and they must be the model's and need a cap.
+    let given = print(
+        "given.stl",
+        json!({"hair": "cap", "hair_thickness_mm": 3.0, "hair_vertices": [2]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(given.is_error, Some(false), "{given:?}");
+    assert_eq!(
+        given.structured_content.unwrap()["hair"]["covers"],
+        "hair_vertices"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("given.stl")).unwrap(),
+        std::fs::read(root.path().join("cap.stl")).unwrap()
+    );
+    for (extra, message) in [
+        (
+            json!({"hair_vertices": [2]}),
+            "hair_vertices needs hair cap",
+        ),
+        (
+            json!({"hair": "cap", "hair_vertices": []}),
+            "at least one vertex",
+        ),
+        (
+            json!({"hair": "cap", "hair_vertices": [2, 4]}),
+            "hair_vertices names vertex 4, but the test model has 4",
+        ),
+    ] {
+        let refused = print("x.stl", extra).await.unwrap();
+        assert!(format!("{refused:?}").contains(message), "{refused:?}");
+    }
     let (_bare_models, bare) = library(false);
     let server = head_print_server(root.path(), bare);
     let refused = server
@@ -6545,6 +6580,15 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .await
         .unwrap();
     assert!(format!("{refused:?}").contains("--masks"), "{refused:?}");
+    // A model without a scalp region can still take given vertices.
+    let given = server
+        .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+            "path": "y.stl", "height_mm": 50.0, "edge_length_mm": 5.0, "hair": "cap",
+            "hair_vertices": [2]
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(given.is_error, Some(false), "{given:?}");
 }
 
 #[tokio::test]
@@ -7906,6 +7950,66 @@ async fn head_reconstruct_paints_eyes_on_the_head_it_returns() {
     // On the metre-wide head the iris is a speck; on the returned head it
     // covers much of the front.
     assert!(painted[1] > 20 * painted[0].max(1), "{painted:?}");
+}
+
+#[tokio::test]
+async fn head_reconstruct_finds_the_hairline_in_the_photographs() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // Hair above photograph row 140 and face skin below, over the whole
+    // photograph.
+    let labels = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_fn(224, 224, |_, row| {
+            image::Luma([if row < 140 { 1 } else { 3 }])
+        })
+        .write_to(&mut png, ImageFormat::Png)
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let views = json!([{
+        "shape": [0.0], "expression": [0.0],
+        "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+        "camera": [1.0, -0.5, -0.5],
+        "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+        "image_size": [224, 224],
+        "segmentation": {
+            "labels_png": labels,
+            "classes": ["background", "hair", "body_skin", "face_skin", "clothes", "other"],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "hair_rgb": [20, 10, 5], "hair_pixels": 100
+        }
+    }]);
+    // The camera sees the triangle through vertices 1, 2 and 3: vertex 2 at
+    // the top of the photograph, in the hair, and vertices 1 and 3 at the
+    // bottom, on skin. Vertex 0 lies behind it.
+    let library = flame2020_library_with_regions(
+        false,
+        vec![("scalp".into(), vec![0, 1]), ("forehead".into(), vec![2])],
+    );
+    let reconstruct = |library| async {
+        let (endpoint, _, task) = fake_recon_worker_with(true, json!({"views": views})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let value = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+            }})))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        task.abort();
+        value
+    };
+    let value = reconstruct(library).await;
+    // Vertex 1 is scalp the photograph shows as skin, vertex 2 forehead it
+    // shows as hair, and vertex 0 scalp it does not show.
+    assert_eq!(value["hairline"]["vertices"], json!([0, 2]), "{value}");
+    let photographed = value["hairline"]["photographed"].as_f64().unwrap();
+    assert!((photographed - 2.0 / 3.0).abs() < 1e-9, "{value}");
+    // Without a scalp region there is no hairline to report.
+    let bare = flame2020_library_with_regions(false, vec![("forehead".into(), vec![2])]);
+    assert!(reconstruct(bare).await.get("hairline").is_none());
 }
 
 #[tokio::test]

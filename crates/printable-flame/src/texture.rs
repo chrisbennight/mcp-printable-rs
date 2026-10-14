@@ -34,7 +34,7 @@ use crate::UvLayout;
 const CROP_PIXELS: f64 = 224.0;
 /// Surface turned further than this from the camera, as the cosine of the
 /// angle to the viewing direction, takes no colour from that photograph.
-const MIN_FACING: f32 = 0.35;
+pub(crate) const MIN_FACING: f32 = 0.35;
 /// Points that land within this fraction of the crop of the head's outline in
 /// a photograph take no colour from it: the fitted head's outline never
 /// matches the real one exactly, and the background lies just beyond it.
