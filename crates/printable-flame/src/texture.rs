@@ -295,7 +295,7 @@ pub struct Projection {
 impl Projection {
     /// Photograph pixel coordinates, with pixel centres on integers, and a
     /// depth that grows toward the camera.
-    fn project(&self, point: [f32; 3]) -> ([f64; 2], f32) {
+    pub(crate) fn project(&self, point: [f32; 3]) -> ([f64; 2], f32) {
         let x = f64::from(self.scale) * f64::from(point[0] + self.offset[0]);
         let y = f64::from(self.scale) * f64::from(point[1] + self.offset[1]);
         let crop = [(x + 1.0) * CROP_PIXELS / 2.0, (1.0 - y) * CROP_PIXELS / 2.0];
@@ -334,6 +334,9 @@ pub struct ColourMap {
     /// For painted eyes, the iris colour used and where it came from; `None`
     /// when the eyes were photographed or the head has no eyeballs.
     pub iris: Option<([u8; 3], IrisSource)>,
+    /// For each model triangle, the map's texels on it and how many of them
+    /// some photograph saw directly, as counted for `seen`.
+    pub face_texels: Vec<[u32; 2]>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -608,11 +611,13 @@ fn finish(
     let painted = matches!(scalp, ScalpColour::Hair(_));
     let mut on_surface = 0usize;
     let mut seen = 0usize;
+    let mut face_texels = vec![[0u32; 2]; faces.len()];
     // Painted eyes show no photograph's colour.
     let painted_eyes = painting.is_some_and(|(_, texels)| !texels.is_empty());
     for (index, &face) in texels.face.iter().enumerate() {
         if face != NO_FACE {
             on_surface += 1;
+            face_texels[face as usize][0] += 1;
             // Painted hair shows a photograph's colour only where it saw
             // bare scalp.
             let shown = if painted_eyes && kinds[face as usize] == FaceKind::Eye {
@@ -624,6 +629,7 @@ fn finish(
             };
             if shown > 0.0 {
                 seen += 1;
+                face_texels[face as usize][1] += 1;
             }
         }
     }
@@ -741,6 +747,7 @@ fn finish(
         seen,
         shading: Vec::new(),
         iris,
+        face_texels,
     })
 }
 
@@ -1004,7 +1011,7 @@ impl TexelMap {
     }
 }
 
-fn edge(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
+pub(crate) fn edge(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
 }
 
@@ -1430,7 +1437,7 @@ impl DepthBuffer {
 }
 
 /// Area-weighted vertex normals.
-fn vertex_normals(faces: &[[u32; 3]], vertices: &[[f32; 3]]) -> Vec<[f32; 3]> {
+pub(crate) fn vertex_normals(faces: &[[u32; 3]], vertices: &[[f32; 3]]) -> Vec<[f32; 3]> {
     let mut normals = vec![[0.0f32; 3]; vertices.len()];
     for face in faces {
         let [a, b, c] = face.map(|vertex| vertices[vertex as usize]);
@@ -1451,7 +1458,7 @@ fn vertex_normals(faces: &[[u32; 3]], vertices: &[[f32; 3]]) -> Vec<[f32; 3]> {
 }
 
 /// Bilinear colour at a pixel position, or `None` outside the photograph.
-fn sample(photo: &Photo<'_>, pixel: [f64; 2]) -> Option<[f32; 3]> {
+pub(crate) fn sample(photo: &Photo<'_>, pixel: [f64; 2]) -> Option<[f32; 3]> {
     let [x, y] = pixel;
     if x < 0.0 || y < 0.0 || x > (photo.width - 1) as f64 || y > (photo.height - 1) as f64 {
         return None;
@@ -2281,6 +2288,23 @@ mod tests {
             builder.finish()
         };
         assert_eq!(unseen.unwrap_err(), TextureError::NotVisible);
+    }
+
+    #[test]
+    fn texels_seen_on_each_triangle_add_up_to_seen() {
+        let map = labelled_bake(FaceKind::Skin, LABEL_HAIR, ScalpColour::Photo);
+        let [on_surface, seen] = map.face_texels.iter().fold([0u32; 2], |total, counts| {
+            [total[0] + counts[0], total[1] + counts[1]]
+        });
+        assert_eq!(map.face_texels.len(), 4);
+        assert!(seen > 0 && seen < on_surface, "{:?}", map.face_texels);
+        assert!((f64::from(seen) / f64::from(on_surface) - map.seen).abs() < 1e-12);
+        // The left square was seen and the right, under hair, was not.
+        assert!(
+            map.face_texels[0][1] > 0 && map.face_texels[2][1] == 0,
+            "{:?}",
+            map.face_texels
+        );
     }
 
     #[test]

@@ -123,7 +123,7 @@ measurements do not prove drain of every accepted effect on process termination.
 Run on Linux from a checkout containing the admission tests:
 
 ```sh
-cargo test -p printable-server --test admission_memory_test --locked -- --nocapture
+cargo test -p printable-server --test admission_memory_test --locked -- --ignored --nocapture
 cargo test -p printable-server --test mcp_endpoint_test \
   retained_tool_work_stays_bounded_after_stream_headers_and_disconnects \
   --locked -- --exact --nocapture

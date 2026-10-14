@@ -89,6 +89,12 @@ pub struct ReconRequest {
     /// Needs `eyes` `painted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sclera_colour: Option<[u8; 3]>,
+    /// Workspace path for an RGB PNG picture of the fit: for each
+    /// photograph, the fitted head's outline and the edges of its parts drawn
+    /// over the photograph, beside the head alone, shaded grey, as the
+    /// photograph's camera sees it. Not made when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_path: Option<String>,
     /// Share, 0 to 1 (default 0), of the head's tilt in the primary
     /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
     /// so a bust can keep the subject's natural tilt. The server applies
@@ -159,6 +165,7 @@ impl ReconRequest {
             eyes: None,
             iris_colour: None,
             sclera_colour: None,
+            fit_path: None,
             ..self.clone()
         }
     }
@@ -215,6 +222,16 @@ impl ReconRequest {
         }
         if self.hair_colour.is_some() && self.scalp.unwrap_or_default() != ScalpChoice::Hair {
             return Err(ToolError::Validation("hair_colour needs scalp hair".into()));
+        }
+        if let Some(fit) = &self.fit_path {
+            if !fit.ends_with(".png") {
+                return Err(ToolError::Validation("fit_path must end in .png".into()));
+            }
+            if *fit == self.displacement_path || self.texture_path.as_ref() == Some(fit) {
+                return Err(ToolError::Validation(
+                    "fit_path must differ from displacement_path and texture_path".into(),
+                ));
+            }
         }
         if self
             .texture_size
@@ -678,6 +695,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             eyes: None,
             iris_colour: None,
             sclera_colour: None,
+            fit_path: None,
             neck_tilt: None,
             neck_turn: None,
         }
@@ -693,10 +711,12 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             eyes: Some(EyeChoice::Painted),
             iris_colour: Some([1, 2, 3]),
             sclera_colour: Some([4, 5, 6]),
+            fit_path: Some("fit.png".into()),
             ..request(&["a.jpg"], "map.png")
         };
         let sent = serde_json::to_value(request.for_worker()).unwrap();
         for name in [
+            "fit_path",
             "neck_tilt",
             "neck_turn",
             "texture_size",

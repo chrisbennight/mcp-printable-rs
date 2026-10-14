@@ -1756,11 +1756,24 @@ pub(super) async fn reconstruct(
         }
         None => None,
     };
-    // The colour map projects private snapshots taken here; the worker
-    // reports the digest of the bytes it fitted, so a photograph replaced in
-    // between is caught rather than misregistered. Snapshots stay on disk.
-    let photos = match textured_model {
-        Some(_) => {
+    if let Some(path) = &request.fit_path {
+        validate_scad_destination(&workspace, path, ".png", request.overwrite)?;
+        let fit = workspace.resolve(path, false)?;
+        let others = std::iter::once(&request.displacement_path).chain(&request.texture_path);
+        for other in others {
+            if workspace.resolve(other, false)? == fit {
+                return Err(ToolError::Validation(
+                    "fit_path names the same file as another output".into(),
+                ));
+            }
+        }
+    }
+    // The colour map and the fit picture use private snapshots taken here;
+    // the worker reports the digest of the bytes it fitted, so a photograph
+    // replaced in between is caught rather than misregistered. Snapshots
+    // stay on disk.
+    let photos = match textured_model.is_some() || request.fit_path.is_some() {
+        true => {
             let workspace = Arc::clone(&workspace);
             let images = request.images.clone();
             Some(
@@ -1773,8 +1786,9 @@ pub(super) async fn reconstruct(
                 .await?,
             )
         }
-        None => None,
+        false => None,
     };
+    let photos = photos.map(Arc::new);
     let result = client.reconstruct(&request).await?;
     let field = |name: &str| result.get(name).cloned().unwrap_or(Value::Null);
     // A worker that does not report the primary photograph used the first.
@@ -1811,6 +1825,58 @@ pub(super) async fn reconstruct(
             response["pose"]["neck"] = json!(suggested_neck(rotation, tilt, turn));
         }
     }
+    let model = Arc::clone(
+        library(settings)?
+            .select(Some(&variant))
+            .map_err(ToolError::Validation)?,
+    );
+    // The fit is judged for the head callers build from the returned identity.
+    let identity: Option<Vec<f32>> = serde_json::from_value(field("identity")).ok();
+    if let Some(identity) = identity.clone() {
+        let (model, images, views) = (Arc::clone(&model), request.images.clone(), field("views"));
+        let measures = blocking(move || {
+            Ok::<_, ToolError>(
+                serde_json::from_value::<Vec<ReconView>>(views)
+                    .ok()
+                    .filter(|views| views.len() == images.len())
+                    .map(|views| fit_measures(&model, &identity, &images, &views)),
+            )
+        })
+        .await?;
+        if let Some(measures) = measures {
+            response["fit"] = measures;
+        }
+    }
+    if let (Some(photos), Some(path)) = (&photos, request.fit_path.clone()) {
+        let (workspace, model, images, photos, overwrite) = (
+            Arc::clone(&workspace),
+            Arc::clone(&model),
+            request.images.clone(),
+            Arc::clone(photos),
+            request.overwrite,
+        );
+        let (views, digests) = (field("views"), field("image_sha256"));
+        let picture = blocking(move || {
+            let views = fitted_views(views, digests, &photos)?;
+            let identity = identity.ok_or_else(|| {
+                ToolError::Validation("the reconstruction worker returned no identity".into())
+            })?;
+            fit_picture(
+                &workspace,
+                (&model, &identity),
+                (&images, &photos, &views),
+                &path,
+                overwrite,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ToolError::Validation(format!(
+                "the reconstruction finished and wrote the displacement map, but the fit picture was not made: {error}"
+            ))
+        })?;
+        response["fit_picture"] = picture;
+    }
     if let (Some(model), Some(photos), Some(path)) =
         (textured_model, photos, request.texture_path.clone())
     {
@@ -1834,26 +1900,10 @@ pub(super) async fn reconstruct(
             // Held by the work itself, so a cancelled request cannot let
             // another map start while this one is still being made.
             let _permit = colour_permit;
-            let views: Vec<ReconView> = serde_json::from_value(views).map_err(|_| {
-                ToolError::Validation(
-                    "the reconstruction worker did not describe its view of each photograph"
-                        .into(),
-                )
-            })?;
-            let fitted: Vec<String> = serde_json::from_value(digests).map_err(|_| {
-                ToolError::Validation(
-                    "the reconstruction worker did not identify the photographs it used".into(),
-                )
-            })?;
+            let views = fitted_views(views, digests, &photos)?;
             let identity: Vec<f32> = serde_json::from_value(identity).map_err(|_| {
                 ToolError::Validation("the reconstruction worker returned no identity".into())
             })?;
-            let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
-            if fitted.iter().collect::<Vec<_>>() != read {
-                return Err(ToolError::Validation(
-                    "a photograph changed while it was being reconstructed".into(),
-                ));
-            }
             colour_map(
                 &workspace,
                 &model,
@@ -1885,6 +1935,258 @@ fn snapshot_photo(workspace: &Workspace, image: &str) -> Result<(Snapshot, Strin
     let snapshot = workspace.snapshot_artifact_bounded(image, crate::recon::MAX_IMAGE_BYTES)?;
     let digest = crate::recon::file_digest(snapshot.path())?;
     Ok((snapshot, digest))
+}
+
+/// The worker's view of each photograph, once its digests confirm that it
+/// fitted the bytes the server read and it describes every photograph.
+fn fitted_views(
+    views: Value,
+    digests: Value,
+    photos: &[(Snapshot, String)],
+) -> Result<Vec<ReconView>, ToolError> {
+    let views: Vec<ReconView> = serde_json::from_value(views).map_err(|_| {
+        ToolError::Validation(
+            "the reconstruction worker did not describe its view of each photograph".into(),
+        )
+    })?;
+    let fitted: Vec<String> = serde_json::from_value(digests).map_err(|_| {
+        ToolError::Validation(
+            "the reconstruction worker did not identify the photographs it used".into(),
+        )
+    })?;
+    let read: Vec<&String> = photos.iter().map(|(_, digest)| digest).collect();
+    if fitted.iter().collect::<Vec<_>>() != read {
+        return Err(ToolError::Validation(
+            "a photograph changed while it was being reconstructed".into(),
+        ));
+    }
+    if views.len() != photos.len() {
+        return Err(ToolError::Validation(
+            "the reconstruction worker described a different number of photographs".into(),
+        ));
+    }
+    Ok(views)
+}
+
+/// A head with `identity`, posed and expressed as fitted to one photograph.
+/// With the view's own shape it is the head that photograph was fitted with;
+/// with the identity `reconstruct` returns it is the head callers build.
+fn view_head(
+    model: &FlameModel,
+    view: &ReconView,
+    identity: &[f32],
+) -> Result<PosedHead, printable_flame::ParamError> {
+    model.evaluate(&FlameParams {
+        identity: identity.to_vec(),
+        expression: view.expression.clone(),
+        pose: Pose {
+            global: view.head_rotation,
+            jaw: view.jaw,
+            ..Pose::default()
+        },
+        translation: [0.0; 3],
+    })
+}
+
+/// Where the head fitted to one photograph lands in it.
+fn view_projection(view: &ReconView) -> texture::Projection {
+    texture::Projection {
+        scale: view.camera[0],
+        offset: [view.camera[1], view.camera[2]],
+        crop_left: view.crop.left,
+        crop_top: view.crop.top,
+        crop_step: view.crop.step,
+    }
+}
+
+/// Parts of the head whose photographed share the colour map reports, each
+/// with the model regions it covers.
+const COVERAGE_REGIONS: [(&str, &[&str]); 4] = [
+    ("face", &["face"]),
+    ("scalp", &["scalp"]),
+    ("ears", &["left_ear", "right_ear"]),
+    ("neck", &["neck"]),
+];
+
+/// For each part of the head the model's regions name, the share of its
+/// colour map texels some photograph saw directly, counted as for `seen`.
+fn region_coverage(model: &FlameModel, face_texels: &[[u32; 2]]) -> Value {
+    let mut report = serde_json::Map::new();
+    for (name, regions) in COVERAGE_REGIONS {
+        let mut vertices = std::collections::HashSet::new();
+        let mut known = true;
+        for region in regions {
+            match model.region(region) {
+                Some(indices) => vertices.extend(indices.iter().copied()),
+                None => known = false,
+            }
+        }
+        if !known {
+            continue;
+        }
+        let [total, seen] = model
+            .faces()
+            .iter()
+            .zip(face_texels)
+            .filter(|(face, _)| face.iter().all(|vertex| vertices.contains(vertex)))
+            .fold([0u64; 2], |sum, (_, counts)| {
+                [sum[0] + u64::from(counts[0]), sum[1] + u64::from(counts[1])]
+            });
+        report.insert(
+            name.to_owned(),
+            if total > 0 {
+                json!(seen as f64 / total as f64)
+            } else {
+                Value::Null
+            },
+        );
+    }
+    Value::Object(report)
+}
+
+/// For each photograph, how the returned head, posed as fitted to it,
+/// compares with its labels. The measures are null where the photograph was
+/// not segmented or its labels could not be read.
+fn fit_measures(
+    model: &FlameModel,
+    identity: &[f32],
+    images: &[String],
+    views: &[ReconView],
+) -> Value {
+    images
+        .iter()
+        .zip(views)
+        .map(|(image, view)| {
+            let measures = view.segmentation.as_ref().and_then(|segmentation| {
+                let (side, data) = decode_labels(segmentation).ok()?;
+                let head = view_head(model, view, identity).ok()?;
+                Some(printable_flame::fit::fit_measures(
+                    model.faces(),
+                    &head.vertices,
+                    view_projection(view),
+                    &texture::Labels {
+                        side,
+                        data: &data,
+                        left: segmentation.crop.left,
+                        top: segmentation.crop.top,
+                        step: segmentation.crop.step,
+                    },
+                ))
+            });
+            json!({
+                "image": image,
+                "head_on_person": measures.and_then(|measures| measures.head_on_person),
+                "face_skin_covered": measures.and_then(|measures| measures.face_skin_covered),
+            })
+        })
+        .collect()
+}
+
+/// Model regions whose edges a fit picture draws, in order of precedence
+/// for triangles in more than one.
+const PICTURE_PARTS: [&str; 9] = [
+    "lips",
+    "left_eyeball",
+    "right_eyeball",
+    "nose",
+    "left_ear",
+    "right_ear",
+    "scalp",
+    "neck",
+    "face",
+];
+/// Height of each photograph's picture, in pixels at most.
+const FIT_PICTURE_HEIGHT: usize = 512;
+
+/// The part of the head each triangle belongs to, for a fit picture: from
+/// the model's regions, or otherwise the eyeballs as the parts beside the
+/// head.
+fn picture_parts(model: &FlameModel) -> Vec<u16> {
+    let regions: Vec<std::collections::HashSet<u32>> = PICTURE_PARTS
+        .iter()
+        .filter_map(|name| model.region(name))
+        .map(|indices| indices.iter().copied().collect())
+        .collect();
+    if regions.is_empty() {
+        return texture::minor_parts(model.faces())
+            .into_iter()
+            .map(u16::from)
+            .collect();
+    }
+    model
+        .faces()
+        .iter()
+        .map(|face| {
+            regions
+                .iter()
+                .position(|region| face.iter().all(|vertex| region.contains(vertex)))
+                .map_or(0, |index| index as u16 + 1)
+        })
+        .collect()
+}
+
+/// Write one picture of the fit of the returned head to every photograph,
+/// one above another.
+fn fit_picture(
+    workspace: &Workspace,
+    (model, identity): (&FlameModel, &[f32]),
+    (images, photos, views): (&[String], &[(Snapshot, String)], &[ReconView]),
+    path: &str,
+    overwrite: bool,
+) -> Result<Value, ToolError> {
+    let parts = picture_parts(model);
+    let mut pictures = Vec::with_capacity(views.len());
+    for ((image, (snapshot, _)), view) in images.iter().zip(photos).zip(views) {
+        let photo = decode_photo(&std::fs::read(snapshot.path())?)
+            .map_err(|message| ToolError::Validation(format!("{image}: {message}")))?;
+        let head = view_head(model, view, identity)
+            .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
+        pictures.push(printable_flame::fit::fit_picture(
+            model.faces(),
+            &parts,
+            &printable_flame::fit::FitView {
+                photo: texture::Photo {
+                    width: photo.width() as usize,
+                    height: photo.height() as usize,
+                    rgb: photo.as_raw(),
+                },
+                vertices: &head.vertices,
+                projection: view_projection(view),
+            },
+            FIT_PICTURE_HEIGHT,
+        ));
+    }
+    let width = pictures
+        .iter()
+        .map(|picture| picture.width)
+        .max()
+        .unwrap_or(1);
+    let height: usize = pictures
+        .iter()
+        .map(|picture| picture.height)
+        .sum::<usize>()
+        .max(1);
+    let mut canvas = RgbImage::from_pixel(width as u32, height as u32, image::Rgb([255, 255, 255]));
+    let mut top = 0;
+    for picture in &pictures {
+        for row in 0..picture.height {
+            for column in 0..picture.width {
+                let at = (row * picture.width + column) * 3;
+                canvas.put_pixel(
+                    column as u32,
+                    (top + row) as u32,
+                    image::Rgb([picture.rgb[at], picture.rgb[at + 1], picture.rgb[at + 2]]),
+                );
+            }
+        }
+        top += picture.height;
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    canvas
+        .write_to(&mut bytes, ImageFormat::Png)
+        .map_err(|_| ToolError::Validation("the fit picture could not be encoded".into()))?;
+    let artifact = workspace.write_generated_bytes(path, &bytes.into_inner(), overwrite)?;
+    Ok(json!({"artifact": artifact, "width": width, "height": height}))
 }
 
 /// Side of the colour map in texels unless the caller chooses another.
@@ -2174,17 +2476,7 @@ fn colour_map(
                 "{image} does not have the size the reconstruction worker read"
             )));
         }
-        let head = model
-            .evaluate(&FlameParams {
-                identity: view.shape.clone(),
-                expression: view.expression.clone(),
-                pose: Pose {
-                    global: view.head_rotation,
-                    jaw: view.jaw,
-                    ..Pose::default()
-                },
-                translation: [0.0; 3],
-            })
+        let head = view_head(model, view, &view.shape)
             .map_err(|error| ToolError::Validation(format!("{image}: {error}")))?;
         let labels = view
             .segmentation
@@ -2201,13 +2493,7 @@ fn colour_map(
                     rgb: photo.as_raw(),
                 },
                 vertices: &head.vertices,
-                projection: texture::Projection {
-                    scale: view.camera[0],
-                    offset: [view.camera[1], view.camera[2]],
-                    crop_left: view.crop.left,
-                    crop_top: view.crop.top,
-                    crop_step: view.crop.step,
-                },
+                projection: view_projection(view),
                 labels: labels
                     .as_ref()
                     .map(|(segmentation, (side, data))| texture::Labels {
@@ -2263,6 +2549,7 @@ fn colour_map(
         "width": side,
         "height": side,
         "seen": map.seen,
+        "coverage": region_coverage(model, &map.face_texels),
         "skin_only": segmented == views.len(),
         "scalp": scalp_report,
         "eyes": eye_report,

@@ -69,6 +69,9 @@ visible; these materials do not claim an exhaustive reconstructed inventory.
 For an immutable record or component reference, use the
 [GitHub verification guidance](https://cli.github.com/manual/gh_attestation_verify):
 
+Authenticate the GitHub CLI with `gh auth login` before using the registry-bundle
+verification command. Public image access is separate from CLI authentication.
+
 ```sh
 gh attestation verify "oci://$IMAGE_REFERENCE" --bundle-from-oci \
   --repo chrisbennight/mcp-printable-rs \
@@ -91,6 +94,14 @@ docker create --name printable-release-inspect "$IMAGE_REFERENCE" /unused
 docker cp printable-release-inspect:/evidence ./release-evidence
 docker rm printable-release-inspect
 ```
+
+Retained component bundles can be verified without GitHub login. Set
+`IMAGE_REFERENCE` to that component's immutable reference from the record and
+use the same verification constraints, replacing `--bundle-from-oci` with
+`--bundle ./release-evidence/server/provenance.sigstore.json` for the server.
+For its SBOM, use `server/sbom.sigstore.json` and the SPDX predicate type above.
+Other roles use their corresponding bundle directories. This verifies the
+component; the record's own provenance uses the registry command above.
 
 Installed third-party notices remain in the component images identified by the
 record. The supplement lists notice locations for known bundles; operating-system
