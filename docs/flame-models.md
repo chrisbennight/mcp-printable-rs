@@ -881,7 +881,9 @@ Before the reconstruction starts, `print` gets every check `prepare_print`
 makes on its options, along with the expression scale, joint rotations and
 the share of the height a body leaves the head; `blender` gets its
 expression scale, rotations and appearance checked, and a bump needs
-`reconstruct.texture_path`. Such mistakes cost no reconstruction. The
+`reconstruct.texture_path` and a `.png` path. Such mistakes cost no
+reconstruction. A bump may name a map the reconstruction writes, so whether
+its file is a readable PNG is checked when Blender creates the head. The
 geometry worker applies some rules of its own while it makes the bust, such
 as how wide a plinth's chamfer may be for its diameter; those are reported
 after the reconstruction, with its result. A request

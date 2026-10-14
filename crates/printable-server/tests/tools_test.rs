@@ -7965,6 +7965,13 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
             }}}),
             "needs a colour map",
         ),
+        (
+            json!({"reconstruct": {"texture_path": "colour.png"}, "print": {"path": "x.stl"},
+            "blender": {"appearance": {
+                "bump": {"path": "detail.jpg", "scale_mm": 1.0}
+            }}}),
+            "must be a .png map",
+        ),
         // Fields are refused when given, whatever their value.
         (
             json!({"print": {"path": "x.stl", "pose": {"jaw": [0.0, 0.0, 0.0]}}}),
@@ -8000,7 +8007,13 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
         ),
     ] {
         let mut params = params;
-        params["reconstruct"] = reconstruct.clone();
+        let mut request = reconstruct.clone();
+        if let Some(extra) = params.get("reconstruct").and_then(Value::as_object) {
+            for (key, value) in extra {
+                request[key] = value.clone();
+            }
+        }
+        params["reconstruct"] = request;
         let refused = server
             .invoke_tool(head_call(
                 json!({"action": "photo_to_bust", "params": params}),
