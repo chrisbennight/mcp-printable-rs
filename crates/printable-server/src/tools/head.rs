@@ -1650,6 +1650,11 @@ async fn print_bust(
                 "height_mm": response["bust"]["raised_mm"][layer].clone(),
                 "share": share,
             });
+            if share == 0.0 {
+                response["brows"]["note"] = json!(
+                    "brow_map shows no brows: nothing above the eyes is much darker than the skin around it"
+                );
+            }
         }
         Ok::<_, ToolError>(response)
     })
@@ -1748,12 +1753,8 @@ async fn with_brows(
         .map_err(|error| ToolError::Validation(error.to_string()))
     })
     .await?;
-    if found.share == 0.0 {
-        return Err(ToolError::Validation(
-            "brow_map shows no brows: nothing above the eyes is much darker than the skin around it"
-                .into(),
-        ));
-    }
+    // A map that shows no brows, such as one of a head with light brows,
+    // raises nothing; the response says so.
     let mut map = displacement.unwrap_or_else(|| Displacement {
         width: 2,
         height: 2,

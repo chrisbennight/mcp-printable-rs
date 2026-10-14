@@ -778,8 +778,9 @@ parts there much darker than the region's median brightness, fully raised
 at 55% of it or darker and not raised at 75% or lighter. A map painted with
 dark brows on light skin works the same way. Hair falling within that area,
 or heavy makeup, counts as brow too. The model must be converted with
-`--texture` and `--masks`, and a map that shows nothing dark enough is
-refused.
+`--texture` and `--masks`. A map that shows nothing dark enough, such as
+one of a head with light brows, raises nothing, and the response's `brows`
+says so in a `note`.
 
 The brows follow the map rather than the model's triangles: the refined
 surface samples it at its own texture coordinates, so their outline is as

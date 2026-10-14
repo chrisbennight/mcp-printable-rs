@@ -6559,6 +6559,27 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
         std::fs::read(root.path().join("plain.stl")).unwrap(),
         std::fs::read(root.path().join("brows.stl")).unwrap()
     );
+    // A map that shows no brows raises nothing, and says so.
+    let bare = print(
+        &server,
+        "bare.stl",
+        json!({"brows": "raised", "brow_map": "bare.png"}),
+    )
+    .await;
+    assert_eq!(bare.is_error, Some(false), "{bare:?}");
+    let bare = bare.structured_content.unwrap();
+    assert_eq!(bare["brows"]["share"], 0.0, "{bare}");
+    assert!(
+        bare["brows"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("shows no brows"),
+        "{bare}"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("bare.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
     // A printer sets a floor of two layers.
     let printed = print(
         &server,
@@ -6581,10 +6602,6 @@ async fn head_prepare_print_raises_the_brows_a_colour_map_shows() {
         (
             json!({"brows": "raised", "brow_map": "colour.png", "brow_height_mm": 9.0}),
             "brow_height_mm",
-        ),
-        (
-            json!({"brows": "raised", "brow_map": "bare.png"}),
-            "shows no brows",
         ),
     ] {
         let refused = print(&server, "x.stl", extra).await;
