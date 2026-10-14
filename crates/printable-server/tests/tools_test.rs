@@ -6500,6 +6500,7 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     assert!(head_output_validator(&server).is_valid(&value), "{value}");
     assert_eq!(value["hair"]["style"], "cap");
     assert_eq!(value["hair"]["requested_mm"], 3.0);
+    assert_eq!(value["hair"]["covers"], "scalp");
     // The thickness applied, after the bust is scaled to its height.
     let applied = value["hair"]["thickness_mm"].as_f64().unwrap();
     assert!(applied > 0.0 && applied <= 3.0 * 1.05, "{value}");
@@ -6544,6 +6545,45 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         format!("{refused:?}").contains("needs hair cap"),
         "{refused:?}"
     );
+    // Vertices given in place of the scalp: the same vertex gives the same
+    // cap, and they must be the model's and need a cap.
+    let given = print(
+        "given.stl",
+        json!({"hair": "cap", "hair_thickness_mm": 3.0, "hair_vertices": [2]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(given.is_error, Some(false), "{given:?}");
+    assert_eq!(
+        given.structured_content.unwrap()["hair"]["covers"],
+        "hair_vertices"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("given.stl")).unwrap(),
+        std::fs::read(root.path().join("cap.stl")).unwrap()
+    );
+    // An empty list, as for a head photographed bald, raises nothing.
+    let bald = print("bald.stl", json!({"hair": "cap", "hair_vertices": []}))
+        .await
+        .unwrap();
+    assert_eq!(bald.is_error, Some(false), "{bald:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("bald.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
+    for (extra, message) in [
+        (
+            json!({"hair_vertices": [2]}),
+            "hair_vertices needs hair cap",
+        ),
+        (
+            json!({"hair": "cap", "hair_vertices": [2, 4]}),
+            "hair_vertices names vertex 4, but the test model has 4",
+        ),
+    ] {
+        let refused = print("x.stl", extra).await.unwrap();
+        assert!(format!("{refused:?}").contains(message), "{refused:?}");
+    }
     let (_bare_models, bare) = library(false);
     let server = head_print_server(root.path(), bare);
     let refused = server
@@ -6553,6 +6593,15 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .await
         .unwrap();
     assert!(format!("{refused:?}").contains("--masks"), "{refused:?}");
+    // A model without a scalp region can still take given vertices.
+    let given = server
+        .invoke_tool(head_call(json!({"action": "prepare_print", "params": {
+            "path": "y.stl", "height_mm": 50.0, "edge_length_mm": 5.0, "hair": "cap",
+            "hair_vertices": [2]
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(given.is_error, Some(false), "{given:?}");
 }
 
 #[tokio::test]
@@ -7917,6 +7966,66 @@ async fn head_reconstruct_paints_eyes_on_the_head_it_returns() {
 }
 
 #[tokio::test]
+async fn head_reconstruct_finds_the_hairline_in_the_photographs() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // Hair above photograph row 140 and face skin below, over the whole
+    // photograph.
+    let labels = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_fn(224, 224, |_, row| {
+            image::Luma([if row < 140 { 1 } else { 3 }])
+        })
+        .write_to(&mut png, ImageFormat::Png)
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let views = json!([{
+        "shape": [0.0], "expression": [0.0],
+        "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+        "camera": [1.0, -0.5, -0.5],
+        "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+        "image_size": [224, 224],
+        "segmentation": {
+            "labels_png": labels,
+            "classes": ["background", "hair", "body_skin", "face_skin", "clothes", "other"],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "hair_rgb": [20, 10, 5], "hair_pixels": 100
+        }
+    }]);
+    // The camera sees the triangle through vertices 1, 2 and 3: vertex 2 at
+    // the top of the photograph, in the hair, and vertices 1 and 3 at the
+    // bottom, on skin. Vertex 0 lies behind it.
+    let library = flame2020_library_with_regions(
+        false,
+        vec![("scalp".into(), vec![0, 1]), ("forehead".into(), vec![2])],
+    );
+    let reconstruct = |library| async {
+        let (endpoint, _, task) = fake_recon_worker_with(true, json!({"views": views})).await;
+        let server = recon_server_with(root.path(), &endpoint, library).await;
+        let value = server
+            .invoke_tool(head_call(json!({"action": "reconstruct", "params": {
+                "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+            }})))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        task.abort();
+        value
+    };
+    let value = reconstruct(library).await;
+    // Vertex 1 is scalp the photograph shows as skin, vertex 2 forehead it
+    // shows as hair, and vertex 0 scalp it does not show.
+    assert_eq!(value["hairline"]["vertices"], json!([0, 2]), "{value}");
+    let photographed = value["hairline"]["photographed"].as_f64().unwrap();
+    assert!((photographed - 2.0 / 3.0).abs() < 1e-9, "{value}");
+    // Without a scalp region there is no hairline to report.
+    let bare = flame2020_library_with_regions(false, vec![("forehead".into(), vec![2])]);
+    assert!(reconstruct(bare).await.get("hairline").is_none());
+}
+
+#[tokio::test]
 async fn head_reconstruct_reports_and_pictures_the_fit() {
     let root = tempfile::tempdir().unwrap();
     image::RgbImage::from_pixel(224, 224, image::Rgb([200, 40, 10]))
@@ -8314,6 +8423,101 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
     assert!(
         text.contains("result follows") && text.contains("identity"),
         "{text}"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_to_bust_caps_the_hairline_the_photographs_show() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // Hair above photograph row 140 and face skin below.
+    let labels = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_fn(224, 224, |_, row| {
+            image::Luma([if row < 140 { 1 } else { 3 }])
+        })
+        .write_to(&mut png, ImageFormat::Png)
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let views = json!([{
+        "shape": [0.0], "expression": [0.0],
+        "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+        "camera": [1.0, -0.5, -0.5],
+        "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+        "image_size": [224, 224],
+        "segmentation": {
+            "labels_png": labels,
+            "classes": ["background", "hair", "body_skin", "face_skin", "clothes", "other"],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "hair_rgb": [20, 10, 5], "hair_pixels": 100
+        }
+    }]);
+    // As in the reconstruction test: the hairline is vertices 0 and 2.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        fixture.regions = vec![("scalp".into(), vec![0, 1]), ("forehead".into(), vec![2])];
+    });
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"views": views})).await;
+    let server = recon_server_with(root.path(), &endpoint, library).await;
+    let reconstruct = json!({
+        "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+    });
+    let print = |path: &str| {
+        json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 5.0, "overwrite": true,
+            "hair": "cap", "hair_thickness_mm": 2.0
+        })
+    };
+    let combined = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct, "print": print("combined.stl"), "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(combined.is_error, Some(false), "{combined:?}");
+    let value = combined.structured_content.unwrap();
+    let reconstructed = &value["reconstruct"];
+    assert_eq!(
+        reconstructed["hairline"]["vertices"],
+        json!([0, 2]),
+        "{value}"
+    );
+    assert_eq!(value["print"]["hair"]["covers"], "hair_vertices", "{value}");
+    // The same bust from prepare_print over the hairline, and a different
+    // one over the scalp region.
+    for (path, hairline) in [("hairline.stl", true), ("scalp.stl", false)] {
+        let mut separate = print(path);
+        for key in ["variant", "identity", "expression", "pose"] {
+            separate[key] = reconstructed[key].clone();
+        }
+        if hairline {
+            separate["hair_vertices"] = reconstructed["hairline"]["vertices"].clone();
+        }
+        let made = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": separate}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(made.is_error, Some(false), "{made:?}");
+    }
+    let read = |path: &str| std::fs::read(root.path().join(path)).unwrap();
+    assert_eq!(read("combined.stl"), read("hairline.stl"));
+    assert_ne!(read("combined.stl"), read("scalp.stl"));
+    // The hairline comes from the reconstruction.
+    let mut params = json!({"reconstruct": reconstruct, "print": print("x.stl")});
+    params["print"]["hair_vertices"] = json!([0]);
+    let refused = server
+        .invoke_tool(head_call(
+            json!({"action": "photo_to_bust", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        format!("{refused:?}").contains("print.hair_vertices comes from the reconstruction"),
+        "{refused:?}"
     );
     task.abort();
 }

@@ -378,6 +378,7 @@ reported as an error and not written.
 | `shoulder_height_mm` | 35% of the head's height | 2 to 200 |
 | `hair` | `none` | `none` or `cap`; see [Hair](#hair) |
 | `hair_thickness_mm` | 3% of the height above the plinth with `cap` | 0.2 to 40, and at most 20% of `height_mm` |
+| `hair_vertices` | the scalp region with `cap` | model vertex indices the cap covers |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -735,7 +736,15 @@ for a default cap. The response adds `hair` with the style, `requested_mm`
 and `thickness_mm`, the thickness applied; the `bust` report gives the same
 as `raised_mm`.
 
-In Blender, `scalp` `hair` in `reconstruct` colours the same region in the
+`hair_vertices` covers the listed model vertices instead of the scalp
+region, with the same sloping edge; it needs no `--masks`. An empty list,
+which `reconstruct` gives for a head its photographs show bald all over,
+raises nothing. A cap that covers
+the scalp reports `covers` `scalp` in `hair`, and one over given vertices
+`hair_vertices`. `reconstruct` returns a hairline that follows the
+photographs; see [Use the result](#use-the-result).
+
+In Blender, `scalp` `hair` in `reconstruct` colours the scalp region in the
 hair colour.
 
 On the FLAME 2020 generic head reconstructed from one photograph, a 100 mm
@@ -901,6 +910,27 @@ models get no `eyelids`, so the response can still be passed on whole. With
 such a model, the colour map also projects each photograph onto the head
 with the eyelid closure SMIRK finds in it, so a closed lid takes its colour.
 
+For a model converted with `--masks`, when the worker segments the
+photographs, the response also gives `hairline`. Its `vertices` are the
+vertices of the scalp and forehead regions that have hair: where the
+photographs show the head, those whose pixels are more often labelled hair
+than skin, and elsewhere the scalp. Only surface facing the camera counts,
+at no more of a grazing angle than the colour map takes, and not the inside
+of the head seen through the neck. Pass the vertices as `prepare_print`'s
+`hair_vertices` with `hair` `cap`, so the cap's edge follows the
+photographed hairline. `photographed` is the share of those regions'
+vertices the photographs decided; the rest keep the scalp region.
+
+On the FLAME 2020 generic head reconstructed from one frontal photograph of
+someone with long hair parted in the middle, the photograph decided 38% of
+the 605 scalp and forehead vertices. The hairline took 29 forehead vertices
+at the temples, where the hair falls, and left out 21 scalp vertices: 17 at
+the top of the forehead, where the parting shows skin, and 4 low on one side
+behind the ear. Renders of a 100 mm bust showed the cap's edge lower at the
+temples and higher at the parting than with the scalp region, and the back
+unchanged. The bust was one valid solid and took about 9 seconds, as with
+the scalp region.
+
 `primary_image` reports the photograph that set the expression and detail,
 by its index and path. `head_rotation` is the head's rotation in that
 photograph. To keep some of it on a bust, `neck_tilt` and `neck_turn`, each
@@ -944,12 +974,15 @@ jaw, any suggested neck rotation and surface detail on:
 
 `reconstruct` takes every `reconstruct` option. `print` takes every
 `prepare_print` option except those the reconstruction supplies: `variant`,
-`identity`, `expression`, `eyelids`, `pose.jaw` and `displacement`, and `pose.neck` when
-`neck_tilt` or `neck_turn` suggests one. Naming any of them is refused,
-whatever its value, rather than silently replaced. `detail` takes the `displacement` options other than
-the map itself, and `"apply": false` leaves the detail off. `blender` takes
-the `create` options, under the same rule, and the head is coloured with the
-colour map when the reconstruction makes one.
+`identity`, `expression`, `eyelids`, `pose.jaw`, `displacement` and
+`hair_vertices`, and `pose.neck` when `neck_tilt` or `neck_turn` suggests
+one. Naming any of them is refused, whatever its value, rather than silently
+replaced. With `hair` `cap`, the cap covers the reconstruction's `hairline`
+when it gives one, and the scalp region otherwise. `detail` takes the
+`displacement` options other than the map itself, and `"apply": false`
+leaves the detail off. `blender` takes the `create` options, under the same
+rule, and the head is coloured with the colour map when the reconstruction
+makes one.
 
 Before the reconstruction starts, `print` gets every check `prepare_print`
 makes on its options, along with the expression scale, joint rotations and

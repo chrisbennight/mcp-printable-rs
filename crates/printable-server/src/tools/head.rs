@@ -330,9 +330,15 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<BodyShape>,
     /// Hair on the bust: `none` (the default) or `cap`, a layer raised over
-    /// the scalp with a sloping edge. Needs a model converted with `--masks`.
+    /// the scalp with a sloping edge. Needs a model converted with `--masks`,
+    /// unless `hair_vertices` says where the cap goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair: Option<HairStyle>,
+    /// The model vertices a `cap` covers, in place of the model's scalp
+    /// region, such as a hairline found in photographs. An empty list raises
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hair_vertices: Option<Vec<u32>>,
     /// How far a `cap` stands out from the scalp, 0.2 to 40 mm on the finished
     /// bust (default 3% of the height above the plinth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -882,13 +888,18 @@ pub(super) struct PhotoDetailParams {
 pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
     let share = |name: &str| arguments["reconstruct"][name].as_f64().unwrap_or(0.0);
     let suggests_neck = share("neck_tilt") > 0.0 || share("neck_turn") > 0.0;
-    for (request, own) in [("print", "displacement"), ("blender", "texture")] {
+    for (request, own) in [
+        ("print", &["displacement", "hair_vertices"][..]),
+        ("blender", &["texture"][..]),
+    ] {
         let Some(given) = arguments.get(request).and_then(Value::as_object) else {
             continue;
         };
         let pose = given.get("pose").and_then(Value::as_object);
-        let named = ["variant", "identity", "expression", "eyelids", own]
-            .into_iter()
+        let named = ["variant", "identity", "expression", "eyelids"]
+            .iter()
+            .chain(own)
+            .copied()
             .find(|field| given.contains_key(*field))
             .or_else(|| {
                 pose.and_then(|pose| {
@@ -1007,6 +1018,11 @@ pub(super) async fn photo_to_bust(
     print.identity = identity.clone();
     print.expression = expression.clone();
     print.eyelids = eyelids;
+    // A cap follows the hairline the photographs show, when they show one.
+    if print.hair == Some(HairStyle::Cap) {
+        print.hair_vertices =
+            serde_json::from_value(reconstructed["hairline"]["vertices"].clone()).ok();
+    }
     print.pose.jaw = jaw;
     if let Some(neck) = neck {
         print.pose.neck = neck;
@@ -1306,6 +1322,9 @@ async fn print_bust(
         }
         (HairStyle::None, None) => None,
     };
+    if params.hair_vertices.is_some() && hair != HairStyle::Cap {
+        return Err(ToolError::Validation("hair_vertices needs hair cap".into()));
+    }
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -1398,8 +1417,14 @@ async fn print_bust(
         None => (None, None),
     };
     let detail_requested = displacement.is_some();
+    let given_hair_vertices = params.hair_vertices.is_some();
     let displacement = match hair_thickness_mm {
-        Some(thickness) => Some(with_hair_cap(&model, displacement, thickness)?),
+        Some(thickness) => Some(with_hair_cap(
+            &model,
+            displacement,
+            thickness,
+            params.hair_vertices.as_deref(),
+        )?),
         None => displacement,
     };
     let head_vertices = millimetres(&head.vertices);
@@ -1518,6 +1543,7 @@ async fn print_bust(
                 "style": hair,
                 "requested_mm": thickness,
                 "thickness_mm": applied,
+                "covers": if given_hair_vertices { "hair_vertices" } else { "scalp" },
             });
         }
         Ok::<_, ToolError>(response)
@@ -1532,19 +1558,34 @@ const HAIR_THICKNESS_MM: std::ops::RangeInclusive<f64> = 0.2..=40.0;
 /// Rings of neighbouring vertices over which a hair cap's edge slopes.
 const HAIR_EDGE_RINGS: usize = 2;
 
-/// The detail map with a cap of hair raised over the scalp, or a flat map
-/// carrying only the cap.
+/// The detail map with a cap of hair raised over the scalp, or over the
+/// given vertices, or a flat map carrying only the cap.
 fn with_hair_cap(
     model: &FlameModel,
     displacement: Option<Displacement>,
     thickness_mm: f64,
+    vertices: Option<&[u32]>,
 ) -> Result<Displacement, ToolError> {
-    let scalp = model.region("scalp").ok_or_else(|| {
-        ToolError::Validation(format!(
-            "the {} model has no scalp region; convert it again with --masks for a hair cap",
-            model.info().variant
-        ))
-    })?;
+    let covered = match vertices {
+        Some(vertices) => {
+            // An empty list, as for a head photographed bald all over,
+            // raises nothing.
+            let count = model.vertex_count();
+            if let Some(vertex) = vertices.iter().find(|&&vertex| vertex as usize >= count) {
+                return Err(ToolError::Validation(format!(
+                    "hair_vertices names vertex {vertex}, but the {} model has {count}",
+                    model.info().variant
+                )));
+            }
+            vertices
+        }
+        None => model.region("scalp").ok_or_else(|| {
+            ToolError::Validation(format!(
+                "the {} model has no scalp region; convert it again with --masks for a hair cap, or give hair_vertices",
+                model.info().variant
+            ))
+        })?,
+    };
     // A cap alone needs no texture layout: a flat map with every corner at
     // the same place carries it.
     let mut map = displacement.unwrap_or_else(|| Displacement {
@@ -1558,7 +1599,12 @@ fn with_hair_cap(
         raised: Vec::new(),
     });
     map.raised.push(Raised {
-        values: sloped_region(model.faces(), model.vertex_count(), scalp, HAIR_EDGE_RINGS),
+        values: sloped_region(
+            model.faces(),
+            model.vertex_count(),
+            covered,
+            HAIR_EDGE_RINGS,
+        ),
         height_mm: thickness_mm,
     });
     Ok(map)
@@ -2037,21 +2083,30 @@ pub(super) async fn reconstruct(
             .select(Some(&variant))
             .map_err(ToolError::Validation)?,
     );
-    // The fit is judged for the head callers build from the returned identity.
+    // The fit is judged, and the hairline found, for the head callers build
+    // from the returned identity.
     let identity: Option<Vec<f32>> = serde_json::from_value(field("identity")).ok();
     if let Some(identity) = identity.clone() {
         let (model, images, views) = (Arc::clone(&model), request.images.clone(), field("views"));
-        let measures = blocking(move || {
+        let judged = blocking(move || {
             Ok::<_, ToolError>(
                 serde_json::from_value::<Vec<ReconView>>(views)
                     .ok()
                     .filter(|views| views.len() == images.len())
-                    .map(|views| fit_measures(&model, &identity, &images, &views)),
+                    .map(|views| {
+                        (
+                            fit_measures(&model, &identity, &images, &views),
+                            photographed_hairline(&model, &identity, &views),
+                        )
+                    }),
             )
         })
         .await?;
-        if let Some(measures) = measures {
+        if let Some((measures, hairline)) = judged {
             response["fit"] = measures;
+            if let Some(hairline) = hairline {
+                response["hairline"] = hairline;
+            }
         }
     }
     if let (Some(photos), Some(path)) = (&photos, request.fit_path.clone()) {
@@ -2293,6 +2348,81 @@ fn fit_measures(
             })
         })
         .collect()
+}
+
+/// Model regions where photographs place the hair cap's edge: the scalp,
+/// which the cap covers where no photograph shows the head, and the
+/// forehead, which hair can cover.
+const HAIRLINE_REGIONS: [&str; 2] = ["scalp", "forehead"];
+/// Votes, in label pixels, a vertex needs before the photographs decide
+/// whether it has hair.
+const MIN_HAIR_VOTES: f64 = 1.0;
+
+/// The vertices of the hairline regions that have hair: where the
+/// photographs' labels show the head, those with more votes for hair than
+/// for skin, and elsewhere the scalp. `None` without a scalp region or
+/// without labels for any photograph.
+fn photographed_hairline(
+    model: &FlameModel,
+    identity: &[f32],
+    views: &[ReconView],
+) -> Option<Value> {
+    let scalp: std::collections::HashSet<u32> = model.region("scalp")?.iter().copied().collect();
+    let mut votes = vec![[0.0; 2]; model.vertex_count()];
+    let mut labelled = false;
+    for view in views {
+        let Some(segmentation) = &view.segmentation else {
+            continue;
+        };
+        let (Ok((side, data)), Ok(head)) = (
+            decode_labels(segmentation),
+            view_head(model, view, identity),
+        ) else {
+            continue;
+        };
+        printable_flame::fit::hair_votes(
+            model.faces(),
+            &head.vertices,
+            view_projection(view),
+            &texture::Labels {
+                side,
+                data: &data,
+                left: segmentation.crop.left,
+                top: segmentation.crop.top,
+                step: segmentation.crop.step,
+            },
+            &mut votes,
+        );
+        labelled = true;
+    }
+    if !labelled {
+        return None;
+    }
+    let mut candidates: Vec<u32> = HAIRLINE_REGIONS
+        .iter()
+        .filter_map(|name| model.region(name))
+        .flatten()
+        .copied()
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    let (mut vertices, mut photographed) = (Vec::new(), 0usize);
+    for vertex in &candidates {
+        let [hair, skin] = votes[*vertex as usize];
+        let has_hair = if hair + skin >= MIN_HAIR_VOTES {
+            photographed += 1;
+            hair > skin
+        } else {
+            scalp.contains(vertex)
+        };
+        if has_hair {
+            vertices.push(*vertex);
+        }
+    }
+    Some(json!({
+        "vertices": vertices,
+        "photographed": photographed as f64 / candidates.len() as f64,
+    }))
 }
 
 /// Model regions whose edges a fit picture draws, in order of precedence
