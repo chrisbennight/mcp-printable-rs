@@ -393,6 +393,11 @@ pub struct BustReport {
     pub hollow: Option<HollowReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displacement: Option<DisplacementReport>,
+    /// How far each raised layer stands out at full height on the finished
+    /// bust. The bust is scaled to its height after the layers are raised,
+    /// so a layer that lifts the crown stands out a little less than asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raised_mm: Vec<f64>,
     /// Surface facing down more steeply than the checked angle, measured
     /// before any plinth was added. The faces resting on the base are left
     /// out.
@@ -593,11 +598,11 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         let mut vertices = Vec::new();
         let mut triangles = Vec::new();
         let mut distances = Vec::new();
-        for part in &smooth {
+        for (part, coarse) in smooth.iter().zip(&parts) {
             let refined = part.refine_to_length(edge);
             let mesh = match displacement {
                 Some(map) => {
-                    let (mesh, applied) = displaced(&refined, map, scale);
+                    let (mesh, applied) = displaced(&refined, map, scale, coarse.triangles.len());
                     distances.extend(applied);
                     mesh
                 }
@@ -788,6 +793,12 @@ fn prepare_at(request: &BustRequest, minimum_edge: f64) -> Result<Prepared, Geom
         hollow,
         displacement: relieved.map(|(_, relief_scale, limited)| {
             detail_report(&mut distances, correction, (relief_scale, limited))
+        }),
+        raised_mm: request.displacement.as_ref().map_or_else(Vec::new, |map| {
+            map.raised
+                .iter()
+                .map(|layer| layer.height_mm * correction)
+                .collect()
         }),
         overhang,
         thin,
@@ -2136,20 +2147,19 @@ fn close_part(
     })
 }
 
-/// How far, in millimetres on the bust, a raised layer's height is blended
-/// across the refined surface. The layer is interpolated linearly within the
-/// head's triangles, which would leave creases along their edges where it
-/// slopes.
-const RAISED_BLEND_MM: f64 = 4.0;
-/// The most blending passes made, whatever the edge length.
-const MAX_RAISED_PASSES: usize = 200;
+/// How far a raised layer's height is blended across the refined surface,
+/// in widths of the head's own triangles. The layer is interpolated linearly
+/// within those triangles, which would leave creases along their edges where
+/// it slopes.
+const RAISED_BLEND_TRIANGLES: f64 = 1.5;
 
 /// The raised layers' height at each merged vertex, blended with its
-/// neighbours over about `RAISED_BLEND_MM`. Untouched when nothing is raised.
+/// neighbours over about `RAISED_BLEND_TRIANGLES` widths of the part's
+/// `coarse_triangles`. Untouched when nothing is raised.
 fn smoothed_raise(
     offsets: &[(f64, f64, u32)],
     triangles: &[[usize; 3]],
-    position: impl Fn(usize) -> [f64; 3],
+    coarse_triangles: usize,
 ) -> Vec<f64> {
     let mut raised: Vec<f64> = offsets
         .iter()
@@ -2159,19 +2169,19 @@ fn smoothed_raise(
         return raised;
     }
     let mut neighbours = vec![Vec::new(); raised.len()];
-    let mut length = 0.0;
     for &[a, b, c] in triangles {
         for (from, to) in [(a, b), (b, c), (c, a)] {
             neighbours[from].push(to);
             neighbours[to].push(from);
-            length += norm(sub(position(from), position(to)));
         }
     }
-    // Each pass spreads a value about one edge, and n passes about the
-    // square root of n edges.
-    let edge = length / (3 * triangles.len()) as f64;
-    let passes =
-        ((RAISED_BLEND_MM / edge.max(1e-9)).powi(2).ceil() as usize).min(MAX_RAISED_PASSES);
+    // A pass spreads a value about one refined edge, and n passes about the
+    // square root of n edges. Over the same area, a coarse triangle is as
+    // wide as the square root of the ratio of triangle counts in refined
+    // edges, so the passes follow that ratio, which the triangle limit
+    // bounds, and the blend is as wide on a fine mesh as on a coarse one.
+    let ratio = triangles.len() as f64 / coarse_triangles.max(1) as f64;
+    let passes = (RAISED_BLEND_TRIANGLES.powi(2) * ratio).ceil() as usize;
     for _ in 0..passes {
         raised = (0..raised.len())
             .map(|vertex| {
@@ -2344,7 +2354,12 @@ impl PropertyMesh {
 /// normal by the map value at its texture coordinates times its weight,
 /// scaled from the request's units to the bust's, and the distance each
 /// vertex moved.
-fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh, Vec<f64>) {
+fn displaced(
+    solid: &Manifold,
+    map: &Displacement,
+    scale: f64,
+    coarse_triangles: usize,
+) -> (TriangleMesh, Vec<f64>) {
     let mesh = solid.to_meshgl64();
     let width = mesh.num_prop();
     let properties = mesh.vert_properties();
@@ -2382,7 +2397,7 @@ fn displaced(solid: &Manifold, map: &Displacement, scale: f64) -> (TriangleMesh,
         entry.1 += properties[at + 6];
         entry.2 += 1;
     }
-    let raised = smoothed_raise(&offsets, &triangles, position);
+    let raised = smoothed_raise(&offsets, &triangles, coarse_triangles);
     // Area-weighted normals.
     let mut normals = vec![[0.0; 3]; count];
     for &[a, b, c] in &triangles {
@@ -2760,7 +2775,7 @@ mod tests {
             raised: Vec::new(),
         };
         let solid = part_solid(&part, |vertex| vertex, Some(&map)).unwrap();
-        let (raised, distances) = displaced(&solid, &map, 2.0);
+        let (raised, distances) = displaced(&solid, &map, 2.0, part.triangles.len());
         assert!(distances.iter().all(|&distance| distance == 0.5));
         for vertex in &raised.vertices {
             let radius = norm(*vertex);
@@ -3185,13 +3200,13 @@ mod tests {
     fn a_raised_layer_stands_out_by_its_height() {
         let plain = with_map(request(1.0, 1_000_000), |_, _| 0.0);
         let (_, flat) = prepare_bust(&plain).unwrap();
-        // The front of the part jutting from the box, at z = 49, raised 2 mm.
-        // It is the bust's deepest point and away from its top, so the depth
-        // grows by the layer's height and the height stays as asked.
-        let values: Vec<f32> = plain
-            .vertices
-            .iter()
-            .map(|vertex| if vertex[2] > 45.0 { 1.0 } else { 0.0 })
+        // The part jutting from the box raised 2 mm. Its front is the bust's
+        // deepest point and away from its top, so the depth grows by the
+        // layer's height and the height stays as asked. The whole part is
+        // raised because the blend spans about one of the fixture's large
+        // triangles.
+        let values: Vec<f32> = (0..plain.vertices.len())
+            .map(|index| if index >= 8 { 1.0 } else { 0.0 })
             .collect();
         let mut raised = plain.clone();
         raised.displacement.as_mut().unwrap().raised = vec![Raised {
@@ -3200,9 +3215,15 @@ mod tests {
         }];
         let (mesh, report) = prepare_bust(&raised).unwrap();
         assert!(validated(&mesh).solid_geometry);
-        // Upright, the head's depth is the bust's y.
+        // Upright, the head's depth is the bust's y. The layer is raised
+        // before the bust is scaled to its height, which on this fixture
+        // shrinks it noticeably; the report gives the height applied, and
+        // the depth grows by just that.
         let grown = report.size_mm[1] - flat.size_mm[1];
-        assert!((grown - 2.0).abs() < 0.5, "{grown}");
+        assert_eq!(report.raised_mm.len(), 1);
+        let applied = report.raised_mm[0];
+        assert!((0.5..=2.0).contains(&applied), "{applied}");
+        assert!((grown - applied).abs() < 0.1, "{grown} {applied}");
         // The layer is not detail.
         let detail = report.displacement.expect("displacement report");
         assert!(
@@ -3226,6 +3247,50 @@ mod tests {
                 Err(GeometryError::InvalidOptions(text)) if text.contains("raised layer")
             ));
         }
+    }
+
+    #[test]
+    fn a_raised_layer_blends_as_wide_on_fine_meshes_as_on_coarse_ones() {
+        // A unit square in an n by n grid of triangle pairs, raised along a
+        // ramp from x = 0.4 to 0.6, which both grids hold exactly, whose
+        // coarse model is a 4 by 4 grid.
+        let profile = |n: usize| {
+            let at = |row: usize, column: usize| row * (n + 1) + column;
+            let triangles: Vec<[usize; 3]> = (0..n)
+                .flat_map(|row| {
+                    (0..n).flat_map(move |column| {
+                        [
+                            [
+                                at(row, column),
+                                at(row, column + 1),
+                                at(row + 1, column + 1),
+                            ],
+                            [
+                                at(row, column),
+                                at(row + 1, column + 1),
+                                at(row + 1, column),
+                            ],
+                        ]
+                    })
+                })
+                .collect();
+            let offsets: Vec<(f64, f64, u32)> = (0..(n + 1) * (n + 1))
+                .map(|index| {
+                    let x = (index % (n + 1)) as f64 / n as f64;
+                    (0.0, ((x - 0.4) / 0.2).clamp(0.0, 1.0), 1)
+                })
+                .collect();
+            let raised = smoothed_raise(&offsets, &triangles, 2 * 4 * 4);
+            // Along the middle row, where the ramp starts and ends.
+            let row = n / 2;
+            [0.4, 0.6].map(|x| raised[at(row, (x * n as f64).round() as usize)])
+        };
+        let (coarse, fine) = (profile(16), profile(48));
+        for (a, b) in coarse.iter().zip(&fine) {
+            assert!((a - b).abs() < 0.05, "{coarse:?} {fine:?}");
+        }
+        // The ramp's ends are blended: neither is still at 0 or 1.
+        assert!(fine[0] > 0.02 && fine[1] < 0.98, "{fine:?}");
     }
 
     #[test]

@@ -1210,7 +1210,19 @@ pub(super) async fn prepare_print(
             response["mouth"] = mouth;
         }
         if let Some(thickness) = hair_thickness_mm {
-            response["hair"] = json!({"style": hair, "thickness_mm": thickness});
+            // The cap is the last raised layer; the bust is scaled to its
+            // height after the cap is raised, so the applied thickness can
+            // be a little less than the requested one.
+            let applied = response["bust"]["raised_mm"]
+                .as_array()
+                .and_then(|layers| layers.last())
+                .cloned()
+                .unwrap_or(Value::Null);
+            response["hair"] = json!({
+                "style": hair,
+                "requested_mm": thickness,
+                "thickness_mm": applied,
+            });
         }
         Ok::<_, ToolError>(response)
     })

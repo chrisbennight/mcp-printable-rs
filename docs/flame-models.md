@@ -689,21 +689,27 @@ the height above the plinth, which is about short hair at life size. The cap
 covers FLAME's scalp region, so the model must be converted with `--masks`;
 the texture layout is not needed. Its edge slopes to nothing over about two
 rings of the model's vertices around the scalp, and the layer's height is
-blended across the refined surface over about 4 mm, so the cap's surface is
-smooth rather than following the model's large triangles. The cap is raised
-on top of any surface detail and is not scaled by `relief_mm`. The response
-adds `hair` with the style and thickness used.
+blended across the refined surface over about one and a half of the model's
+own triangles, whatever the edge length, so the cap's surface is smooth
+rather than following those triangles. The cap is raised on top of any
+surface detail and is not scaled by `relief_mm`.
+
+The bust is scaled to `height_mm` after the cap is raised, and the cap lifts
+the crown, so the thickness applied is a little less than asked, about 3%
+for a default cap. The response adds `hair` with the style, `requested_mm`
+and `thickness_mm`, the thickness applied; the `bust` report gives the same
+as `raised_mm`.
 
 In Blender, `scalp` `hair` in `reconstruct` colours the same region in the
 hair colour.
 
 On the FLAME 2020 generic head reconstructed from one photograph, a 100 mm
-FDM bust with the default cap, 2.8 mm thick, was one valid solid and took
-about 8 seconds. Renders showed the crown and back of the head fuller,
-with a soft hairline in front and above the ears and no seams. The `thin`
-report grew from 2.2 to 4.2 mm², near the ears, where the cap's edge passes
-close to their tops. A 150 mm bust with a 6 mm cap was one valid solid and
-took 21 seconds.
+FDM bust with the default cap, 2.76 mm asked and 2.68 mm applied, was one
+valid solid and took about 9 seconds. Renders showed the crown and back of
+the head fuller, with a soft hairline in front and above the ears and no
+seams. The `thin` report grew from 2.2 to 5.5 mm², near the ears, where the
+cap's edge passes close to their tops. A 150 mm bust with a 6 mm cap, 5.77 mm
+applied, was one valid solid and took 23 seconds.
 
 ## Reconstruct a head from photographs
 

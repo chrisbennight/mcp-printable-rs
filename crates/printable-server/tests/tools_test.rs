@@ -6498,7 +6498,12 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
     assert_eq!(capped.is_error, Some(false), "{capped:?}");
     let value = capped.structured_content.unwrap();
     assert!(head_output_validator(&server).is_valid(&value), "{value}");
-    assert_eq!(value["hair"], json!({"style": "cap", "thickness_mm": 3.0}));
+    assert_eq!(value["hair"]["style"], "cap");
+    assert_eq!(value["hair"]["requested_mm"], 3.0);
+    // The thickness applied, after the bust is scaled to its height.
+    let applied = value["hair"]["thickness_mm"].as_f64().unwrap();
+    assert!(applied > 0.0 && applied <= 3.0 * 1.05, "{value}");
+    assert_eq!(value["bust"]["raised_mm"], json!([applied]));
     assert_eq!(value["validation"]["solid_geometry"], true, "{value}");
     // A cap alone carries no detail to report.
     assert!(value["bust"].get("displacement").is_none(), "{value}");
@@ -6512,7 +6517,7 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         .unwrap()
         .structured_content
         .unwrap();
-    assert!((default["hair"]["thickness_mm"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    assert!((default["hair"]["requested_mm"].as_f64().unwrap() - 1.5).abs() < 1e-9);
     // A thickness without a cap, and a model without a scalp, are refused.
     let refused = print("x.stl", json!({"hair_thickness_mm": 2.0}))
         .await
