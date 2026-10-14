@@ -7,6 +7,7 @@ use super::*;
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
 use printable_geom::{
     Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
+    Raised,
 };
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
@@ -328,6 +329,14 @@ pub(super) struct HeadPreparePrintParams {
     /// chest and shoulders. The head keeps at least half the height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<BodyShape>,
+    /// Hair on the bust: `none` (the default) or `cap`, a layer raised over
+    /// the scalp with a sloping edge. Needs a model converted with `--masks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hair: Option<HairStyle>,
+    /// How far a `cap` stands out from the scalp, 0.2 to 40 mm on the finished
+    /// bust (default 3% of the height above the plinth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hair_thickness_mm: Option<f64>,
     /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
     /// head's height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -428,6 +437,19 @@ pub(super) enum BodyShape {
     ExtendedNeck,
     /// A block of chest and shoulders.
     Shoulders,
+}
+
+/// Hair on a bust.
+#[derive(
+    Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum HairStyle {
+    /// The bare scalp.
+    #[default]
+    None,
+    /// A layer raised over the scalp.
+    Cap,
 }
 
 /// How the eyes of a bust are carved.
@@ -1257,6 +1279,33 @@ async fn print_bust(
             depth_mm: params.shoulder_depth_mm,
         }),
     };
+    let hair = params.hair.unwrap_or_default();
+    let hair_thickness_mm = match (hair, params.hair_thickness_mm) {
+        (HairStyle::Cap, thickness) => {
+            let thickness = in_range(
+                "hair_thickness_mm",
+                thickness.unwrap_or(
+                    HAIR_THICKNESS_SHARE
+                        * (height_mm - plinth.map_or(0.0, |plinth| plinth.height_mm)),
+                ),
+                &HAIR_THICKNESS_MM,
+            )?;
+            let thickest = printable_geom::MAX_RAISED_SHARE * height_mm;
+            if thickness > thickest {
+                return Err(ToolError::Validation(format!(
+                    "hair_thickness_mm must be at most {thickest:.1} mm, {:.0}% of height_mm",
+                    printable_geom::MAX_RAISED_SHARE * 100.0
+                )));
+            }
+            Some(thickness)
+        }
+        (HairStyle::None, Some(_)) => {
+            return Err(ToolError::Validation(
+                "hair_thickness_mm needs hair cap".into(),
+            ));
+        }
+        (HairStyle::None, None) => None,
+    };
     let mouth = params.mouth.unwrap_or_default();
     let mouth_recess_mm = match (mouth, params.mouth_recess_mm) {
         (MouthShape::Recessed, recess) => Some(in_range(
@@ -1348,6 +1397,11 @@ async fn print_bust(
         }
         None => (None, None),
     };
+    let detail_requested = displacement.is_some();
+    let displacement = match hair_thickness_mm {
+        Some(thickness) => Some(with_hair_cap(&model, displacement, thickness)?),
+        None => displacement,
+    };
     let head_vertices = millimetres(&head.vertices);
     let request = BustRequest {
         vertices: head_vertices
@@ -1417,6 +1471,10 @@ async fn print_bust(
         if let (Some(filter), Some(applied)) = (detail_filter, report.get_mut("displacement")) {
             applied["filter"] = filter;
         }
+        // A cap alone carries no detail to report.
+        if !detail_requested && let Some(report) = report.as_object_mut() {
+            report.remove("displacement");
+        }
         name_regions(&model, &head_vertices, &mut report);
         if let Some(carved) = report.get_mut("eyes") {
             carved["style"] = json!(eye_style);
@@ -1447,9 +1505,98 @@ async fn print_bust(
             }
             response["mouth"] = mouth;
         }
+        if let Some(thickness) = hair_thickness_mm {
+            // The cap is the last raised layer; the bust is scaled to its
+            // height after the cap is raised, so the applied thickness can
+            // be a little less than the requested one.
+            let applied = response["bust"]["raised_mm"]
+                .as_array()
+                .and_then(|layers| layers.last())
+                .cloned()
+                .unwrap_or(Value::Null);
+            response["hair"] = json!({
+                "style": hair,
+                "requested_mm": thickness,
+                "thickness_mm": applied,
+            });
+        }
         Ok::<_, ToolError>(response)
     })
     .await
+}
+
+/// A hair cap's thickness, by default as a share of the height above the
+/// plinth, about life size, and its range in millimetres.
+const HAIR_THICKNESS_SHARE: f64 = 0.03;
+const HAIR_THICKNESS_MM: std::ops::RangeInclusive<f64> = 0.2..=40.0;
+/// Rings of neighbouring vertices over which a hair cap's edge slopes.
+const HAIR_EDGE_RINGS: usize = 2;
+
+/// The detail map with a cap of hair raised over the scalp, or a flat map
+/// carrying only the cap.
+fn with_hair_cap(
+    model: &FlameModel,
+    displacement: Option<Displacement>,
+    thickness_mm: f64,
+) -> Result<Displacement, ToolError> {
+    let scalp = model.region("scalp").ok_or_else(|| {
+        ToolError::Validation(format!(
+            "the {} model has no scalp region; convert it again with --masks for a hair cap",
+            model.info().variant
+        ))
+    })?;
+    // A cap alone needs no texture layout: a flat map with every corner at
+    // the same place carries it.
+    let mut map = displacement.unwrap_or_else(|| Displacement {
+        width: 2,
+        height: 2,
+        values: vec![0.0; 4],
+        triangle_uvs: vec![[[0.0; 2]; 3]; model.faces().len()],
+        relief_mm: None,
+        limit_relief: false,
+        faded: Vec::new(),
+        raised: Vec::new(),
+    });
+    map.raised.push(Raised {
+        values: sloped_region(model.faces(), model.vertex_count(), scalp, HAIR_EDGE_RINGS),
+        height_mm: thickness_mm,
+    });
+    Ok(map)
+}
+
+/// 1 on a region's vertices and 0 elsewhere, blended with each vertex's
+/// neighbours `rings` times so that the region's edge slopes.
+fn sloped_region(
+    faces: &[[u32; 3]],
+    vertex_count: usize,
+    region: &[u32],
+    rings: usize,
+) -> Vec<f32> {
+    let mut neighbours = vec![Vec::new(); vertex_count];
+    for face in faces {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            neighbours[a as usize].push(b as usize);
+            neighbours[b as usize].push(a as usize);
+        }
+    }
+    let mut weights = vec![0.0f32; vertex_count];
+    for &vertex in region {
+        weights[vertex as usize] = 1.0;
+    }
+    for _ in 0..rings {
+        weights = (0..vertex_count)
+            .map(|vertex| {
+                let around = &neighbours[vertex];
+                if around.is_empty() {
+                    return weights[vertex];
+                }
+                let mean =
+                    around.iter().map(|&other| weights[other]).sum::<f32>() / around.len() as f32;
+                (weights[vertex] + mean) / 2.0
+            })
+            .collect();
+    }
+    weights
 }
 
 /// Each eyeball's centre and the point where its gaze leaves it, in
@@ -2742,6 +2889,7 @@ async fn displacement(
             relief_mm: params.relief_mm,
             limit_relief,
             faded,
+            raised: Vec::new(),
         },
         description,
     ))

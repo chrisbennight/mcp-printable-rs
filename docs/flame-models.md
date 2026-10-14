@@ -376,6 +376,8 @@ reported as an error and not written.
 | `shoulder_width_mm` | 1.6 times the head's width, and at least 1.3 times the neck's | 10 to 500 |
 | `shoulder_depth_mm` | 0.9 times the head's depth, and at least 1.3 times the neck's | 5 to 300 |
 | `shoulder_height_mm` | 35% of the head's height | 2 to 200 |
+| `hair` | `none` | `none` or `cap`; see [Hair](#hair) |
+| `hair_thickness_mm` | 3% of the height above the plinth with `cap` | 0.2 to 40, and at most 20% of `height_mm` |
 | `overwrite` | false | |
 
 A solid bust suits FDM printing, where the slicer's infill already saves
@@ -706,6 +708,43 @@ plinth and carved eyes, were each one valid solid and took 4 to 6 seconds.
 The neck leaned forward by the 30-degree limit, and renders showed the
 extended neck continuing that lean and the shoulders standing square under
 the neck.
+
+### Hair
+
+FLAME has no hair, so every bust is bald. `hair` `cap` raises a layer over
+the scalp, `hair_thickness_mm` thick on the finished bust, by default 3% of
+the height above the plinth, which is about short hair at life size. The cap
+covers FLAME's scalp region, so the model must be converted with `--masks`;
+the texture layout is not needed. Its edge slopes to nothing over about two
+rings of the model's vertices around the scalp, and the layer's height is
+blended across the refined surface over about one and a half of the model's
+own triangles, whatever the edge length, so the cap's surface is smooth
+rather than following those triangles. The cap is raised on top of any
+surface detail and is not scaled by `relief_mm`.
+
+The blend takes more passes the more refined triangles fall in each of the
+model's own. A cap that would take more than 1,000 is refused before it
+starts; raise `edge_length_mm` or lower `max_triangles`. A model with a few
+large triangles, refined finely, reaches this limit. On the FLAME 2020 head
+at the default 750,000 triangles, the blend took about 200 passes and 1.5
+seconds.
+
+The bust is scaled to `height_mm` after the cap is raised, and the cap lifts
+the crown, so the thickness applied is a little less than asked, about 3%
+for a default cap. The response adds `hair` with the style, `requested_mm`
+and `thickness_mm`, the thickness applied; the `bust` report gives the same
+as `raised_mm`.
+
+In Blender, `scalp` `hair` in `reconstruct` colours the same region in the
+hair colour.
+
+On the FLAME 2020 generic head reconstructed from one photograph, a 100 mm
+FDM bust with the default cap, 2.76 mm asked and 2.68 mm applied, was one
+valid solid and took about 9 seconds. Renders showed the crown and back of
+the head fuller, with a soft hairline in front and above the ears and no
+seams. The `thin` report grew from 2.2 to 5.5 mm², near the ears, where the
+cap's edge passes close to their tops. A 150 mm bust with a 6 mm cap, 5.77 mm
+applied, was one valid solid and took 23 seconds.
 
 ## Reconstruct a head from photographs
 
