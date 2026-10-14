@@ -11,6 +11,7 @@
 //! The crate performs no filesystem, network, or async I/O.
 
 pub mod detail;
+pub mod fit;
 mod model;
 mod pose;
 pub mod texture;

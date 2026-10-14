@@ -884,6 +884,43 @@ To raise this detail on a printed bust, pass the map's `artifact.path`,
 `offset_mm` and `scale_mm` as `prepare_print`'s `displacement`, with the same
 coefficients and variant. See [Surface detail](#surface-detail).
 
+### Judge the fit
+
+`fit` gives, for each photograph, two measures that compare the returned
+head, the one `create` and `prepare_print` build from `identity`, with the
+photograph's segmentation. The head takes the expression, jaw and rotation
+fitted to that photograph and is seen through its camera. Each measure is a
+share from 0 to 1 within the square the segmenter labelled:
+
+- `head_on_person`: how much of the head's projected area the segmenter
+  labels as part of the person rather than background. It falls when the head
+  spills past the person, too large or misplaced.
+- `face_skin_covered`: how much of the photographed face skin the head
+  covers. It falls when the head is too small or misplaced.
+
+A close fit gives both near 1. Both are null for a photograph that was not
+segmented; otherwise `head_on_person` is null only when the head lands
+outside the labelled square, where `face_skin_covered` is then 0, and
+`face_skin_covered` only when the photograph shows no face skin. `identity_agreement` compares each photograph's identity with the
+average of all of them, so with one photograph it is always 1 and says
+nothing about the fit.
+
+`fit_path` names a PNG to write a picture of the fit to. For each
+photograph, one above another and each at most 512 pixels high, it shows the
+photograph cropped to the head with the returned head's outline drawn in green
+and the edges of its parts in yellow, beside the head alone, shaded grey, as
+the photograph's camera sees it. With a model converted with `--masks`, the
+parts are the lips, eyeballs, nose, ears, scalp, neck and face, so the rims
+of the eyes, nose and lips show where the head places them. Without the
+masks, only the eyeballs are told apart. The response adds `fit_picture`
+with the artifact and its size. `fit_path` must differ from the other
+outputs, and `overwrite` applies to it as to them.
+
+On the front-on photograph described under [Colour map](#colour-map),
+`head_on_person` was 0.99 and `face_skin_covered` 1.00. The picture showed
+the eyes, nose, lips and jaw drawn over their places in the photograph, and
+took about a second to make.
+
 ### Colour map
 
 With `texture_path`, `reconstruct` also writes a square RGB PNG colour map in
@@ -951,7 +988,13 @@ head. Without them nothing is painted, and the response says so.
 
 The response adds `texture` with the artifact, its size and `seen`, the share
 of the head's surface whose colour some photograph gave directly; painted
-eyeballs do not count. `skin_only`
+eyeballs do not count. With a model converted with `--masks`, `coverage`
+gives the same share for the `face`, `scalp`, `ears` and `neck`, counted the
+same way over the triangles wholly within each, so a region covering the
+whole head would give `seen` itself.
+On the front-on photograph below, the face's share was 0.66, the neck's 0.28,
+the ears' 0.03 and the scalp's 0.02, against 0.31 for the whole head.
+`skin_only`
 says whether every photograph was segmented. `scalp` reports the colouring
 requested and applied, the hair colour used and the hair colour found, and a
 `note` when the colouring applied differs from the one requested. `eyes`
