@@ -32,6 +32,9 @@ pub struct Fixture {
     pub uv: Option<(Vec<f32>, Vec<u32>)>,
     /// Named vertex regions, each written as `region.<name>`.
     pub regions: Vec<(String, Vec<u32>)>,
+    /// Left and right eyelid displacements flattened as `[vertex][axis]`,
+    /// written as `eyelid.left` and `eyelid.right` when present.
+    pub eyelids: Option<(Vec<f32>, Vec<f32>)>,
 }
 
 impl Default for Fixture {
@@ -74,6 +77,7 @@ impl Default for Fixture {
             omit: Vec::new(),
             uv: None,
             regions: Vec::new(),
+            eyelids: None,
         }
     }
 }
@@ -160,6 +164,16 @@ impl Fixture {
                 vec![faces.len() / 3, 3],
                 faces.iter().flat_map(|value| value.to_le_bytes()).collect(),
             ));
+        }
+        if let Some((left, right)) = &self.eyelids {
+            for (name, values) in [("eyelid.left", left), ("eyelid.right", right)] {
+                tensors.push((
+                    name.into(),
+                    Dtype::F32,
+                    vec![values.len() / 3, 3],
+                    floats(values),
+                ));
+            }
         }
         for (name, indices) in &self.regions {
             tensors.push((
