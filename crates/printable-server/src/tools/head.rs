@@ -335,7 +335,8 @@ pub(super) struct HeadPreparePrintParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair: Option<HairStyle>,
     /// The model vertices a `cap` covers, in place of the model's scalp
-    /// region, such as a hairline found in photographs.
+    /// region, such as a hairline found in photographs. An empty list raises
+    /// nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair_vertices: Option<Vec<u32>>,
     /// How far a `cap` stands out from the scalp, 0.2 to 40 mm on the finished
@@ -1567,12 +1568,9 @@ fn with_hair_cap(
 ) -> Result<Displacement, ToolError> {
     let covered = match vertices {
         Some(vertices) => {
+            // An empty list, as for a head photographed bald all over,
+            // raises nothing.
             let count = model.vertex_count();
-            if vertices.is_empty() {
-                return Err(ToolError::Validation(
-                    "hair_vertices must name at least one vertex".into(),
-                ));
-            }
             if let Some(vertex) = vertices.iter().find(|&&vertex| vertex as usize >= count) {
                 return Err(ToolError::Validation(format!(
                     "hair_vertices names vertex {vertex}, but the {} model has {count}",

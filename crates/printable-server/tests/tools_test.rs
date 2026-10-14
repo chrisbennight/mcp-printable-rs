@@ -6562,14 +6562,19 @@ async fn head_prepare_print_raises_a_hair_cap_over_the_scalp() {
         std::fs::read(root.path().join("given.stl")).unwrap(),
         std::fs::read(root.path().join("cap.stl")).unwrap()
     );
+    // An empty list, as for a head photographed bald, raises nothing.
+    let bald = print("bald.stl", json!({"hair": "cap", "hair_vertices": []}))
+        .await
+        .unwrap();
+    assert_eq!(bald.is_error, Some(false), "{bald:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("bald.stl")).unwrap(),
+        std::fs::read(root.path().join("plain.stl")).unwrap()
+    );
     for (extra, message) in [
         (
             json!({"hair_vertices": [2]}),
             "hair_vertices needs hair cap",
-        ),
-        (
-            json!({"hair": "cap", "hair_vertices": []}),
-            "at least one vertex",
         ),
         (
             json!({"hair": "cap", "hair_vertices": [2, 4]}),
