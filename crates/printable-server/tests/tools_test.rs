@@ -8409,6 +8409,101 @@ async fn photo_to_bust_makes_the_bust_the_separate_calls_make() {
 }
 
 #[tokio::test]
+async fn photo_to_bust_caps_the_hairline_the_photographs_show() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();
+    // Hair above photograph row 140 and face skin below.
+    let labels = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_fn(224, 224, |_, row| {
+            image::Luma([if row < 140 { 1 } else { 3 }])
+        })
+        .write_to(&mut png, ImageFormat::Png)
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    };
+    let views = json!([{
+        "shape": [0.0], "expression": [0.0],
+        "jaw": [0.0, 0.0, 0.0], "head_rotation": [0.0, 0.0, 0.0],
+        "camera": [1.0, -0.5, -0.5],
+        "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+        "image_size": [224, 224],
+        "segmentation": {
+            "labels_png": labels,
+            "classes": ["background", "hair", "body_skin", "face_skin", "clothes", "other"],
+            "crop": {"left": 0.0, "top": 0.0, "step": 1.0},
+            "hair_rgb": [20, 10, 5], "hair_pixels": 100
+        }
+    }]);
+    // As in the reconstruction test: the hairline is vertices 0 and 2.
+    let library = flame2020_library_edited(|fixture| {
+        fixture.faces = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        fixture.regions = vec![("scalp".into(), vec![0, 1]), ("forehead".into(), vec![2])];
+    });
+    let (endpoint, _, task) = fake_recon_worker_with(true, json!({"views": views})).await;
+    let server = recon_server_with(root.path(), &endpoint, library).await;
+    let reconstruct = json!({
+        "images": ["face.jpg"], "displacement_path": "detail.png", "overwrite": true
+    });
+    let print = |path: &str| {
+        json!({
+            "path": path, "height_mm": 50.0, "edge_length_mm": 5.0, "overwrite": true,
+            "hair": "cap", "hair_thickness_mm": 2.0
+        })
+    };
+    let combined = server
+        .invoke_tool(head_call(json!({"action": "photo_to_bust", "params": {
+            "reconstruct": reconstruct, "print": print("combined.stl"), "detail": {"apply": false}
+        }})))
+        .await
+        .unwrap();
+    assert_eq!(combined.is_error, Some(false), "{combined:?}");
+    let value = combined.structured_content.unwrap();
+    let reconstructed = &value["reconstruct"];
+    assert_eq!(
+        reconstructed["hairline"]["vertices"],
+        json!([0, 2]),
+        "{value}"
+    );
+    assert_eq!(value["print"]["hair"]["covers"], "hair_vertices", "{value}");
+    // The same bust from prepare_print over the hairline, and a different
+    // one over the scalp region.
+    for (path, hairline) in [("hairline.stl", true), ("scalp.stl", false)] {
+        let mut separate = print(path);
+        for key in ["variant", "identity", "expression", "pose"] {
+            separate[key] = reconstructed[key].clone();
+        }
+        if hairline {
+            separate["hair_vertices"] = reconstructed["hairline"]["vertices"].clone();
+        }
+        let made = server
+            .invoke_tool(head_call(
+                json!({"action": "prepare_print", "params": separate}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(made.is_error, Some(false), "{made:?}");
+    }
+    let read = |path: &str| std::fs::read(root.path().join(path)).unwrap();
+    assert_eq!(read("combined.stl"), read("hairline.stl"));
+    assert_ne!(read("combined.stl"), read("scalp.stl"));
+    // The hairline comes from the reconstruction.
+    let mut params = json!({"reconstruct": reconstruct, "print": print("x.stl")});
+    params["print"]["hair_vertices"] = json!([0]);
+    let refused = server
+        .invoke_tool(head_call(
+            json!({"action": "photo_to_bust", "params": params}),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        format!("{refused:?}").contains("print.hair_vertices comes from the reconstruction"),
+        "{refused:?}"
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn photo_to_bust_closes_the_eyelids_as_reconstructed() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("face.jpg"), b"jpeg").unwrap();

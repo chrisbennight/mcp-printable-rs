@@ -887,13 +887,18 @@ pub(super) struct PhotoDetailParams {
 pub(super) fn refuse_reconstructed(arguments: &Value) -> Result<(), ToolError> {
     let share = |name: &str| arguments["reconstruct"][name].as_f64().unwrap_or(0.0);
     let suggests_neck = share("neck_tilt") > 0.0 || share("neck_turn") > 0.0;
-    for (request, own) in [("print", "displacement"), ("blender", "texture")] {
+    for (request, own) in [
+        ("print", &["displacement", "hair_vertices"][..]),
+        ("blender", &["texture"][..]),
+    ] {
         let Some(given) = arguments.get(request).and_then(Value::as_object) else {
             continue;
         };
         let pose = given.get("pose").and_then(Value::as_object);
-        let named = ["variant", "identity", "expression", "eyelids", own]
-            .into_iter()
+        let named = ["variant", "identity", "expression", "eyelids"]
+            .iter()
+            .chain(own)
+            .copied()
             .find(|field| given.contains_key(*field))
             .or_else(|| {
                 pose.and_then(|pose| {
@@ -1012,6 +1017,11 @@ pub(super) async fn photo_to_bust(
     print.identity = identity.clone();
     print.expression = expression.clone();
     print.eyelids = eyelids;
+    // A cap follows the hairline the photographs show, when they show one.
+    if print.hair == Some(HairStyle::Cap) {
+        print.hair_vertices =
+            serde_json::from_value(reconstructed["hairline"]["vertices"].clone()).ok();
+    }
     print.pose.jaw = jaw;
     if let Some(neck) = neck {
         print.pose.neck = neck;

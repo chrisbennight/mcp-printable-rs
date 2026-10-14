@@ -972,12 +972,15 @@ jaw, any suggested neck rotation and surface detail on:
 
 `reconstruct` takes every `reconstruct` option. `print` takes every
 `prepare_print` option except those the reconstruction supplies: `variant`,
-`identity`, `expression`, `eyelids`, `pose.jaw` and `displacement`, and `pose.neck` when
-`neck_tilt` or `neck_turn` suggests one. Naming any of them is refused,
-whatever its value, rather than silently replaced. `detail` takes the `displacement` options other than
-the map itself, and `"apply": false` leaves the detail off. `blender` takes
-the `create` options, under the same rule, and the head is coloured with the
-colour map when the reconstruction makes one.
+`identity`, `expression`, `eyelids`, `pose.jaw`, `displacement` and
+`hair_vertices`, and `pose.neck` when `neck_tilt` or `neck_turn` suggests
+one. Naming any of them is refused, whatever its value, rather than silently
+replaced. With `hair` `cap`, the cap covers the reconstruction's `hairline`
+when it gives one, and the scalp region otherwise. `detail` takes the
+`displacement` options other than the map itself, and `"apply": false`
+leaves the detail off. `blender` takes the `create` options, under the same
+rule, and the head is coloured with the colour map when the reconstruction
+makes one.
 
 Before the reconstruction starts, `print` gets every check `prepare_print`
 makes on its options, along with the expression scale, joint rotations and
