@@ -158,6 +158,12 @@ jobs:
         if: steps.scope.outputs.images == 'true'
         with:
           cache-binary: false
+      - name: Make room for the CUDA reconstruction image
+        if: steps.scope.outputs.images == 'true'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Verify private local files stay outside the build context
         if: steps.scope.outputs.images == 'true'
         run: scripts/test-build-context
@@ -211,7 +217,6 @@ jobs:
         run: |
           docker buildx build --platform linux/amd64 --load \
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu \
             --target recon-runtime --tag printable-recon:ci .
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg RECON_IMAGE=printable-recon:ci \
