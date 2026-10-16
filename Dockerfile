@@ -111,8 +111,8 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 # definitions, DINOv3 from transformers and BiRefNet's pinned network code.
 # Network checkpoints, the converted Marigold V2 model and the Pixal3D model
 # directory are operator-supplied on mounted volumes.
-# The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts; CI uses
-# the CPU index to test without a GPU.
+# The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts. They
+# also run on the processor, which is how CI tests the image it publishes.
 # OpenCV for the reconstruction worker, built from the hash-pinned
 # opencv-python source with core and image processing only. Published OpenCV
 # wheels bundle FFmpeg and other media libraries the worker never uses.

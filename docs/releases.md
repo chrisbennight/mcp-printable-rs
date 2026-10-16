@@ -130,7 +130,8 @@ are diagnostic copies, not the supported consumer access path.
 
 The record identifies a matching server, Blender, CAD, slicer and photo
 reconstruction set. The reconstruction image is the one CI tests: it carries
-CPU-only PyTorch and runs without a GPU.
+PyTorch built for CUDA 12.8, uses an NVIDIA GPU when the container is given
+one, and otherwise runs on the processor, as CI tests it.
 Installations pin its digest and resolve the component references from its
 labels. A downstream deployment repository reviews image updates through its
 own pull requests and deploys after merge. No private deployment configuration
