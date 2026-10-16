@@ -457,6 +457,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 json!({
                     "artifact": artifact(),
                     "triangles": {"type": "integer", "minimum": 1},
+                    "generated_triangles": {"type": "integer", "minimum": 1},
                     "size_mm": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
                     "resolution": {"type": "integer", "minimum": 1},
                     "steps": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
@@ -475,7 +476,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
                     "image_sha256": {"type": "string"}
                 }),
-                &["artifact", "triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
+                &["artifact", "triangles", "generated_triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
             )
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [

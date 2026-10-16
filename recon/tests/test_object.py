@@ -24,7 +24,7 @@ from PIL import Image
 from safetensors.torch import save_file
 
 import generate_object
-from printable_recon import features, files, objects, pixal3d, voxels
+from printable_recon import features, files, meshes, objects, pixal3d, voxels
 
 RECON = Path(__file__).resolve().parent.parent
 
@@ -454,6 +454,67 @@ class FeatureTest(unittest.TestCase):
             features.load_naf(directory / "naf" / "naf_release.pth", torch.device("cpu"))
 
 
+def sphere(subdivisions: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """A closed icosphere of radius 0.4."""
+    golden = (1 + 5**0.5) / 2
+    points = [[-1, golden, 0], [1, golden, 0], [-1, -golden, 0], [1, -golden, 0], [0, -1, golden], [0, 1, golden],
+              [0, -1, -golden], [0, 1, -golden], [golden, 0, -1], [golden, 0, 1], [-golden, 0, -1], [-golden, 0, 1]]
+    faces = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2],
+             [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11],
+             [6, 2, 10], [8, 6, 7], [9, 8, 1]]
+    points = [list(numpy.array(point) / numpy.linalg.norm(point)) for point in points]
+    for _ in range(subdivisions):
+        middles, refined = {}, []
+
+        def middle(a, b):
+            key = (min(a, b), max(a, b))
+            if key not in middles:
+                point = (numpy.array(points[a]) + numpy.array(points[b])) / 2
+                points.append(list(point / numpy.linalg.norm(point)))
+                middles[key] = len(points) - 1
+            return middles[key]
+
+        for a, b, c in faces:
+            ab, bc, ca = middle(a, b), middle(b, c), middle(c, a)
+            refined += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        faces = refined
+    return torch.tensor(points, dtype=torch.float32) * 0.4, torch.tensor(faces)
+
+
+class SimplificationTest(unittest.TestCase):
+    def test_merging_drops_collapsed_and_repeated_triangles(self):
+        vertices = torch.tensor([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [0.3, 0.0, 0.0], [0.0, 0.3, 0.0], [0.3, 0.3, 0.0]])
+        triangles = torch.tensor([[0, 2, 3], [1, 2, 3], [0, 1, 2], [2, 4, 3]])
+        merged, kept = meshes.cluster(vertices, triangles, 0.1)
+        # Vertices 0 and 1 share a cell: the triangle between them collapses
+        # and the two triangles they each made become one.
+        self.assertEqual(merged.shape[0], 4)
+        self.assertEqual(kept.shape[0], 2)
+        torch.testing.assert_close(merged[kept[0, 0]], torch.tensor([0.005, 0.0, 0.0]))
+        self.assertEqual(sorted(map(sorted, kept.tolist())), sorted(map(sorted, [[0, 1, 2], [1, 3, 2]])))
+
+    def test_surfaces_are_brought_down_towards_the_target(self):
+        vertices, triangles = sphere(5)
+        self.assertEqual(triangles.shape[0], 20480)
+        points, faces = meshes.reduce(vertices, triangles, 64, 2000)
+        self.assertLessEqual(faces.shape[0], 2000)
+        self.assertGreater(faces.shape[0], 1000)
+        radius = numpy.linalg.norm(points[numpy.unique(faces)], axis=1)
+        numpy.testing.assert_allclose(radius, 0.4, atol=0.02)
+        # Small surfaces are written as they are.
+        points, faces = meshes.reduce(vertices, triangles, 64, 50000)
+        self.assertEqual(faces.shape[0], 20480)
+        # Surfaces too large for the simplifier's memory are coarsened first.
+        size = meshes.CLUSTER_ABOVE
+        meshes.CLUSTER_ABOVE = 5000
+        try:
+            points, faces = meshes.reduce(vertices, triangles, 64, 1000)
+        finally:
+            meshes.CLUSTER_ABOVE = size
+        self.assertLessEqual(faces.shape[0], 1000)
+        numpy.testing.assert_allclose(numpy.linalg.norm(points[numpy.unique(faces)], axis=1), 0.4, atol=0.03)
+
+
 class MeshFileTest(unittest.TestCase):
     def test_the_stl_stands_up_facing_the_camera(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -500,7 +561,8 @@ class GenerationTest(unittest.TestCase):
         self.assertEqual((shape.fov_source, shape.background), ("request", "transparency"))
         self.assertEqual([stage["stage"] for stage in shape.report.stages],
                          ["background", "image features", "structure", "shape at 512", "subdivision", "shape at 1024",
-                          "surface"])
+                          "surface", "simplification"])
+        self.assertEqual(shape.generated_triangles, shape.triangles.shape[0])
         self.assertGreater(shape.tokens["structure"], 0)
         self.assertTrue(numpy.array_equal(shape.triangles, again.triangles))
         self.assertTrue(numpy.array_equal(shape.vertices, again.vertices))
@@ -508,11 +570,14 @@ class GenerationTest(unittest.TestCase):
     def test_the_worker_script_writes_a_scaled_stl(self):
         mesh = self.root / "disc.stl"
         request = {"image": str(self.root / "disc.png"), "model": str(self.models), "mesh": str(mesh),
-                   "resolution": 512, "steps": 1, "size_mm": 40, "device": "cpu"}
+                   "resolution": 512, "steps": 1, "size_mm": 40, "target_triangles": 20000, "device": "cpu"}
         answer = self._run(request)
         self.assertIn("result", answer, answer)
         result = answer["result"]
         self.assertEqual(result["resolution"], 512)
+        # The miniature model's surface is larger than the target, so it is simplified.
+        self.assertGreater(result["generated_triangles"], 20000)
+        self.assertLessEqual(result["triangles"], 20000)
         self.assertEqual((result["fov_source"], result["fov_degrees"]), ("assumed", features.DEFAULT_FOV_DEGREES))
         data = mesh.read_bytes()
         (count,) = struct.unpack("<I", data[80:84])
@@ -534,6 +599,7 @@ class GenerationTest(unittest.TestCase):
             ({"steps": 0}, "steps"),
             ({"fov_degrees": 1}, "fov_degrees"),
             ({"size_mm": 1}, "size_mm"),
+            ({"target_triangles": 100}, "target_triangles"),
             ({"seed": True}, "invalid"),
         ]:
             answer = self._run({**base, **change})

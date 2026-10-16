@@ -43,13 +43,40 @@ The other choices are:
   plausible shape, which helps when the first one is wrong.
 - `fov_degrees`: the horizontal field of view, 5 to 90 degrees, of the square
   that frames the subject. See [Camera](#camera).
+- `target_triangles`: the triangles the mesh is simplified towards, 10,000
+  to 4,000,000 (default 1,000,000, as Pixal3D's own export uses). See
+  [Mesh size](#mesh-size).
 
-The result reports the triangle count, the mesh's size in millimetres, the
+The result reports the triangle count written and the count generated, the
+mesh's size in millimetres, the
 resolution reached, the steps used, the voxel counts of the structure and last
 shape stages, the seed, the field of view and where it came from, whether the
 background was removed, the device, the time taken, each stage's time and,
 on a GPU, its peak memory, the photograph's SHA-256 and the written
 artifact.
+
+## Mesh size
+
+The generator's surface follows its voxels, so its triangle count grows with
+the subject's detail and is expected to grow about fourfold with each
+doubling of `resolution`. A detailed figure generated on the processor at
+512 had 4.6 million triangles, a 230 MB STL, so at 1024 such a subject is
+expected to have tens of millions. The worker therefore simplifies the surface before writing it:
+
+- A surface above 4 million triangles is first coarsened by merging the
+  vertices in each cell of a grid a few voxels across, which needs little
+  memory and runs where the surface was made.
+- Quadric edge collapse then brings it to `target_triangles`, keeping the
+  shape's form where it removes triangles. It needs about 350 bytes of
+  processor memory per triangle, so at most about 1.5 GB.
+- Simplification stops early on parts it cannot simplify without folding the
+  surface, so a low target may leave more triangles than asked. The result
+  reports the count written.
+
+On that figure, simplifying 4.6 million triangles to 1 million took about
+2 seconds on the processor and kept its detail visibly intact. Raise
+`target_triangles` for a large print with fine detail; lower it for a quick
+look or a small print.
 
 ## Photographs that work
 
@@ -207,10 +234,10 @@ under `missing.object`.
 
 ## From the mesh to a print
 
-The STL comes straight from the generator and is not checked: it may have
-holes, small separate pieces or self-intersections, and its triangle count
-follows the resolution rather than the print. Repair it in Blender before
-slicing:
+The STL is the generator's surface, simplified but not checked or repaired.
+Like Pixal3D's own raw surface, it may have holes, small separate pieces,
+edges shared by more than two triangles, triangles facing inconsistently
+and self-intersections. Repair it in Blender before slicing:
 
 1. Import it into the scene with the `scene` tool's `import` action.
 2. Remesh it into a watertight solid with `blender_execute`, choosing a
