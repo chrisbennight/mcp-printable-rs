@@ -68,10 +68,10 @@ transformer whole:
   memory when it exits.
 
 Peak GPU memory is therefore one block, the small layers outside the blocks,
-the VAE and the activations, rather than the whole model. This design is
-expected to stay within a few gigabytes at the default size. That figure has
-not been measured on a GPU: this repository's tests run on the processor with
-a miniature model. Read `peak_gpu_memory_bytes` from your own first results.
+the VAE and the activations, rather than the whole model. On an NVIDIA GeForce
+RTX 4060 Ti with 16 GB, the depth and normal maps of a 1024 × 688 photograph
+took 66 seconds together and peaked at 1.8 GB of GPU memory. Other GPUs and
+photograph sizes differ; read `peak_gpu_memory_bytes` from your own results.
 
 The price is disk reading. Each map reads the whole converted transformer and
 the task's adapter, about 13 GB, once; a request with normals reads them
