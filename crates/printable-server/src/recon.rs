@@ -358,9 +358,11 @@ pub const OBJECT_STEPS: std::ops::RangeInclusive<u32> = 1..=50;
 pub const OBJECT_FOV_DEGREES: std::ops::RangeInclusive<f64> = 5.0..=90.0;
 /// Longest sides, in millimetres, an object request may choose.
 pub const OBJECT_SIZES_MM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
-/// Largest object mesh committed to the workspace: a binary STL of about 10
+/// Triangle counts an object request may simplify its mesh towards.
+pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_000_000;
+/// Largest object mesh committed to the workspace: a binary STL of about 5
 /// million triangles.
-const MAX_OBJECT_MESH_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -396,6 +398,12 @@ pub struct ObjectRequest {
     /// 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_mm: Option<f64>,
+    /// Triangles the generated surface is simplified towards: 10,000 to
+    /// 4,000,000 (default 1,000,000). Simplification stops early on parts it
+    /// cannot simplify without folding the surface, so the mesh may keep
+    /// more; the result reports both counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_triangles: Option<u32>,
     /// Replace an existing file at `mesh_path`.
     #[serde(default)]
     pub overwrite: bool,
@@ -458,6 +466,16 @@ impl ObjectRequest {
                 "size_mm must be between {} and {}",
                 OBJECT_SIZES_MM.start(),
                 OBJECT_SIZES_MM.end()
+            )));
+        }
+        if self
+            .target_triangles
+            .is_some_and(|target| !OBJECT_TARGET_TRIANGLES.contains(&target))
+        {
+            return Err(ToolError::Validation(format!(
+                "target_triangles must be between {} and {}",
+                OBJECT_TARGET_TRIANGLES.start(),
+                OBJECT_TARGET_TRIANGLES.end()
             )));
         }
         Ok(())
@@ -784,6 +802,10 @@ impl ReconWorker {
             ("steps", request.steps.map(|steps| json!(steps))),
             ("fov_degrees", request.fov_degrees.map(|fov| json!(fov))),
             ("size_mm", request.size_mm.map(|size| json!(size))),
+            (
+                "target_triangles",
+                request.target_triangles.map(|target| json!(target)),
+            ),
         ] {
             if let Some(value) = value {
                 job[key] = value;
@@ -1026,7 +1048,7 @@ if "blank" in request["image"]:
 open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
 result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
     "device": request["device"], "model": request["model"],
-    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm") if key in request}}
+    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles") if key in request}}
 print(json.dumps({"result": result}))
 "#;
 
@@ -1229,6 +1251,7 @@ print(json.dumps({"result": result}))
             seed: None,
             fov_degrees: None,
             size_mm: None,
+            target_triangles: None,
             overwrite: false,
         }
     }
@@ -1261,6 +1284,7 @@ print(json.dumps({"result": result}))
             seed: Some(7),
             fov_degrees: Some(35.0),
             size_mm: Some(60.0),
+            target_triangles: Some(200_000),
             overwrite: true,
             ..object_request("side.png")
         };
@@ -1269,7 +1293,7 @@ print(json.dumps({"result": result}))
         assert_eq!(result["seed"], 7);
         assert_eq!(
             result["options"],
-            json!({"steps": 8, "fov_degrees": 35.0, "size_mm": 60.0})
+            json!({"steps": 8, "fov_degrees": 35.0, "size_mm": 60.0, "target_triangles": 200_000})
         );
     }
 
@@ -1339,6 +1363,13 @@ print(json.dumps({"result": result}))
                     ..object_request("a.jpg")
                 },
                 "size_mm must be between 5 and 2000",
+            ),
+            (
+                ObjectRequest {
+                    target_triangles: Some(5_000_000),
+                    ..object_request("a.jpg")
+                },
+                "target_triangles must be between 10000 and 4000000",
             ),
         ] {
             let error = request.validate().unwrap_err().to_string();

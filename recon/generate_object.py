@@ -7,7 +7,8 @@ Usage: generate_object.py <request.json>
 The request names the photograph, the Pixal3D model directory, the STL file
 to write, the resolution (512, 1024 or 1536), the sampling steps, a seed, an
 optional horizontal field of view of the framed subject in degrees, the
-size of the longest side in millimetres and the device. One JSON object is
+size of the longest side in millimetres, the triangles the mesh is simplified
+towards and the device. One JSON object is
 printed: {"result": ...} or {"error": {"code", "message"}}.
 
 The STL is in millimetres with Z up, the subject facing -Y as the camera
@@ -30,6 +31,12 @@ STEPS_RANGE = (1, 50)
 FOV_RANGE = (5.0, 90.0)
 SIZE_RANGE = (5.0, 2000.0)
 DEFAULT_SIZE_MM = 100.0
+DEFAULT_TARGET_TRIANGLES = 1_000_000
+# The simplifier needs about 350 bytes per triangle, so the target is
+# bounded with its working memory.
+TARGET_TRIANGLES_RANGE = (10_000, 4_000_000)
+# Triangles written to the STL at a time, so its buffers stay small.
+STL_CHUNK = 1 << 20
 DEFAULT_SEED = 42
 SEED_RANGE = (0, 2**31 - 1)
 # The pinned background removal code installed beside this script.
@@ -58,10 +65,11 @@ def main(argv: list[str]) -> int:
         seed = _whole(request.get("seed", DEFAULT_SEED))
         fov = float(request["fov_degrees"]) if request.get("fov_degrees") is not None else None
         size_mm = float(request.get("size_mm", DEFAULT_SIZE_MM))
+        target = _whole(request.get("target_triangles", DEFAULT_TARGET_TRIANGLES))
         device = str(request.get("device", "auto"))
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail("validation", f"the request is invalid: {error}")
-    problem = _check(resolution, steps, seed, fov, size_mm)
+    problem = _check(resolution, steps, seed, fov, size_mm, target)
     if problem:
         return _fail("validation", problem)
 
@@ -97,6 +105,7 @@ def main(argv: list[str]) -> int:
             steps=steps,
             seed=seed,
             fov=math.radians(fov) if fov is not None else None,
+            target_triangles=target,
         )
     except pixal3d.ModelError as error:
         return _fail("checkpoints", str(error))
@@ -109,6 +118,7 @@ def main(argv: list[str]) -> int:
     extent = write_stl(shape.vertices, shape.triangles, size_mm, mesh_path)
     result = {
         "triangles": int(shape.triangles.shape[0]),
+        "generated_triangles": shape.generated_triangles,
         "size_mm": extent,
         "resolution": shape.resolution,
         "tokens": shape.tokens,
@@ -133,7 +143,9 @@ def _whole(value) -> int:
     return value
 
 
-def _check(resolution: int, steps: int | None, seed: int, fov: float | None, size_mm: float) -> str | None:
+def _check(
+    resolution: int, steps: int | None, seed: int, fov: float | None, size_mm: float, target: int
+) -> str | None:
     if resolution not in RESOLUTIONS:
         return f"resolution must be one of {', '.join(map(str, RESOLUTIONS))}"
     if steps is not None and not STEPS_RANGE[0] <= steps <= STEPS_RANGE[1]:
@@ -144,6 +156,9 @@ def _check(resolution: int, steps: int | None, seed: int, fov: float | None, siz
         return f"fov_degrees must be between {FOV_RANGE[0]:g} and {FOV_RANGE[1]:g}"
     if not SIZE_RANGE[0] <= size_mm <= SIZE_RANGE[1]:
         return f"size_mm must be between {SIZE_RANGE[0]:g} and {SIZE_RANGE[1]:g}"
+    low, high = TARGET_TRIANGLES_RANGE
+    if not low <= target <= high:
+        return f"target_triangles must be between {low} and {high}"
     return None
 
 
@@ -163,18 +178,18 @@ def write_stl(vertices, triangles, size_mm: float, path: Path) -> list[float]:
     scale = size_mm / max(float((high - low).max()), 1e-9)
     offset = numpy.array([(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, low[2]])
     points = ((points - offset) * scale).astype(numpy.float32)
-    corners = points[triangles]  # T x 3 x 3
-    normals = numpy.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
-    lengths = numpy.linalg.norm(normals, axis=1, keepdims=True)
-    normals = numpy.where(lengths > 0, normals / numpy.maximum(lengths, 1e-30), 0.0).astype(numpy.float32)
     record = numpy.dtype([("normal", "<f4", 3), ("corners", "<f4", (3, 3)), ("attribute", "<u2")])
-    rows = numpy.zeros(triangles.shape[0], dtype=record)
-    rows["normal"] = normals
-    rows["corners"] = corners
     with path.open("wb") as stl:
         stl.write(b"Printable Pixal3D shape".ljust(80, b" "))
         stl.write(struct.pack("<I", triangles.shape[0]))
-        rows.tofile(stl)
+        for start in range(0, triangles.shape[0], STL_CHUNK):
+            corners = points[triangles[start : start + STL_CHUNK]]  # n x 3 x 3
+            normals = numpy.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+            lengths = numpy.linalg.norm(normals, axis=1, keepdims=True)
+            rows = numpy.zeros(corners.shape[0], dtype=record)
+            rows["normal"] = numpy.where(lengths > 0, normals / numpy.maximum(lengths, 1e-30), 0.0)
+            rows["corners"] = corners
+            rows.tofile(stl)
     return [round(float(side), 3) for side in (high - low) * scale]
 
 

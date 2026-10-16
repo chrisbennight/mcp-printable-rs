@@ -7613,7 +7613,7 @@ async fn fake_object_worker() -> (
                     recorded.lock().unwrap().push(request.clone());
                     Json(json!({
                         "artifact": {"path": request["mesh_path"], "size_bytes": 584, "media_type": "model/stl", "modified_ns": 1},
-                        "triangles": 10, "size_mm": [100.0, 41.5, 87.25], "resolution": 1024,
+                        "triangles": 10, "generated_triangles": 40, "size_mm": [100.0, 41.5, 87.25], "resolution": 1024,
                         "steps": {"structure": 12, "shape": 12}, "tokens": {"structure": 2000, "shape": 30000},
                         "seed": 42, "fov_degrees": 20.0, "fov_source": "assumed", "background": "removed",
                         "device": "cuda", "seconds": 95.0,

@@ -17,7 +17,7 @@ import numpy
 import torch
 from PIL import Image
 
-from . import features, files, pixal3d
+from . import features, files, meshes, pixal3d
 from .pixal3d import ModelError, Voxels
 
 RESOLUTIONS = (512, 1024, 1536)
@@ -32,6 +32,8 @@ MAX_TOKENS = 49152
 COARSE_IMAGE = 512
 FINE_IMAGE = 1024
 NAF_SIZE = 512
+# The triangles a written surface aims for, as Pixal3D's own export does.
+DEFAULT_TARGET_TRIANGLES = 1_000_000
 
 
 class GenerationError(Exception):
@@ -114,6 +116,7 @@ class _Stage:
 class Shape:
     vertices: numpy.ndarray  # V x 3, in the cube from -0.5 to 0.5: x right, y up, z towards the camera
     triangles: numpy.ndarray  # T x 3
+    generated_triangles: int
     resolution: int
     steps: dict
     tokens: dict
@@ -133,8 +136,10 @@ def generate(
     steps: int | None = None,
     seed: int = 42,
     fov: float | None = None,
+    target_triangles: int = DEFAULT_TARGET_TRIANGLES,
 ) -> Shape:
-    """The shape Pixal3D generates for the subject of `photo`."""
+    """The shape Pixal3D generates for the subject of `photo`, simplified
+    towards `target_triangles`."""
     if resolution not in RESOLUTIONS:
         raise ValueError(f"resolution must be one of {', '.join(map(str, RESOLUTIONS))}")
     try:
@@ -221,12 +226,15 @@ def generate(
                                _weights(checkpoints["shape_slat_decoder"]), device)
         vertices, triangles = decoder(Voxels(latent, coords, size))
         del decoder, latent
-        vertices = vertices.cpu().numpy()
-        triangles = triangles.cpu().numpy()
-    if triangles.shape[0] == 0:
+    generated = int(triangles.shape[0])
+    if generated == 0:
         raise GenerationError("the shape has no surface; try another photograph or seed")
+    with report.stage("simplification", device), torch.no_grad():
+        vertices, triangles = meshes.reduce(vertices, triangles, used, target_triangles)
+    if triangles.shape[0] == 0:
+        raise GenerationError("the shape's surface vanished when simplified; try a higher target_triangles")
     steps = {"structure": settings.structure.steps, "shape": settings.shape.steps}
-    return Shape(vertices, triangles, used, steps, tokens, fov, fov_source, background, report)
+    return Shape(vertices, triangles, generated, used, steps, tokens, fov, fov_source, background, report)
 
 
 def _projected(patches, coords, grid, side, camera, naf=None, pixels=None) -> torch.Tensor:
