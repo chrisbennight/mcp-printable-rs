@@ -130,7 +130,7 @@ are diagnostic copies, not the supported consumer access path.
 
 The record identifies a matching server, Blender, CAD, slicer and photo
 reconstruction set. The reconstruction image is the one CI tests: it carries
-PyTorch built for CUDA 12.8, uses an NVIDIA GPU when the container is given
+PyTorch built for CUDA 13.0, uses an NVIDIA GPU when the container is given
 one, and otherwise runs on the processor, as CI tests it.
 Installations pin its digest and resolve the component references from its
 labels. A downstream deployment repository reviews image updates through its

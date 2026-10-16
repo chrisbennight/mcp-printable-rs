@@ -221,7 +221,7 @@ services:
 
 Object generation needs a CUDA GPU: give the worker container one, as the
 GPU reservation in [Run the worker](flame-models.md#run-the-worker) does;
-the published image carries PyTorch built for CUDA 12.8. When the worker's device is `auto` and no GPU is visible, a request fails
+the published image carries PyTorch built for CUDA 13.0. When the worker's device is `auto` and no GPU is visible, a request fails
 with `unavailable` rather than running for hours on the processor; setting
 `PRINTABLE_RECON_DEVICE` to `cpu` forces the processor.
 

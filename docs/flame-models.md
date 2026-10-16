@@ -846,7 +846,7 @@ Each release publishes the worker as
 `ghcr.io/chrisbennight/mcp-printable-recon:sha-<commit>`, and the image-set
 record names it in its `org.printable.recon.image` and
 `org.printable.recon.digest` labels. The published image is the build CI
-tests: it carries PyTorch built for CUDA 12.8 and uses the GPU the container
+tests: it carries PyTorch built for CUDA 13.0 and uses the GPU the container
 is given, or the processor without one. To use it, replace `build` in the
 service below with that pinned image reference; drop the GPU reservation to
 run on the processor.
@@ -900,8 +900,8 @@ docker compose --env-file .dev/compose.env -f compose.yaml -f compose.flame.yaml
 docker compose --env-file .dev/compose.env -f compose.yaml -f compose.flame.yaml up -d --wait --wait-timeout 600
 ```
 
-The image installs PyTorch built for CUDA 12.8, which needs an NVIDIA driver
-supporting CUDA 12. Pass
+The image installs PyTorch built for CUDA 13.0, which needs NVIDIA driver 580
+or newer. Pass
 `--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu` to build a
 smaller CPU-only image instead. The worker uses the GPU when one is visible and the CPU
 otherwise; `PRINTABLE_RECON_DEVICE` forces one or the other. It runs one

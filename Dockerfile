@@ -111,7 +111,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 # definitions, DINOv3 from transformers and BiRefNet's pinned network code.
 # Network checkpoints, the converted Marigold V2 model and the Pixal3D model
 # directory are operator-supplied on mounted volumes.
-# The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts. They
+# The default PyTorch index serves CUDA 13.0 builds for NVIDIA hosts. They
 # also run on the processor, which is how CI tests the image it publishes.
 # OpenCV for the reconstruction worker, built from the hash-pinned
 # opencv-python source with core and image processing only. Published OpenCV
@@ -147,7 +147,7 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
 ARG SOURCE_REVISION
 ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
