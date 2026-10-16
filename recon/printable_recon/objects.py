@@ -100,10 +100,13 @@ class _Stage:
         return self
 
     def __exit__(self, *_exc) -> None:
-        entry = {"stage": self.name, "seconds": round(time.monotonic() - self.started, 3)}
+        entry = {"stage": self.name}
         if self.device.type == "cuda":
+            # The stage's queued GPU work counts towards its own time.
+            torch.cuda.synchronize(self.device)
             entry["peak_gpu_memory_bytes"] = int(torch.cuda.max_memory_allocated(self.device))
             torch.cuda.empty_cache()
+        entry["seconds"] = round(time.monotonic() - self.started, 3)
         self.report.stages.append(entry)
 
 
@@ -169,7 +172,8 @@ def generate(
         if fine_pixels is not None:
             fine_global, fine_patches = features.dinov3_tokens(dino, fine_pixels)
         del dino
-        naf = features.load_naf(directory / "naf" / "naf_release.pth", device)
+        # NAF is small and used in two stages; it waits on the processor in between.
+        naf = features.load_naf(directory / "naf" / "naf_release.pth", torch.device("cpu"))
 
     camera = (fov, distance)
     with report.stage("structure", device), torch.no_grad():
@@ -232,7 +236,11 @@ def _projected(patches, coords, grid, side, camera, naf=None, pixels=None) -> to
     low = features.sample(patches, positions)
     if naf is None:
         return low
-    high = naf(pixels, patches, NAF_SIZE)
+    naf.to(patches.device)
+    try:
+        high = naf(pixels, patches, NAF_SIZE)
+    finally:
+        naf.cpu()
     return torch.cat([low, features.sample(high, positions)], dim=-1)
 
 
