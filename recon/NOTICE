@@ -23,3 +23,10 @@ own licenses in their .dist-info directories under
 
 The image contains no MICA, SMIRK, DECA or FLAME model files. Those are
 obtained separately by the operator and mounted at run time.
+
+Depth estimation follows the inference procedure of Marigold V2
+(https://github.com/kpbm-ai/marigoldv2), published by Huawei Bayer Lab under
+the Apache License, Version 2.0, and builds its networks from the Hugging
+Face diffusers model definitions, also Apache-2.0. The image contains no
+Qwen-Image-Edit-2509 or Marigold V2 weights; the operator downloads them,
+converts them with convert_marigold.py and mounts the result at run time.

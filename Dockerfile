@@ -105,8 +105,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/printable-cad-worker", "--healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 
-# Photo reconstruction: PyTorch, the network definitions and MediaPipe's face
-# landmarker. Network checkpoints are operator-supplied on a mounted volume.
+# Photograph jobs: FLAME reconstruction with PyTorch, the network definitions
+# and MediaPipe's face landmarker, and Marigold V2 depth estimation with the
+# diffusers model definitions. Network checkpoints and the converted Marigold
+# V2 model are operator-supplied on mounted volumes.
 # The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts; CI uses
 # the CPU index to test without a GPU.
 # OpenCV for the reconstruction worker, built from the hash-pinned
@@ -163,7 +165,7 @@ RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
  && curl --fail --location --output /opt/printable/recon/selfie_multiclass_256x256.tflite \
       https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite \
  && echo 'c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0  /opt/printable/recon/selfie_multiclass_256x256.tflite' | sha256sum --check
-COPY recon/reconstruct.py /opt/printable/recon/reconstruct.py
+COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py /opt/printable/recon/
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE

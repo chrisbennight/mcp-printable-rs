@@ -44,8 +44,8 @@ CAD worker with the other services before backup.
 
 The server and CAD, reconstruction, and slicer workers handle both SIGTERM
 (the usual container-stop signal) and SIGINT. They stop accepting new HTTP
-connections and drain accepted HTTP requests. A synchronous CAD build or
-reconstruction request can finish during this drain. The MCP server also
+connections and drain accepted HTTP requests. A synchronous CAD build,
+reconstruction or depth request can finish during this drain. The MCP server also
 cancels its transport sessions and background readiness checks; this does not
 prove that a Blender mutation already delivered to the separate bridge was
 undone. Inspect that scene after restart before deciding whether to retry.

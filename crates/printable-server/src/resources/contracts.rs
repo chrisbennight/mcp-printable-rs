@@ -166,10 +166,12 @@ mod tests {
             workflows::Availability {
                 head: true,
                 reconstruct: false,
+                depth: false,
             },
             workflows::Availability {
                 head: true,
                 reconstruct: true,
+                depth: true,
             },
         ] {
             let index = read(ROOT, available).unwrap();
@@ -212,10 +214,12 @@ mod tests {
         let head = workflows::Availability {
             head: true,
             reconstruct: false,
+            depth: false,
         };
         let reconstruct = workflows::Availability {
             head: true,
             reconstruct: true,
+            depth: false,
         };
         let listed = |available| {
             read(ROOT, available).unwrap()["tools"]
@@ -230,6 +234,31 @@ mod tests {
         assert!(read("printable://contracts/head/create", head).is_some());
         assert!(read("printable://contracts/head/reconstruct", head).is_none());
         assert!(read("printable://contracts/head/reconstruct", reconstruct).is_some());
+    }
+
+    #[test]
+    fn photo_contracts_follow_depth_availability() {
+        let none = workflows::Availability::default();
+        let depth = workflows::Availability {
+            depth: true,
+            ..none
+        };
+        let listed = |available| {
+            read(ROOT, available).unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["tool"] == "photo")
+        };
+        assert!(!listed(none));
+        assert!(listed(depth));
+        assert!(read("printable://contracts/photo/depth", none).is_none());
+        let contract = read("printable://contracts/photo/depth", depth).unwrap();
+        let validator = jsonschema::validator_for(&contract["inputSchema"]).unwrap();
+        assert!(validator.is_valid(&json!({"action": "depth", "params": {
+            "image": "photo.jpg", "depth_path": "depth.png", "normals_path": "normals.png", "max_side": 1536
+        }})));
+        assert!(!validator.is_valid(&json!({"action": "depth", "params": {"image": "photo.jpg"}})));
     }
 
     #[test]
@@ -248,7 +277,8 @@ mod tests {
                     uri,
                     workflows::Availability {
                         head: true,
-                        reconstruct: true
+                        reconstruct: true,
+                        depth: true,
                     }
                 )
                 .is_none(),

@@ -5,7 +5,12 @@
 //! and the displacement map is committed back through the workspace, so the
 //! Python process never touches workspace paths.
 
-use std::{os::unix::process::CommandExt, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    os::unix::process::CommandExt,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use printable_workspace::Workspace;
 use schemars::JsonSchema;
@@ -259,6 +264,85 @@ impl ReconRequest {
     }
 }
 
+/// Longest side, in pixels, that depth is estimated at unless a request
+/// chooses otherwise.
+pub const DEPTH_DEFAULT_MAX_SIDE: u32 = 1024;
+/// Longest sides a depth request may choose.
+pub const DEPTH_MAX_SIDES: std::ops::RangeInclusive<u32> = 256..=2048;
+/// Largest depth map committed to the workspace: a 2048-pixel 16-bit map.
+const MAX_DEPTH_MAP_BYTES: u64 = 32 * 1024 * 1024;
+/// Largest normal map committed to the workspace: a 2048-pixel 16-bit RGB map.
+const MAX_NORMAL_MAP_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DepthRequest {
+    /// Workspace photograph, JPEG, PNG or WebP. Any transparency is flattened
+    /// onto black.
+    pub image: String,
+    /// Workspace path for the 16-bit greyscale PNG depth map, nearest
+    /// brightest: a pixel value p means a relative log depth of
+    /// far - (far - near) * p / 65535, with near and far reported. The scale
+    /// and offset of the true distances are unknown.
+    pub depth_path: String,
+    /// Workspace path for a 16-bit RGB PNG of unit surface normals in the
+    /// camera's frame, x right, y up and z towards the camera, each component
+    /// c stored as (c + 1) / 2 * 65535. Not made when omitted; making it runs
+    /// the model a second time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normals_path: Option<String>,
+    /// Longest side, in pixels, to estimate at: 256 to 2048 (default 1024).
+    /// Larger photographs are scaled down, never up, and both sides are
+    /// rounded to multiples of 16. More pixels resolve finer detail and take
+    /// longer and more GPU memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_side: Option<u32>,
+    /// Replace existing files at `depth_path` and `normals_path`.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+impl DepthRequest {
+    /// Checks that need no file access.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        if !IMAGE_SUFFIXES
+            .iter()
+            .any(|suffix| self.image.ends_with(suffix))
+        {
+            return Err(ToolError::Validation(format!(
+                "{} is not a .jpg, .jpeg, .png or .webp photograph",
+                self.image
+            )));
+        }
+        if !self.depth_path.ends_with(".png") {
+            return Err(ToolError::Validation("depth_path must end in .png".into()));
+        }
+        if let Some(normals) = &self.normals_path {
+            if !normals.ends_with(".png") {
+                return Err(ToolError::Validation(
+                    "normals_path must end in .png".into(),
+                ));
+            }
+            if *normals == self.depth_path {
+                return Err(ToolError::Validation(
+                    "normals_path and depth_path must differ".into(),
+                ));
+            }
+        }
+        if self
+            .max_side
+            .is_some_and(|side| !DEPTH_MAX_SIDES.contains(&side))
+        {
+            return Err(ToolError::Validation(format!(
+                "max_side must be between {} and {}",
+                DEPTH_MAX_SIDES.start(),
+                DEPTH_MAX_SIDES.end()
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// SHA-256 of a file read in pieces, as lowercase hexadecimal.
 pub(crate) fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
@@ -291,6 +375,10 @@ pub struct ReconConfig {
     pub segmenter: PathBuf,
     pub device: String,
     pub timeout: Duration,
+    /// The depth estimation runtime and its converted Marigold V2 model.
+    pub depth_script: PathBuf,
+    pub depth_model: PathBuf,
+    pub depth_timeout: Duration,
 }
 
 pub struct ReconWorker {
@@ -310,21 +398,9 @@ impl ReconWorker {
 
     /// Checkpoint files the operator has not yet supplied.
     pub async fn missing_checkpoints(&self) -> Result<Vec<String>, ToolError> {
-        let mut command = self.python_command();
-        command.arg("--check").arg(&self.config.checkpoints);
-        let output = tokio::time::timeout(CHECK_TIMEOUT, command.output())
-            .await
-            .map_err(|_| {
-                reconstruction_error("timeout", "the checkpoint check did not finish")
-            })??;
-        #[derive(Deserialize)]
-        struct Check {
-            missing: Vec<String>,
-        }
-        let check: Check = serde_json::from_slice(&output.stdout).map_err(|_| {
-            reconstruction_error("protocol", "the checkpoint check returned no answer")
-        })?;
-        let mut missing = check.missing;
+        let mut missing = self
+            .check(&self.config.script, &self.config.checkpoints)
+            .await?;
         if !self.config.landmarker.is_file() {
             missing.push("face landmarker model".into());
         }
@@ -334,23 +410,88 @@ impl ReconWorker {
         Ok(missing)
     }
 
+    /// Files of the converted Marigold V2 model the operator has not yet
+    /// supplied.
+    pub async fn missing_depth_files(&self) -> Result<Vec<String>, ToolError> {
+        self.check(&self.config.depth_script, &self.config.depth_model)
+            .await
+    }
+
+    /// Whether the worker can run any job, and its readiness answer:
+    /// `capabilities` says which jobs can run and `missing` lists each job's
+    /// absent files. Each job's check stands alone, so a check that fails
+    /// withholds only its own job.
+    pub async fn readiness(&self) -> (bool, Value) {
+        let (reconstruct, depth) =
+            tokio::join!(self.missing_checkpoints(), self.missing_depth_files());
+        let present = |check: &Result<Vec<String>, ToolError>| matches!(check, Ok(missing) if missing.is_empty());
+        let describe = |check: Result<Vec<String>, ToolError>| match check {
+            Ok(missing) => json!(missing),
+            Err(error) => json!({"error": worker_message(&error)}),
+        };
+        let capabilities = Readiness {
+            reconstruct: present(&reconstruct),
+            depth: present(&depth),
+        };
+        let missing = json!({"reconstruct": describe(reconstruct), "depth": describe(depth)});
+        let workspace_ready = self.workspace.ready();
+        if workspace_ready && (capabilities.reconstruct || capabilities.depth) {
+            (
+                true,
+                json!({
+                    "ready": true,
+                    "busy": self.admission.available_permits() == 0,
+                    "capabilities": capabilities,
+                    "missing": missing,
+                }),
+            )
+        } else {
+            (
+                false,
+                json!({"ready": false, "missing": missing, "workspace_ready": workspace_ready}),
+            )
+        }
+    }
+
+    /// Ask a runtime script which of its files `directory` lacks.
+    async fn check(&self, script: &Path, directory: &Path) -> Result<Vec<String>, ToolError> {
+        let mut command = self.python_command(script);
+        command.arg("--check").arg(directory);
+        let output = tokio::time::timeout(CHECK_TIMEOUT, command.output())
+            .await
+            .map_err(|_| {
+                reconstruction_error("timeout", "the model file check did not finish")
+            })??;
+        #[derive(Deserialize)]
+        struct Check {
+            missing: Vec<String>,
+        }
+        let check: Check = serde_json::from_slice(&output.stdout).map_err(|_| {
+            reconstruction_error("protocol", "the model file check returned no answer")
+        })?;
+        Ok(check.missing)
+    }
+
+    /// Refuse an output path that is unsafe or, unless `overwrite`, taken.
+    fn check_destination(&self, path: &str, overwrite: bool) -> Result<(), ToolError> {
+        self.workspace.validate_public_mutation_path(path)?;
+        if !overwrite && self.workspace.stat_artifact(path).is_ok() {
+            return Err(printable_workspace::WsError::AlreadyExists(path.to_owned()).into());
+        }
+        Ok(())
+    }
+
+    /// One photograph job runs at a time, so they share the GPU in turn.
+    fn permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, ToolError> {
+        self.admission.try_acquire().map_err(|_| {
+            reconstruction_error("busy", "another photograph job is running; retry shortly")
+        })
+    }
+
     pub async fn reconstruct(&self, request: ReconRequest) -> Result<Value, ToolError> {
         request.validate()?;
-        self.workspace
-            .validate_public_mutation_path(&request.displacement_path)?;
-        if !request.overwrite
-            && self
-                .workspace
-                .stat_artifact(&request.displacement_path)
-                .is_ok()
-        {
-            return Err(
-                printable_workspace::WsError::AlreadyExists(request.displacement_path).into(),
-            );
-        }
-        let _permit = self.admission.try_acquire().map_err(|_| {
-            reconstruction_error("busy", "another reconstruction is running; retry shortly")
-        })?;
+        self.check_destination(&request.displacement_path, request.overwrite)?;
+        let _permit = self.permit()?;
 
         let mut snapshots = Vec::with_capacity(request.images.len());
         for image in &request.images {
@@ -375,74 +516,15 @@ impl ReconWorker {
         if let Some(primary) = request.primary_image {
             job["primary"] = json!(primary);
         }
-        let request_path = staging.path().join("request.json");
-        std::fs::write(&request_path, serde_json::to_vec(&job)?)?;
-
-        let mut command = self.python_command();
-        command
-            .arg(&request_path)
-            .current_dir(staging.path())
-            .env("HOME", staging.path());
-        command.as_std_mut().process_group(0);
-        let mut child = command.spawn().map_err(|_| {
-            reconstruction_error("unavailable", "the reconstruction runtime could not start")
-        })?;
-        let mut group = ProcessGroup(child.id());
-        let stdout = child.stdout.take().expect("piped stdout");
-        let run = async {
-            let mut response = Vec::new();
-            let mut bounded = stdout.take(MAX_RESPONSE_BYTES as u64 + 1);
-            let (status, read) = tokio::join!(child.wait(), bounded.read_to_end(&mut response));
-            read?;
-            Ok::<_, std::io::Error>((status?, response))
-        };
-        let (status, response) = match tokio::time::timeout(self.config.timeout, run).await {
-            Ok(result) => {
-                // The child has been reaped, so its group id may be reused.
-                group.disarm();
-                result?
-            }
-            Err(_) => {
-                drop(group);
-                return Err(reconstruction_error(
-                    "timeout",
-                    format!(
-                        "reconstruction did not finish within {} seconds",
-                        self.config.timeout.as_secs()
-                    ),
-                ));
-            }
-        };
-        let envelope: Value = serde_json::from_slice(&response).map_err(|_| {
-            if status.success() {
-                reconstruction_error("protocol", "the reconstruction runtime returned no answer")
-            } else {
-                reconstruction_error(
-                    "resource_limit",
-                    "reconstruction ran out of memory or stopped unexpectedly",
-                )
-            }
-        })?;
-        if let Some(error) = envelope.get("error") {
-            let code = match error.get("code").and_then(Value::as_str) {
-                Some("no_face") => "no_face",
-                Some("checkpoints") => "checkpoints",
-                Some("validation") => "validation",
-                _ => "failed",
-            };
-            let message = error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("reconstruction failed");
-            return Err(reconstruction_error(code, message));
-        }
-        let mut result = envelope
-            .get("result")
-            .cloned()
-            .filter(Value::is_object)
-            .ok_or_else(|| {
-                reconstruction_error("protocol", "the reconstruction answer has no result")
-            })?;
+        let mut result = self
+            .run(
+                &self.config.script,
+                &job,
+                staging.path(),
+                self.config.timeout,
+                "reconstruction",
+            )
+            .await?;
         let artifact = self.workspace.commit_generated_artifact_bounded(
             &request.displacement_path,
             &map,
@@ -460,15 +542,164 @@ impl ReconWorker {
         Ok(result)
     }
 
-    fn python_command(&self) -> Command {
+    /// Estimate relative depth, and optionally surface normals, for one
+    /// photograph with Marigold V2.
+    pub async fn estimate_depth(&self, request: DepthRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.check_destination(&request.depth_path, request.overwrite)?;
+        if let Some(normals) = &request.normals_path {
+            self.check_destination(normals, request.overwrite)?;
+        }
+        let _permit = self.permit()?;
+
+        let snapshot = self
+            .workspace
+            .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
+        let staging = tempfile::Builder::new()
+            .prefix("printable-depth-")
+            .tempdir()?;
+        let depth = staging.path().join("depth.png");
+        let normals = staging.path().join("normals.png");
+        let mut job = json!({
+            "image": snapshot.path(),
+            "model": self.config.depth_model,
+            "depth": depth,
+            "max_side": request.max_side.unwrap_or(DEPTH_DEFAULT_MAX_SIDE),
+            "device": self.config.device,
+            "seed": 0,
+        });
+        if request.normals_path.is_some() {
+            job["normals"] = json!(normals);
+        }
+        let mut result = self
+            .run(
+                &self.config.depth_script,
+                &job,
+                staging.path(),
+                self.config.depth_timeout,
+                "depth estimation",
+            )
+            .await?;
+        let artifact = self.workspace.commit_generated_artifact_bounded(
+            &request.depth_path,
+            &depth,
+            request.overwrite,
+            MAX_DEPTH_MAP_BYTES,
+        )?;
+        result["depth"]["artifact"] = json!(artifact);
+        if let Some(path) = &request.normals_path {
+            let artifact = self.workspace.commit_generated_artifact_bounded(
+                path,
+                &normals,
+                request.overwrite,
+                MAX_NORMAL_MAP_BYTES,
+            )?;
+            result["normals"]["artifact"] = json!(artifact);
+        }
+        result["image_sha256"] = json!(file_digest(snapshot.path())?);
+        Ok(result)
+    }
+
+    /// Run one job in a fresh Python process with a deadline and return the
+    /// result object it prints. The process and any helpers it starts are
+    /// killed if the deadline passes, and its memory returns when it exits.
+    async fn run(
+        &self,
+        script: &Path,
+        job: &Value,
+        staging: &Path,
+        timeout: Duration,
+        activity: &str,
+    ) -> Result<Value, ToolError> {
+        let request_path = staging.join("request.json");
+        std::fs::write(&request_path, serde_json::to_vec(job)?)?;
+
+        let mut command = self.python_command(script);
+        command
+            .arg(&request_path)
+            .current_dir(staging)
+            .env("HOME", staging);
+        command.as_std_mut().process_group(0);
+        let mut child = command.spawn().map_err(|_| {
+            reconstruction_error(
+                "unavailable",
+                format!("the {activity} runtime could not start"),
+            )
+        })?;
+        let mut group = ProcessGroup(child.id());
+        let stdout = child.stdout.take().expect("piped stdout");
+        let run = async {
+            let mut response = Vec::new();
+            let mut bounded = stdout.take(MAX_RESPONSE_BYTES as u64 + 1);
+            let (status, read) = tokio::join!(child.wait(), bounded.read_to_end(&mut response));
+            read?;
+            Ok::<_, std::io::Error>((status?, response))
+        };
+        let (status, response) = match tokio::time::timeout(timeout, run).await {
+            Ok(result) => {
+                // The child has been reaped, so its group id may be reused.
+                group.disarm();
+                result?
+            }
+            Err(_) => {
+                drop(group);
+                return Err(reconstruction_error(
+                    "timeout",
+                    format!(
+                        "{activity} did not finish within {} seconds",
+                        timeout.as_secs()
+                    ),
+                ));
+            }
+        };
+        let envelope: Value = serde_json::from_slice(&response).map_err(|_| {
+            if status.success() {
+                reconstruction_error(
+                    "protocol",
+                    format!("the {activity} runtime returned no answer"),
+                )
+            } else {
+                reconstruction_error(
+                    "resource_limit",
+                    format!("{activity} ran out of memory or stopped unexpectedly"),
+                )
+            }
+        })?;
+        if let Some(error) = envelope.get("error") {
+            let code = match error.get("code").and_then(Value::as_str) {
+                Some("no_face") => "no_face",
+                Some("checkpoints") => "checkpoints",
+                Some("validation") => "validation",
+                Some("unavailable") => "unavailable",
+                Some("resource_limit") => "resource_limit",
+                _ => "failed",
+            };
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map_or_else(|| format!("{activity} failed"), str::to_owned);
+            return Err(reconstruction_error(code, message));
+        }
+        envelope
+            .get("result")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| {
+                reconstruction_error("protocol", format!("the {activity} answer has no result"))
+            })
+    }
+
+    fn python_command(&self, script: &Path) -> Command {
         let mut command = Command::new(&self.config.python);
         command
             .arg("-I")
             .arg("-B")
-            .arg(&self.config.script)
+            .arg(script)
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("OMP_NUM_THREADS", "4")
+            // The runtimes read only mounted files; nothing is fetched.
+            .env("HF_HUB_OFFLINE", "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -546,11 +777,37 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
     "displacement": {"offset_mm": -1.0, "scale_mm": 2.0, "width": 256, "height": 256}}}))
 "#;
 
+    /// A stand-in depth runtime: it answers the file check by whether the
+    /// model directory exists and otherwise echoes the request, choosing its
+    /// behaviour from the photograph's name.
+    const FAKE_DEPTH_RUNTIME: &str = r#"
+import json, os, sys, time
+if len(sys.argv) == 3 and sys.argv[1] == "--check":
+    print(json.dumps({"missing": [] if os.path.isdir(sys.argv[2]) else ["manifest.json"]}))
+    sys.exit(0)
+request = json.load(open(sys.argv[1]))
+name = request["image"]
+if "slow" in name:
+    time.sleep(30)
+if "oom" in name:
+    print(json.dumps({"error": {"code": "resource_limit", "message": "the GPU ran out of memory"}}))
+    sys.exit(2)
+open(request["depth"], "wb").write(b"\x89PNG\r\n\x1a\ndepth")
+result = {"width": 64, "height": 48, "depth": {"near": -1.0, "far": 1.0}, "device": request["device"],
+    "max_side": request["max_side"], "model": request["model"]}
+if "normals" in request:
+    open(request["normals"], "wb").write(b"\x89PNG\r\n\x1a\nnormals")
+    result["normals"] = {"encoding": "c = 2 * p / 65535 - 1", "frame": "x right, y up, z towards the camera"}
+print(json.dumps({"result": result}))
+"#;
+
     fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");
         std::fs::create_dir(&runtime).unwrap();
         std::fs::write(runtime.join("reconstruct.py"), FAKE_RUNTIME).unwrap();
+        std::fs::write(runtime.join("estimate_depth.py"), FAKE_DEPTH_RUNTIME).unwrap();
+        std::fs::create_dir(runtime.join("marigold")).unwrap();
         std::fs::write(runtime.join("face_landmarker.task"), b"model").unwrap();
         std::fs::write(runtime.join("segmenter.tflite"), b"model").unwrap();
         let workspace_root = root.path().join("workspace");
@@ -561,6 +818,7 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
             "noface.jpg",
             "slow.jpg",
             "crash.jpg",
+            "oom.jpg",
         ] {
             std::fs::write(workspace_root.join(name), b"image bytes").unwrap();
         }
@@ -575,9 +833,170 @@ print(json.dumps({"result": {"identity": [0.5] * 300, "expression": [0.0] * 50, 
                 segmenter: runtime.join("segmenter.tflite"),
                 device: "cpu".into(),
                 timeout,
+                depth_script: runtime.join("estimate_depth.py"),
+                depth_model: runtime.join("marigold"),
+                depth_timeout: timeout,
             },
         );
         (root, worker)
+    }
+
+    fn depth_request(image: &str, normals: Option<&str>) -> DepthRequest {
+        DepthRequest {
+            image: image.into(),
+            depth_path: "relief/depth.png".into(),
+            normals_path: normals.map(Into::into),
+            max_side: None,
+            overwrite: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn depth_maps_are_committed_with_the_photographs_digest() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        assert!(worker.missing_depth_files().await.unwrap().is_empty());
+        let result = worker
+            .estimate_depth(depth_request("face.jpg", Some("relief/normals.png")))
+            .await
+            .unwrap();
+        assert_eq!(result["depth"]["artifact"]["path"], "relief/depth.png");
+        assert_eq!(result["normals"]["artifact"]["path"], "relief/normals.png");
+        assert_eq!(result["max_side"], DEPTH_DEFAULT_MAX_SIDE);
+        assert_eq!(result["device"], "cpu");
+        assert!(root.path().join("workspace/relief/depth.png").is_file());
+        assert!(root.path().join("workspace/relief/normals.png").is_file());
+        let digest = file_digest(&root.path().join("workspace/face.jpg")).unwrap();
+        assert_eq!(result["image_sha256"], digest);
+        // Without normals_path the runtime is not asked for them.
+        let mut plain = depth_request("side.png", None);
+        plain.depth_path = "relief/plain.png".into();
+        let result = worker.estimate_depth(plain).await.unwrap();
+        assert!(result.get("normals").is_none());
+        // Existing maps are kept unless overwrite is requested.
+        for normals in [None, Some("relief/normals.png")] {
+            let mut repeat = depth_request("face.jpg", normals);
+            if normals.is_some() {
+                repeat.depth_path = "relief/other.png".into();
+            }
+            let error = worker.estimate_depth(repeat).await.unwrap_err();
+            assert_eq!(error.code(), "already_exists");
+        }
+        let mut overwrite = depth_request("face.jpg", Some("relief/normals.png"));
+        overwrite.overwrite = true;
+        overwrite.max_side = Some(2048);
+        let result = worker.estimate_depth(overwrite).await.unwrap();
+        assert_eq!(result["max_side"], 2048);
+    }
+
+    #[tokio::test]
+    async fn depth_failures_keep_their_cause() {
+        let (_root, worker) = worker(Duration::from_secs(60));
+        let error = worker
+            .estimate_depth(depth_request("oom.jpg", None))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "resource_limit");
+        assert_eq!(worker_message(&error), "the GPU ran out of memory");
+        drop(worker);
+        let (_short_root, short) = super::tests::worker(Duration::from_secs(1));
+        let error = short
+            .estimate_depth(depth_request("slow.jpg", None))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "timeout");
+        assert!(worker_message(&error).starts_with("depth estimation did not finish"));
+        std::fs::remove_dir(&short.config.depth_model).unwrap();
+        assert_eq!(
+            short.missing_depth_files().await.unwrap(),
+            ["manifest.json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn photograph_jobs_take_turns() {
+        let (_root, worker) = worker(Duration::from_secs(60));
+        let worker = Arc::new(worker);
+        let slow = {
+            let worker = Arc::clone(&worker);
+            tokio::spawn(
+                async move { worker.estimate_depth(depth_request("slow.jpg", None)).await },
+            )
+        };
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let busy = worker
+            .reconstruct(request(&["face.jpg"], "detail/map.png"))
+            .await
+            .unwrap_err();
+        assert_eq!(busy.code(), "busy");
+        slow.abort();
+    }
+
+    #[tokio::test]
+    async fn each_job_is_ready_on_its_own_files() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let (ready, answer) = worker.readiness().await;
+        assert!(ready);
+        assert_eq!(
+            answer["capabilities"],
+            json!({"reconstruct": true, "depth": true})
+        );
+        // A depth check that cannot run withholds depth alone.
+        let mut broken = worker.config.clone();
+        broken.depth_script = root.path().join("absent.py");
+        let worker = ReconWorker::new(Arc::clone(&worker.workspace), broken);
+        let (ready, answer) = worker.readiness().await;
+        assert!(ready);
+        assert_eq!(
+            answer["capabilities"],
+            json!({"reconstruct": true, "depth": false})
+        );
+        assert!(answer["missing"]["depth"]["error"].is_string());
+        // Without either job's files the worker is not ready and says why.
+        let mut bare = worker.config.clone();
+        bare.depth_script = root.path().join("runtime/estimate_depth.py");
+        bare.landmarker = root.path().join("absent.task");
+        bare.depth_model = root.path().join("absent");
+        let worker = ReconWorker::new(Arc::clone(&worker.workspace), bare);
+        let (ready, answer) = worker.readiness().await;
+        assert!(!ready);
+        assert_eq!(answer["missing"]["depth"], json!(["manifest.json"]));
+        assert_eq!(
+            answer["missing"]["reconstruct"],
+            json!(["face landmarker model"])
+        );
+    }
+
+    #[test]
+    fn depth_requests_are_checked_before_any_work() {
+        assert!(depth_request("a.jpg", Some("n.png")).validate().is_ok());
+        for (request, message) in [
+            (depth_request("a.gif", None), "not a .jpg"),
+            (
+                DepthRequest {
+                    depth_path: "d.tif".into(),
+                    ..depth_request("a.jpg", None)
+                },
+                "depth_path must end in .png",
+            ),
+            (
+                depth_request("a.jpg", Some("n.jpg")),
+                "normals_path must end in .png",
+            ),
+            (
+                depth_request("a.jpg", Some("relief/depth.png")),
+                "must differ",
+            ),
+            (
+                DepthRequest {
+                    max_side: Some(4096),
+                    ..depth_request("a.jpg", None)
+                },
+                "between 256 and 2048",
+            ),
+        ] {
+            let error = request.validate().unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[tokio::test]
@@ -862,13 +1281,22 @@ const READINESS_INTERVAL: Duration = Duration::from_secs(30);
 /// The worker enforces its own deadline; this only bounds a lost connection.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3660);
 
+/// Which of the photograph worker's jobs it last reported it can run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Readiness {
+    /// Every reconstruction checkpoint is present.
+    pub reconstruct: bool,
+    /// The converted Marigold V2 model is present.
+    pub depth: bool,
+}
+
 /// The server's view of the reconstruction worker.
 #[derive(Debug)]
 pub struct ReconClient {
     endpoint: String,
     http: reqwest::Client,
     /// The worker's last readiness answer; subscribers hear each change.
-    ready: tokio::sync::watch::Sender<bool>,
+    ready: tokio::sync::watch::Sender<Readiness>,
     /// Building a colour map holds a photograph, its depth buffer and the map
     /// in the server's memory, so the server builds one at a time.
     colour_maps: Arc<Semaphore>,
@@ -895,14 +1323,20 @@ impl ReconClient {
         Ok(Some(Arc::new(Self {
             endpoint: endpoint.trim().trim_end_matches('/').to_owned(),
             http,
-            ready: tokio::sync::watch::Sender::new(false),
+            ready: tokio::sync::watch::Sender::new(Readiness::default()),
             colour_maps: Arc::new(Semaphore::new(1)),
         })))
     }
 
-    /// Whether the worker last reported every checkpoint present.
-    pub fn is_ready(&self) -> bool {
-        *self.ready.borrow()
+    /// Whether the worker last reported every reconstruction checkpoint
+    /// present.
+    pub fn can_reconstruct(&self) -> bool {
+        self.ready.borrow().reconstruct
+    }
+
+    /// Whether the worker last reported the depth model present.
+    pub fn can_estimate_depth(&self) -> bool {
+        self.ready.borrow().depth
     }
 
     /// Permission to build a colour map, or a busy error while another is
@@ -916,27 +1350,41 @@ impl ReconClient {
     }
 
     /// A receiver that wakes whenever readiness changes.
-    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Readiness> {
         self.ready.subscribe()
     }
 
     /// Ask the worker now and remember the answer.
-    pub async fn refresh(&self) -> bool {
-        let ready = matches!(
-            self.http
-                .get(format!("{}/readyz", self.endpoint))
-                .timeout(CHECK_TIMEOUT)
-                .send()
-                .await,
-            Ok(response) if response.status().is_success()
-        );
+    pub async fn refresh(&self) -> Readiness {
+        #[derive(Deserialize)]
+        struct Answer {
+            capabilities: Readiness,
+        }
+        let ready = match self
+            .http
+            .get(format!("{}/readyz", self.endpoint))
+            .timeout(CHECK_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .json::<Answer>()
+                .await
+                .map(|answer| answer.capabilities)
+                .unwrap_or_default(),
+            _ => Readiness::default(),
+        };
         let changed = self.ready.send_if_modified(|current| {
             let changed = *current != ready;
             *current = ready;
             changed
         });
         if changed {
-            tracing::info!(ready, "reconstruction worker availability changed");
+            tracing::info!(
+                reconstruct = ready.reconstruct,
+                depth = ready.depth,
+                "photograph worker availability changed"
+            );
         }
         ready
     }
@@ -956,29 +1404,57 @@ impl ReconClient {
 
     pub async fn reconstruct(&self, request: &ReconRequest) -> Result<Value, ToolError> {
         request.validate()?;
+        self.post(
+            "reconstruct",
+            &request.for_worker(),
+            "check displacement_path before retrying, because the map may have been written",
+        )
+        .await
+    }
+
+    pub async fn estimate_depth(&self, request: &DepthRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.post(
+            "depth",
+            request,
+            "check depth_path before retrying, because the map may have been written",
+        )
+        .await
+    }
+
+    /// Send one job to the worker. A request the worker may have received
+    /// but whose answer was lost has an unknown outcome; `advice` tells the
+    /// caller what to inspect before retrying.
+    async fn post(
+        &self,
+        route: &str,
+        body: &impl Serialize,
+        advice: &str,
+    ) -> Result<Value, ToolError> {
         let response = self
             .http
-            .post(format!("{}/reconstruct", self.endpoint))
+            .post(format!("{}/{route}", self.endpoint))
             .timeout(REQUEST_TIMEOUT)
-            .json(&request.for_worker())
+            .json(body)
             .send()
             .await
             .map_err(|_| {
                 reconstruction_error(
                     "outcome_unknown",
-                    "the reconstruction worker could not be reached or the connection was lost; \
-                     check displacement_path before retrying, because the map may have been written",
+                    format!(
+                        "the photograph worker could not be reached or the connection was lost; {advice}"
+                    ),
                 )
             })?;
         let status = response.status();
         let body = response.bytes().await.map_err(|_| {
             reconstruction_error(
                 "outcome_unknown",
-                "the reconstruction answer was interrupted; check displacement_path before retrying",
+                format!("the photograph worker's answer was interrupted; {advice}"),
             )
         })?;
         let value: Value = serde_json::from_slice(&body).map_err(|_| {
-            reconstruction_error("protocol", "the reconstruction worker returned no answer")
+            reconstruction_error("protocol", "the photograph worker returned no answer")
         })?;
         if status.is_success() {
             return Ok(value);
@@ -991,12 +1467,13 @@ impl ReconClient {
             Some("resource_limit") => "resource_limit",
             Some("validation") => "validation",
             Some("already_exists") => "already_exists",
+            Some("unavailable") => "unavailable",
             _ => "failed",
         };
         let message = value
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("the reconstruction worker refused the request");
+            .unwrap_or("the photograph worker refused the request");
         Err(reconstruction_error(code, message))
     }
 }

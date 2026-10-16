@@ -8,6 +8,7 @@
 mod head;
 mod native;
 pub mod output;
+mod photo;
 pub mod workflows;
 use head::{
     HeadCreateParams, HeadExportParams, HeadModelsParams, HeadPhotoToBustParams,
@@ -2104,6 +2105,7 @@ async fn dispatch_value(
         "printable_flame_reconstruct" => {
             head::reconstruct(Arc::clone(workspace), settings, de(args)?).await
         }
+        "printable_photo_depth" => photo::depth(Arc::clone(workspace), settings, de(args)?).await,
         "printable_flame_photo_to_bust" => {
             let params: Box<HeadPhotoToBustParams> = de(args)?;
             head::photo_to_bust(Arc::clone(workspace), blender, settings, *params).await
@@ -5630,11 +5632,15 @@ async fn status(
         ),
         "reconstruction": {
             "configured": settings.recon.is_some(),
-            "ready": settings.recon.as_ref().is_some_and(|recon| recon.is_ready()),
+            "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_reconstruct()),
             "variant": settings
                 .flame
                 .as_ref()
                 .and_then(|library| library.reconstruction_variant()),
+        },
+        "depth": {
+            "configured": settings.recon.is_some(),
+            "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_estimate_depth()),
         },
         "workspace": {
             "confined": ws.confined,

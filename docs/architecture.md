@@ -54,10 +54,10 @@ the HTTP stream closes. After each subscription acknowledgement, read the
 current catalog. Reconnecting requires a new subscription; previous streams
 do not replay missed changes.
 
-Only reconstruction readiness with a matching mounted head model changes the
-catalog after startup. Servers without that worker or model omit
-tool-list-change capability and accept an
-empty notification filter. Other notification categories are not advertised.
+Only the photograph worker's readiness changes the catalog after startup: it
+gates the `photo` tool, and `head`'s `reconstruct` when a matching head model
+is mounted. Servers without that worker omit tool-list-change capability and
+accept an empty notification filter. Other notification categories are not advertised.
 See the [MCP subscription requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions)
 and [Streamable HTTP requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
 
