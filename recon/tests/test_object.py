@@ -501,9 +501,13 @@ class SimplificationTest(unittest.TestCase):
         self.assertGreater(faces.shape[0], 1000)
         radius = numpy.linalg.norm(points[numpy.unique(faces)], axis=1)
         numpy.testing.assert_allclose(radius, 0.4, atol=0.02)
-        # Small surfaces are written as they are.
-        points, faces = meshes.reduce(vertices, triangles, 64, 50000)
+        # Small surfaces are written as they are, without vertices no
+        # triangle uses.
+        spare = torch.cat([vertices, torch.zeros(5000, 3)])
+        points, faces = meshes.reduce(spare, triangles, 64, 50000)
         self.assertEqual(faces.shape[0], 20480)
+        self.assertEqual(points.shape[0], vertices.shape[0])
+        numpy.testing.assert_allclose(points[faces], vertices[triangles].numpy())
         # Surfaces too large for the simplifier's memory are coarsened first.
         size = meshes.CLUSTER_ABOVE
         meshes.CLUSTER_ABOVE = 5000

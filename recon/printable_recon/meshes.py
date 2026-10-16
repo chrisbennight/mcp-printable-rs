@@ -67,9 +67,12 @@ def reduce(
         while triangles.shape[0] > limit:
             vertices, triangles = cluster(vertices, triangles, voxels / size)
             voxels *= 2
-    points = vertices.double().cpu().numpy()
-    faces = triangles.cpu().numpy().astype(numpy.int64)
-    del vertices, triangles
+    # Only the vertices the triangles use go on, so memory follows the
+    # triangle count rather than the voxels decoded.
+    used, corners = torch.unique(triangles, return_inverse=True)
+    points = vertices[used].double().cpu().numpy()
+    faces = corners.reshape(-1, 3).cpu().numpy().astype(numpy.int64)
+    del vertices, triangles, used, corners
     if faces.shape[0] > target:
         points, faces = fast_simplification.simplify(points, faces, target_count=target)
     return points.astype(numpy.float32), faces
