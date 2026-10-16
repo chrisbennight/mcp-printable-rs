@@ -349,6 +349,121 @@ impl DepthRequest {
     }
 }
 
+/// Surface resolutions an object request may choose.
+pub const OBJECT_RESOLUTIONS: [u32; 3] = [512, 1024, 1536];
+pub const OBJECT_DEFAULT_RESOLUTION: u32 = 1024;
+/// Sampling steps per generation stage an object request may choose.
+pub const OBJECT_STEPS: std::ops::RangeInclusive<u32> = 1..=50;
+/// Horizontal fields of view, in degrees, an object request may give.
+pub const OBJECT_FOV_DEGREES: std::ops::RangeInclusive<f64> = 5.0..=90.0;
+/// Longest sides, in millimetres, an object request may choose.
+pub const OBJECT_SIZES_MM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
+/// Largest object mesh committed to the workspace: a binary STL of about 10
+/// million triangles.
+const MAX_OBJECT_MESH_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectRequest {
+    /// Workspace photograph of one object, figure or character, JPEG, PNG or
+    /// WebP. The background is removed unless the photograph already has
+    /// transparency, which then marks the subject.
+    pub image: String,
+    /// Workspace path for the binary STL, in millimetres with Z up, the
+    /// subject facing -Y as the camera saw it, centred on the origin and
+    /// standing on Z = 0.
+    pub mesh_path: String,
+    /// Detail of the surface: 512, 1024 (default) or 1536 voxels across.
+    /// Higher resolutions take longer, use more GPU memory and give larger
+    /// meshes; 1536 is coarsened towards 1024 when the shape has too many
+    /// voxels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<u32>,
+    /// Sampling steps for each generation stage: 1 to 50, by default the
+    /// published pipeline's. Fewer steps are faster and rougher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    /// Seed for the generator's noise (default 42); another seed gives
+    /// another plausible shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    /// Horizontal field of view, in degrees, of the square that frames the
+    /// subject: 5 to 90. When omitted it is derived from the photograph's
+    /// 35 mm equivalent focal length, or else assumed to be 20 degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fov_degrees: Option<f64>,
+    /// Length of the mesh's longest side in millimetres: 5 to 2000 (default
+    /// 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_mm: Option<f64>,
+    /// Replace an existing file at `mesh_path`.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+impl ObjectRequest {
+    /// Checks that need no file access.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        if !IMAGE_SUFFIXES
+            .iter()
+            .any(|suffix| self.image.ends_with(suffix))
+        {
+            return Err(ToolError::Validation(format!(
+                "{} is not a .jpg, .jpeg, .png or .webp photograph",
+                self.image
+            )));
+        }
+        if !self.mesh_path.ends_with(".stl") {
+            return Err(ToolError::Validation("mesh_path must end in .stl".into()));
+        }
+        if self
+            .resolution
+            .is_some_and(|resolution| !OBJECT_RESOLUTIONS.contains(&resolution))
+        {
+            return Err(ToolError::Validation(
+                "resolution must be 512, 1024 or 1536".into(),
+            ));
+        }
+        if self
+            .steps
+            .is_some_and(|steps| !OBJECT_STEPS.contains(&steps))
+        {
+            return Err(ToolError::Validation(format!(
+                "steps must be between {} and {}",
+                OBJECT_STEPS.start(),
+                OBJECT_STEPS.end()
+            )));
+        }
+        if self.seed.is_some_and(|seed| seed > i32::MAX as u32) {
+            return Err(ToolError::Validation(format!(
+                "seed must be at most {}",
+                i32::MAX
+            )));
+        }
+        if self
+            .fov_degrees
+            .is_some_and(|fov| !OBJECT_FOV_DEGREES.contains(&fov))
+        {
+            return Err(ToolError::Validation(format!(
+                "fov_degrees must be between {} and {}",
+                OBJECT_FOV_DEGREES.start(),
+                OBJECT_FOV_DEGREES.end()
+            )));
+        }
+        if self
+            .size_mm
+            .is_some_and(|size| !OBJECT_SIZES_MM.contains(&size))
+        {
+            return Err(ToolError::Validation(format!(
+                "size_mm must be between {} and {}",
+                OBJECT_SIZES_MM.start(),
+                OBJECT_SIZES_MM.end()
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// SHA-256 of a file read in pieces, as lowercase hexadecimal.
 pub(crate) fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
@@ -385,6 +500,10 @@ pub struct ReconConfig {
     pub depth_script: PathBuf,
     pub depth_model: PathBuf,
     pub depth_timeout: Duration,
+    /// The object generation runtime and its Pixal3D model directory.
+    pub object_script: PathBuf,
+    pub object_model: PathBuf,
+    pub object_timeout: Duration,
 }
 
 pub struct ReconWorker {
@@ -423,13 +542,23 @@ impl ReconWorker {
             .await
     }
 
+    /// Files of the Pixal3D model directory the operator has not yet
+    /// supplied.
+    pub async fn missing_object_files(&self) -> Result<Vec<String>, ToolError> {
+        self.check(&self.config.object_script, &self.config.object_model)
+            .await
+    }
+
     /// Whether the worker can run any job, and its readiness answer:
     /// `capabilities` says which jobs can run and `missing` lists each job's
     /// absent files. Each job's check stands alone, so a check that fails
     /// withholds only its own job.
     pub async fn readiness(&self) -> (bool, Value) {
-        let (reconstruct, depth) =
-            tokio::join!(self.missing_checkpoints(), self.missing_depth_files());
+        let (reconstruct, depth, object) = tokio::join!(
+            self.missing_checkpoints(),
+            self.missing_depth_files(),
+            self.missing_object_files()
+        );
         let present = |check: &Result<Vec<String>, ToolError>| matches!(check, Ok(missing) if missing.is_empty());
         let describe = |check: Result<Vec<String>, ToolError>| match check {
             Ok(missing) => json!(missing),
@@ -438,10 +567,17 @@ impl ReconWorker {
         let capabilities = Readiness {
             reconstruct: present(&reconstruct),
             depth: present(&depth),
+            object: present(&object),
         };
-        let missing = json!({"reconstruct": describe(reconstruct), "depth": describe(depth)});
+        let missing = json!({
+            "reconstruct": describe(reconstruct),
+            "depth": describe(depth),
+            "object": describe(object),
+        });
         let workspace_ready = self.workspace.ready();
-        if workspace_ready && (capabilities.reconstruct || capabilities.depth) {
+        if workspace_ready
+            && (capabilities.reconstruct || capabilities.depth || capabilities.object)
+        {
             (
                 true,
                 json!({
@@ -622,6 +758,57 @@ impl ReconWorker {
         Ok(result)
     }
 
+    /// Generate the shape of the object in one photograph with Pixal3D and
+    /// write it as a binary STL.
+    pub async fn generate_object(&self, request: ObjectRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.check_destination(&request.mesh_path, request.overwrite)?;
+        let _permit = self.permit()?;
+
+        let snapshot = self
+            .workspace
+            .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
+        let staging = tempfile::Builder::new()
+            .prefix("printable-object-")
+            .tempdir()?;
+        let mesh = staging.path().join("object.stl");
+        let mut job = json!({
+            "image": snapshot.path(),
+            "model": self.config.object_model,
+            "mesh": mesh,
+            "resolution": request.resolution.unwrap_or(OBJECT_DEFAULT_RESOLUTION),
+            "seed": request.seed.unwrap_or(42),
+            "device": self.config.device,
+        });
+        for (key, value) in [
+            ("steps", request.steps.map(|steps| json!(steps))),
+            ("fov_degrees", request.fov_degrees.map(|fov| json!(fov))),
+            ("size_mm", request.size_mm.map(|size| json!(size))),
+        ] {
+            if let Some(value) = value {
+                job[key] = value;
+            }
+        }
+        let mut result = self
+            .run(
+                &self.config.object_script,
+                &job,
+                staging.path(),
+                self.config.object_timeout,
+                "object generation",
+            )
+            .await?;
+        let artifact = self.workspace.commit_generated_artifact_bounded(
+            &request.mesh_path,
+            &mesh,
+            request.overwrite,
+            MAX_OBJECT_MESH_BYTES,
+        )?;
+        result["artifact"] = json!(artifact);
+        result["image_sha256"] = json!(file_digest(snapshot.path())?);
+        Ok(result)
+    }
+
     /// Run one job in a fresh Python process with a deadline and return the
     /// result object it prints. The process and any helpers it starts are
     /// killed if the deadline passes, and its memory returns when it exits.
@@ -690,6 +877,7 @@ impl ReconWorker {
         if let Some(error) = envelope.get("error") {
             let code = match error.get("code").and_then(Value::as_str) {
                 Some("no_face") => "no_face",
+                Some("no_shape") => "no_shape",
                 Some("checkpoints") => "checkpoints",
                 Some("validation") => "validation",
                 Some("unavailable") => "unavailable",
@@ -823,6 +1011,25 @@ if "normals" in request:
 print(json.dumps({"result": result}))
 "#;
 
+    /// A stand-in object runtime: it answers the file check by whether the
+    /// model directory exists and otherwise echoes the request, choosing its
+    /// behaviour from the photograph's name.
+    const FAKE_OBJECT_RUNTIME: &str = r#"
+import json, os, sys
+if len(sys.argv) == 3 and sys.argv[1] == "--check":
+    print(json.dumps({"missing": [] if os.path.isdir(sys.argv[2]) else ["pipeline.json"]}))
+    sys.exit(0)
+request = json.load(open(sys.argv[1]))
+if "blank" in request["image"]:
+    print(json.dumps({"error": {"code": "no_shape", "message": "no subject was found in the photograph"}}))
+    sys.exit(2)
+open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
+result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
+    "device": request["device"], "model": request["model"],
+    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm") if key in request}}
+print(json.dumps({"result": result}))
+"#;
+
     fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");
@@ -830,6 +1037,8 @@ print(json.dumps({"result": result}))
         std::fs::write(runtime.join("reconstruct.py"), FAKE_RUNTIME).unwrap();
         std::fs::write(runtime.join("estimate_depth.py"), FAKE_DEPTH_RUNTIME).unwrap();
         std::fs::create_dir(runtime.join("marigold")).unwrap();
+        std::fs::write(runtime.join("generate_object.py"), FAKE_OBJECT_RUNTIME).unwrap();
+        std::fs::create_dir(runtime.join("pixal3d")).unwrap();
         std::fs::write(runtime.join("face_landmarker.task"), b"model").unwrap();
         std::fs::write(runtime.join("segmenter.tflite"), b"model").unwrap();
         let workspace_root = root.path().join("workspace");
@@ -841,6 +1050,7 @@ print(json.dumps({"result": result}))
             "slow.jpg",
             "crash.jpg",
             "oom.jpg",
+            "blank.png",
         ] {
             std::fs::write(workspace_root.join(name), b"image bytes").unwrap();
         }
@@ -858,6 +1068,9 @@ print(json.dumps({"result": result}))
                 depth_script: runtime.join("estimate_depth.py"),
                 depth_model: runtime.join("marigold"),
                 depth_timeout: timeout,
+                object_script: runtime.join("generate_object.py"),
+                object_model: runtime.join("pixal3d"),
+                object_timeout: timeout,
             },
         );
         (root, worker)
@@ -977,7 +1190,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": true})
+            json!({"reconstruct": true, "depth": true, "object": true})
         );
         // A depth check that cannot run withholds depth alone.
         let mut broken = worker.config.clone();
@@ -987,22 +1200,150 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": false})
+            json!({"reconstruct": true, "depth": false, "object": true})
         );
         assert!(answer["missing"]["depth"]["error"].is_string());
-        // Without either job's files the worker is not ready and says why.
+        // Without any job's files the worker is not ready and says why.
         let mut bare = worker.config.clone();
         bare.depth_script = root.path().join("runtime/estimate_depth.py");
         bare.landmarker = root.path().join("absent.task");
         bare.depth_model = root.path().join("absent");
+        bare.object_model = root.path().join("absent");
         let worker = ReconWorker::new(Arc::clone(&worker.workspace), bare);
         let (ready, answer) = worker.readiness().await;
         assert!(!ready);
         assert_eq!(answer["missing"]["depth"], json!(["manifest.json"]));
+        assert_eq!(answer["missing"]["object"], json!(["pipeline.json"]));
         assert_eq!(
             answer["missing"]["reconstruct"],
             json!(["face landmarker model"])
         );
+    }
+
+    fn object_request(image: &str) -> ObjectRequest {
+        ObjectRequest {
+            image: image.into(),
+            mesh_path: "objects/figure.stl".into(),
+            resolution: None,
+            steps: None,
+            seed: None,
+            fov_degrees: None,
+            size_mm: None,
+            overwrite: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn object_meshes_are_committed_with_the_photographs_digest() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        assert!(worker.missing_object_files().await.unwrap().is_empty());
+        let result = worker
+            .generate_object(object_request("side.png"))
+            .await
+            .unwrap();
+        assert_eq!(result["artifact"]["path"], "objects/figure.stl");
+        assert_eq!(result["resolution"], OBJECT_DEFAULT_RESOLUTION);
+        assert_eq!(result["seed"], 42);
+        assert_eq!(result["device"], "cpu");
+        // Options the request leaves out are left to the runtime's defaults.
+        assert_eq!(result["options"], json!({}));
+        assert!(root.path().join("workspace/objects/figure.stl").is_file());
+        let digest = file_digest(&root.path().join("workspace/side.png")).unwrap();
+        assert_eq!(result["image_sha256"], digest);
+        let error = worker
+            .generate_object(object_request("side.png"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "already_exists");
+        let chosen = ObjectRequest {
+            resolution: Some(512),
+            steps: Some(8),
+            seed: Some(7),
+            fov_degrees: Some(35.0),
+            size_mm: Some(60.0),
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let result = worker.generate_object(chosen).await.unwrap();
+        assert_eq!(result["resolution"], 512);
+        assert_eq!(result["seed"], 7);
+        assert_eq!(
+            result["options"],
+            json!({"steps": 8, "fov_degrees": 35.0, "size_mm": 60.0})
+        );
+    }
+
+    #[tokio::test]
+    async fn object_failures_keep_their_cause() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let error = worker
+            .generate_object(object_request("blank.png"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "no_shape");
+        assert_eq!(
+            worker_message(&error),
+            "no subject was found in the photograph"
+        );
+        assert!(!root.path().join("workspace/objects/figure.stl").exists());
+        std::fs::remove_dir(&worker.config.object_model).unwrap();
+        assert_eq!(
+            worker.missing_object_files().await.unwrap(),
+            ["pipeline.json"]
+        );
+    }
+
+    #[test]
+    fn object_requests_are_checked_before_any_work() {
+        assert!(object_request("a.jpg").validate().is_ok());
+        for (request, message) in [
+            (object_request("a.gif"), "not a .jpg"),
+            (
+                ObjectRequest {
+                    mesh_path: "figure.obj".into(),
+                    ..object_request("a.jpg")
+                },
+                "mesh_path must end in .stl",
+            ),
+            (
+                ObjectRequest {
+                    resolution: Some(768),
+                    ..object_request("a.jpg")
+                },
+                "resolution must be 512, 1024 or 1536",
+            ),
+            (
+                ObjectRequest {
+                    steps: Some(0),
+                    ..object_request("a.jpg")
+                },
+                "steps must be between 1 and 50",
+            ),
+            (
+                ObjectRequest {
+                    seed: Some(u32::MAX),
+                    ..object_request("a.jpg")
+                },
+                "seed must be at most",
+            ),
+            (
+                ObjectRequest {
+                    fov_degrees: Some(120.0),
+                    ..object_request("a.jpg")
+                },
+                "fov_degrees must be between 5 and 90",
+            ),
+            (
+                ObjectRequest {
+                    size_mm: Some(f64::NAN),
+                    ..object_request("a.jpg")
+                },
+                "size_mm must be between 5 and 2000",
+            ),
+        ] {
+            let error = request.validate().unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]
@@ -1327,6 +1668,9 @@ pub struct Readiness {
     pub reconstruct: bool,
     /// The converted Marigold V2 model is present.
     pub depth: bool,
+    /// Every Pixal3D model file is present.
+    #[serde(default)]
+    pub object: bool,
 }
 
 /// The server's view of the reconstruction worker.
@@ -1378,6 +1722,11 @@ impl ReconClient {
         self.ready.borrow().depth
     }
 
+    /// Whether the worker last reported the Pixal3D model present.
+    pub fn can_generate_objects(&self) -> bool {
+        self.ready.borrow().object
+    }
+
     /// Permission to build a colour map, or a busy error while another is
     /// being built.
     pub fn colour_map_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ToolError> {
@@ -1422,6 +1771,7 @@ impl ReconClient {
             tracing::info!(
                 reconstruct = ready.reconstruct,
                 depth = ready.depth,
+                object = ready.object,
                 "photograph worker availability changed"
             );
         }
@@ -1457,6 +1807,16 @@ impl ReconClient {
             "depth",
             request,
             "check depth_path before retrying, because the map may have been written",
+        )
+        .await
+    }
+
+    pub async fn generate_object(&self, request: &ObjectRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.post(
+            "object",
+            request,
+            "check mesh_path before retrying, because the mesh may have been written",
         )
         .await
     }
@@ -1500,6 +1860,7 @@ impl ReconClient {
         }
         let code = match value.get("code").and_then(Value::as_str) {
             Some("no_face") => "no_face",
+            Some("no_shape") => "no_shape",
             Some("busy") => "busy",
             Some("timeout") => "timeout",
             Some("checkpoints") => "checkpoints",

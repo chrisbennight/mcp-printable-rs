@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Start the photograph worker without checkpoints or a depth model and check
-# that it is healthy, reports itself not ready, and names every missing file.
+# Start the photograph worker without checkpoints, a depth model or an object
+# model and check that it is healthy, reports itself not ready, and names every
+# missing file.
 set -euo pipefail
 image="${1:?usage: smoke-recon-worker <image>}"
 name="printable-recon-smoke-$$"
@@ -23,7 +24,7 @@ readiness="$(docker exec "$name" curl --silent --show-error --write-out '\n%{htt
 status="$(tail -n 1 <<<"$readiness")"
 body="$(head -n 1 <<<"$readiness")"
 [[ "$status" == 503 ]] || { echo "expected 503 without checkpoints, got $status: $body" >&2; exit 1; }
-for file in mica.tar SMIRK_em1.pt deca_model.tar uv_face_eye_mask.png manifest.json; do
+for file in mica.tar SMIRK_em1.pt deca_model.tar uv_face_eye_mask.png manifest.json pipeline.json; do
   grep -q "$file" <<<"$body" || { echo "readiness does not name $file: $body" >&2; exit 1; }
 done
 # The image carries its own MediaPipe models, so readiness never names them.
@@ -31,4 +32,13 @@ if grep -q -e "landmarker" -e "segmenter" <<<"$body"; then
   echo "the image lacks a bundled MediaPipe model: $body" >&2
   exit 1
 fi
+# Background removal's network definition is pinned in the image, and the
+# object runtime's imports resolve without the model files.
+docker exec "$name" /opt/recon/bin/python -I -c '
+import importlib, sys
+sys.path.insert(0, "/opt/printable/recon")
+sys.path.insert(0, "/opt/printable/recon/vendor")
+from printable_recon import features, objects
+importlib.import_module("birefnet.BiRefNet_config")
+'
 echo "photograph worker reports its missing model files as expected"

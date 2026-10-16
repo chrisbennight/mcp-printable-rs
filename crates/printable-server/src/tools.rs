@@ -2106,6 +2106,7 @@ async fn dispatch_value(
             head::reconstruct(Arc::clone(workspace), settings, de(args)?).await
         }
         "printable_photo_depth" => photo::depth(Arc::clone(workspace), settings, de(args)?).await,
+        "printable_photo_object" => photo::object(Arc::clone(workspace), settings, de(args)?).await,
         "printable_flame_photo_to_bust" => {
             let params: Box<HeadPhotoToBustParams> = de(args)?;
             head::photo_to_bust(Arc::clone(workspace), blender, settings, *params).await
@@ -5641,6 +5642,10 @@ async fn status(
         "depth": {
             "configured": settings.recon.is_some(),
             "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_estimate_depth()),
+        },
+        "object": {
+            "configured": settings.recon.is_some(),
+            "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_generate_objects()),
         },
         "workspace": {
             "confined": ws.confined,

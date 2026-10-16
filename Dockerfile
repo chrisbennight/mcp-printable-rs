@@ -106,9 +106,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 
 # Photograph jobs: FLAME reconstruction with PyTorch, the network definitions
-# and MediaPipe's face landmarker, and Marigold V2 depth estimation with the
-# diffusers model definitions. Network checkpoints and the converted Marigold
-# V2 model are operator-supplied on mounted volumes.
+# and MediaPipe's face landmarker, Marigold V2 depth estimation with the
+# diffusers model definitions, and Pixal3D object generation with its network
+# definitions, DINOv3 from transformers and BiRefNet's pinned network code.
+# Network checkpoints, the converted Marigold V2 model and the Pixal3D model
+# directory are operator-supplied on mounted volumes.
 # The default PyTorch index serves CUDA 12.8 builds for NVIDIA hosts; CI uses
 # the CPU index to test without a GPU.
 # OpenCV for the reconstruction worker, built from the hash-pinned
@@ -165,7 +167,19 @@ RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
  && curl --fail --location --output /opt/printable/recon/selfie_multiclass_256x256.tflite \
       https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite \
  && echo 'c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0  /opt/printable/recon/selfie_multiclass_256x256.tflite' | sha256sum --check
-COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py /opt/printable/recon/
+# BiRefNet's network definition (MIT), for background removal, pinned to a
+# revision of its published model repository. The worker imports it as plain
+# code; its weights are operator-supplied.
+ARG BIREFNET_REVISION=e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4
+RUN mkdir -p /opt/printable/recon/vendor/birefnet \
+ && curl --fail --location --output /opt/printable/recon/vendor/birefnet/birefnet.py \
+      "https://huggingface.co/ZhengPeng7/BiRefNet/resolve/${BIREFNET_REVISION}/birefnet.py" \
+ && echo '208771ae626f653d64128fbf2d6ac9f8e645c5cc5e286258a73ec3322bbfe5ef  /opt/printable/recon/vendor/birefnet/birefnet.py' | sha256sum --check \
+ && curl --fail --location --output /opt/printable/recon/vendor/birefnet/BiRefNet_config.py \
+      "https://huggingface.co/ZhengPeng7/BiRefNet/resolve/${BIREFNET_REVISION}/BiRefNet_config.py" \
+ && echo 'e7b8c2a74f6cea6a59553d517f71d47f2c1d90e670a13416af17c25fe2f3dc52  /opt/printable/recon/vendor/birefnet/BiRefNet_config.py' | sha256sum --check \
+ && touch /opt/printable/recon/vendor/birefnet/__init__.py
+COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py recon/generate_object.py /opt/printable/recon/
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE

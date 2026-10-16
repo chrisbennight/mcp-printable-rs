@@ -435,23 +435,49 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             selected_bundle(), native_bundle()
         ],"$defs":generator.take_definitions(true)})
         }
-        "photo" => object(
-            json!({
-                "width": {"type": "integer", "minimum": 1},
-                "height": {"type": "integer", "minimum": 1},
-                "depth": {"type": "object", "required": ["artifact", "near", "far"], "properties": {
-                    "artifact": artifact(), "near": {"type": "number"}, "far": {"type": "number"}
-                }},
-                "normals": {"type": "object", "required": ["artifact", "encoding", "frame"], "properties": {
-                    "artifact": artifact(), "encoding": {"type": "string"}, "frame": {"type": "string"}
-                }},
-                "device": {"type": "string"},
-                "seconds": {"type": "number", "minimum": 0},
-                "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
-                "image_sha256": {"type": "string"}
-            }),
-            &["width", "height", "depth", "device", "image_sha256"],
-        ),
+        "photo" => json!({"type": "object", "anyOf": [
+            object(
+                json!({
+                    "width": {"type": "integer", "minimum": 1},
+                    "height": {"type": "integer", "minimum": 1},
+                    "depth": {"type": "object", "required": ["artifact", "near", "far"], "properties": {
+                        "artifact": artifact(), "near": {"type": "number"}, "far": {"type": "number"}
+                    }},
+                    "normals": {"type": "object", "required": ["artifact", "encoding", "frame"], "properties": {
+                        "artifact": artifact(), "encoding": {"type": "string"}, "frame": {"type": "string"}
+                    }},
+                    "device": {"type": "string"},
+                    "seconds": {"type": "number", "minimum": 0},
+                    "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
+                    "image_sha256": {"type": "string"}
+                }),
+                &["width", "height", "depth", "device", "image_sha256"],
+            ),
+            object(
+                json!({
+                    "artifact": artifact(),
+                    "triangles": {"type": "integer", "minimum": 1},
+                    "size_mm": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+                    "resolution": {"type": "integer", "minimum": 1},
+                    "steps": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
+                    "tokens": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
+                    "seed": {"type": "integer", "minimum": 0},
+                    "fov_degrees": {"type": "number"},
+                    "fov_source": {"enum": ["request", "photograph", "assumed"]},
+                    "background": {"enum": ["removed", "transparency"]},
+                    "device": {"type": "string"},
+                    "seconds": {"type": "number", "minimum": 0},
+                    "stages": {"type": "array", "items": object(json!({
+                        "stage": {"type": "string"},
+                        "seconds": {"type": "number", "minimum": 0},
+                        "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0}
+                    }), &["stage", "seconds"])},
+                    "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
+                    "image_sha256": {"type": "string"}
+                }),
+                &["artifact", "triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
+            )
+        ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
             object(json!({"format_version":{"const":1},"logical_bytes":{"type":"integer"},"reserved_remaining_bytes":{"type":"integer"},"charged_bytes":{"type":"integer"},"complete":{"type":"boolean"},"by_project":{"type":"object"},"by_class":{"type":"object"},"accounting":{"type":"string"}}), &["format_version","logical_bytes","reserved_remaining_bytes","charged_bytes","complete","by_project","by_class","accounting"]),
