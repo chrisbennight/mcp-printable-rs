@@ -38,10 +38,29 @@ text masks, counters, and separate strokes. Use bevels or rounded profiles when
 they improve release without erasing useful detail. Keep foreground features and
 shallow background texture independently adjustable.
 
-For photographs, use supplied measured depth when available. Otherwise author or
-infer a relief and label it as an interpretation, rather than recovered physical
-geometry. Preserve calibrated depth data instead of replacing it with a display
-preview or an image generated for appearance.
+For photographs, use supplied measured depth when available. Otherwise, when
+the `photo` tool is offered, estimate depth with its `depth` action, with
+`normals_path` when fine surface detail matters; without it, author or infer a
+relief. Either way, label the result an interpretation rather than recovered
+physical geometry. Preserve calibrated depth data instead of replacing it with a
+display preview or an image generated for appearance.
+
+An estimated depth map is relative log depth, nearest brightest. Decode it with
+the reported `near` and `far` before calibrating:
+
+- Choose the depth that becomes the flat background and flatten everything
+  beyond it. An outline of the subject keeps the background flat where the
+  estimate drifts.
+- Map the remaining range to the intended relief height. A shallow subject can
+  use the range directly. Where the depth jumps, as from a face to a distant
+  wall, compress the large steps and keep the small ones, for example by
+  limiting the slope between neighbouring pixels and integrating the limited
+  slopes back into heights. Otherwise fine detail flattens to nothing on a
+  shallow relief.
+- Compare the heights with the photograph's features and the smallest detail
+  the printer resolves. Estimates go wrong on reflective, transparent and very
+  dark surfaces, on hard shadows, and on flat artwork, which they read as
+  flat.
 
 Save quantitative heights as a 16-bit grayscale PNG and record this decoding
 equation, or an equally explicit alternative:

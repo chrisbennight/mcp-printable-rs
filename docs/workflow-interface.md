@@ -67,6 +67,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
 | `head` | `models`, `create`, `update`, `prepare_print`, and `reconstruct` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
+| `photo` | `depth` (relative depth and surface normals from a photograph); advertised only when the photograph worker reports its [depth model](photo-depth.md) present |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit`, `usage`, `cleanup_preview`, `cleanup` |

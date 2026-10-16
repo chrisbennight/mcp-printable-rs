@@ -139,6 +139,10 @@ workflow!(HeadRequest {
     PhotoToBust(Box<HeadPhotoToBustParams>) => "printable_flame_photo_to_bust",
 });
 
+workflow!(PhotoRequest {
+    Depth(crate::recon::DepthRequest) => "printable_photo_depth",
+});
+
 /// Actions that need the reconstruction worker.
 const RECONSTRUCTION_ACTIONS: [&str; 2] = ["reconstruct", "photo_to_bust"];
 
@@ -311,6 +315,7 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             }
             de::<HeadRequest>(arguments)?.resolve()
         }
+        PHOTO => de::<PhotoRequest>(arguments)?.resolve(),
         "scene" => de::<SceneRequest>(arguments)?.resolve(),
         "scad_build" => de::<ScadRequest>(arguments)?.resolve(),
         "cad_build" => ResolvedCall::new(
@@ -382,6 +387,10 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 /// The workflow tool that exists only while FLAME head models are mounted.
 pub const HEAD: &str = "head";
 
+/// The workflow tool that exists only while the photograph worker can
+/// estimate depth.
+pub const PHOTO: &str = "photo";
+
 /// Optional capabilities that change what this server advertises.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Availability {
@@ -389,15 +398,19 @@ pub struct Availability {
     pub head: bool,
     /// The reconstruction worker is ready and a FLAME 2020 model is mounted.
     pub reconstruct: bool,
+    /// The photograph worker reports its depth model present.
+    pub depth: bool,
 }
 
 /// Tools this server advertises and accepts. `head` is included only when a
 /// FLAME model is mounted, and offers `reconstruct` only when that can be
-/// served, so clients never see a capability that cannot be served.
+/// served, and `photo` only when depth can be estimated, so clients never see
+/// a capability that cannot be served.
 pub fn advertised(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
     TOOLS
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
+        .filter(move |tool| tool.name != PHOTO || available.depth)
         .map(move |tool| {
             if tool.name == HEAD && available.reconstruct {
                 &HEAD_WITH_RECONSTRUCTION
@@ -532,6 +545,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: write_annotations,
     },
     ToolDef {
+        name: PHOTO,
+        description: "Estimate geometry from a workspace photograph on the photograph worker's GPU, one job at a time. depth writes Marigold V2's relative depth as a 16-bit PNG, nearest brightest, and optionally a 16-bit surface normal map, for reliefs, molds and displacement; the depth's scale and offset are unknown, so calibrate heights before building geometry, as the image-to-mold skill describes. Advertised only when the worker reports its converted Marigold V2 model present.",
+        schema: workflow_schema_of::<PhotoRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "artifact",
         description: "Stat/list/read/write workspace files, publish immutable files, ingest uploaded file URIs, inspect transfers, or upload chunks. Usage reports shared storage accounting; cleanup_preview and cleanup reclaim abandoned managed temporary directories while protecting live owners and retained artifacts. Writes/chunks accept at most 1 MiB decoded; use publication for video delivery.",
         schema: workflow_schema_of::<ArtifactRequest>,
@@ -642,19 +661,39 @@ mod tests {
     }
 
     #[test]
-    fn head_is_advertised_only_with_mounted_models() {
-        let names = |head| {
+    fn head_and_photo_are_advertised_only_when_they_can_be_served() {
+        let names = |head, depth| {
             advertised(Availability {
                 head,
                 reconstruct: false,
+                depth,
             })
             .map(|tool| tool.name)
             .collect::<Vec<_>>()
         };
-        assert!(!names(false).contains(&HEAD));
-        assert!(names(true).contains(&HEAD));
-        assert_eq!(names(true).len(), TOOLS.len());
-        assert_eq!(names(false).len(), TOOLS.len() - 1);
+        assert!(!names(false, false).contains(&HEAD));
+        assert!(names(true, false).contains(&HEAD));
+        assert!(!names(true, false).contains(&PHOTO));
+        assert!(names(false, true).contains(&PHOTO));
+        assert_eq!(names(true, true).len(), TOOLS.len());
+        assert_eq!(names(false, false).len(), TOOLS.len() - 2);
+    }
+
+    #[test]
+    fn photo_depth_resolves_to_the_depth_operation() {
+        let call = resolve(
+            PHOTO,
+            json!({"action": "depth", "params": {"image": "photo.jpg", "depth_path": "depth.png"}}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_depth");
+        assert!(
+            resolve(
+                PHOTO,
+                json!({"action": "depth", "params": {"image": "photo.jpg", "depth_path": "depth.png", "scale": 2}}),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -663,6 +702,7 @@ mod tests {
             let tool = advertised(Availability {
                 head: true,
                 reconstruct,
+                depth: false,
             })
             .find(|tool| tool.name == HEAD)
             .unwrap();
@@ -727,6 +767,7 @@ mod tests {
                 "job",
                 "project",
                 "head",
+                "photo",
                 "artifact",
             ],
         );

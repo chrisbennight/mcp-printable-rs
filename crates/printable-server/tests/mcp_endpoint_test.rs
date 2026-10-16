@@ -1840,9 +1840,11 @@ async fn retained_work_saturation(modern: bool) {
     server.shutdown().await;
 }
 
-/// A reconstruction worker whose readiness the test switches.
+/// A photograph worker whose readiness for `capability`, `reconstruct` or
+/// `depth`, the test switches.
 async fn switchable_recon_worker(
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    capability: &'static str,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let app = axum::Router::new().route(
         "/readyz",
@@ -1850,9 +1852,17 @@ async fn switchable_recon_worker(
             let ready = ready.load(std::sync::atomic::Ordering::SeqCst);
             async move {
                 if ready {
-                    axum::http::StatusCode::OK
+                    let mut capabilities = json!({"reconstruct": false, "depth": false});
+                    capabilities[capability] = json!(true);
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(json!({"ready": true, "capabilities": capabilities})),
+                    )
                 } else {
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                    (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        axum::Json(json!({"ready": false})),
+                    )
                 }
             }
         }),
@@ -1957,7 +1967,7 @@ fn reconstruction_library() -> (
 #[tokio::test]
 async fn modern_subscriptions_acknowledge_filter_and_track_actual_catalog_changes() {
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (endpoint, worker) = switchable_recon_worker(ready.clone()).await;
+    let (endpoint, worker) = switchable_recon_worker(ready.clone(), "reconstruct").await;
     let recon = printable_server::recon::ReconClient::configure(&|name| {
         (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
     })
@@ -2028,7 +2038,7 @@ async fn modern_subscriptions_acknowledge_filter_and_track_actual_catalog_change
         );
         for available in [true, false] {
             ready.store(available, std::sync::atomic::Ordering::SeqCst);
-            assert_eq!(recon.refresh().await, available);
+            assert_eq!(recon.refresh().await.reconstruct, available);
             let notification = stream.next().await;
             assert_eq!(notification["method"], "notifications/tools/list_changed");
             assert_eq!(
@@ -2065,7 +2075,7 @@ async fn modern_subscriptions_acknowledge_filter_and_track_actual_catalog_change
     let ack = stream.next().await;
     assert_eq!(ack["params"]["notifications"], json!({}));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(recon.refresh().await);
+    assert!(recon.refresh().await.reconstruct);
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
@@ -2143,7 +2153,8 @@ async fn sessions_hear_when_reconstruction_readiness_changes_the_tools() {
 
 async fn legacy_session_hears_tool_changes(version: &str) {
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (endpoint, worker) = switchable_recon_worker(std::sync::Arc::clone(&ready)).await;
+    let (endpoint, worker) =
+        switchable_recon_worker(std::sync::Arc::clone(&ready), "reconstruct").await;
     let recon = printable_server::recon::ReconClient::configure(&|name| {
         (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
     })
@@ -2202,7 +2213,7 @@ async fn legacy_session_hears_tool_changes(version: &str) {
     assert!(stream.status().is_success(), "{}", stream.status());
 
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(recon.refresh().await);
+    assert!(recon.refresh().await.reconstruct);
     let mut received = String::new();
     let heard = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while let Some(chunk) = stream.chunk().await.expect("read the event stream") {
@@ -2249,9 +2260,9 @@ async fn tools_are_fixed_without_a_reconstruction_worker() {
 }
 
 #[tokio::test]
-async fn reconstruction_without_a_matching_model_advertises_no_catalog_changes() {
+async fn a_photograph_worker_without_a_head_model_announces_depth_changes() {
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (endpoint, worker) = switchable_recon_worker(ready.clone()).await;
+    let (endpoint, worker) = switchable_recon_worker(ready.clone(), "depth").await;
     let recon = printable_server::recon::ReconClient::configure(&|name| {
         (name == "PRINTABLE_RECON_ENDPOINT").then(|| endpoint.clone())
     })
@@ -2271,11 +2282,7 @@ async fn reconstruction_without_a_matching_model_advertises_no_catalog_changes()
         .await,
     )
     .await;
-    assert!(
-        discovery["capabilities"]["tools"]
-            .get("listChanged")
-            .is_none()
-    );
+    assert_eq!(discovery["capabilities"]["tools"]["listChanged"], true);
     let mut stream = SubscriptionStream {
         response: modern_post(
             &http,
@@ -2289,17 +2296,40 @@ async fn reconstruction_without_a_matching_model_advertises_no_catalog_changes()
         .await,
         pending: String::new(),
     };
-    assert_eq!(stream.next().await["params"]["notifications"], json!({}));
-    ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(recon.refresh().await);
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            stream.response.chunk()
-        )
-        .await
-        .is_err()
+    assert_eq!(
+        stream.next().await["params"]["notifications"],
+        json!({"toolsListChanged": true})
     );
+    let photo_listed = |tools: &Value| {
+        tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "photo")
+    };
+    let list = |id| {
+        let http = http.clone();
+        let mcp = mcp.clone();
+        async move {
+            rpc_result(
+                modern_post(
+                    &http,
+                    &mcp,
+                    &modern_request(json!(id), "tools/list", json!({})),
+                )
+                .await,
+            )
+            .await
+        }
+    };
+    assert!(!photo_listed(&list(3).await));
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(recon.refresh().await.depth);
+    assert_eq!(
+        stream.next().await["method"],
+        "notifications/tools/list_changed"
+    );
+    assert!(photo_listed(&list(4).await));
     drop(stream);
     server.shutdown().await;
     worker.abort();

@@ -7391,9 +7391,15 @@ async fn fake_recon_worker_with(
             "/readyz",
             get(move || async move {
                 if ready {
-                    axum::http::StatusCode::OK
+                    (
+                        axum::http::StatusCode::OK,
+                        Json(json!({"ready": true, "capabilities": {"reconstruct": true, "depth": false}})),
+                    )
                 } else {
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                    (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"ready": false})),
+                    )
                 }
             }),
         )
@@ -7449,6 +7455,137 @@ async fn fake_recon_worker_with(
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{address}"), seen, task)
+}
+
+/// A photograph worker that can estimate depth but not reconstruct heads, and
+/// answers depth requests as the real worker does.
+async fn fake_depth_worker() -> (
+    String,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::{Json, Router, routing::get, routing::post};
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let app = Router::new()
+        .route(
+            "/readyz",
+            get(|| async {
+                Json(json!({"ready": true, "capabilities": {"reconstruct": false, "depth": true}}))
+            }),
+        )
+        .route(
+            "/depth",
+            post(move |Json(request): Json<Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    recorded.lock().unwrap().push(request.clone());
+                    let artifact = |path: &Value| {
+                        json!({"path": path, "size_bytes": 10, "media_type": "image/png", "modified_ns": 1})
+                    };
+                    let mut answer = json!({
+                        "width": 1024, "height": 768, "device": "cuda", "seconds": 12.5,
+                        "peak_gpu_memory_bytes": 2_000_000_000u64,
+                        "depth": {"near": -1.1, "far": 1.2, "artifact": artifact(&request["depth_path"])},
+                        "image_sha256": "a".repeat(64)
+                    });
+                    if !request["normals_path"].is_null() {
+                        answer["normals"] = json!({
+                            "encoding": "c = 2 * p / 65535 - 1",
+                            "frame": "x right, y up, z towards the camera",
+                            "artifact": artifact(&request["normals_path"])
+                        });
+                    }
+                    Json(answer)
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{address}"), seen, task)
+}
+
+fn photo_call(arguments: Value) -> CallToolRequestParams {
+    CallToolRequestParams::new("photo").with_arguments(arguments.as_object().unwrap().clone())
+}
+
+#[tokio::test]
+async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_depth() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("photo.jpg"), b"jpeg").unwrap();
+    let advertised = |server: &PrintableServer| {
+        server
+            .workflow_tools_payload()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == "photo")
+    };
+
+    let (endpoint, _, task) = fake_recon_worker(true).await;
+    let server = recon_server(root.path(), &endpoint).await;
+    assert!(advertised(&server).is_none());
+    task.abort();
+
+    let (endpoint, seen, task) = fake_depth_worker().await;
+    let server = recon_server(root.path(), &endpoint).await;
+    assert!(!head_offers_reconstruct(&server));
+    let tool = advertised(&server).expect("photo is advertised");
+    let output =
+        jsonschema::validator_for(&Value::Object(tool.output_schema.unwrap().as_ref().clone()))
+            .unwrap();
+    let result = server
+        .invoke_tool(photo_call(json!({
+            "action": "depth",
+            "params": {"image": "photo.jpg", "depth_path": "relief/depth.png", "normals_path": "relief/normals.png"}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(output.is_valid(&value), "{value}");
+    assert_eq!(value["depth"]["artifact"]["path"], "relief/depth.png");
+    assert_eq!(value["normals"]["artifact"]["path"], "relief/normals.png");
+    assert_eq!(seen.lock().unwrap()[0]["image"], "photo.jpg");
+
+    // Requests are checked before the worker is asked.
+    std::fs::create_dir(root.path().join("relief")).unwrap();
+    std::fs::write(root.path().join("relief/taken.png"), b"png").unwrap();
+    for (params, message) in [
+        (
+            json!({"image": "photo.gif", "depth_path": "d.png"}),
+            "photograph",
+        ),
+        (
+            json!({"image": "absent.jpg", "depth_path": "d.png"}),
+            "absent.jpg",
+        ),
+        (json!({"image": "photo.jpg", "depth_path": "d.jpg"}), ".png"),
+        (
+            json!({"image": "photo.jpg", "depth_path": "relief/taken.png"}),
+            "taken.png",
+        ),
+        (
+            json!({"image": "photo.jpg", "depth_path": "d.png", "max_side": 64}),
+            "max_side",
+        ),
+        (
+            json!({"image": "photo.jpg", "depth_path": "d.png", "normals_path": "./d.png"}),
+            "same file",
+        ),
+    ] {
+        let result = server
+            .invoke_tool(photo_call(json!({"action": "depth", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains(message), "{params}: {text}");
+    }
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    task.abort();
 }
 
 async fn recon_server(root: &Path, endpoint: &str) -> PrintableServer {

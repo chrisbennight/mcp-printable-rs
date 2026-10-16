@@ -111,9 +111,9 @@ impl PrintableServer {
         }
     }
 
-    /// The advertised `head` schema depends on whether the reconstruction
-    /// worker is ready. Until `cancel` fires, tell every initialized session
-    /// when that changes, so clients list the tools again.
+    /// The advertised `head` schema and `photo` tool depend on what the
+    /// photograph worker can run. Until `cancel` fires, tell every
+    /// initialized session when that changes, so clients list the tools again.
     pub(crate) fn announce_tool_changes(&self, cancel: tokio_util::sync::CancellationToken) {
         let Some(recon) = self
             .settings
@@ -193,17 +193,19 @@ impl PrintableServer {
                     .settings
                     .recon
                     .as_ref()
-                    .is_some_and(|recon| recon.is_ready()),
+                    .is_some_and(|recon| recon.can_reconstruct()),
+            depth: self
+                .settings
+                .recon
+                .as_ref()
+                .is_some_and(|recon| recon.can_estimate_depth()),
         }
     }
 
+    /// The photograph worker's readiness changes the catalog: it gates the
+    /// `photo` tool, and `reconstruct` when a FLAME 2020 model is mounted.
     fn tool_list_can_change(&self) -> bool {
         self.settings.recon.is_some()
-            && self
-                .settings
-                .flame
-                .as_ref()
-                .is_some_and(|library| library.reconstruction_variant().is_some())
     }
 
     /// Resolve a tool name and dispatch. An unknown name is a JSON-RPC
@@ -772,6 +774,7 @@ mod tests {
         let available = crate::tools::workflows::Availability {
             head: true,
             reconstruct: true,
+            depth: true,
         };
         let index = crate::resources::contracts::read(crate::resources::contracts::ROOT, available)
             .unwrap();

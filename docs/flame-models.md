@@ -837,6 +837,10 @@ skin and clothing for the colour map.
 
 ### Run the worker
 
+The same worker also estimates depth from photographs; see
+[Depth from a photograph](photo-depth.md). It offers whichever of its jobs
+have their files present.
+
 Each release publishes the worker as
 `ghcr.io/chrisbennight/mcp-printable-recon:sha-<commit>`, and the image-set
 record names it in its `org.printable.recon.image` and
@@ -898,8 +902,8 @@ The image installs PyTorch built for CUDA 12.8. Pass
 `--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu` to build a
 CPU-only image instead. The worker uses the GPU when one is visible and the CPU
 otherwise; `PRINTABLE_RECON_DEVICE` forces one or the other. It runs one
-reconstruction at a time and stops any that exceeds
-`PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
+photograph job at a time, reconstruction or depth estimation, and stops a
+reconstruction that exceeds `PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
 worker is configured and ready.
 
 The `head` tool offers `reconstruct` only when a matching head model is mounted

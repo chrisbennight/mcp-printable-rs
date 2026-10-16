@@ -45,6 +45,8 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
 - Generate parametric human heads in millimetres from [FLAME models](docs/flame-models.md) you mount, reconstruct them from photographs with an optional worker, and turn them into watertight bust STLs for printing.
 - Load the [image to mold skill](docs/image-to-mold.md) for calibrated relief maps,
   positive masters, silicone casting trays, and negative cavities.
+- Estimate [depth and surface normals from a photograph](docs/photo-depth.md) with
+  Marigold V2 on the optional worker's GPU, for reliefs from photographs.
 
 The [workflow interface](docs/workflow-interface.md) lists the public
 tools and their typed actions. The [product refactor](docs/product-refactor.md)

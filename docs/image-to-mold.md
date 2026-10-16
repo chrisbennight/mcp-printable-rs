@@ -42,7 +42,10 @@ the same geometry supplied for printing. Slicing uses the requested setup and
 reviews actual toolpaths, including features too narrow to reproduce.
 
 A height map cannot represent undercuts. Photograph relief is an interpretation
-unless measured depth is supplied. Mesh validation does not establish physical
+unless measured depth is supplied. When the photograph worker can estimate
+depth, the `photo` tool's `depth` action gives the client a relative depth map
+and surface normals to calibrate, in place of hand-assigned heights; see
+[Depth from a photograph](photo-depth.md). Mesh validation does not establish physical
 leak resistance, material compatibility, or successful release. Physical printing
 uses the existing [printing workflow](printer-integration.md) and requires
 authorization covering that action.

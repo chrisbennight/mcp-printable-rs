@@ -1,4 +1,5 @@
-//! HTTP service that reconstructs FLAME heads from workspace photographs.
+//! HTTP service that runs the photograph jobs: FLAME head reconstruction and
+//! Marigold V2 depth estimation, one at a time.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -9,7 +10,9 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use printable_server::recon::{ReconConfig, ReconRequest, ReconWorker, worker_message};
+use printable_server::recon::{
+    DepthRequest, ReconConfig, ReconRequest, ReconWorker, worker_message,
+};
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
 
@@ -53,14 +56,17 @@ async fn main() -> anyhow::Result<()> {
             .map(PathBuf::from)
             .unwrap_or_else(|| default.into())
     };
-    let timeout = match std::env::var("PRINTABLE_RECON_TIMEOUT_SECONDS") {
+    let seconds = |name: &str, default: u64| match std::env::var(name) {
         Ok(value) => value
             .parse::<u64>()
             .ok()
             .filter(|seconds| (1..=3600).contains(seconds))
-            .context("PRINTABLE_RECON_TIMEOUT_SECONDS must be between 1 and 3600")?,
-        Err(_) => 300,
+            .with_context(|| format!("{name} must be between 1 and 3600")),
+        Err(_) => Ok(default),
     };
+    let timeout = seconds("PRINTABLE_RECON_TIMEOUT_SECONDS", 300)?;
+    // Depth estimation reads the whole transformer from disk once per map.
+    let depth_timeout = seconds("PRINTABLE_RECON_DEPTH_TIMEOUT_SECONDS", 900)?;
     let device = std::env::var("PRINTABLE_RECON_DEVICE").unwrap_or_else(|_| "auto".into());
     anyhow::ensure!(
         matches!(device.as_str(), "auto" | "cpu" | "cuda"),
@@ -85,12 +91,19 @@ async fn main() -> anyhow::Result<()> {
             ),
             device,
             timeout: Duration::from_secs(timeout),
+            depth_script: path(
+                "PRINTABLE_RECON_DEPTH_SCRIPT",
+                "/opt/printable/recon/estimate_depth.py",
+            ),
+            depth_model: path("PRINTABLE_RECON_DEPTH_MODEL", "/models/marigold"),
+            depth_timeout: Duration::from_secs(depth_timeout),
         },
     ));
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/readyz", get(readiness))
         .route("/reconstruct", post(reconstruct))
+        .route("/depth", post(depth))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(worker);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -100,24 +113,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ready when the workspace is usable and every checkpoint file is present.
+/// Ready when the workspace is usable and the files of at least one job are
+/// present; the answer says which jobs can run.
 async fn readiness(State(worker): State<Arc<ReconWorker>>) -> (StatusCode, Json<Value>) {
-    match worker.missing_checkpoints().await {
-        Ok(missing) if missing.is_empty() && worker.workspace.ready() => (
-            StatusCode::OK,
-            Json(json!({"ready": true, "busy": worker.admission.available_permits() == 0})),
-        ),
-        Ok(missing) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(
-                json!({"ready": false, "missing": missing, "workspace_ready": worker.workspace.ready()}),
-            ),
-        ),
-        Err(error) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"ready": false, "error": error.to_string()})),
-        ),
-    }
+    let (ready, answer) = worker.readiness().await;
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(answer))
 }
 
 async fn reconstruct(
@@ -125,6 +130,19 @@ async fn reconstruct(
     Json(request): Json<ReconRequest>,
 ) -> (StatusCode, Json<Value>) {
     match worker.reconstruct(request).await {
+        Ok(result) => (StatusCode::OK, Json(result)),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"code": error.code(), "message": worker_message(&error)})),
+        ),
+    }
+}
+
+async fn depth(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<DepthRequest>,
+) -> (StatusCode, Json<Value>) {
+    match worker.estimate_depth(request).await {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,
