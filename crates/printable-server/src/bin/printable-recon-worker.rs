@@ -1,5 +1,5 @@
-//! HTTP service that runs the photograph jobs: FLAME head reconstruction and
-//! Marigold V2 depth estimation, one at a time.
+//! HTTP service that runs the photograph jobs: FLAME head reconstruction,
+//! Marigold V2 depth estimation and Pixal3D object generation, one at a time.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    DepthRequest, ReconConfig, ReconRequest, ReconWorker, worker_message,
+    DepthRequest, ObjectRequest, ReconConfig, ReconRequest, ReconWorker, worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -67,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     let timeout = seconds("PRINTABLE_RECON_TIMEOUT_SECONDS", 300)?;
     // Depth estimation reads the whole transformer from disk once per map.
     let depth_timeout = seconds("PRINTABLE_RECON_DEPTH_TIMEOUT_SECONDS", 900)?;
+    // Object generation reads each stage's network from disk in turn.
+    let object_timeout = seconds("PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS", 1800)?;
     let device = std::env::var("PRINTABLE_RECON_DEVICE").unwrap_or_else(|_| "auto".into());
     anyhow::ensure!(
         matches!(device.as_str(), "auto" | "cpu" | "cuda"),
@@ -97,6 +99,12 @@ async fn main() -> anyhow::Result<()> {
             ),
             depth_model: path("PRINTABLE_RECON_DEPTH_MODEL", "/models/marigold"),
             depth_timeout: Duration::from_secs(depth_timeout),
+            object_script: path(
+                "PRINTABLE_RECON_OBJECT_SCRIPT",
+                "/opt/printable/recon/generate_object.py",
+            ),
+            object_model: path("PRINTABLE_RECON_OBJECT_MODEL", "/models/pixal3d"),
+            object_timeout: Duration::from_secs(object_timeout),
         },
     ));
     let app = Router::new()
@@ -104,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/readyz", get(readiness))
         .route("/reconstruct", post(reconstruct))
         .route("/depth", post(depth))
+        .route("/object", post(object))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(worker);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -143,6 +152,19 @@ async fn depth(
     Json(request): Json<DepthRequest>,
 ) -> (StatusCode, Json<Value>) {
     match worker.estimate_depth(request).await {
+        Ok(result) => (StatusCode::OK, Json(result)),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"code": error.code(), "message": worker_message(&error)})),
+        ),
+    }
+}
+
+async fn object(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<ObjectRequest>,
+) -> (StatusCode, Json<Value>) {
+    match worker.generate_object(request).await {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,

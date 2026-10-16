@@ -7588,6 +7588,129 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
     task.abort();
 }
 
+/// A photograph worker that can generate objects but not estimate depth,
+/// and answers object requests as the real worker does.
+async fn fake_object_worker() -> (
+    String,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::{Json, Router, routing::get, routing::post};
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let app = Router::new()
+        .route(
+            "/readyz",
+            get(|| async {
+                Json(json!({"ready": true, "capabilities": {"reconstruct": false, "depth": false, "object": true}}))
+            }),
+        )
+        .route(
+            "/object",
+            post(move |Json(request): Json<Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    recorded.lock().unwrap().push(request.clone());
+                    Json(json!({
+                        "artifact": {"path": request["mesh_path"], "size_bytes": 584, "media_type": "model/stl", "modified_ns": 1},
+                        "triangles": 10, "size_mm": [100.0, 41.5, 87.25], "resolution": 1024,
+                        "steps": {"structure": 12, "shape": 12}, "tokens": {"structure": 2000, "shape": 30000},
+                        "seed": 42, "fov_degrees": 20.0, "fov_source": "assumed", "background": "removed",
+                        "device": "cuda", "seconds": 95.0,
+                        "stages": [{"stage": "structure", "seconds": 10.0, "peak_gpu_memory_bytes": 3_000_000_000u64}],
+                        "peak_gpu_memory_bytes": 3_000_000_000u64,
+                        "image_sha256": "a".repeat(64)
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{address}"), seen, task)
+}
+
+#[tokio::test]
+async fn photo_object_is_offered_and_forwarded_only_when_the_worker_can_generate_objects() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("figure.jpg"), b"jpeg").unwrap();
+    let advertised = |server: &PrintableServer| {
+        server
+            .workflow_tools_payload()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == "photo")
+    };
+
+    // A worker that can only estimate depth does not offer objects.
+    let (endpoint, _, task) = fake_depth_worker().await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let tool = advertised(&server).expect("photo is advertised");
+    assert!(
+        !serde_json::to_string(&tool.input_schema)
+            .unwrap()
+            .contains("mesh_path")
+    );
+    task.abort();
+
+    let (endpoint, seen, task) = fake_object_worker().await;
+    let server = recon_server(root.path(), &endpoint).await;
+    let tool = advertised(&server).expect("photo is advertised");
+    let schema = serde_json::to_string(&tool.input_schema).unwrap();
+    assert!(schema.contains("mesh_path") && !schema.contains("depth_path"));
+    let output =
+        jsonschema::validator_for(&Value::Object(tool.output_schema.unwrap().as_ref().clone()))
+            .unwrap();
+    let result = server
+        .invoke_tool(photo_call(json!({
+            "action": "object",
+            "params": {"image": "figure.jpg", "mesh_path": "objects/figure.stl", "size_mm": 100.0}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let value = result.structured_content.unwrap();
+    assert!(output.is_valid(&value), "{value}");
+    assert_eq!(value["artifact"]["path"], "objects/figure.stl");
+    assert_eq!(seen.lock().unwrap()[0]["image"], "figure.jpg");
+    assert_eq!(seen.lock().unwrap()[0]["size_mm"], 100.0);
+
+    // Requests are checked before the worker is asked.
+    std::fs::create_dir(root.path().join("objects")).unwrap();
+    std::fs::write(root.path().join("objects/taken.stl"), b"stl").unwrap();
+    for (params, message) in [
+        (
+            json!({"image": "figure.gif", "mesh_path": "f.stl"}),
+            "photograph",
+        ),
+        (
+            json!({"image": "absent.jpg", "mesh_path": "f.stl"}),
+            "absent.jpg",
+        ),
+        (json!({"image": "figure.jpg", "mesh_path": "f.obj"}), ".stl"),
+        (
+            json!({"image": "figure.jpg", "mesh_path": "objects/taken.stl"}),
+            "taken.stl",
+        ),
+        (
+            json!({"image": "figure.jpg", "mesh_path": "f.stl", "resolution": 2048}),
+            "resolution",
+        ),
+    ] {
+        let result = server
+            .invoke_tool(photo_call(json!({"action": "object", "params": params})))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{params}");
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains(message), "{params}: {text}");
+    }
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    task.abort();
+}
+
 async fn recon_server(root: &Path, endpoint: &str) -> PrintableServer {
     recon_server_with(root, endpoint, flame2020_library()).await
 }

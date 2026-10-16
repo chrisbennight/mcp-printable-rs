@@ -141,6 +141,7 @@ workflow!(HeadRequest {
 
 workflow!(PhotoRequest {
     Depth(crate::recon::DepthRequest) => "printable_photo_depth",
+    Object(crate::recon::ObjectRequest) => "printable_photo_object",
 });
 
 /// Actions that need the reconstruction worker.
@@ -149,12 +150,30 @@ const RECONSTRUCTION_ACTIONS: [&str; 2] = ["reconstruct", "photo_to_bust"];
 /// The `head` input schema without the actions that need the reconstruction
 /// worker, for servers whose worker is absent or not ready.
 fn head_schema() -> Arc<JsonObject> {
-    let mut schema = (*workflow_schema_of::<HeadRequest>()).clone();
+    without_actions(
+        &workflow_schema_of::<HeadRequest>(),
+        &RECONSTRUCTION_ACTIONS,
+    )
+}
+
+/// The `photo` input schema with only the depth action.
+fn photo_depth_schema() -> Arc<JsonObject> {
+    without_actions(&workflow_schema_of::<PhotoRequest>(), &["object"])
+}
+
+/// The `photo` input schema with only the object action.
+fn photo_object_schema() -> Arc<JsonObject> {
+    without_actions(&workflow_schema_of::<PhotoRequest>(), &["depth"])
+}
+
+/// A workflow input schema without the `removed` actions.
+fn without_actions(schema: &JsonObject, removed: &[&str]) -> Arc<JsonObject> {
+    let mut schema = schema.clone();
     for key in ["oneOf", "anyOf"] {
         if let Some(Value::Array(variants)) = schema.get_mut(key) {
             variants.retain(|variant| {
                 let action = &variant["properties"]["action"];
-                !RECONSTRUCTION_ACTIONS
+                !removed
                     .iter()
                     .any(|name| action["const"] == *name || action["enum"] == json!([name]))
             });
@@ -388,7 +407,7 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 pub const HEAD: &str = "head";
 
 /// The workflow tool that exists only while the photograph worker can
-/// estimate depth.
+/// estimate depth or generate objects.
 pub const PHOTO: &str = "photo";
 
 /// Optional capabilities that change what this server advertises.
@@ -400,25 +419,68 @@ pub struct Availability {
     pub reconstruct: bool,
     /// The photograph worker reports its depth model present.
     pub depth: bool,
+    /// The photograph worker reports its Pixal3D model present.
+    pub object: bool,
 }
 
 /// Tools this server advertises and accepts. `head` is included only when a
 /// FLAME model is mounted, and offers `reconstruct` only when that can be
-/// served, and `photo` only when depth can be estimated, so clients never see
-/// a capability that cannot be served.
+/// served, and `photo` only when depth can be estimated or objects generated,
+/// offering only the actions that can be served, so clients never see a
+/// capability that cannot be served.
 pub fn advertised(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
     TOOLS
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
-        .filter(move |tool| tool.name != PHOTO || available.depth)
-        .map(move |tool| {
-            if tool.name == HEAD && available.reconstruct {
-                &HEAD_WITH_RECONSTRUCTION
-            } else {
-                tool
-            }
+        .filter(move |tool| tool.name != PHOTO || available.depth || available.object)
+        .map(move |tool| match tool.name {
+            HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
+            PHOTO if !available.object => &PHOTO_DEPTH,
+            PHOTO if !available.depth => &PHOTO_OBJECT,
+            _ => tool,
         })
 }
+
+// The parts of the `photo` description, as macros so `concat!` can join them.
+macro_rules! photo_prefix {
+    () => {
+        "Estimate geometry from a workspace photograph on the photograph worker's GPU, one job at a time."
+    };
+}
+macro_rules! photo_depth_text {
+    () => {
+        "depth writes Marigold V2's relative depth as a 16-bit PNG, nearest brightest, and optionally a 16-bit surface normal map, for reliefs, molds and displacement; the depth's scale and offset are unknown, so calibrate heights before building geometry, as the image-to-mold skill describes."
+    };
+}
+macro_rules! photo_object_text {
+    () => {
+        "object generates the 3D shape of the one object, figure or character in the photograph with Pixal3D and writes it as a binary STL in millimetres, Z up, standing on Z = 0; the background is removed unless the photograph has transparency, the sides the camera did not see are the model's invention, and the surface is neither checked nor repaired, so check it with validate_mesh and repair it before slicing."
+    };
+}
+
+static PHOTO_DEPTH: ToolDef = ToolDef {
+    name: PHOTO,
+    description: concat!(
+        photo_prefix!(),
+        " ",
+        photo_depth_text!(),
+        " Advertised only when the worker reports its converted Marigold V2 model present."
+    ),
+    schema: photo_depth_schema,
+    annotations: write_annotations,
+};
+
+static PHOTO_OBJECT: ToolDef = ToolDef {
+    name: PHOTO,
+    description: concat!(
+        photo_prefix!(),
+        " ",
+        photo_object_text!(),
+        " Advertised only when the worker reports its Pixal3D model present."
+    ),
+    schema: photo_object_schema,
+    annotations: write_annotations,
+};
 
 const HEAD_DESCRIPTION: &str = "Generate parametric human heads from mounted FLAME models. models lists variants and their identity and expression basis sizes; create adds a head mesh from identity and expression coefficients and joint rotations, optionally coloured by a PNG colour map; update re-evaluates an existing head in place; export writes the head to a workspace OBJ file, with texture coordinates when the model has them; prepare_print writes a watertight bust STL with a flat base, closed mouth and eyes united with the head, smoothed to a 0.4 mm facet edge by default, finer on busts under 100 mm, for fine-nozzle FDM printing; an optional printer block sets the plinth and detail defaults for FDM or resin and reports overhangs, thin parts and detail too shallow to print, mouth closes or recesses an open mouth, eyes drills the pupils and engraves the irises along each eye's gaze, and body extends the neck or adds shoulders; expression_scale softens the expression in every action that evaluates a head, and eyelids closes the eyelids with a model converted with an eyelid basis. Coordinates are millimetres. Coefficients are in standard deviations within plus or minus 5. Advertised only when FLAME models are mounted.";
 
@@ -546,7 +608,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: PHOTO,
-        description: "Estimate geometry from a workspace photograph on the photograph worker's GPU, one job at a time. depth writes Marigold V2's relative depth as a 16-bit PNG, nearest brightest, and optionally a 16-bit surface normal map, for reliefs, molds and displacement; the depth's scale and offset are unknown, so calibrate heights before building geometry, as the image-to-mold skill describes. Advertised only when the worker reports its converted Marigold V2 model present.",
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_depth_text!(),
+            " ",
+            photo_object_text!(),
+            " Each action is advertised only when the worker reports its model present."
+        ),
         schema: workflow_schema_of::<PhotoRequest>,
         annotations: write_annotations,
     },
@@ -667,6 +736,7 @@ mod tests {
                 head,
                 reconstruct: false,
                 depth,
+                object: false,
             })
             .map(|tool| tool.name)
             .collect::<Vec<_>>()
@@ -677,6 +747,44 @@ mod tests {
         assert!(names(false, true).contains(&PHOTO));
         assert_eq!(names(true, true).len(), TOOLS.len());
         assert_eq!(names(false, false).len(), TOOLS.len() - 2);
+    }
+
+    #[test]
+    fn photo_offers_only_the_actions_its_models_serve() {
+        let photo = |depth, object| {
+            advertised(Availability {
+                depth,
+                object,
+                ..Availability::default()
+            })
+            .find(|tool| tool.name == PHOTO)
+        };
+        assert!(photo(false, false).is_none());
+        for (depth, object) in [(true, false), (false, true), (true, true)] {
+            let tool = photo(depth, object).unwrap();
+            let schema = serde_json::to_string(&*(tool.schema)()).unwrap();
+            assert_eq!(schema.contains("depth_path"), depth);
+            assert_eq!(schema.contains("mesh_path"), object);
+            assert_eq!(tool.description.contains("depth writes"), depth);
+            assert_eq!(tool.description.contains("object generates"), object);
+        }
+    }
+
+    #[test]
+    fn photo_object_resolves_to_the_object_operation() {
+        let call = resolve(
+            PHOTO,
+            json!({"action": "object", "params": {"image": "figure.jpg", "mesh_path": "figure.stl", "resolution": 512}}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_object");
+        assert!(
+            resolve(
+                PHOTO,
+                json!({"action": "object", "params": {"image": "figure.jpg", "mesh_path": "figure.stl", "texture": true}}),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -703,6 +811,7 @@ mod tests {
                 head: true,
                 reconstruct,
                 depth: false,
+                object: false,
             })
             .find(|tool| tool.name == HEAD)
             .unwrap();

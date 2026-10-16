@@ -47,6 +47,8 @@ the [recorded artifact evidence](evidence/quickstart-artifacts.md).
   positive masters, silicone casting trays, and negative cavities.
 - Estimate [depth and surface normals from a photograph](docs/photo-depth.md) with
   Marigold V2 on the optional worker's GPU, for reliefs from photographs.
+- Generate [an object's shape from a photograph](docs/photo-object.md) with
+  Pixal3D on the same worker, as an STL to repair and print.
 
 The [workflow interface](docs/workflow-interface.md) lists the public
 tools and their typed actions. The [product refactor](docs/product-refactor.md)

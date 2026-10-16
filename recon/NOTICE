@@ -30,3 +30,42 @@ the Apache License, Version 2.0, and builds its networks from the Hugging
 Face diffusers model definitions, also Apache-2.0. The image contains no
 Qwen-Image-Edit-2509 or Marigold V2 weights; the operator downloads them,
 converts them with convert_marigold.py and mounts the result at run time.
+
+Object generation follows the network definitions and inference procedure of
+Pixal3D (https://github.com/TencentARC/Pixal3D), copyright 2026 Tencent,
+and of the TRELLIS.2 backbone it builds on
+(https://github.com/microsoft/TRELLIS.2), copyright Microsoft Corporation,
+both under the MIT License. Its feature upsampler follows NAF
+(https://github.com/valeoai/NAF), published by valeo.ai under the Apache
+License, Version 2.0. Its DINOv3 network is the Hugging Face transformers
+definition, Apache-2.0. The image contains no Pixal3D, DINOv3, NAF or
+BiRefNet weights; the operator downloads them and mounts them at run time.
+
+Background removal uses BiRefNet's network definition, birefnet.py and
+BiRefNet_config.py, downloaded unmodified from
+https://huggingface.co/ZhengPeng7/BiRefNet at revision
+e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 and installed under
+/opt/printable/recon/vendor/birefnet/. Its Swin Transformer portion is
+copyright 2021 Microsoft. It is published under the MIT License:
+
+  MIT License
+
+  Copyright (c) 2024 ZhengPeng
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.

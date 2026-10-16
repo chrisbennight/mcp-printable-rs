@@ -199,6 +199,11 @@ impl PrintableServer {
                 .recon
                 .as_ref()
                 .is_some_and(|recon| recon.can_estimate_depth()),
+            object: self
+                .settings
+                .recon
+                .as_ref()
+                .is_some_and(|recon| recon.can_generate_objects()),
         }
     }
 
@@ -775,6 +780,7 @@ mod tests {
             head: true,
             reconstruct: true,
             depth: true,
+            object: true,
         };
         let index = crate::resources::contracts::read(crate::resources::contracts::ROOT, available)
             .unwrap();

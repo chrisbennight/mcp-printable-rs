@@ -167,11 +167,17 @@ mod tests {
                 head: true,
                 reconstruct: false,
                 depth: false,
+                object: false,
             },
             workflows::Availability {
                 head: true,
                 reconstruct: true,
                 depth: true,
+                object: true,
+            },
+            workflows::Availability {
+                object: true,
+                ..workflows::Availability::default()
             },
         ] {
             let index = read(ROOT, available).unwrap();
@@ -215,11 +221,13 @@ mod tests {
             head: true,
             reconstruct: false,
             depth: false,
+            object: false,
         };
         let reconstruct = workflows::Availability {
             head: true,
             reconstruct: true,
             depth: false,
+            object: false,
         };
         let listed = |available| {
             read(ROOT, available).unwrap()["tools"]
@@ -237,10 +245,19 @@ mod tests {
     }
 
     #[test]
-    fn photo_contracts_follow_depth_availability() {
+    fn photo_contracts_follow_each_models_availability() {
         let none = workflows::Availability::default();
         let depth = workflows::Availability {
             depth: true,
+            ..none
+        };
+        let object = workflows::Availability {
+            object: true,
+            ..none
+        };
+        let both = workflows::Availability {
+            depth: true,
+            object: true,
             ..none
         };
         let listed = |available| {
@@ -252,13 +269,28 @@ mod tests {
         };
         assert!(!listed(none));
         assert!(listed(depth));
+        assert!(listed(object));
         assert!(read("printable://contracts/photo/depth", none).is_none());
-        let contract = read("printable://contracts/photo/depth", depth).unwrap();
+        assert!(read("printable://contracts/photo/object", depth).is_none());
+        assert!(read("printable://contracts/photo/depth", object).is_none());
+        let contract = read("printable://contracts/photo/depth", both).unwrap();
         let validator = jsonschema::validator_for(&contract["inputSchema"]).unwrap();
         assert!(validator.is_valid(&json!({"action": "depth", "params": {
             "image": "photo.jpg", "depth_path": "depth.png", "normals_path": "normals.png", "max_side": 1536
         }})));
         assert!(!validator.is_valid(&json!({"action": "depth", "params": {"image": "photo.jpg"}})));
+        let contract = read("printable://contracts/photo/object", object).unwrap();
+        let validator = jsonschema::validator_for(&contract["inputSchema"]).unwrap();
+        assert!(validator.is_valid(&json!({"action": "object", "params": {
+            "image": "figure.jpg", "mesh_path": "figure.stl", "resolution": 512, "steps": 8,
+            "seed": 3, "fov_degrees": 30.0, "size_mm": 80.0
+        }})));
+        assert!(
+            !validator.is_valid(&json!({"action": "object", "params": {"image": "figure.jpg"}}))
+        );
+        assert!(!validator.is_valid(&json!({"action": "depth", "params": {
+            "image": "photo.jpg", "depth_path": "depth.png"
+        }})));
     }
 
     #[test]
@@ -279,6 +311,7 @@ mod tests {
                         head: true,
                         reconstruct: true,
                         depth: true,
+                        object: true,
                     }
                 )
                 .is_none(),
