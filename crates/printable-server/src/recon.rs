@@ -30,7 +30,13 @@ const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// Largest displacement map committed to the workspace.
 const MAX_MAP_BYTES: u64 = 16 * 1024 * 1024;
 const IMAGE_SUFFIXES: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
-const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the worker waits for one job's model file check. The checks run
+/// together and finish well inside the server's readiness deadline, so one
+/// check that hangs reports only its own job missing.
+const MODEL_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the server waits for the worker's readiness answer.
+const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const _: () = assert!(MODEL_CHECK_TIMEOUT.as_secs() * 2 < READINESS_TIMEOUT.as_secs());
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -457,7 +463,7 @@ impl ReconWorker {
     async fn check(&self, script: &Path, directory: &Path) -> Result<Vec<String>, ToolError> {
         let mut command = self.python_command(script);
         command.arg("--check").arg(directory);
-        let output = tokio::time::timeout(CHECK_TIMEOUT, command.output())
+        let output = tokio::time::timeout(MODEL_CHECK_TIMEOUT, command.output())
             .await
             .map_err(|_| {
                 reconstruction_error("timeout", "the model file check did not finish")
@@ -1363,7 +1369,7 @@ impl ReconClient {
         let ready = match self
             .http
             .get(format!("{}/readyz", self.endpoint))
-            .timeout(CHECK_TIMEOUT)
+            .timeout(READINESS_TIMEOUT)
             .send()
             .await
         {
