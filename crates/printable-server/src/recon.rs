@@ -594,12 +594,28 @@ impl ReconWorker {
         )?;
         result["depth"]["artifact"] = json!(artifact);
         if let Some(path) = &request.normals_path {
-            let artifact = self.workspace.commit_generated_artifact_bounded(
-                path,
-                &normals,
-                request.overwrite,
-                MAX_NORMAL_MAP_BYTES,
-            )?;
+            // The depth map is already in the workspace, so a failure here
+            // reports it with the values needed to decode it.
+            let artifact = self
+                .workspace
+                .commit_generated_artifact_bounded(
+                    path,
+                    &normals,
+                    request.overwrite,
+                    MAX_NORMAL_MAP_BYTES,
+                )
+                .map_err(|error| {
+                    reconstruction_error(
+                        "failed",
+                        format!(
+                            "the depth map was written to {}, with near {} and far {}, but the normal map could not be written: {}",
+                            request.depth_path,
+                            result["depth"]["near"],
+                            result["depth"]["far"],
+                            ToolError::from(error)
+                        ),
+                    )
+                })?;
             result["normals"]["artifact"] = json!(artifact);
         }
         result["image_sha256"] = json!(file_digest(snapshot.path())?);
@@ -892,6 +908,23 @@ print(json.dumps({"result": result}))
         overwrite.max_side = Some(2048);
         let result = worker.estimate_depth(overwrite).await.unwrap();
         assert_eq!(result["max_side"], 2048);
+    }
+
+    #[tokio::test]
+    async fn a_depth_map_written_before_a_failed_normal_map_is_reported() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let request = DepthRequest {
+            depth_path: "relief.png".into(),
+            ..depth_request("face.jpg", Some("relief.png/normals.png"))
+        };
+        let error = worker.estimate_depth(request).await.unwrap_err();
+        let message = worker_message(&error);
+        assert!(
+            message
+                .starts_with("the depth map was written to relief.png, with near -1.0 and far 1.0"),
+            "{message}"
+        );
+        assert!(root.path().join("workspace/relief.png").is_file());
     }
 
     #[tokio::test]
