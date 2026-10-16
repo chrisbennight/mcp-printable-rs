@@ -515,6 +515,35 @@ class SimplificationTest(unittest.TestCase):
         numpy.testing.assert_allclose(numpy.linalg.norm(points[numpy.unique(faces)], axis=1), 0.4, atol=0.03)
 
 
+    def test_coarsening_continues_until_the_surface_fits(self):
+        # Small triangles that each straddle a cell boundary survive one
+        # coarsening pass at the estimated cell width.
+        torch.manual_seed(6)
+        centres = torch.rand(4000, 3) * 0.8 - 0.4
+        offsets = torch.tensor([[0.0, 0.0, 0.0], [0.004, 0.0, 0.001], [0.0, 0.004, 0.002]])
+        vertices = (centres[:, None, :] + offsets[None]).reshape(-1, 3)
+        triangles = torch.arange(vertices.shape[0]).reshape(-1, 3)
+        size = meshes.CLUSTER_ABOVE
+        meshes.CLUSTER_ABOVE = 1000
+        seen = []
+        import fast_simplification
+
+        original = fast_simplification.simplify
+
+        def recording(points, faces, **kwargs):
+            seen.append(faces.shape[0])
+            return original(points, faces, **kwargs)
+
+        fast_simplification.simplify = recording
+        try:
+            _, faces = meshes.reduce(vertices, triangles, 512, 500)
+        finally:
+            meshes.CLUSTER_ABOVE = size
+            fast_simplification.simplify = original
+        self.assertTrue(all(count <= 1000 for count in seen), seen)
+        self.assertLessEqual(faces.shape[0], 1000)
+
+
 class MeshFileTest(unittest.TestCase):
     def test_the_stl_stands_up_facing_the_camera(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -590,6 +619,18 @@ class GenerationTest(unittest.TestCase):
         self.assertAlmostEqual(float(extent.max()), 40.0, places=3)
         self.assertAlmostEqual(float(corners[:, 2].min()), 0.0, places=4)
         numpy.testing.assert_allclose(extent, result["size_mm"], atol=1e-3)
+
+    def test_a_surface_lost_in_simplification_is_reported(self):
+        photo, photo_fov = features.open_photograph(self.root / "disc.png")
+        reduce = meshes.reduce
+        meshes.reduce = lambda vertices, triangles, size, target: (numpy.zeros((0, 3), numpy.float32),
+                                                                    numpy.zeros((0, 3), numpy.int64))
+        try:
+            with self.assertRaisesRegex(objects.GenerationError, "vanished when simplified"):
+                objects.generate(photo, photo_fov, self.models, RECON / "absent", torch.device("cpu"),
+                                 resolution=512, steps=1)
+        finally:
+            meshes.reduce = reduce
 
     def test_requests_and_models_are_checked(self):
         mesh = self.root / "refused.stl"

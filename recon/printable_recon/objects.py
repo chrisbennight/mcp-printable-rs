@@ -231,6 +231,8 @@ def generate(
         raise GenerationError("the shape has no surface; try another photograph or seed")
     with report.stage("simplification", device), torch.no_grad():
         vertices, triangles = meshes.reduce(vertices, triangles, used, target_triangles)
+    if triangles.shape[0] == 0:
+        raise GenerationError("the shape's surface vanished when simplified; try a higher target_triangles")
     steps = {"structure": settings.structure.steps, "shape": settings.shape.steps}
     return Shape(vertices, triangles, generated, used, steps, tokens, fov, fov_source, background, report)
 

@@ -15,8 +15,9 @@ import math
 import numpy
 import torch
 
-# Surfaces with more triangles than this are coarsened on a grid before
-# quadric edge collapse, which then needs about 1.5 GB of memory at most.
+# Surfaces with more triangles than this, or than the target if larger, are
+# coarsened on a grid before quadric edge collapse, which then needs about
+# 1.5 GB of memory at most.
 CLUSTER_ABOVE = 4_000_000
 
 
@@ -57,10 +58,15 @@ def reduce(
     """
     import fast_simplification
 
-    if triangles.shape[0] > max(CLUSTER_ABOVE, target):
-        # Triangles fall roughly with the square of the cell width.
-        voxels = math.ceil(math.sqrt(triangles.shape[0] / CLUSTER_ABOVE))
-        vertices, triangles = cluster(vertices, triangles, voxels / size)
+    limit = max(CLUSTER_ABOVE, target)
+    if triangles.shape[0] > limit:
+        # Triangles fall roughly with the square of the cell width; triangles
+        # whose corners stay in separate cells survive, so wider cells are
+        # tried until the surface fits the simplifier's memory.
+        voxels = math.ceil(math.sqrt(triangles.shape[0] / limit))
+        while triangles.shape[0] > limit:
+            vertices, triangles = cluster(vertices, triangles, voxels / size)
+            voxels *= 2
     points = vertices.double().cpu().numpy()
     faces = triangles.cpu().numpy().astype(numpy.int64)
     del vertices, triangles
