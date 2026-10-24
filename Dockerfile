@@ -212,9 +212,12 @@ RUN apt-get update \
       xauth \
  && rm -rf /var/lib/apt/lists/*
 
+# /var/lib/printable-library is the optional model-library state directory.
+# A new named volume mounted there takes this owner-only directory's ownership.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
  && mkdir -p /tmp/printable \
- && chown 10001:10001 /tmp/printable
+ && chown 10001:10001 /tmp/printable \
+ && install -d -o 10001 -g 10001 -m 0700 /var/lib/printable-library
 
 COPY --from=build /app/target/release/printable-server /usr/local/bin/printable-server
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker

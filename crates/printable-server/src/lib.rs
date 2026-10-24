@@ -15,6 +15,7 @@ pub mod file_transfer;
 pub mod flame;
 pub mod health;
 pub mod jobs;
+pub mod library;
 pub mod mcp;
 pub mod printers;
 pub mod projects;

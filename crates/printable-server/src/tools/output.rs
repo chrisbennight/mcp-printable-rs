@@ -435,6 +435,42 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             selected_bundle(), native_bundle()
         ],"$defs":generator.take_definitions(true)})
         }
+        "library" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let page = generator.subschema_for::<model_library::SearchPage>();
+            let detail = generator.subschema_for::<model_library::ModelDetail>();
+            let digest = json!({"type": "string", "pattern": "^[0-9a-f]{64}$"});
+            let saved = object(
+                json!({
+                    "file_id": {"type": "string"}, "name": {"type": "string"},
+                    "artifact": artifact(), "sha256": digest
+                }),
+                &["file_id", "name", "artifact", "sha256"],
+            );
+            let download = object(
+                json!({
+                    "site": {"type": "string"}, "model_id": {"type": "string"},
+                    "title": {"type": "string"}, "url": {"type": "string"},
+                    "designer": {"type": ["string", "null"]},
+                    "license": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                    "files": {"type": "array", "items": saved, "minItems": 1},
+                    "manifest": artifact()
+                }),
+                &["site", "model_id", "title", "url", "files", "manifest"],
+            );
+            let sign_in = object(
+                json!({
+                    "site": {"const": "makerworld"},
+                    "state": {"enum": ["signed_in", "code_required"]},
+                    "expires_unix_ms": {"type": ["integer", "null"], "minimum": 0},
+                    "code_source": {"enum": ["email", "authenticator"]},
+                    "instructions": {"type": "string"}
+                }),
+                &["site", "state"],
+            );
+            json!({"type": "object", "anyOf": [page, detail, download, sign_in],
+                "$defs": generator.take_definitions(true)})
+        }
         "photo" => json!({"type": "object", "anyOf": [
             object(
                 json!({

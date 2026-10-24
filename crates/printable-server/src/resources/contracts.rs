@@ -168,12 +168,14 @@ mod tests {
                 reconstruct: false,
                 depth: false,
                 object: false,
+                library: false,
             },
             workflows::Availability {
                 head: true,
                 reconstruct: true,
                 depth: true,
                 object: true,
+                library: true,
             },
             workflows::Availability {
                 object: true,
@@ -217,17 +219,11 @@ mod tests {
     #[test]
     fn head_contracts_follow_model_availability() {
         let none = workflows::Availability::default();
-        let head = workflows::Availability {
-            head: true,
-            reconstruct: false,
-            depth: false,
-            object: false,
-        };
+        let head = workflows::Availability { head: true, ..none };
         let reconstruct = workflows::Availability {
             head: true,
             reconstruct: true,
-            depth: false,
-            object: false,
+            ..none
         };
         let listed = |available| {
             read(ROOT, available).unwrap()["tools"]
@@ -312,6 +308,7 @@ mod tests {
                         reconstruct: true,
                         depth: true,
                         object: true,
+                        library: true,
                     }
                 )
                 .is_none(),

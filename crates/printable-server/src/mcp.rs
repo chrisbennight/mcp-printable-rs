@@ -204,6 +204,7 @@ impl PrintableServer {
                 .recon
                 .as_ref()
                 .is_some_and(|recon| recon.can_generate_objects()),
+            library: self.settings.library.is_some(),
         }
     }
 
@@ -319,6 +320,33 @@ impl PrintableServer {
                 }
             }
             .await;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
+
+        if operation == "printable_library" {
+            let result = match (self.settings.library.as_ref(), serde_json::from_value(args)) {
+                (Some(library), Ok(request)) => {
+                    library
+                        .dispatch(
+                            request,
+                            &self.workspace,
+                            self.settings.file_upload_max_bytes,
+                        )
+                        .await
+                }
+                (None, _) => Err(ToolError::Validation(
+                    "the model library is not configured".into(),
+                )),
+                (_, Err(error)) => Err(ToolError::Validation(error.to_string())),
+            };
             return Ok(match result {
                 Ok(value) => {
                     let mut result =
@@ -781,6 +809,7 @@ mod tests {
             reconstruct: true,
             depth: true,
             object: true,
+            library: true,
         };
         let index = crate::resources::contracts::read(crate::resources::contracts::ROOT, available)
             .unwrap();
