@@ -15,7 +15,7 @@ or binaries.
 | Fira font | Embedded by `printable-imaging`; SIL Open Font License 1.1, with the Mozilla Foundation and Telefonica attribution in the [bundled notice](crates/printable-imaging/assets/LICENSE-Fira-OFL.txt). |
 | Blender | The official archive is checksum-pinned in `blender/Dockerfile`; retain its bundled licenses and corresponding source for the exact redistributed version. See [Blender's licensing guidance](https://www.blender.org/about/license/). |
 | Blender add-on | First-party MIT source is included in the image. Use with Blender must also respect Blender's GPL distribution requirements; this does not relicense unrelated Rust source. |
-| urllib3 | The pinned wheel replaces Blender's bundled copy. Its installed distribution metadata includes its license. |
+| urllib3 and certifi | The pinned wheels replace Blender's bundled copies. Their installed distribution metadata includes their licenses. |
 | VirtualGL | The pinned Debian package retains its own license files under its installed documentation paths. |
 | OpenSCAD, FFmpeg, x264, Xvfb, fonts, and Debian libraries | Installed package versions and `/usr/share/doc/*/copyright` determine the actual inventory and notices for each image. They are not all under one license. |
 
