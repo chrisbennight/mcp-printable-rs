@@ -30,6 +30,8 @@ const CONCURRENT_REQUESTS: usize = 2;
 const MAXIMUM_FILES: usize = 50;
 const MANIFEST: &str = "source.json";
 const MAXIMUM_STEM_CHARACTERS: usize = 100;
+/// The longest file or directory name Linux file systems accept.
+const MAXIMUM_COMPONENT_BYTES: usize = 255;
 
 fn first_page() -> u32 {
     1
@@ -290,6 +292,15 @@ impl LibraryService {
         let directory = params
             .directory
             .unwrap_or_else(|| format!("library/{}-{model_id}", site.id()));
+        // Components below a missing directory are only checked when created,
+        // after any sign-in, so their limits are enforced here.
+        if directory.split('/').any(|component| {
+            component.len() > MAXIMUM_COMPONENT_BYTES || component.chars().any(char::is_control)
+        }) {
+            return Err(ToolError::Validation(format!(
+                "directory components must be at most {MAXIMUM_COMPONENT_BYTES} bytes without control characters"
+            )));
+        }
         let resolve = |name: &str| {
             crate::projects::resolve(
                 workspace,
@@ -384,6 +395,7 @@ impl LibraryService {
         for (file, path, received) in staged {
             let workspace_for_commit = Arc::clone(workspace);
             let overwrite = params.overwrite;
+            let attempted = path.clone();
             let committed = tokio::task::spawn_blocking(move || {
                 workspace_for_commit
                     .commit_generated_artifact_bounded(
@@ -403,7 +415,7 @@ impl LibraryService {
                     artifact,
                     sha256,
                 }),
-                Err(error) => return Err(incomplete(&saved, error.into())),
+                Err(error) => return Err(incomplete(&saved, &attempted, error)),
             }
         }
 
@@ -427,7 +439,7 @@ impl LibraryService {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         let manifest_artifact = workspace
             .write_artifact(&manifest_path, &manifest_bytes, params.overwrite)
-            .map_err(|error| incomplete(&saved, error.into()))?;
+            .map_err(|error| incomplete(&saved, &manifest_path, error))?;
         Ok(download_result(&detail, &saved, manifest_artifact))
     }
 }
@@ -458,19 +470,29 @@ fn download_result(detail: &ModelDetail, saved: &[SavedFile], manifest: Artifact
 }
 
 /// A failure after some files were committed names them, so the caller can
-/// inspect or remove them rather than assume nothing changed.
-fn incomplete(saved: &[SavedFile], error: ToolError) -> ToolError {
-    if saved.is_empty() {
-        return error;
+/// inspect or remove them rather than assume nothing changed. A failed commit
+/// can still have placed its file before a later step failed, so its path is
+/// named as possibly written unless the destination already existed.
+fn incomplete(
+    saved: &[SavedFile],
+    attempted: &str,
+    error: printable_workspace::WsError,
+) -> ToolError {
+    let mut changes = Vec::new();
+    if !saved.is_empty() {
+        let paths: Vec<_> = saved
+            .iter()
+            .map(|file| file.artifact.path.as_str())
+            .collect();
+        changes.push(format!("saved {}", paths.join(", ")));
     }
-    let paths: Vec<_> = saved
-        .iter()
-        .map(|file| file.artifact.path.as_str())
-        .collect();
-    ToolError::LibraryIncomplete(format!(
-        "saved {} before failing: {error}",
-        paths.join(", ")
-    ))
+    if !matches!(error, printable_workspace::WsError::AlreadyExists(_)) {
+        changes.push(format!("{attempted} may have been written"));
+    }
+    if changes.is_empty() {
+        return error.into();
+    }
+    ToolError::LibraryIncomplete(format!("{} before failing: {error}", changes.join("; ")))
 }
 
 struct Received {

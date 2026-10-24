@@ -356,7 +356,7 @@ impl Client {
             return Err(match refusal.and_then(|refusal| refusal.code) {
                 Some(1) => {
                     self.request_email_code(account).await?;
-                    rejected("the code expired; Bambu Lab has emailed a new one")
+                    LibraryError::SignInCodeExpired { site: SITE }
                 }
                 Some(2) => rejected("Bambu Lab did not accept the code"),
                 _ => sign_in_refusal(&exchange, "Bambu Lab did not accept the code"),

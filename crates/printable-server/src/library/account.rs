@@ -390,10 +390,19 @@ impl MakerWorldAccount {
             ));
         };
         let was_authenticator = pending.challenge.source() == CodeSource::Authenticator;
-        let next = client
-            .bambu_submit_code(account, &pending.challenge, code)
-            .await?;
-        Ok(self.settle(client, state, next, was_authenticator))
+        let challenge = pending.challenge.clone();
+        match client.bambu_submit_code(account, &challenge, code).await {
+            Ok(next) => Ok(self.settle(client, state, next, was_authenticator)),
+            Err(error @ LibraryError::SignInCodeExpired { .. }) => {
+                // Bambu Lab just emailed a new code: wait for that one rather
+                // than letting the next request ask for yet another.
+                if let Some(pending) = state.pending.as_mut() {
+                    pending.since = Instant::now();
+                }
+                Err(error.into())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Record a completed sign-in, or the emailed code requested when the

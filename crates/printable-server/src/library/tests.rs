@@ -1232,3 +1232,53 @@ async fn a_file_of_undeclared_size_is_charged_for_what_arrives() {
         2 * 1024 * 1024
     );
 }
+
+#[tokio::test]
+async fn an_expired_code_waits_for_the_new_email_instead_of_sending_another() {
+    let fixture = fixture_with(&[Site::MakerWorld], &account_settings(&[])).await;
+    password_login(&fixture, json!({"loginType": "verifyCode"}), 1).await;
+    Mock::given(method("POST"))
+        .and(path(EMAIL_CODE))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(2)
+        .mount(&fixture.site)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(LOGIN))
+        .and(body_partial_json(json!({"code": "111111"})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"code": 1})))
+        .mount(&fixture.site)
+        .await;
+    let waiting = call(&fixture.server, "library", sign_in(None)).await;
+    assert_eq!(structured(&waiting)["state"], "code_required");
+    let expired = call(&fixture.server, "library", sign_in(Some("111111"))).await;
+    let error = &structured(&expired)["error"];
+    assert_eq!(error["code"], "library_sign_in_rejected");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("emailed a new one")
+    );
+    let still_waiting = call(&fixture.server, "library", sign_in(None)).await;
+    assert_eq!(structured(&still_waiting)["state"], "code_required");
+}
+
+#[tokio::test]
+async fn unusable_directory_names_are_refused_before_signing_in() {
+    let fixture = fixture_with(&[Site::MakerWorld], &account_settings(&[])).await;
+    for directory in [
+        "new/bad\u{0}name".to_owned(),
+        format!("new/{}", "a".repeat(256)),
+    ] {
+        let mut request = download_bowl();
+        request["params"]["directory"] = json!(directory);
+        let refused = call(&fixture.server, "library", request).await;
+        assert_eq!(
+            structured(&refused)["error"]["code"],
+            "validation",
+            "{refused:?}"
+        );
+    }
+    assert!(fixture.site.received_requests().await.unwrap().is_empty());
+}

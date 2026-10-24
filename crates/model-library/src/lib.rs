@@ -105,4 +105,6 @@ pub enum LibraryError {
     Interrupted { site: Site },
     #[error("{site} sign-in failed: {reason}")]
     SignInRejected { site: Site, reason: String },
+    #[error("the {site} sign-in code expired; Bambu Lab has emailed a new one")]
+    SignInCodeExpired { site: Site },
 }

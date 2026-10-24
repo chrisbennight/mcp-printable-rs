@@ -134,6 +134,8 @@ fn library_code(error: &model_library::LibraryError) -> &'static str {
         }
         LibraryError::FileTooLarge { .. } => "library_file_too_large",
         LibraryError::DisallowedHost { .. } => "library_disallowed_host",
-        LibraryError::SignInRejected { .. } => "library_sign_in_rejected",
+        LibraryError::SignInRejected { .. } | LibraryError::SignInCodeExpired { .. } => {
+            "library_sign_in_rejected"
+        }
     }
 }

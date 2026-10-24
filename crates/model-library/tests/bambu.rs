@@ -161,14 +161,15 @@ async fn wrong_and_expired_email_codes_are_rejected_and_expiry_sends_a_new_code(
             reason: "Bambu Lab did not accept the code".into()
         }
     );
-    let LibraryError::SignInRejected { reason, .. } = client
-        .bambu_submit_code(&account(), &challenge, "222222")
-        .await
-        .unwrap_err()
-    else {
-        panic!("expected a rejection");
-    };
-    assert!(reason.contains("emailed a new one"), "{reason}");
+    assert_eq!(
+        client
+            .bambu_submit_code(&account(), &challenge, "222222")
+            .await
+            .unwrap_err(),
+        LibraryError::SignInCodeExpired {
+            site: Site::MakerWorld
+        }
+    );
     assert!(matches!(
         client
             .bambu_submit_code(&account(), &challenge, "12ab")
