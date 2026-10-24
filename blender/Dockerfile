@@ -8,6 +8,8 @@ ARG BLENDER_VERSION=5.2.0
 ARG BLENDER_SHA256=96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
 ARG URLLIB3_WHEEL_URL=https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
 ARG URLLIB3_SHA256=0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
+ARG CERTIFI_WHEEL_URL=https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl
+ARG CERTIFI_SHA256=e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
 ARG VIRTUALGL_URL=https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb
 ARG VIRTUALGL_SHA256=df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e
 
@@ -26,8 +28,13 @@ RUN apt-get update \
        --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
        --output /tmp/urllib3-2.8.0-py3-none-any.whl "${URLLIB3_WHEEL_URL}" \
     && echo "${URLLIB3_SHA256}  /tmp/urllib3-2.8.0-py3-none-any.whl" | sha256sum --check --strict \
+    && curl --fail --location --proto '=https' --tlsv1.2 \
+       --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
+       --output /tmp/certifi-2026.10.23-py3-none-any.whl "${CERTIFI_WHEEL_URL}" \
+    && echo "${CERTIFI_SHA256}  /tmp/certifi-2026.10.23-py3-none-any.whl" | sha256sum --check --strict \
     && /opt/blender/5.2/python/bin/python3.13 -m pip install \
-       --no-cache-dir --no-deps --force-reinstall /tmp/urllib3-2.8.0-py3-none-any.whl \
+       --no-cache-dir --no-deps --force-reinstall \
+       /tmp/urllib3-2.8.0-py3-none-any.whl /tmp/certifi-2026.10.23-py3-none-any.whl \
     && rm -rf \
        /opt/blender/5.2/python/bin \
        /opt/blender/5.2/python/lib/python3.13/ensurepip \
