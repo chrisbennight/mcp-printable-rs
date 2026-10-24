@@ -6,7 +6,7 @@
 //! then committed atomically, and a `source.json` record keeps its origin and
 //! license beside it.
 
-use std::{collections::BTreeSet, fmt::Write as _, sync::Arc};
+use std::{collections::BTreeSet, fmt::Write as _, io::Write as _, sync::Arc};
 
 use model_library::{
     Client, Credentials, FileStream, LibraryError, ModelDetail, SearchQuery, SearchSort, Site,
@@ -17,7 +17,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::{io::AsyncWriteExt, sync::Semaphore};
+
+use tokio::sync::Semaphore;
 
 use crate::{config::SettingsError, error::ToolError};
 
@@ -318,13 +319,18 @@ impl LibraryService {
             let name = unique_name(local_name(&file.name)?, file_id, &mut names);
             plan.push((file, resolve(&name)?));
         }
-        if !params.overwrite {
-            for path in plan
-                .iter()
-                .map(|(_, path)| path)
-                .chain(std::iter::once(&manifest_path))
-            {
-                if workspace.stat_artifact(path).is_ok() {
+        // Only an absent destination is free. Any other answer, such as a
+        // path through an existing file, means the commit cannot succeed.
+        for path in plan
+            .iter()
+            .map(|(_, path)| path)
+            .chain(std::iter::once(&manifest_path))
+        {
+            match workspace.stat_artifact(path) {
+                Err(printable_workspace::WsError::NotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) if params.overwrite => {}
+                Ok(_) => {
                     return Err(ToolError::Validation(format!(
                         "{path} already exists; set overwrite or choose another directory"
                     )));
@@ -470,38 +476,68 @@ fn incomplete(saved: &[SavedFile], error: ToolError) -> ToolError {
 struct Received {
     path: std::path::PathBuf,
     sha256: String,
-    /// Keeps the received bytes, and their storage reservation, until commit.
-    _scratch: ManagedScratch,
+    /// Keeps the received bytes, and their storage charge, until commit.
+    _scratch: Arc<ManagedScratch>,
 }
 
-/// Stream one file into managed scratch space and hash it.
+/// Bytes written to scratch space per storage admission.
+const WRITE_BLOCK_BYTES: usize = 1024 * 1024;
+
+/// Stream one file into managed scratch space and hash it. A declared size is
+/// reserved up front; otherwise each block is admitted against the workspace
+/// budget as it is written, so the charge follows what actually arrives.
 async fn receive(
     workspace: &Arc<Workspace>,
     mut stream: FileStream,
     max_file_bytes: u64,
 ) -> Result<Received, ToolError> {
-    let reservation = stream
+    let declared = stream
         .declared_size()
-        .unwrap_or(max_file_bytes)
-        .min(max_file_bytes);
+        .filter(|size| *size <= max_file_bytes);
     let staging = Arc::clone(workspace);
     let (scratch, file) = tokio::task::spawn_blocking(move || {
-        let scratch = staging.scratch(reservation, "library_download")?;
+        let scratch = staging.scratch(declared.unwrap_or(0), "library_download")?;
         let file = tempfile::NamedTempFile::new_in(scratch.path())?;
-        Ok::<_, ToolError>((scratch, file))
+        Ok::<_, ToolError>((Arc::new(scratch), file))
     })
     .await
     .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
-    let mut writer = tokio::fs::File::from_std(file.reopen()?);
+    let mut writer = Some(file.reopen()?);
     let mut digest = Sha256::new();
-    let mut size = 0_u64;
-    while let Some(chunk) = stream.chunk().await? {
-        digest.update(&chunk);
-        size = size.saturating_add(chunk.len() as u64);
-        writer.write_all(&chunk).await?;
+    let mut block = Vec::with_capacity(WRITE_BLOCK_BYTES);
+    let mut finished = false;
+    while !finished {
+        match stream.chunk().await? {
+            Some(chunk) => {
+                digest.update(&chunk);
+                block.extend_from_slice(&chunk);
+                if block.len() < WRITE_BLOCK_BYTES {
+                    continue;
+                }
+            }
+            None => finished = true,
+        }
+        let owner = Arc::clone(&scratch);
+        let mut file = writer.take().expect("writer returned after each block");
+        let pending = std::mem::replace(&mut block, Vec::with_capacity(WRITE_BLOCK_BYTES));
+        let admit = declared.is_none();
+        writer = Some(
+            tokio::task::spawn_blocking(move || {
+                let _admission = if admit && !pending.is_empty() {
+                    owner.admit_growth(pending.len() as u64)?
+                } else {
+                    None
+                };
+                file.write_all(&pending)?;
+                if finished {
+                    file.sync_all()?;
+                }
+                Ok::<_, ToolError>(file)
+            })
+            .await
+            .map_err(|error| ToolError::Io(std::io::Error::other(error)))??,
+        );
     }
-    writer.flush().await?;
-    writer.sync_all().await?;
     drop(writer);
     let sha256 = digest
         .finalize()
@@ -510,27 +546,10 @@ async fn receive(
             let _ = write!(hex, "{byte:02x}");
             hex
         });
-    // A host that declared no size was given the whole file limit. Until the
-    // commit, hold only what arrived, so later files in the same download are
-    // not refused for space this one never used.
-    let workspace = Arc::clone(workspace);
-    let (scratch, path) = tokio::task::spawn_blocking(move || {
-        if size >= reservation {
-            let path = file
-                .into_temp_path()
-                .keep()
-                .map_err(|error| ToolError::Io(error.error))?;
-            return Ok::<_, ToolError>((scratch, path));
-        }
-        let smaller = workspace.scratch(size, "library_download")?;
-        let path = smaller.path().join("download");
-        file.persist(&path)
-            .map_err(|error| ToolError::Io(error.error))?;
-        drop(scratch);
-        Ok((smaller, path))
-    })
-    .await
-    .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+    let path = file
+        .into_temp_path()
+        .keep()
+        .map_err(|error| ToolError::Io(error.error))?;
     Ok(Received {
         path,
         sha256,

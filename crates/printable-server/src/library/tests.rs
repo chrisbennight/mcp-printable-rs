@@ -427,17 +427,35 @@ async fn makerworld_downloads_without_a_token_fail_before_contacting_the_site() 
     assert!(fixture.site.received_requests().await.unwrap().is_empty());
 }
 
+/// Answers a file request after placing another file at `path`, as a
+/// concurrent writer might between validation and commit.
+struct CreateOnRequest {
+    path: std::path::PathBuf,
+}
+
+impl wiremock::Respond for CreateOnRequest {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        std::fs::create_dir_all(self.path.parent().unwrap()).unwrap();
+        std::fs::write(&self.path, b"someone else's file").unwrap();
+        ResponseTemplate::new(200).set_body_bytes(b"solid 2\n".to_vec())
+    }
+}
+
 #[tokio::test]
 async fn a_commit_failure_after_saving_names_the_saved_files() {
     let fixture = fixture(&[Site::Printables]).await;
+    Mock::given(method("GET"))
+        .and(path("/files/2.stl"))
+        .respond_with(CreateOnRequest {
+            path: fixture
+                ._workspace
+                .path()
+                .join("projects/bowls/library/printables-553277/Tray-stl-2.stl"),
+        })
+        .with_priority(1)
+        .mount(&fixture.files)
+        .await;
     mount_printables_model(&fixture, 200).await;
-    std::fs::create_dir_all(
-        fixture
-            ._workspace
-            .path()
-            .join("projects/bowls/library/printables-553277/Tray-stl-2.stl"),
-    )
-    .unwrap();
     let failed = call(
         &fixture.server,
         "library",
@@ -456,6 +474,31 @@ async fn a_commit_failure_after_saving_names_the_saved_files() {
             .unwrap()
             .contains("projects/bowls/library/printables-553277/Tray.stl"),
         "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_destination_through_an_existing_file_is_refused_before_signing_in() {
+    let fixture = fixture_with(&[Site::MakerWorld], &account_settings(&[])).await;
+    mount_makerworld_model(&fixture, "unused").await;
+    std::fs::write(
+        fixture
+            ._workspace
+            .path()
+            .join("projects/bowls/blocker.json"),
+        b"{}",
+    )
+    .unwrap();
+    let mut request = download_bowl();
+    request["params"]["directory"] = json!("blocker.json");
+    let refused = call(&fixture.server, "library", request).await;
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    let requests = fixture.site.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.url.path().contains("user-service")),
+        "signed in for an unusable destination"
     );
 }
 
@@ -1110,4 +1153,82 @@ fn an_unwritable_state_directory_is_refused_at_startup() {
 fn nix_is_root() -> bool {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() == 0 }
+}
+
+/// Serve one response whose size is not declared up front, as a chunked body.
+async fn serve_chunked(body: Vec<u8>) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut buffer).await.unwrap();
+            request.extend_from_slice(&buffer[..read]);
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        for piece in body.chunks(64 * 1024) {
+            socket
+                .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(piece).await.unwrap();
+            socket.write_all(b"\r\n").await.unwrap();
+        }
+        socket.write_all(b"0\r\n\r\n").await.unwrap();
+    });
+    format!("http://{address}/bowl.stl")
+}
+
+#[tokio::test]
+async fn a_file_of_undeclared_size_is_charged_for_what_arrives() {
+    let fixture = fixture(&[Site::Printables]).await;
+    Workspace::open(Some(fixture._workspace.path()), None)
+        .unwrap()
+        .configure_storage_budget(Some(8 * 1024 * 1024))
+        .unwrap();
+    let link = serve_chunked(vec![b'x'; 2 * 1024 * 1024]).await;
+    Mock::given(method("POST"))
+        .and(path("/printables/graphql/"))
+        .and(body_partial_json(json!({"operationName": "ModelFiles"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"print": {
+                "id": "9", "name": "Bowl", "stls": [{"id": "1", "name": "bowl.stl"}]
+            }}})),
+        )
+        .mount(&fixture.site)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/printables/graphql/"))
+        .and(body_partial_json(
+            json!({"operationName": "GetDownloadLink"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"data": {"getDownloadLink": {
+                "ok": true, "output": {"link": link}
+            }}}),
+        ))
+        .mount(&fixture.site)
+        .await;
+    let downloaded = call(
+        &fixture.server,
+        "library",
+        json!({"action": "download", "params": {
+            "site": "printables", "model": "9", "files": ["stl-1"], "project_id": "bowls"
+        }}),
+    )
+    .await;
+    assert_ne!(downloaded.is_error, Some(true), "{downloaded:?}");
+    assert_eq!(
+        structured(&downloaded)["files"][0]["artifact"]["size_bytes"],
+        2 * 1024 * 1024
+    );
 }
