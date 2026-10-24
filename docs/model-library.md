@@ -80,36 +80,23 @@ never do. Signing in can also fail with `library_challenged` when Bambu Lab
 answers with a CAPTCHA, or `library_sign_in_rejected` for a wrong password or
 code.
 
-To keep the session across restarts with Compose, mount a volume that only the
-server uses, give it to the server's user, UID 10001, the way `workspace-init`
-does for the workspace, and set the state directory:
+To keep the session across restarts with Compose, mount a named volume that
+only the server uses at `/var/lib/printable-library` and set the state
+directory. The server image owns that directory as UID 10001 with owner-only
+access, and Docker gives a new named volume the same ownership:
 
 ```yaml
 services:
-  library-state-init:
-    image: ${PRINTABLE_SERVER_IMAGE:?Set PRINTABLE_SERVER_IMAGE to the server image}
-    platform: linux/amd64
-    user: "0:0"
-    read_only: true
-    network_mode: none
-    cap_drop: [ALL]
-    cap_add: [CHOWN]
-    security_opt: [no-new-privileges:true]
-    entrypoint: ["/usr/bin/chown", "10001:10001", "/var/lib/printable-library"]
-    volumes:
-      - library-state:/var/lib/printable-library
   server:
     environment:
       PRINTABLE_LIBRARY_STATE_DIR: /var/lib/printable-library
     volumes:
       - library-state:/var/lib/printable-library
-    depends_on:
-      library-state-init:
-        condition: service_completed_successfully
 volumes:
   library-state: {}
 ```
 
+A bind mount or network volume must already be writable by UID 10001.
 Do not mount the volume into the Blender, CAD or slicer containers. If a later
 write fails, the session stays in memory and `status` reports
 `persistence_failed`.
