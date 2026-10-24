@@ -16,6 +16,7 @@ path = "src/bin/printable-geometry-worker.rs"
 
 [dependencies]
 bambuddy-api = { path = "../bambuddy-api" }
+model-library = { path = "../model-library" }
 url = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
@@ -54,6 +55,8 @@ libc = "=0.2.189"
 sha2 = "=0.11.0"
 # Constant-time comparison for the single long-lived gateway credential.
 subtle = "=2.6.1"
+# Clears Bambu Lab sign-in secrets from memory when they are dropped.
+zeroize = "1.9"
 # Store project bundles without optional archive codecs or encryption.
 zip = { version = "8.6", default-features = false }
 

@@ -66,6 +66,16 @@ pub enum ToolError {
     /// Photo reconstruction was refused or failed in the reconstruction worker.
     #[error("reconstruction failed: {message}")]
     Reconstruction { code: &'static str, message: String },
+    /// A public model site refused or failed a request.
+    #[error(transparent)]
+    Library(#[from] model_library::LibraryError),
+    /// A library download failed; any files it already saved are named.
+    #[error("library download incomplete: {0}")]
+    LibraryIncomplete(String),
+    /// MakerWorld needs a code from the user to finish signing in; the
+    /// message says which code and how to submit it.
+    #[error("{0}")]
+    LibrarySignInRequired(String),
 }
 
 impl ToolError {
@@ -98,6 +108,32 @@ impl ToolError {
             }
             ToolError::Job(_) => "job",
             ToolError::Reconstruction { code, .. } => code,
+            ToolError::Library(error) => library_code(error),
+            ToolError::LibraryIncomplete(_) => "library_incomplete",
+            ToolError::LibrarySignInRequired(_) => "library_sign_in_required",
         }
+    }
+}
+
+fn library_code(error: &model_library::LibraryError) -> &'static str {
+    use model_library::LibraryError;
+    match error {
+        LibraryError::InvalidConfiguration(_) => "library_configuration",
+        LibraryError::InvalidRequest(_) => "validation",
+        LibraryError::CredentialsRequired { .. } => "library_credentials_required",
+        LibraryError::Authentication { .. } => "library_authentication",
+        LibraryError::Forbidden { .. } => "library_forbidden",
+        LibraryError::NotFound { .. } => "library_not_found",
+        LibraryError::Challenged { .. } => "library_challenged",
+        LibraryError::RateLimited { .. } => "library_rate_limited",
+        LibraryError::Unavailable { .. } | LibraryError::Interrupted { .. } => {
+            "library_unavailable"
+        }
+        LibraryError::IncompatibleResponse { .. } | LibraryError::ResponseTooLarge { .. } => {
+            "library_incompatible"
+        }
+        LibraryError::FileTooLarge { .. } => "library_file_too_large",
+        LibraryError::DisallowedHost { .. } => "library_disallowed_host",
+        LibraryError::SignInRejected { .. } => "library_sign_in_rejected",
     }
 }

@@ -68,6 +68,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
 | `head` | `models`, `create`, `update`, `prepare_print`, and `reconstruct` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
 | `photo` | `depth` (relative depth and surface normals from a photograph) and `object` (an object's shape from a photograph, as an STL); advertised only when the photograph worker reports the [depth model](photo-depth.md) or the [object model](photo-object.md) present, with only the actions whose models are present |
+| `library` | `search`, `get`, `download` (find designs on public model sites and save their files into a project), `sign_in` (finish a MakerWorld sign-in with a code from the user); advertised only when [model sites](model-library.md) are enabled |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
 | `artifact` | `stat`, `list`, `read`, `write`, `publish`, `ingest`, `transfer_status`, `upload_begin`, `upload_chunk`, `upload_commit`, `usage`, `cleanup_preview`, `cleanup` |

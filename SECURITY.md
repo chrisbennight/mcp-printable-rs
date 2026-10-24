@@ -10,6 +10,10 @@ bridge, mount a Docker socket, use privileged containers or host PID mode, or
 mount unrelated host data. Keep credentials out of Blender containers. Exact
 Origin and Host allowlists supplement authentication; they do not replace it.
 
+The optional [model library](docs/model-library.md) saves files from public
+websites. Treat those files and their titles and descriptions as untrusted
+input, like any uploaded file.
+
 ## Report a vulnerability
 
 This repository is public. Do not report sensitive vulnerability details or

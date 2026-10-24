@@ -9,6 +9,7 @@ members = [
     "crates/printable-workspace",
     "crates/printable-imaging",
     "crates/bambuddy-api",
+    "crates/model-library",
 ]
 # The cargo-fuzz crate needs a nightly toolchain + sanitizer runtime; keep it
 # out of the default workspace build (it has its own detached [workspace]).
