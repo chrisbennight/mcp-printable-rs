@@ -39,7 +39,7 @@ server signs in for you:
 | --- | --- |
 | `PRINTABLE_BAMBU_ACCOUNT` | The Bambu Lab account's email address. Accounts registered by telephone number are not supported |
 | `PRINTABLE_BAMBU_PASSWORD` | Its password; required with the account |
-| `PRINTABLE_BAMBU_AUTHENTICATOR_SECRET` | Optional. The base32 secret shown beside the QR code when you set up an authenticator app for the account. With it, the server answers authenticator codes itself |
+| `PRINTABLE_BAMBU_AUTHENTICATOR_SECRET` | Optional. The base32 secret, or setup key, shown beside the QR code when you set up an authenticator app for the account. Spaces, lower case and trailing `=` are accepted, so a key copied in groups of four characters works as is. With it, the server answers authenticator codes itself |
 | `PRINTABLE_LIBRARY_STATE_DIR` | Optional. An existing, writable absolute directory that only the server can read; the server refuses to start if it cannot write there. The session is kept there, owner-readable only, so a restart does not need a new code. Without it, the session is kept in memory |
 | `PRINTABLE_MAKERWORLD_TOKEN` | Optional. A token to start with, such as the `token` cookie makerworld.com sets after you sign in in a browser. A newly set or changed token is used instead of a stored session. Without an account, this is the only way to download, and it must be replaced by hand when it expires |
 
@@ -214,7 +214,11 @@ CAPTCHAs, imitate a browser, or bypass paid or Club-only access.
 
 MakerWorld and Printables do not document the APIs these clients use, and the
 sites can change them without notice. The unit tests run against local fake
-sites; they do not show that the live sites still behave the same way.
+sites; they do not show that the live sites still behave the same way. On 25
+October 2026, search, model details and a file download succeeded against the
+live MakerWorld and Printables sites, and a MakerWorld sign-in completed with an
+authenticator secret and no code from the user. Thingiverse has not been checked
+against its live site.
 Printables search results do not say whether a model is paid. Downloading a paid
 model fails with `library_forbidden`. MakerWorld files that are not part of a
 print profile are not offered.
