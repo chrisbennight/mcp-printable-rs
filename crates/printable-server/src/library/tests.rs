@@ -202,10 +202,10 @@ async fn mount_printables_model(fixture: &Fixture, second_file_status: u16) {
             .and(path("/printables/graphql/"))
             .and(body_partial_json(json!({
                 "operationName": "GetDownloadLink",
-                "variables": {"files": [{"fileType": "stl", "ids": [id]}]}
+                "variables": {"fileType": "stl", "ids": [id]}
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"getDownloadLink": {
-                "ok": true, "output": {"files": [{"id": id, "link": format!("{}/files/{id}.stl", fixture.files.uri())}]}
+                "ok": true, "output": {"link": format!("{}/files/{id}.stl", fixture.files.uri())}
             }}})))
             .mount(&fixture.site)
             .await;

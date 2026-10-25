@@ -119,12 +119,14 @@ async fn printables_files_download_through_a_link_without_credentials() {
         .and(body_partial_json(json!({
             "operationName": "GetDownloadLink",
             "variables": {"printId": "553277", "source": "model_detail",
-                          "files": [{"fileType": "stl", "ids": ["2351722"]}]}
+                          "fileType": "stl", "ids": ["2351722"]}
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"getDownloadLink": {
-            "ok": true, "errors": [],
-            "output": {"link": null, "files": [{"id": "2351722", "link": format!("{}/media/Tray.stl?sig=a%2Fb", files.uri())}]}
-        }}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"data": {"getDownloadLink": {
+                "ok": true, "errors": [],
+                "output": {"link": format!("{}/media/Tray.stl?sig=a%2Fb", files.uri()), "ttl": 600}
+            }}}),
+        ))
         .expect(1)
         .mount(&site)
         .await;

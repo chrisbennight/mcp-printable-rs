@@ -18,7 +18,7 @@ const MODEL_PAGE: &str = "https://www.printables.com/model/";
 
 const SEARCH: &str = "query SearchModels($query: String!, $limit: Int, $offset: Int, $ordering: SearchChoicesEnum) { result: searchPrints2(query: $query, limit: $limit, offset: $offset, ordering: $ordering, printType: print) { totalCount items { id name slug likesCount downloadCount user { handle publicUsername } image { filePath } license { name } } } }";
 const MODEL: &str = "query ModelFiles($id: ID!) { print(id: $id) { id name slug summary user { handle publicUsername } image { filePath } license { name abbreviation disallowRemixing } stls { id name fileSize folder note } gcodes { id name fileSize folder note } slas { id name fileSize folder note } otherFiles { id name fileSize folder note } } }";
-const DOWNLOAD: &str = "mutation GetDownloadLink($printId: ID!, $files: [DownloadFileInput], $source: DownloadSourceEnum!) { getDownloadLink(printId: $printId, files: $files, source: $source) { ok errors { field messages } output { link files { id link } } } }";
+const DOWNLOAD: &str = "mutation GetDownloadLink($printId: ID!, $fileType: DownloadFileTypeEnum!, $ids: [ID!]!, $source: DownloadSourceEnum!) { getDownloadLink(printId: $printId, files: [{fileType: $fileType, ids: $ids}], source: $source) { ok errors { field messages } output { link } } }";
 const NO_LINK: &str =
     "Printables issued no download link; the model may be paid, Club-only or require signing in";
 
@@ -151,14 +151,6 @@ struct LinkError {
 
 #[derive(Deserialize)]
 struct LinkOutput {
-    link: Option<String>,
-    #[serde(default)]
-    files: Vec<FileLink>,
-}
-
-#[derive(Deserialize)]
-struct FileLink {
-    id: wire::Id,
     link: Option<String>,
 }
 
@@ -305,7 +297,8 @@ pub(crate) async fn file_url(
         json!({
             "printId": model.model_id,
             "source": "model_detail",
-            "files": [{"fileType": kind, "ids": [id]}],
+            "fileType": kind,
+            "ids": [id],
         }),
     )
     .await?;
@@ -324,13 +317,7 @@ pub(crate) async fn file_url(
         return Err(refused(&link.errors));
     }
     let output = link.output.ok_or_else(|| refused(&link.errors))?;
-    let location = output
-        .files
-        .into_iter()
-        .find(|candidate| candidate.id.0 == id)
-        .and_then(|candidate| candidate.link)
-        .or(output.link)
-        .ok_or_else(|| refused(&[]))?;
+    let location = output.link.ok_or_else(|| refused(&[]))?;
     Url::parse(&location).map_err(|_| LibraryError::IncompatibleResponse { site: SITE })
 }
 
