@@ -61,7 +61,7 @@ class BundledSkillScopeTests(unittest.TestCase):
 
             git("init", "-b", "main")
             worker = root / name
-            worker.parent.mkdir(parents=True)
+            worker.parent.mkdir(parents=True, exist_ok=True)
             worker.write_text("original = True\n")
             git("add", name)
             git("commit", "-m", "Base")
@@ -81,6 +81,11 @@ class BundledSkillScopeTests(unittest.TestCase):
 
     def test_reconstruction_worker_edits_select_images_and_publication(self):
         scope = self.scope_for_changed_input("recon/reconstruct.py")
+        self.assertEqual(scope["images"], "true")
+        self.assertEqual(scope["publish"], "true")
+
+    def test_image_set_definition_edits_select_images_and_publication(self):
+        scope = self.scope_for_changed_input("docker-bake.hcl")
         self.assertEqual(scope["images"], "true")
         self.assertEqual(scope["publish"], "true")
 

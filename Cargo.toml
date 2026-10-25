@@ -20,3 +20,15 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/chrisbennight/mcp-printable-rs"
+
+# Mesh numerics in the geometry and head-model crates, and in dependencies such
+# as manifold3d and parry, dominate test time when unoptimized. Optimizing them
+# keeps debug assertions, overflow checks and debug info.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.printable-geom]
+opt-level = 2
+
+[profile.dev.package.printable-flame]
+opt-level = 2

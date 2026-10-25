@@ -37,12 +37,26 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
+# An optional absolute host directory, writable by uid 10001, keeps compiled
+# software shaders between Blender containers and runs.
+shader_cache=()
+if [ -n "${PRINTABLE_SMOKE_SHADER_CACHE:-}" ]; then
+  case "$PRINTABLE_SMOKE_SHADER_CACHE" in
+    /*) ;;
+    *) echo "PRINTABLE_SMOKE_SHADER_CACHE must be an absolute path" >&2; exit 2 ;;
+  esac
+  shader_cache=(--volume "${PRINTABLE_SMOKE_SHADER_CACHE}:/var/cache/mesa"
+    -e MESA_SHADER_CACHE_DIR=/var/cache/mesa)
+fi
+
 docker network create --internal "$network" >/dev/null
 docker volume create "$workspace" >/dev/null
 docker run --rm --platform linux/amd64 --user 0:0 \
   --entrypoint /bin/sh --volume "$workspace:/workspace" \
   "$server_ref" -c 'chown 10001:10001 /workspace'
 
+# Both Blender roles render one EEVEE sample: this smoke checks the paired
+# workflow contracts, not image quality.
 docker run -d --name "$blender_name" --platform linux/amd64 \
   --network "$network" --network-alias printable-blender \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
@@ -51,8 +65,10 @@ docker run -d --name "$blender_name" --platform linux/amd64 \
   --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
   --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
   --volume "$workspace:/workspace" \
+  ${shader_cache[@]+"${shader_cache[@]}"} \
   -e PRINTABLE_BLENDER_MODE=ui \
   -e PRINTABLE_BLENDER_UI_BACKEND=software \
+  -e PRINTABLE_BLENDER_EEVEE_SAMPLES=1 \
   "$blender_ref" >/dev/null
 
 wait_healthy() {
@@ -74,18 +90,15 @@ wait_healthy() {
 }
 
 wait_healthy "$blender_name"
+# smoke-blender-cpu covers the bridge capabilities directly; the paired run
+# needs only a saved scene that the server restores through its public tool.
 if ! docker exec "$blender_name" python3 \
   /opt/printable/addon/integration_smoke.py \
-  --host 127.0.0.1 --mode capabilities; then
+  --host 127.0.0.1 --mode durable-fixture; then
   docker logs "$blender_name" || true
   exit 1
 fi
 docker exec "$blender_name" test -s /workspace/smoke/scene.blend
-# The direct bridge probe owns this fixed job id and intentionally exercises
-# reserved mechanical-analysis output. Remove only that probe-owned subtree
-# before the server performs durable recovery inspection on the new volume.
-docker exec "$blender_name" rm -rf -- /workspace/.printable/jobs/smoke
-docker exec "$blender_name" test ! -e /workspace/.printable/jobs/smoke
 
 docker run -d --name "$worker_name" --platform linux/amd64 \
   --network "$network" --network-alias printable-render-worker \
@@ -95,8 +108,10 @@ docker run -d --name "$worker_name" --platform linux/amd64 \
   --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
   --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
   --volume "$workspace:/workspace" \
+  ${shader_cache[@]+"${shader_cache[@]}"} \
   -e PRINTABLE_BLENDER_ROLE=render_worker \
   -e PRINTABLE_BLENDER_MODE=background \
+  -e PRINTABLE_BLENDER_EEVEE_SAMPLES=1 \
   "$blender_ref" >/dev/null
 wait_healthy "$worker_name"
 

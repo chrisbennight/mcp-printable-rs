@@ -2,12 +2,14 @@
 
 ARG SOURCE_REVISION=unknown
 
-# Builder: compile printable-server against the pinned toolchain. The whole
-# workspace is copied because cargo must parse every member to build one crate
-# (`-p printable-server`); `.dockerignore` keeps the context lean. manifold3d
-# compiles its C++ library from source on first build, so the builder needs
-# cmake + a C++ toolchain + git (the same deps the CI installs).
-FROM rust:1.97-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f AS build
+# Builder: compile printable-server against the pinned toolchain. Every
+# workspace member is copied because cargo must parse each one to build one
+# crate, along with the files outside crates/ that the sources embed. Nothing
+# else enters this stage, so add-on, worker-script and documentation edits
+# reuse the compiled binaries. manifold3d compiles its C++ library from source
+# on first build, so the builder needs cmake + a C++ toolchain + git (the same
+# deps the CI installs).
+FROM rust:1.97-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f AS rust-tools
 WORKDIR /app
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake g++ git curl xz-utils \
@@ -19,6 +21,23 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
  && tar -xJf /tmp/cargo-auditable.tar.xz --strip-components=1 -C /usr/local/bin \
       cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable \
  && rm /tmp/cargo-auditable.tar.xz
+# cargo-chef reduces the workspace manifests to a recipe, so dependencies
+# compile in their own layer and stay reusable while only workspace sources
+# change.
+RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output /tmp/cargo-chef.tar.xz \
+      https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.78/cargo-chef-x86_64-unknown-linux-gnu.tar.xz \
+ && echo '70ef940ef90d04d122f0176fdb8d6c39069191b484a1eaa29b327370c2e1c3c0  /tmp/cargo-chef.tar.xz' | sha256sum --check --strict \
+ && tar -xJf /tmp/cargo-chef.tar.xz --strip-components=1 -C /usr/local/bin \
+      cargo-chef-x86_64-unknown-linux-gnu/cargo-chef \
+ && rm /tmp/cargo-chef.tar.xz
+
+FROM rust-tools AS recipe
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM rust-tools AS build
 
 # Where crates come from. Cargo reads no environment variable for a mirror, so
 # unlike pip or npm it cannot simply be told: the redirect has to be a config
@@ -33,18 +52,23 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
 # network the proxy lives on.
 ARG CRATES_INDEX_URL
 
-COPY . .
-
 # Source replacement rather than an additional registry: it redirects the
 # existing crates.io source instead of introducing a second one, so Cargo.lock
 # goes on naming crates-io and stays resolvable from the public index. Written
-# after COPY so the build context cannot overwrite it, and appended so anything
-# the context already carries survives.
+# before dependencies are fetched; the copied paths never include .cargo.
 RUN if [ -n "${CRATES_INDEX_URL}" ]; then \
       mkdir -p .cargo && \
       printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
         "${CRATES_INDEX_URL}" >> .cargo/config.toml; \
     fi
+COPY --from=recipe /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
+
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
+COPY skills skills
+COPY acceptance/products acceptance/products
+COPY smoke/expected-tools.txt smoke/expected-tools.txt
 RUN cargo auditable build --release --locked --bin printable-server --bin printable-geometry-worker --bin printable-cad-worker --bin printable-slicer-worker --bin printable-recon-worker
 RUN strip target/release/printable-server target/release/printable-geometry-worker || true
 
@@ -58,8 +82,6 @@ FROM scratch AS smoke-export
 COPY --from=smoke-build /app/target/release/printable-smoke /printable-smoke
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS slicer-runtime
-ARG SOURCE_REVISION
-ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
@@ -74,6 +96,9 @@ COPY release/notices/orca /opt/orca/licenses
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
 ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
+# Declared here so the per-commit revision leaves earlier layers cacheable.
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="slicer-worker"
@@ -84,8 +109,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-slicer-worker"]
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cad-runtime
-ARG SOURCE_REVISION
-ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libgl1 libxrender1 libglib2.0-0 libgomp1 tini ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
@@ -96,6 +119,9 @@ COPY cad/build.py cad/step.py /opt/printable/cad/
 COPY --from=build /app/target/release/printable-cad-worker /usr/local/bin/printable-cad-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+# Declared here so the per-commit revision leaves earlier layers cacheable.
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="cad-worker"
@@ -145,8 +171,6 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
  && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
-ARG SOURCE_REVISION
-ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
@@ -185,6 +209,9 @@ COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/prin
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+# Declared here so the per-commit revision leaves earlier layers cacheable.
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.printable.role="recon-worker"

@@ -2757,9 +2757,19 @@ async fn delivered_mutation_failures_validate_without_automatic_replay() {
         })
         .await;
         let tmp = tempfile::tempdir().unwrap();
+        // The hanging fake would otherwise hold the call for the full default
+        // transport allowance before the timeout outcome is observable.
+        let blender = BlenderClient::new(
+            fake.host(),
+            fake.port(),
+            ClientOptions {
+                default_budget: std::time::Duration::from_secs(1),
+                ..ClientOptions::default()
+            },
+        );
         let server = PrintableServer::new(
             workspace(Some(tmp.path())),
-            Arc::new(client(&fake.host(), fake.port())),
+            Arc::new(blender),
             Arc::new(settings(&fake.host(), fake.port())),
         );
         let result = server
