@@ -95,6 +95,8 @@ pub enum LibraryError {
     Unavailable { site: Site },
     #[error("{site} returned a response this client does not understand")]
     IncompatibleResponse { site: Site },
+    #[error("{site} rejected this client's request: {reason}")]
+    RequestRejected { site: Site, reason: String },
     #[error("{site} returned a response larger than this client accepts")]
     ResponseTooLarge { site: Site },
     #[error("the file is larger than the configured limit of {limit} bytes")]

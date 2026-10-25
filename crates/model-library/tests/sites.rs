@@ -123,7 +123,7 @@ async fn printables_files_download_through_a_link_without_credentials() {
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(
             json!({"data": {"getDownloadLink": {
-                "ok": true, "errors": [],
+                "ok": true, "errors": null,
                 "output": {"link": format!("{}/media/Tray.stl?sig=a%2Fb", files.uri()), "ttl": 600}
             }}}),
         ))
@@ -690,7 +690,7 @@ async fn a_file_host_cannot_redirect_the_token_back_to_the_api() {
 }
 
 #[tokio::test]
-async fn printables_field_errors_are_refusals_and_missing_data_is_incompatible() {
+async fn printables_field_errors_are_refusals_and_rejected_requests_give_the_site_reason() {
     let site = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(
@@ -711,6 +711,22 @@ async fn printables_field_errors_are_refusals_and_missing_data_is_incompatible()
         })))
         .mount(&site)
         .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"operationName": "ModelFiles", "variables": {"id": "3"}}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "errors": [{"message": "Unknown type \"DownloadFileInput\""}]
+        })))
+        .mount(&site)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"operationName": "ModelFiles", "variables": {"id": "4"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"errors": null})))
+        .mount(&site)
+        .await;
     let client = client(&site, Credentials::default());
     assert_eq!(
         client.model(Site::Printables, "1").await.unwrap_err(),
@@ -721,6 +737,20 @@ async fn printables_field_errors_are_refusals_and_missing_data_is_incompatible()
     );
     assert_eq!(
         client.model(Site::Printables, "2").await.unwrap_err(),
+        LibraryError::RequestRejected {
+            site: Site::Printables,
+            reason: "Cannot query field \"summary\"".into()
+        }
+    );
+    assert_eq!(
+        client.model(Site::Printables, "3").await.unwrap_err(),
+        LibraryError::RequestRejected {
+            site: Site::Printables,
+            reason: "Unknown type \"DownloadFileInput\"".into()
+        }
+    );
+    assert_eq!(
+        client.model(Site::Printables, "4").await.unwrap_err(),
         LibraryError::IncompatibleResponse {
             site: Site::Printables
         }

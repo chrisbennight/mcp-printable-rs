@@ -607,17 +607,25 @@ pub(crate) fn classify(
         },
         StatusCode::NOT_FOUND | StatusCode::GONE => LibraryError::NotFound { site },
         StatusCode::TOO_MANY_REQUESTS => LibraryError::RateLimited { site },
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => match refusal_reason(body) {
+            Some(reason) => LibraryError::RequestRejected { site, reason },
+            None => LibraryError::IncompatibleResponse { site },
+        },
         status if status.is_server_error() => LibraryError::Unavailable { site },
         _ => LibraryError::IncompatibleResponse { site },
     }
 }
 
-/// The first non-empty message field of a JSON error body.
+/// The first non-empty message field of a JSON error body, including the
+/// first message of a GraphQL `errors` list.
 fn refusal_reason(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let graphql = value.pointer("/errors/0/message");
     ["error", "message", "detail", "msg"]
         .iter()
-        .filter_map(|key| value.get(key)?.as_str())
+        .filter_map(|key| value.get(key))
+        .chain(graphql)
+        .filter_map(serde_json::Value::as_str)
         .map(|reason| text::bounded(reason, text::REASON_TEXT))
         .find(|reason| !reason.is_empty())
 }
@@ -822,6 +830,27 @@ mod tests {
         assert_eq!(
             classified(StatusCode::BAD_GATEWAY, Credential::Missing, false, b""),
             LibraryError::Unavailable { site }
+        );
+        assert_eq!(
+            classified(
+                StatusCode::BAD_REQUEST,
+                Credential::NotApplicable,
+                false,
+                br#"{"errors":[{"message":"Unknown argument \"files\""}]}"#
+            ),
+            LibraryError::RequestRejected {
+                site,
+                reason: "Unknown argument \"files\"".into()
+            }
+        );
+        assert_eq!(
+            classified(
+                StatusCode::BAD_REQUEST,
+                Credential::Missing,
+                false,
+                b"<html>"
+            ),
+            LibraryError::IncompatibleResponse { site }
         );
     }
 

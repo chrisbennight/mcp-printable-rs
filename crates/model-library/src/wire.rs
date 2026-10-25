@@ -1,4 +1,4 @@
-//! Lenient decoding for values that sites send as either strings or numbers.
+//! Lenient decoding for values that sites send in more than one shape.
 
 use serde::{Deserialize, Deserializer, de};
 
@@ -43,6 +43,16 @@ pub(crate) fn count<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option
     )
 }
 
+/// A list sent as a JSON array, null or nothing at all; the last two mean
+/// empty. Use with `#[serde(default)]` so an absent field also decodes.
+pub(crate) fn list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Classify a file by its extension when the site does not say what it is.
 pub(crate) fn kind_for_name(name: &str) -> FileKind {
     let lower = name.to_ascii_lowercase();
@@ -83,6 +93,20 @@ mod tests {
         assert!(serde_json::from_str::<Sample>(r#"{"id": "../x"}"#).is_err());
         let long = format!(r#"{{"id": "{}"}}"#, "a".repeat(65));
         assert!(serde_json::from_str::<Sample>(&long).is_err());
+    }
+
+    #[test]
+    fn lists_accept_null_and_absence_as_empty() {
+        #[derive(Deserialize)]
+        struct Listing {
+            #[serde(default, deserialize_with = "list")]
+            items: Vec<u8>,
+        }
+        let decode = |text| serde_json::from_str::<Listing>(text).unwrap().items;
+        assert_eq!(decode(r#"{"items": [1, 2]}"#), [1, 2]);
+        assert!(decode(r#"{"items": null}"#).is_empty());
+        assert!(decode("{}").is_empty());
+        assert!(serde_json::from_str::<Listing>(r#"{"items": "1"}"#).is_err());
     }
 
     #[test]
