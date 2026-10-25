@@ -94,6 +94,8 @@ class BridgeConfig:
     render_device: str
     enable_test_commands: bool
     role: str = "live"
+    # EEVEE samples for bridge renders; None keeps each scene's own setting.
+    eevee_samples: int | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> BridgeConfig:
@@ -121,6 +123,11 @@ class BridgeConfig:
             raise ConfigError("PRINTABLE_BLENDER_STATE_DIR must be absolute")
         if not workspace_root.is_absolute():
             raise ConfigError("PRINTABLE_BLENDER_WORKSPACE_ROOT must be absolute")
+        eevee_samples = (
+            _integer(values, "PRINTABLE_BLENDER_EEVEE_SAMPLES", 1, 1, 4096)
+            if "PRINTABLE_BLENDER_EEVEE_SAMPLES" in values
+            else None
+        )
 
         return cls(
             bind=bind,
@@ -157,6 +164,7 @@ class BridgeConfig:
             workspace_root=workspace_root,
             render_device=render_device,
             role=role,
+            eevee_samples=eevee_samples,
             enable_test_commands=values.get(
                 "PRINTABLE_BLENDER_ENABLE_TEST_COMMANDS", "false"
             ).lower()

@@ -20,12 +20,25 @@ cleanup() {
 }
 trap 'cleanup; rm -rf -- "$scratch"' EXIT
 
+# An optional absolute host directory, writable by uid 10001, keeps compiled
+# software shaders between Blender containers and runs.
+shader_cache=()
+if [ -n "${PRINTABLE_SMOKE_SHADER_CACHE:-}" ]; then
+  case "$PRINTABLE_SMOKE_SHADER_CACHE" in
+    /*) ;;
+    *) echo "PRINTABLE_SMOKE_SHADER_CACHE must be an absolute path" >&2; exit 2 ;;
+  esac
+  shader_cache=(--volume "${PRINTABLE_SMOKE_SHADER_CACHE}:/var/cache/mesa"
+    -e MESA_SHADER_CACHE_DIR=/var/cache/mesa)
+fi
+
 run_blender() {
   local container_name="$1"
   local request_timeout="${2:-120}"
   local heartbeat="${3:-1}"
   local shutdown_timeout="${4:-10}"
   local blender_mode="${5:-background}"
+  # One EEVEE sample: this smoke checks bridge contracts, not image quality.
   docker run -d --name "$container_name" --platform linux/amd64 \
     --read-only \
     --cap-drop ALL \
@@ -35,7 +48,9 @@ run_blender() {
     --tmpfs /home/printable:rw,uid=10001,gid=10001,mode=0750 \
     --tmpfs /run/printable-blender:rw,uid=10001,gid=10001,mode=0750 \
     --tmpfs /workspace:rw,uid=10001,gid=10001,mode=1770 \
+    ${shader_cache[@]+"${shader_cache[@]}"} \
     -e PRINTABLE_BLENDER_ENABLE_TEST_COMMANDS=true \
+    -e PRINTABLE_BLENDER_EEVEE_SAMPLES=1 \
     -e "PRINTABLE_BLENDER_MODE=${blender_mode}" \
     -e "PRINTABLE_BLENDER_REQUEST_TIMEOUT_SECONDS=${request_timeout}" \
     -e "PRINTABLE_BLENDER_HEARTBEAT_SECONDS=${heartbeat}" \

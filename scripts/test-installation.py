@@ -28,7 +28,10 @@ def main():
     parser.add_argument("--slicer-image", required=True)
     parser.add_argument("--evidence-dir", type=Path, help="new directory for verified artifacts and discovery evidence")
     parser.add_argument("--recovery", action="store_true", help="also test backup restore, damaged metadata, and bounded storage exhaustion")
+    parser.add_argument("--shader-cache", type=Path, help="existing directory, writable by uid 10001, that keeps compiled software shaders between Blender containers")
     args = parser.parse_args()
+    if args.shader_cache is not None and not args.shader_cache.is_dir():
+        parser.error("--shader-cache must name an existing directory")
     if args.evidence_dir is not None:
         args.evidence_dir.mkdir(mode=0o700)
     root = Path(__file__).resolve().parent.parent
@@ -59,6 +62,12 @@ def main():
         service = config["services"][name]
         service.pop("deploy")
         service["environment"]["PRINTABLE_BLENDER_RENDER_DEVICE"] = "CPU"
+        # Software rendering here checks workflow contracts, not image quality.
+        service["environment"]["PRINTABLE_BLENDER_EEVEE_SAMPLES"] = "1"
+        if args.shader_cache is not None:
+            service["environment"]["MESA_SHADER_CACHE_DIR"] = "/var/cache/mesa"
+            service["volumes"].append({"type": "bind", "source": str(args.shader_cache.resolve()),
+                                       "target": "/var/cache/mesa"})
     config["services"]["blender"]["environment"]["PRINTABLE_BLENDER_UI_BACKEND"] = "software"
     config["services"]["server"]["ports"][0]["published"] = "0"
     with tempfile.TemporaryDirectory(prefix=project) as directory:
