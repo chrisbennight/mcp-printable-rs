@@ -13,7 +13,8 @@ release coordinator is required.
 The container job saves the images it tested. The publication job loads those
 images and checks their IDs, source revision and runtime configuration. It scans
 them under the existing vulnerability policy before pushing anything. It does
-not rebuild the runtime images.
+not rebuild the runtime images. Main-branch builds do not read the Docker layer
+cache, so published images install current packages.
 
 The `release-security-scans` Actions artifact retains completed Grype reports,
 including when a finding blocks publication. Each report identifies its source
@@ -50,8 +51,9 @@ registry setting; preserve it when adding packages.
 
 ## SBOMs and attestations
 
-The container job runs pinned Syft against each tested image ID and retains its
-unmodified SPDX 2.3 document. Rust executables carry cargo-auditable dependency
+On a main-branch push, the container job runs pinned Syft against each tested
+image ID and retains its unmodified SPDX 2.3 document. Pull requests validate
+the component supplement without generating SBOMs. Rust executables carry cargo-auditable dependency
 metadata. The [component supplement](../release/components.json) records declared
 inputs that scanners can miss, such as bundled native programs, fonts and model
 assets. It identifies exact source and recipe locations; it does not establish

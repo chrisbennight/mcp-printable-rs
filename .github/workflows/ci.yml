@@ -25,6 +25,10 @@ jobs:
     name: Source checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Line tables keep file and line numbers in backtraces while making test
+      # binaries and the dependency cache much smaller.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,6 +48,11 @@ jobs:
       - name: Activate the repository Rust toolchain
         if: steps.scope.outputs.rust == 'true'
         run: rustup show active-toolchain
+      # Pull requests reuse dependencies that main compiled; only main stores them.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.scope.outputs.rust == 'true'
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Check Rust formatting
         if: steps.scope.outputs.rust == 'true'
         run: cargo fmt --all -- --check
@@ -167,28 +176,24 @@ jobs:
       - name: Verify private local files stay outside the build context
         if: steps.scope.outputs.images == 'true'
         run: scripts/test-build-context
-      - name: Build the server and matching external smoke driver
+      # One bake builds the whole set in parallel and compiles the shared Rust
+      # stage once. Pull requests reuse layers that main stored; main rebuilds
+      # without reading them, so published images carry fresh packages.
+      - name: Build the matching image set and external smoke driver
+        if: steps.scope.outputs.images == 'true'
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+          CACHE_MODE: ${{ github.event_name == 'pull_request' && 'read' || github.event_name == 'push' && 'write' || '' }}
+        with:
+          source: .
+          files: docker-bake.hcl
+      - name: Check the external smoke driver
+        if: steps.scope.outputs.images == 'true'
+        run: test -x target/release/printable-smoke
+      - name: Verify native CAD
         if: steps.scope.outputs.images == 'true'
         run: |
-          docker buildx build --platform linux/amd64 --load \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --tag printable-server:ci .
-          docker buildx build --platform linux/amd64 \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --target smoke-export --output type=local,dest=target/release .
-          test -x target/release/printable-smoke
-      - name: Build Blender
-        if: steps.scope.outputs.images == 'true'
-        run: |
-          docker buildx build --platform linux/amd64 --load \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --file blender/Dockerfile --tag printable-blender:ci .
-      - name: Build and verify native CAD
-        if: steps.scope.outputs.images == 'true'
-        run: |
-          docker buildx build --platform linux/amd64 --load \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --target cad-runtime --tag printable-cad:ci .
           # The Docker driver can resolve the runtime just loaded into the local image store.
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg CAD_IMAGE=printable-cad:ci \
@@ -198,12 +203,9 @@ jobs:
             --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
             --entrypoint /opt/cad/bin/python printable-cad-smoke:ci \
             /opt/printable/cad/smoke.py --worker
-      - name: Build and verify native slicing
+      - name: Verify native slicing
         if: steps.scope.outputs.images == 'true'
         run: |
-          docker buildx build --platform linux/amd64 --load \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --target slicer-runtime --tag printable-slicer:ci .
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg SLICER_IMAGE=printable-slicer:ci \
             --file slicer/Dockerfile.smoke --tag printable-slicer-smoke:ci .
@@ -212,12 +214,9 @@ jobs:
             --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
             --entrypoint /usr/bin/python3 printable-slicer-smoke:ci \
             /opt/printable/slicer-smoke.py
-      - name: Build and verify photo reconstruction
+      - name: Verify photo reconstruction
         if: steps.scope.outputs.images == 'true'
         run: |
-          docker buildx build --platform linux/amd64 --load \
-            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
-            --target recon-runtime --tag printable-recon:ci .
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg RECON_IMAGE=printable-recon:ci \
             --file recon/Dockerfile.smoke --tag printable-recon-smoke:ci .
@@ -228,9 +227,23 @@ jobs:
             --entrypoint /opt/recon/bin/python printable-recon-smoke:ci \
             -m unittest discover -s /opt/printable/recon/tests -v
           scripts/smoke-recon-worker printable-recon:ci
+      # Software rendering compiles every shader on first use. Main keeps the
+      # compiled shaders for later runs; Mesa ignores entries from another driver build.
+      - name: Restore compiled software shaders
+        if: steps.scope.outputs.images == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/software-shaders
+          key: software-shaders-${{ hashFiles('blender/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: software-shaders-${{ hashFiles('blender/Dockerfile') }}-
+      - name: Share compiled shaders with the Blender containers
+        if: steps.scope.outputs.images == 'true'
+        run: |
+          mkdir -p "${RUNNER_TEMP}/software-shaders"
+          sudo chown -R 10001:10001 "${RUNNER_TEMP}/software-shaders"
       - name: Exercise the independent installation and direct client
         if: steps.scope.outputs.images == 'true'
-        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recovery --evidence-dir target/installation-evidence
+        run: python3 scripts/test-installation.py printable-server:ci printable-blender:ci --cad-image printable-cad:ci --slicer-image printable-slicer:ci --recovery --evidence-dir target/installation-evidence --shader-cache "${RUNNER_TEMP}/software-shaders"
       - name: Retain discovery evidence
         if: steps.scope.outputs.images == 'true' && (always())
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -241,6 +254,8 @@ jobs:
           retention-days: 14
       - name: Check Blender capabilities and shutdown recovery
         if: steps.scope.outputs.images == 'true'
+        env:
+          PRINTABLE_SMOKE_SHADER_CACHE: ${{ runner.temp }}/software-shaders
         run: scripts/smoke-blender-cpu printable-blender:ci
       - name: Verify packaged license notices
         if: steps.scope.outputs.images == 'true'
@@ -249,15 +264,32 @@ jobs:
         if: steps.scope.outputs.images == 'true'
         env:
           PRINTABLE_PAIR_SMOKE_RUN_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
+          PRINTABLE_SMOKE_SHADER_CACHE: ${{ runner.temp }}/software-shaders
         run: |
           scripts/smoke-release-pair \
             printable-server:ci printable-blender:ci \
             target/release/printable-smoke smoke/expected-tools.txt
+      - name: Return compiled shaders to the runner
+        if: steps.scope.outputs.images == 'true' && (always())
+        run: |
+          if [ -d "${RUNNER_TEMP}/software-shaders" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/software-shaders"
+          fi
+      - name: Store compiled software shaders
+        if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/software-shaders
+          key: software-shaders-${{ hashFiles('blender/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Verify and record tested image IDs
         if: steps.scope.outputs.images == 'true'
         run: python3 scripts/publish_images.py record "$GITHUB_SHA" target/release/image-ids.json
+      # Pull requests check the declared supplement; SBOMs are publication evidence.
+      - name: Validate the declared component supplement
+        if: steps.scope.outputs.images == 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: PYTHONPATH=scripts python3 -c 'import sys; from release_evidence import supplement; supplement(sys.argv[1])' "$GITHUB_SHA"
       - name: Install the pinned SBOM generator
-        if: steps.scope.outputs.images == 'true'
+        if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
           SYFT_VERSION: "1.54.1"
           SYFT_CHECKSUM: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
@@ -270,18 +302,18 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "$RUNNER_TEMP" syft
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Generate standard SBOMs for tested images
-        if: steps.scope.outputs.images == 'true'
+        if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: python3 scripts/release_evidence.py "$GITHUB_SHA" target/release/image-ids.json target/release/evidence
       - name: Save tested images
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
-          docker save printable-server:ci printable-blender:ci printable-cad:ci printable-slicer:ci printable-recon:ci | gzip -1 > target/release/images.tar.gz
+          docker save printable-server:ci printable-blender:ci printable-cad:ci printable-slicer:ci printable-recon:ci | zstd -T0 -3 -q -o target/release/images.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         with:
           name: tested-images
           path: |
-            target/release/images.tar.gz
+            target/release/images.tar.zst
             target/release/image-ids.json
             target/release/evidence
           compression-level: 0
@@ -320,7 +352,7 @@ jobs:
           GRYPE_VERSION: "0.110.0"
           GRYPE_CHECKSUM: aaa98d27d2d7efd9317c6a1ad6d9b15f3e65bab320e7d03bde41e251387bb71c
         run: |
-          docker load --input target/release/images.tar.gz
+          zstd -dc target/release/images.tar.zst | docker load
           curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --connect-timeout 10 --max-time 120 \
             --output "${RUNNER_TEMP}/grype.tar.gz" \
