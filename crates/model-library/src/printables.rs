@@ -25,7 +25,7 @@ const NO_LINK: &str =
 #[derive(Deserialize)]
 struct Response<T> {
     data: Option<T>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     errors: Vec<GraphQlError>,
 }
 
@@ -64,7 +64,7 @@ struct SearchData {
 struct SearchResult {
     #[serde(default, deserialize_with = "wire::count")]
     total_count: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     items: Vec<Print>,
 }
 
@@ -87,13 +87,13 @@ struct Print {
     user: Option<User>,
     image: Option<Image>,
     license: Option<PrintLicense>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     stls: Vec<PrintFile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     gcodes: Vec<PrintFile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     slas: Vec<PrintFile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     other_files: Vec<PrintFile>,
 }
 
@@ -138,14 +138,14 @@ struct LinkData {
 #[derive(Deserialize)]
 struct Link {
     ok: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     errors: Vec<LinkError>,
     output: Option<LinkOutput>,
 }
 
 #[derive(Deserialize)]
 struct LinkError {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wire::list")]
     messages: Vec<String>,
 }
 
@@ -154,8 +154,8 @@ struct LinkOutput {
     link: Option<String>,
 }
 
-/// Send one GraphQL operation. A response without `data` means the request
-/// itself was not understood, which this client reports as incompatible.
+/// Send one GraphQL operation. A response without `data` means the site
+/// refused the request itself; its first error message says why.
 async fn query<T: serde::de::DeserializeOwned>(
     client: &Client,
     operation: &str,
@@ -171,9 +171,12 @@ async fn query<T: serde::de::DeserializeOwned>(
         .filter_map(|error| error.message.as_deref())
         .map(|message| text::bounded(message, text::REASON_TEXT))
         .find(|message| !message.is_empty());
-    let data = response
-        .data
-        .ok_or(LibraryError::IncompatibleResponse { site: SITE })?;
+    let Some(data) = response.data else {
+        return Err(match error {
+            Some(reason) => LibraryError::RequestRejected { site: SITE, reason },
+            None => LibraryError::IncompatibleResponse { site: SITE },
+        });
+    };
     Ok(Answer { data, error })
 }
 

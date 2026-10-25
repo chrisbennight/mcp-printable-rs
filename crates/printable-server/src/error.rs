@@ -129,9 +129,9 @@ fn library_code(error: &model_library::LibraryError) -> &'static str {
         LibraryError::Unavailable { .. } | LibraryError::Interrupted { .. } => {
             "library_unavailable"
         }
-        LibraryError::IncompatibleResponse { .. } | LibraryError::ResponseTooLarge { .. } => {
-            "library_incompatible"
-        }
+        LibraryError::IncompatibleResponse { .. }
+        | LibraryError::RequestRejected { .. }
+        | LibraryError::ResponseTooLarge { .. } => "library_incompatible",
         LibraryError::FileTooLarge { .. } => "library_file_too_large",
         LibraryError::DisallowedHost { .. } => "library_disallowed_host",
         LibraryError::SignInRejected { .. } | LibraryError::SignInCodeExpired { .. } => {

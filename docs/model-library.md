@@ -197,7 +197,7 @@ secrets.
 | `library_challenged` | The site asked for a CAPTCHA; wait before trying again, or download the file in a browser and upload it with `artifact` |
 | `library_rate_limited` | The site is limiting requests; wait before trying again |
 | `library_unavailable` | The site could not be reached, failed, or the transfer was interrupted |
-| `library_incompatible` | The site returned a response this version does not understand, or a response over the size limit |
+| `library_incompatible` | The site rejected this version's request, with the site's reason when it gives one, or returned a response this version does not understand or that exceeds the size limit |
 | `library_file_too_large` | The file exceeds `PRINTABLE_FILE_UPLOAD_MAX_MIB` |
 | `library_disallowed_host` | A download redirected outside the site's file hosts |
 | `library_incomplete` | Committing failed after some files were saved |
