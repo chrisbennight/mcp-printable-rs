@@ -102,7 +102,17 @@ with tempfile.TemporaryDirectory() as directory:
         assert readiness["state"] == "ready"
         assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.4.2"
         assert all(count > 0 for count in readiness["profile_counts"].values())
+        vendor = request("profiles", {"category": "filament", "query": "Polymaker",
+                                      "printer": "Bambu Lab X1 Carbon 0.4 nozzle"})
+        assert vendor["total"] > 0, "vendor subfolder profiles are missing"
+        library_child = request("settings", {"category": "filament", "profile": {"name": "AliZ PLA @P1-X1"},
+                                             "query": "nozzle_temperature"})
+        assert any(row["value"] for row in library_child["settings"]), "shared library parent did not resolve"
+        hidden = request("settings", {"category": "process", "profile": {"name": "0.20mm Standard @BBL X1C"},
+                                      "query": "brim_type"})
+        assert any(row["key"] == "brim_type" and row["overrideable"] for row in hidden["settings"])
         handles = []
+        colours = {"a1": "#0A2CE3", "x1c-reslice": "#C12E1F"}
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
                                         ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
@@ -111,11 +121,18 @@ with tempfile.TemporaryDirectory() as directory:
             inspected = request("settings", {"category": "filament", "profile": {"name": f"Bambu PLA Basic @BBL {suffix}"}, "query": "plate_temp"})
             assert any(row["key"] == "hot_plate_temp" for row in inspected["settings"])
             handle = {"project_id": "native-slice", "output_dir": model}
+            process = {"name": f"0.20mm Standard @BBL {suffix}"}
+            filament = {"name": f"Bambu PLA Basic @BBL {suffix}"}
+            if model == "a1":
+                process["overrides"] = {"brim_type": "no_brim"}
+                filament["overrides"] = {"pressure_advance": ["0.031"]}
+            if model in colours:
+                filament["colour"] = colours[model]
             state = request("prepare", {**handle, "source": "x1c/model.gcode.3mf" if model == "x1c-reslice" else "source.stl",
                 "build_plate": "High Temp Plate" if model == "x1c" else "Textured PEI Plate",
                 "printer": {"name": printer},
-                "process": {"name": f"0.20mm Standard @BBL {suffix}"},
-                "filaments": [{"name": f"Bambu PLA Basic @BBL {suffix}"}],
+                "process": process,
+                "filaments": [filament],
                 "auto_arrange": True, "timeout_seconds": 300})
             deadline = time.monotonic() + 360
             while state["status"] == "running" and time.monotonic() < deadline:
@@ -131,6 +148,14 @@ with tempfile.TemporaryDirectory() as directory:
             assert f'; curr_bed_type = {state["setup"]["build_plate"]}' in gcode
             temperature = state["setup"]["filaments"][0]["bed_temperature_initial_layer"][0]
             assert f"M190 S{temperature}" in gcode or f"M140 S{temperature}" in gcode
+            if model == "a1":
+                assert "; brim_type = no_brim" in gcode, "process override did not reach Orca"
+                assert "; pressure_advance = 0.031" in gcode, "filament override did not reach Orca"
+            if model in colours:
+                assert f"; filament_colour = {colours[model]}" in gcode, "slot colour did not reach the G-code"
+                with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
+                    project_settings = json.loads(package.read("Metadata/project_settings.config"))
+                assert project_settings["filament_colour"][0].upper() == colours[model], project_settings["filament_colour"]
             verify_package(project / model / "model.gcode.3mf")
             review = request("review", {"slice": handle, "toolpath": toolpath, "first_layer": 1, "last_layer": 1})
             assert review["kind"] == "actual_toolpath" and review["segments"] > 0
@@ -145,7 +170,8 @@ with tempfile.TemporaryDirectory() as directory:
         worker = start()
         for handle in handles:
             assert request("status", handle)["status"] == "completed"
-        print("Native A1/X1C slices, package thumbnails, actual toolpath images, and restart recovery passed")
+        print("Native A1/X1C slices, overrides, slot colours, vendor profiles, package thumbnails, "
+              "actual toolpath images, and restart recovery passed")
     finally:
         worker.terminate()
         worker.wait(timeout=10)

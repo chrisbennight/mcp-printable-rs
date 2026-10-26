@@ -57,9 +57,12 @@ fn fixture(root: &Path, delay: bool) -> Arc<SliceWorker> {
     .unwrap();
     let binary = root.join("fake-slicer");
     let script = if delay {
-        "#!/usr/bin/python3\nimport sys,time\nwith open(sys.argv[sys.argv.index('--pipe')+1], 'w') as progress:\n progress.write('{\"message\":\"Generating supports\",\"total_percent\":25,\"plate_percent\":30,\"plate_index\":1,\"plate_count\":1}\\n')\n progress.flush()\n time.sleep(60)\n"
+        "#!/usr/bin/python3\nimport sys,time\nwith open(sys.argv[sys.argv.index('--pipe')+1], 'w') as progress:\n progress.write('{\"message\":\"Generating supports\",\"total_percent\":25,\"plate_percent\":30,\"plate_index\":1,\"plate_count\":1}\\n')\n progress.flush()\n time.sleep(60)\n".to_owned()
     } else {
-        "#!/usr/bin/python3\nimport sys,pathlib\np=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])\n(p/'model.gcode.3mf').write_bytes(b'fake3mf')\n(p/'plate_1.gcode').write_text('M83\\n; CHANGE_LAYER\\n; FEATURE: Outer wall\\nG1 X10 E1\\n')\n"
+        format!(
+            "#!/usr/bin/python3\nimport json,sys,pathlib\npathlib.Path({:?}).write_text(json.dumps(sys.argv))\np=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])\n(p/'model.gcode.3mf').write_bytes(b'fake3mf')\n(p/'plate_1.gcode').write_text('M83\\n; CHANGE_LAYER\\n; FEATURE: Outer wall\\nG1 X10 E1\\n')\n",
+            root.join("slicer-argv.json").to_str().unwrap()
+        )
     };
     std::fs::write(&binary, script).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -171,6 +174,71 @@ async fn large_material_selection_and_work_budget_reach_the_native_worker() {
         .await
         .expect("native admission accepts caller budgets");
     assert_eq!(terminal(&worker).await["status"], "completed");
+}
+
+#[tokio::test]
+async fn slot_colours_reach_the_native_slicer_and_invalid_colours_change_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    let argv = || -> Vec<String> {
+        serde_json::from_slice(&std::fs::read(directory.path().join("slicer-argv.json")).unwrap())
+            .unwrap()
+    };
+    worker.prepare(params()).await.unwrap();
+    assert_eq!(terminal(&worker).await["status"], "completed");
+    assert!(!argv().contains(&"--filament-colour".to_owned()));
+
+    let mut coloured = params();
+    coloured.output_dir = "coloured".into();
+    coloured.filaments.push(coloured.filaments[0].clone());
+    coloured.filaments[1].colour = Some("c12e1fff".into());
+    worker.prepare(coloured).await.unwrap();
+    let state = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = worker
+                .status(
+                    SliceHandle {
+                        project_id: "part".into(),
+                        output_dir: "coloured".into(),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+            if state["status"] != "running" {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(state["status"], "completed", "{state}");
+    assert_eq!(state["setup"]["filaments"][0]["colour"], Value::Null);
+    assert_eq!(state["setup"]["filaments"][1]["colour"], "#C12E1FFF");
+    let arguments = argv();
+    let flag = arguments
+        .iter()
+        .position(|arg| arg == "--filament-colour")
+        .unwrap();
+    assert_eq!(arguments[flag + 1], ";#C12E1FFF");
+    let (_, settings) = worker
+        .workspace
+        .read_generated_bytes("projects/part/coloured/settings.json")
+        .unwrap();
+    let settings: Value = serde_json::from_slice(&settings).unwrap();
+    assert_eq!(settings["filament_colours"], json!([null, "#C12E1FFF"]));
+
+    let mut invalid = params();
+    invalid.output_dir = "invalid".into();
+    invalid.filaments[0].colour = Some("blue".into());
+    assert!(worker.prepare(invalid).await.is_err());
+    assert!(
+        worker
+            .workspace
+            .read_generated_bytes("projects/part/invalid/state.json")
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -291,9 +359,10 @@ fn settings_discovery_and_surface_selection_use_profile_overrides() {
     request.filaments[0]
         .overrides
         .insert("hot_plate_temp_initial_layer".into(), json!(["60"]));
+    request.filaments[0].colour = Some("#0a2ce3".into());
     let query = profiles::SettingsQuery {
         category: Category::Filament,
-        profile: request.filaments[0].clone(),
+        profile: request.filaments[0].profile(),
         query: "hot_plate_temp".into(),
         offset: 0,
         limit: 1,
@@ -305,10 +374,12 @@ fn settings_discovery_and_surface_selection_use_profile_overrides() {
     assert_eq!(discovered["settings"][0]["overrideable"], true);
     let filament = worker
         .profiles
-        .resolve(Category::Filament, &request.filaments[0])
+        .resolve(Category::Filament, &request.filaments[0].profile())
         .unwrap();
-    let summary = setup::summary(&request, &json!({}), &json!({}), &[filament]);
+    let colours = [request.filaments[0].colour().unwrap()];
+    let summary = setup::summary(&request, &json!({}), &json!({}), &[filament], &colours);
     assert_eq!(summary["project_plate"], 1);
+    assert_eq!(summary["filaments"][0]["colour"], "#0A2CE3");
     assert_eq!(
         summary["filaments"][0]["bed_temperature_initial_layer"],
         json!(["60"])

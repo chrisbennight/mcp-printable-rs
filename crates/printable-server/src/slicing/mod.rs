@@ -8,7 +8,7 @@ mod tests;
 
 use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use printable_workspace::Workspace;
-use profiles::{Category, ProfileQuery, ProfileSelection, Profiles};
+use profiles::{Category, FilamentSelection, ProfileQuery, ProfileSelection, Profiles};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -74,7 +74,7 @@ pub struct PrepareParams {
     pub printer: ProfileSelection,
     pub process: ProfileSelection,
     /// Ordered material slots, matching the source plate's filament indices.
-    pub filaments: Vec<ProfileSelection>,
+    pub filaments: Vec<FilamentSelection>,
     /// Orca plate index, one-based; zero slices every plate.
     #[serde(default = "default_plate")]
     pub plate: u16,
@@ -337,7 +337,12 @@ impl SliceWorker {
         let filaments = params
             .filaments
             .iter()
-            .map(|x| self.profiles.resolve(Category::Filament, x))
+            .map(|x| self.profiles.resolve(Category::Filament, &x.profile()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let colours = params
+            .filaments
+            .iter()
+            .map(FilamentSelection::colour)
             .collect::<Result<Vec<_>, _>>()?;
         if !profiles::compatible(&process, &params.printer.name)
             || filaments
@@ -383,8 +388,9 @@ impl SliceWorker {
             &source_path_for_evidence,
             &source_hash,
         )?;
-        let summary = setup::summary(&params, &printer, &process, &filaments);
-        let settings = json!({"build_plate":params.build_plate,"printer":printer,"process":process,"filaments":filaments});
+        let summary = setup::summary(&params, &printer, &process, &filaments, &colours);
+        let settings = json!({"build_plate":params.build_plate,"printer":printer,"process":process,"filaments":filaments,
+            "filament_colours":colours});
         for (name, value) in [
             ("printer.json", &settings["printer"]),
             ("process.json", &settings["process"]),
@@ -443,7 +449,7 @@ impl SliceWorker {
         tokio::spawn(async move {
             let _permit = permit;
             let result = worker
-                .execute(&staging, &local_source, &params, &cancel)
+                .execute(&staging, &local_source, &params, &colours, &cancel)
                 .await;
             let mut active = worker.active.lock().await;
             let mut terminal = active
@@ -508,6 +514,7 @@ impl SliceWorker {
         staging_owner: &printable_workspace::ManagedScratch,
         source: &Path,
         params: &PrepareParams,
+        colours: &[Option<String>],
         cancel: &CancellationToken,
     ) -> Result<Value, ToolError> {
         use std::os::unix::process::CommandExt;
@@ -561,7 +568,18 @@ impl SliceWorker {
                 if params.auto_arrange { "1" } else { "0" },
                 "--orient",
                 if params.auto_orient { "1" } else { "0" },
-            ])
+            ]);
+        if colours.iter().any(Option::is_some) {
+            // Orca keeps the source colour for a slot whose entry is empty.
+            command.arg("--filament-colour").arg(
+                colours
+                    .iter()
+                    .map(|colour| colour.as_deref().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            );
+        }
+        command
             .arg(source)
             .current_dir(staging)
             .env_clear()
