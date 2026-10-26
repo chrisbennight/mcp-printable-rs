@@ -85,11 +85,14 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
+# Extracted modes depend on the AppImage runtime embedded in each build, so the
+# bundle is made readable and traversable for the unprivileged worker explicitly.
 RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-b08db1a/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-b08db1a.AppImage \
  && echo '27cedb3f138e13cddf542e24657961ded693b53f2c4cbadacb0cfe820dd19f26  /tmp/orca.AppImage' | sha256sum --check \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
  && rm -rf /opt/orca/resources/web \
+ && chmod -R u=rwX,go=rX /opt/orca \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
 COPY release/notices/orca /opt/orca/licenses
