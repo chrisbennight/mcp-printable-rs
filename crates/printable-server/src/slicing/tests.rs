@@ -174,6 +174,29 @@ async fn large_material_selection_and_work_budget_reach_the_native_worker() {
 }
 
 #[tokio::test]
+async fn native_refusals_and_crashes_are_reported_plainly() {
+    for (script, expected) in [
+        (
+            "#!/usr/bin/python3\nimport json,sys,pathlib\np=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])\n(p/'result.json').write_text(json.dumps({'return_code':-64,'error_string':'source.stl is too close to exclusion area'}))\nsys.exit(192)\n",
+            "OrcaSlicer refused the slice: source.stl is too close to exclusion area (return code -64)",
+        ),
+        (
+            "#!/usr/bin/python3\nimport os\nos._exit(139)\n",
+            "OrcaSlicer exited without reporting a result (exit status: 139), which usually means it crashed",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let worker = fixture(directory.path(), false);
+        std::fs::write(&worker.binary, script).unwrap();
+        worker.prepare(params()).await.unwrap();
+        let state = terminal(&worker).await;
+        assert_eq!(state["status"], "failed");
+        let error = state["error"].as_str().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[tokio::test]
 async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
     let directory = tempfile::tempdir().unwrap();
     let worker = fixture(directory.path(), false);

@@ -16,6 +16,7 @@ each slice's temporary staging directory. The worker's existing process-group
 cancellation and staging cleanup also cover the display process and runtime files.
 The native smoke checks A1/X1C slices and package re-slicing, including decodable,
 nonblank thumbnail relationships, retained geometry, G-code, and build-plate settings.
+It also slices for the two-nozzle H2D with two filaments loaded.
 
 Read `printable://contracts/slice/{action}` for exact request parameters.
 Use `profiles` to find printer, process and filament profiles, and `settings` to
@@ -35,6 +36,10 @@ do not submit the same operation again after a connection timeout. The worker
 admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
+
+A failed slice repeats OrcaSlicer's own message and return code when OrcaSlicer
+records a reason. A failed exit without a recorded reason is reported as a likely
+crash. `build-log.json` keeps OrcaSlicer's output in both cases.
 
 The caller's MCP client owns its end-to-end request deadline. Worker forwarding
 imposes no independent fixed HTTP timeout. A lost response or client deadline

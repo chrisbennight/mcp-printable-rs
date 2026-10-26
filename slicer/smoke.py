@@ -140,6 +140,27 @@ with tempfile.TemporaryDirectory() as directory:
             assert settings["printer"]["machine_start_gcode"]
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
+        # Two-nozzle printers group the loaded filaments between their nozzles.
+        # The bundled profiles set no filament colours, so this slice also checks
+        # that a colour list shorter than the filament count is handled.
+        handle = {"project_id": "native-slice", "output_dir": "h2d-two-filaments"}
+        state = request("prepare", {**handle, "source": "source.stl", "build_plate": "Textured PEI Plate",
+            "printer": {"name": "Bambu Lab H2D 0.4 nozzle"},
+            "process": {"name": "0.20mm Standard @BBL H2D"},
+            "filaments": [{"name": "Bambu PLA Basic @BBL H2D"}, {"name": "Bambu PETG HF @BBL H2D 0.4 nozzle"}],
+            "auto_arrange": True, "timeout_seconds": 300})
+        deadline = time.monotonic() + 360
+        while state["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.5)
+            state = request("status", handle)
+        if state["status"] != "completed":
+            log = project / handle["output_dir"] / "build-log.json"
+            raise RuntimeError(f"H2D slice failed: {state}; {log.read_text() if log.exists() else 'no log'}")
+        toolpath = next(name for name in state["artifacts"] if name.endswith(".gcode"))
+        gcode = (project / handle["output_dir"] / toolpath).read_text()
+        assert "; filament_type = PLA;PETG" in gcode, "both H2D filaments did not reach Orca"
+        handles.append(handle)
+        print("Native H2D two-filament slice passed")
         worker.terminate()
         worker.wait(timeout=10)
         worker = start()
