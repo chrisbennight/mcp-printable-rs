@@ -85,8 +85,8 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
-RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-6915edb/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-6915edb.AppImage \
- && echo 'eb46a67b37063cc5ccbe00c058b45cf5cd71e4c0c15e66a96ca2c0c89ca1da13  /tmp/orca.AppImage' | sha256sum --check \
+RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-b08db1a/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-b08db1a.AppImage \
+ && echo '27cedb3f138e13cddf542e24657961ded693b53f2c4cbadacb0cfe820dd19f26  /tmp/orca.AppImage' | sha256sum --check \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
  && rm -rf /opt/orca/resources/web \
