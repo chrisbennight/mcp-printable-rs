@@ -1,7 +1,7 @@
 {
  "engine": "OrcaSlicer",
  "engine_version": "2.4.2",
- "source_revision": "6915edbfae3746da236b22630ff75a2fa304b796",
+ "source_revision": "b08db1a4efc79abfbcfc05bcbd12005868f3b98f",
  "printer": [
   "adaptive_bed_mesh_margin",
   "auxiliary_fan",

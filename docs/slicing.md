@@ -5,10 +5,14 @@ the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
-The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-6915edb)
+The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-b08db1a)
 supports headless package thumbnails by fixing the CLI OpenGL context request and
-model initialization without a wx application. It retains the upstream 2.4.2 JSON
-profile format used by the worker.
+model initialization without a wx application. It also carries three upstream
+fixes from the 2.4.4 backports: bounds checks for per-filament settings lists
+shorter than the filament count, which crashed H2D slices with two or more
+filaments; bounds checks for tool-change lookups; and two buffer overflow fixes
+in the STL reader. It retains the upstream 2.4.2 JSON profile format used by the
+worker.
 
 The container's `orca-headless` wrapper provides Xvfb and Mesa software rendering
 without GPU passthrough. It creates a private runtime directory inside
@@ -16,6 +20,8 @@ each slice's temporary staging directory. The worker's existing process-group
 cancellation and staging cleanup also cover the display process and runtime files.
 The native smoke checks A1/X1C slices and package re-slicing, including decodable,
 nonblank thumbnail relationships, retained geometry, G-code, and build-plate settings.
+It also slices for the two-nozzle H2D with two filaments loaded, and checks
+process and filament overrides, slot colours and vendor subfolder profiles.
 
 Read `printable://contracts/slice/{action}` for exact request parameters.
 Use `profiles` to find printer, process and filament profiles, and `settings` to
@@ -38,7 +44,7 @@ these overrides:
 
 Override values are Orca strings or nonempty string arrays. The worker does not
 check them against Orca's allowed values; Orca rejects an invalid value when it
-slices, and `build-log.json` records the reason.
+slices, and the failed slice repeats Orca's reason.
 
 Each filament selection may also set `colour`, such as `#0A2CE3`. An AMS tray
 value such as `0A2CE3FF` is also accepted. Colours are recorded in the sliced
@@ -60,6 +66,10 @@ do not submit the same operation again after a connection timeout. The worker
 admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
+
+A failed slice repeats OrcaSlicer's own message and return code when OrcaSlicer
+records a reason. A failed exit without a recorded reason is reported as a likely
+crash. `build-log.json` keeps OrcaSlicer's output in both cases.
 
 The caller's MCP client owns its end-to-end request deadline. Worker forwarding
 imposes no independent fixed HTTP timeout. A lost response or client deadline
