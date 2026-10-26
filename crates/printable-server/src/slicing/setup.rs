@@ -67,6 +67,7 @@ pub fn summary(
     printer: &Value,
     process: &Value,
     filaments: &[Value],
+    colours: &[Option<String>],
 ) -> Value {
     let temperature = params.build_plate.temperature_key();
     let initial = format!("{temperature}_initial_layer");
@@ -77,6 +78,7 @@ pub fn summary(
         "process": select(process, &["name", "layer_height", "initial_layer_print_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "support_type", "support_on_build_plate_only", "brim_type"]),
         "filaments": filaments.iter().enumerate().map(|(slot, filament)| json!({
             "slice_material_index": slot,
+            "colour": colours.get(slot).cloned().flatten(),
             "profile": select(filament, &["name", "filament_type", "filament_vendor", "nozzle_temperature", "nozzle_temperature_initial_layer", "fan_min_speed", "fan_max_speed", "close_fan_the_first_x_layers"]),
             "bed_temperature": filament.get(temperature),
             "bed_temperature_initial_layer": filament.get(&initial),
