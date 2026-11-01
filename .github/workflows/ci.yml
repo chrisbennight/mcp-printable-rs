@@ -292,6 +292,20 @@ jobs:
       - name: Verify and record tested image IDs
         if: steps.scope.outputs.images == 'true'
         run: python3 scripts/publish_images.py record "$GITHUB_SHA" target/release/image-ids.json
+      - name: Install the release scanner for pull-request validation
+        if: steps.scope.outputs.images == 'true' && github.event_name == 'pull_request'
+        uses: ./.github/actions/setup-release-scanner
+      - name: Check tested images against release security policy before merge
+        if: steps.scope.outputs.images == 'true' && github.event_name == 'pull_request'
+        run: python3 scripts/publish_images.py scan "$GITHUB_SHA" target/release/image-ids.json
+      - name: Retain pull-request image security evidence
+        if: steps.scope.outputs.images == 'true' && github.event_name == 'pull_request' && always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dependency-security-scans
+          path: target/release/evidence/scans
+          if-no-files-found: warn
+          retention-days: 14
       # Pull requests check the declared supplement; SBOMs are publication evidence.
       - name: Validate the declared component supplement
         if: steps.scope.outputs.images == 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -355,19 +369,9 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           cache-binary: false
-      - name: Load tested images and install the scanner
-        env:
-          GRYPE_VERSION: "0.110.0"
-          GRYPE_CHECKSUM: aaa98d27d2d7efd9317c6a1ad6d9b15f3e65bab320e7d03bde41e251387bb71c
-        run: |
-          zstd -dc target/release/images.tar.zst | docker load
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --retry 3 --connect-timeout 10 --max-time 120 \
-            --output "${RUNNER_TEMP}/grype.tar.gz" \
-            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
-          printf '%s  %s\n' "$GRYPE_CHECKSUM" "${RUNNER_TEMP}/grype.tar.gz" | sha256sum --check --strict
-          tar -xzf "${RUNNER_TEMP}/grype.tar.gz" -C "$RUNNER_TEMP" grype
-          printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Load tested images
+        run: zstd -dc target/release/images.tar.zst | docker load
+      - uses: ./.github/actions/setup-release-scanner
       - name: Install the pinned attestation verifier
         env:
           GH_VERSION: "2.102.0"

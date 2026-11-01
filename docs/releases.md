@@ -13,8 +13,11 @@ release coordinator is required.
 The container job saves the images it tested. The publication job loads those
 images and checks their IDs, source revision and runtime configuration. It scans
 them under the existing vulnerability policy before pushing anything. It does
-not rebuild the runtime images. Main-branch builds do not read the Docker layer
-cache, so published images install current packages.
+not rebuild the runtime images. Pull-request container integration applies the
+same scanner, vulnerability policy and vendor-fix evidence to its tested image
+IDs before merge, without publishing or receiving publication credentials.
+Main-branch builds do not read the Docker layer cache, so published images
+install current packages.
 
 The `release-security-scans` Actions artifact retains completed Grype reports,
 including when a finding blocks publication. Each report identifies its source

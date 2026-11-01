@@ -20,7 +20,10 @@ does not establish coverage for that component.
 - Container integration builds the server, Blender, CAD, slicer and photo
   reconstruction images together from [docker-bake.hcl](../docker-bake.hcl)
   and exercises native geometry, slicing, notices, installation, recovery,
-  views and isolated rendering with software graphics.
+  views and isolated rendering with software graphics. On pull requests with image
+  inputs, it also scans the tested image IDs against the release security policy
+  before the check passes. The `dependency-security-scans` artifact retains the
+  reports and policy inputs, including completed scans from a rejected candidate.
 - On a main-branch push with image inputs, publication waits for every check,
   scans the tested images, and publishes them without rebuilding. See
   [releases](releases.md).
