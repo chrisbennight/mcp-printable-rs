@@ -80,7 +80,7 @@ class Client:
             result["Mcp-Session-Id"] = self.session
         return result
 
-    def rpc(self, method, params=None, notification=False):
+    def rpc(self, method, params=None, notification=False, timeout=180):
         self.sequence += 1
         request = {"jsonrpc": "2.0", "method": method}
         if params is not None:
@@ -88,7 +88,7 @@ class Client:
         if not notification:
             request["id"] = self.sequence
         with self.http.open(Request(self.url, data=json.dumps(request).encode(),
-                                    headers=self.headers()), timeout=180) as response:
+                                    headers=self.headers()), timeout=timeout) as response:
             if response.headers.get("Mcp-Session-Id"):
                 self.session = response.headers["Mcp-Session-Id"]
             if notification:
@@ -128,8 +128,9 @@ class Client:
             raise ValueError("MCP request failed; inspect service status before retrying mutations")
         return message["result"]
 
-    def call(self, name, arguments):
-        result = self.rpc("tools/call", {"name": name, "arguments": arguments})
+    def call(self, name, arguments, *, timeout=None):
+        options = {} if timeout is None else {"timeout": timeout}
+        result = self.rpc("tools/call", {"name": name, "arguments": arguments}, **options)
         if result.get("isError"):
             raise ValueError("Tool failed; inspect service status before retrying mutations")
         if "structuredContent" in result:
@@ -146,15 +147,18 @@ class Client:
             raise ValueError("CAD wait budget must be a positive finite number")
         deadline = time.monotonic() + timeout_seconds
         handle = {"project_id": project_id, "output_dir": output_dir}
+        def remaining_budget():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("CAD wait ended; query the same build handle. Native work was not cancelled or repeated.")
+            return remaining
         while True:
-            state = self.call("cad_build", {"action": "status", "params": handle})
+            state = self.call("cad_build", {"action": "status", "params": handle}, timeout=min(180, remaining_budget()))
+            remaining = remaining_budget()
             if state["status"] in {"completed", "failed", "cancelled", "interrupted"}:
                 return state
             if state["status"] not in {"admitted", "running"}:
                 raise ValueError("Unrecognized retained CAD state")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("CAD wait ended; query the same build handle. Native work was not cancelled or repeated.")
             time.sleep(min(1.0, remaining))
 
     def contracts(self, tool=None, action=None):

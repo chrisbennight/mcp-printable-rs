@@ -24,23 +24,28 @@ class DownloadTests(unittest.TestCase):
     def test_cad_wait_returns_terminal_evidence_without_resubmission(self):
         instance = object.__new__(client.Client)
         instance.call = Mock(side_effect=[{"status":"running"}, {"status":"failed", "available_artifacts":["evidence"]}])
-        with patch.object(client.time, "monotonic", side_effect=[0, 0.1]), patch.object(client.time, "sleep"):
+        with patch.object(client.time, "monotonic", side_effect=[0, 0.1, 0.2, 1.2, 1.3]), patch.object(client.time, "sleep"):
             result = instance.wait_cad("project", "builds/one", 10)
         self.assertEqual(result, {"status":"failed", "available_artifacts":["evidence"]})
         self.assertTrue(all(call.args == ("cad_build", {"action":"status", "params":{"project_id":"project", "output_dir":"builds/one"}})
                             for call in instance.call.call_args_list))
+        self.assertEqual([call.kwargs["timeout"] for call in instance.call.call_args_list], [9.9, 8.8])
 
     def test_cad_wait_deadline_does_not_cancel_native_work(self):
         instance = object.__new__(client.Client)
         instance.call = Mock(return_value={"status":"running"})
-        with patch.object(client.time, "monotonic", side_effect=[0, 2]):
+        with patch.object(client.time, "monotonic", side_effect=[0, 0.1, 0.2, 2]), patch.object(client.time, "sleep"):
             with self.assertRaisesRegex(TimeoutError, "not cancelled or repeated"):
                 instance.wait_cad("project", "builds/one", 1)
         self.assertEqual(instance.call.call_count, 1)
+        instance.call.return_value = {"status":"completed"}
+        with patch.object(client.time, "monotonic", side_effect=[0, 0.1, 2]):
+            with self.assertRaises(TimeoutError):
+                instance.wait_cad("project", "builds/one", 1)
         for budget in (0, -1, True, float("inf")):
             with self.assertRaises(ValueError):
                 instance.wait_cad("project", "builds/one", budget)
-        self.assertEqual(instance.call.call_count, 1)
+        self.assertEqual(instance.call.call_count, 2)
 
     def test_selected_contracts_do_not_request_the_full_catalog(self):
         instance = object.__new__(client.Client)

@@ -402,11 +402,7 @@ impl CadWorker {
                 job.cancel.cancel();
             }
             if let Some(directory) = &job.native_directory {
-                let previous = job.state.clone();
                 progress::observe(directory, &mut job.state);
-                if job.state != previous {
-                    self.persist_state(&output, &job.state, true)?;
-                }
             }
             let mut state = job.state.clone();
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
