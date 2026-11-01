@@ -112,6 +112,19 @@ class DownloadTests(unittest.TestCase):
                 return response
         instance.http = Transport()
         self.assertEqual(instance.rpc("initialize"), {"ok": True})
+        class Drip(Response):
+            def read1(self, size):
+                return super().read1(min(size, 1))
+        class SlowTransport:
+            def open(self, request, timeout):
+                response = Drip(b"data: still streaming\n\n")
+                response.headers = Message()
+                response.headers["Content-Type"] = "text/event-stream"
+                return response
+        instance.http = SlowTransport()
+        with patch.object(client.time, "monotonic", side_effect=[0, 0.4, 0.6, 1.2]):
+            with self.assertRaisesRegex(TimeoutError, "native work continues"):
+                instance.rpc("tools/call", deadline=1, timeout=1)
 
     def make_client(self, body, expected=None):
         instance = object.__new__(client.Client)

@@ -40,7 +40,7 @@ def inspection_smoke(root):
         directory.mkdir()
         (directory / "model.py").write_text(source)
         build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": options}, directory)
-        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json"}
+        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json", "measurements.json"}
         reports.append(json.loads((directory / "output/report.json").read_text()))
     first, second, local, missing = reports
     assert first["matched_count"] == 2 and first["next_offset"] == 1

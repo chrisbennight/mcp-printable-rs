@@ -137,7 +137,9 @@ def build(request, directory):
         output = directory / "output"
         output.mkdir()
         inspect(assembly, original_names(assembly), request["inspection"], output)
-        progress.advance("completed", "components.json")
+        report = json.loads((output / "report.json").read_text())
+        write_json(output / "measurements.json", {"scope":"cad_measurements", "completion":"partial", **report})
+        progress.advance("completed", "components.json", "measurements.json")
         return
 
     shape = assembly.toCompound()

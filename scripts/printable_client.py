@@ -4,6 +4,7 @@
 import argparse
 import base64
 import hashlib
+from http.client import HTTPResponse
 import ipaddress
 import json
 import math
@@ -80,7 +81,7 @@ class Client:
             result["Mcp-Session-Id"] = self.session
         return result
 
-    def rpc(self, method, params=None, notification=False, timeout=180):
+    def rpc(self, method, params=None, notification=False, timeout=180, deadline=None):
         self.sequence += 1
         request = {"jsonrpc": "2.0", "method": method}
         if params is not None:
@@ -93,30 +94,46 @@ class Client:
                 self.session = response.headers["Mcp-Session-Id"]
             if notification:
                 return None
-            if response.headers.get_content_type() == "text/event-stream":
+            def chunks():
                 used = 0
-                data = []
-                for _ in range(MAX_RESPONSE):
-                    line = response.readline(MAX_RESPONSE - used + 1)
-                    used += len(line)
+                while True:
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("CAD wait expired while reading status; native work continues")
+                        if isinstance(response, HTTPResponse) and response.fp is not None:
+                            # urllib's HTTPResponse owns this socket for this request.
+                            response.fp.raw._sock.settimeout(remaining)
+                    chunk = response.read1(min(65536, MAX_RESPONSE - used + 1))
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError("CAD wait expired while reading status; native work continues")
+                    used += len(chunk)
                     if used > MAX_RESPONSE:
                         raise ValueError("MCP response exceeds client limit")
-                    if not line:
-                        break
-                    if line in (b"\n", b"\r\n") and data:
-                        payload = b"\n".join(data)
-                        data = []
-                        if not payload.strip():
-                            continue
-                        message = json.loads(payload)
-                        if message.get("id") == self.sequence:
-                            return self.result(message)
-                    elif line.startswith(b"data:"):
-                        data.append(line[5:].strip())
+                    if not chunk:
+                        return
+                    yield chunk
+
+            if response.headers.get_content_type() == "text/event-stream":
+                pending = b""
+                data = []
+                for chunk in chunks():
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, _, pending = pending.partition(b"\n")
+                        line = line.rstrip(b"\r")
+                        if not line and data:
+                            payload = b"\n".join(data)
+                            data = []
+                            if not payload.strip():
+                                continue
+                            message = json.loads(payload)
+                            if message.get("id") == self.sequence:
+                                return self.result(message)
+                        elif line.startswith(b"data:"):
+                            data.append(line[5:].strip())
                 raise ValueError("MCP response ended without the requested result")
-            body = response.read(MAX_RESPONSE + 1)
-            if len(body) > MAX_RESPONSE:
-                raise ValueError("MCP response exceeds client limit")
+            body = b"".join(chunks())
             message = json.loads(body)
             if message.get("id") != self.sequence:
                 raise ValueError("MCP response identifier mismatch")
@@ -128,8 +145,10 @@ class Client:
             raise ValueError("MCP request failed; inspect service status before retrying mutations")
         return message["result"]
 
-    def call(self, name, arguments, *, timeout=None):
+    def call(self, name, arguments, *, timeout=None, deadline=None):
         options = {} if timeout is None else {"timeout": timeout}
+        if deadline is not None:
+            options["deadline"] = deadline
         result = self.rpc("tools/call", {"name": name, "arguments": arguments}, **options)
         if result.get("isError"):
             raise ValueError("Tool failed; inspect service status before retrying mutations")
@@ -153,7 +172,7 @@ class Client:
                 raise TimeoutError("CAD wait ended; query the same build handle. Native work was not cancelled or repeated.")
             return remaining
         while True:
-            state = self.call("cad_build", {"action": "status", "params": handle}, timeout=min(180, remaining_budget()))
+            state = self.call("cad_build", {"action": "status", "params": handle}, timeout=min(180, remaining_budget()), deadline=deadline)
             remaining = remaining_budget()
             if state["status"] in {"completed", "failed", "cancelled", "interrupted"}:
                 return state
