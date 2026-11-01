@@ -35,21 +35,11 @@ def tested_images(revision):
     return images
 
 
-def publish_images(revision, expected, evidence_directory=Path("target/release/evidence")):
-    images = tested_images(revision)
-    if images != expected:
-        raise ValueError("loaded images differ from the tested image IDs")
-    transfer = json.loads((evidence_directory / "tested-images.json").read_text())
-    if transfer != {"schema": 1, "revision": revision, "images": images}:
-        raise ValueError("image inventories differ from the tested image IDs")
-    for role in ROLES:
-        sbom = json.loads((evidence_directory / role / "sbom.spdx.json").read_text())
-        if sbom.get("spdxVersion") != "SPDX-2.3":
-            raise ValueError("required image SBOM is not an SPDX document")
+def scan_images(revision, images, scan_directory):
+    """Assess the tested images without granting any publication capability."""
     policy = load_policy()
     verify_grype_version(policy["scanner_version"])
     kev = load_kev_ids() if policy["fail_on_kev"] else set()
-    scan_directory = evidence_directory / "scans"
     scan_directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(POLICY_PATH, scan_directory / "security-policy.json")
     shutil.copyfile(VENDOR_FIXES_PATH, scan_directory / "vendor-fixes.vex.json")
@@ -67,6 +57,20 @@ def publish_images(revision, expected, evidence_directory=Path("target/release/e
             approved = False
     if not approved:
         raise ValueError("image security check failed")
+
+
+def publish_images(revision, expected, evidence_directory=Path("target/release/evidence")):
+    images = tested_images(revision)
+    if images != expected:
+        raise ValueError("loaded images differ from the tested image IDs")
+    transfer = json.loads((evidence_directory / "tested-images.json").read_text())
+    if transfer != {"schema": 1, "revision": revision, "images": images}:
+        raise ValueError("image inventories differ from the tested image IDs")
+    for role in ROLES:
+        sbom = json.loads((evidence_directory / role / "sbom.spdx.json").read_text())
+        if sbom.get("spdxVersion") != "SPDX-2.3":
+            raise ValueError("required image SBOM is not an SPDX document")
+    scan_images(revision, images, evidence_directory / "scans")
     identity = ReleaseIdentity.from_environment()
     references = {}
     for role, image in images.items():
@@ -130,7 +134,7 @@ def publish_update_tag(revision, reference, identity):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("record", "push", "record-release", "complete"))
+    parser.add_argument("operation", choices=("record", "scan", "push", "record-release", "complete"))
     parser.add_argument("revision")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--evidence-directory", type=Path, default=Path("target/release/evidence"))
@@ -140,6 +144,11 @@ def main():
         with args.manifest.open("x") as output:
             json.dump(images, output, sort_keys=True)
             output.write("\n")
+    elif args.operation == "scan":
+        images = tested_images(args.revision)
+        if images != json.loads(args.manifest.read_text()):
+            raise ValueError("local images differ from the tested image IDs")
+        scan_images(args.revision, images, args.evidence_directory / "scans")
     elif args.operation == "push":
         candidate = publish_images(args.revision, json.loads(args.manifest.read_text()), args.evidence_directory)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
