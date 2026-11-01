@@ -11,6 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import cadquery as cq
 
@@ -39,7 +40,7 @@ def inspection_smoke(root):
         directory.mkdir()
         (directory / "model.py").write_text(source)
         build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": options}, directory)
-        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json"}
+        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json", "measurements.json"}
         reports.append(json.loads((directory / "output/report.json").read_text()))
     first, second, local, missing = reports
     assert first["matched_count"] == 2 and first["next_offset"] == 1
@@ -71,6 +72,24 @@ def main():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         inspection_smoke(root)
+        interrupted = root / "failed-export"
+        interrupted.mkdir()
+        (interrupted / "part.py").write_text('result = cq.Workplane().box(10, 20, 30)\n')
+        with patch("build.export_glb", side_effect=ValueError("export unavailable")):
+            try:
+                build({"action":"model", "source":"part.py", "parameters":{},
+                       "linear_tolerance_mm":0.05, "angular_tolerance_rad":0.1}, interrupted)
+            except ValueError as error:
+                assert str(error) == "export unavailable"
+            else:
+                raise AssertionError("expected an export failure")
+        partial = json.loads((interrupted / "output/measurements.json").read_text())
+        close(partial["bounds_mm"]["size"], [10, 20, 30])
+        assert partial["completion"] == "partial" and "valid" not in partial
+        progress = json.loads((interrupted / "progress.json").read_text())
+        assert progress["stage"] == "glb_export"
+        assert "model.stl" in progress["completed_artifacts"]
+        assert "model.glb" not in progress["completed_artifacts"]
         (root / "model.py").write_text('result = cq.Workplane().box(parameters["width"], 20, 30)\n')
         build({"action": "model", "source": "model.py", "parameters": {"width": 10},
                "linear_tolerance_mm": 0.05, "angular_tolerance_rad": 0.1}, root)

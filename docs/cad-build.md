@@ -151,6 +151,35 @@ choosing a new directory. Native diagnostics are retained in
 measurements and artifact references; the full component inventory stays in a
 file. Retrieve or publish outputs with the existing `artifact` workflow.
 
+Status also reports the last observed `native_stage`: source reading, component
+inspection, STEP export, STL export, GLB export, geometry checks, or native
+completion. This describes observed work, not a percentage or an estimated
+finish time. `progress` remains null.
+Unavailable or malformed stage metadata is reported as `progress_error`; it
+does not turn a successful native operation into a failure or hide its logs.
+
+Timeout and cancellation retain the bounded stdout/stderr captured before the
+native process group was stopped. Terminal status lists committed diagnostic
+and partial output references in `available_artifacts`. The worker retains only
+files the native adapter marked complete, so a partly written mesh is not
+presented as a finished export. Basic dimensions are saved before exports in
+`measurements.json`, with `scope: "cad_measurements"` and `completion: "partial"`.
+That evidence does not imply completed delivery or manufacturing qualification.
+The normal full report still requires the complete build to succeed.
+
+Use the direct client's runtime wait when an admitted job needs time:
+
+```sh
+python3 scripts/printable_client.py wait-cad enclosure builds/revision-1 --timeout 900
+```
+
+It queries the retained handle and returns terminal state, including failures
+and available evidence, without resubmitting work. The waiting budget does not
+change the native budget or cancel a build. Reconcile the same handle after a
+lost connection or expired wait. A worker restart still reports unfinished work
+as interrupted; files not committed to the workspace are not promised to survive
+that restart, and no automatic native resume or script replay is attempted.
+
 ## Completion and delivery qualification
 
 A response with `completion: "completed"` means the native exports and retained

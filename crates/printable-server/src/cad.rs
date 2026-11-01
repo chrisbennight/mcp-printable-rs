@@ -1,6 +1,7 @@
 //! Project CAD builds delegated to a dedicated native worker.
 
 pub mod inspection;
+mod progress;
 pub mod qualification;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
@@ -250,6 +251,7 @@ struct Active {
     state: Value,
     cancel: CancellationToken,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    native_directory: Option<std::path::PathBuf>,
 }
 
 struct ExecutionGuard(Arc<std::sync::atomic::AtomicBool>);
@@ -329,6 +331,7 @@ impl CadWorker {
             state: state.clone(),
             cancel: cancel.clone(),
             alive,
+            native_directory: None,
         });
         drop(active);
         let worker = Arc::clone(self);
@@ -391,12 +394,15 @@ impl CadWorker {
 
     async fn status(&self, handle: BuildHandle, cancel: bool) -> Result<Value, ToolError> {
         let output = build_directory(&self.workspace, &handle)?;
-        let active = self.active.lock().await;
-        if let Some(job) = active.as_ref().filter(|job| {
+        let mut active = self.active.lock().await;
+        if let Some(job) = active.as_mut().filter(|job| {
             job.output == output && job.alive.load(std::sync::atomic::Ordering::Acquire)
         }) {
             if cancel {
                 job.cancel.cancel();
+            }
+            if let Some(directory) = &job.native_directory {
+                progress::observe(directory, &mut job.state);
             }
             let mut state = job.state.clone();
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
@@ -514,21 +520,45 @@ impl CadWorker {
             }
             {
                 let mut active = self.active.lock().await;
-                let state = &mut active.as_mut().expect("admitted build owns capacity").state;
+                let job = active.as_mut().expect("admitted build owns capacity");
+                job.native_directory = Some(staging.path().to_owned());
+                let state = &mut job.state;
                 state["status"] = json!("running");
                 state["phase"] = json!("native_execution");
                 state["native_started_at_unix_ms"] = json!(now_ms());
                 self.persist_state(output, state, true)?;
             }
             let result = self.execute(&staging, params.timeout_seconds, cancel).await;
+            let progress = {
+                let mut active = self.active.lock().await;
+                let state = &mut active.as_mut().expect("admitted build owns capacity").state;
+                progress::observe(staging.path(), state)
+            };
             let log = staging.path().join("build-log.json");
             if log.try_exists()? {
-                self.workspace.commit_generated_artifact_bounded(
+                let artifact = self.workspace.commit_generated_artifact_bounded(
                     &format!("{output}/build-log.json"),
                     &log,
                     false,
                     MAX_LOG_BYTES * 16,
                 )?;
+                self.record_available(json!({"artifact":artifact,"sha256":hash_file(&log)?}))
+                    .await;
+            }
+            if result.is_err()
+                && let Some(progress) = &progress
+            {
+                for name in &progress.completed_artifacts {
+                    let path = staging.path().join("output").join(name);
+                    let artifact = self.workspace.commit_generated_artifact_bounded(
+                        &format!("{output}/{name}"),
+                        &path,
+                        false,
+                        u64::MAX,
+                    )?;
+                    self.record_available(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
+                        .await;
+                }
             }
             match result {
                 Ok(()) if action == "inspect" => self.commit_inspection(staging.path(), output),
@@ -574,6 +604,18 @@ impl CadWorker {
         Ok(result)
     }
 
+    async fn record_available(&self, artifact: Value) {
+        let mut active = self.active.lock().await;
+        let state = &mut active.as_mut().expect("admitted build owns capacity").state;
+        if state.get("available_artifacts").is_none() {
+            state["available_artifacts"] = json!([]);
+        }
+        state["available_artifacts"]
+            .as_array_mut()
+            .expect("artifact array")
+            .push(artifact);
+    }
+
     async fn execute(
         &self,
         staging: &printable_workspace::ManagedScratch,
@@ -598,14 +640,19 @@ impl CadWorker {
         command.as_std_mut().process_group(0);
         staging.retain_for_command(command.as_std_mut())?;
         let mut child = command.spawn()?;
-        let _group = ProcessGroup(child.id().expect("spawned process"));
+        let group = ProcessGroup(child.id().expect("spawned process"));
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
         let run = async {
-            let (status, out, err) =
-                tokio::join!(child.wait(), bounded_log(stdout), bounded_log(stderr));
-            let log = json!({"stdout":out?,"stderr":err?});
-            std::fs::write(directory.join("build-log.json"), serde_json::to_vec(&log)?)?;
+            let (status, stdout, stderr) = tokio::join!(
+                child.wait(),
+                bounded_log(stdout, &mut out),
+                bounded_log(stderr, &mut err),
+            );
+            stdout?;
+            stderr?;
             if !status?.success() {
                 return Err(ToolError::Cad(
                     "native CAD build failed; inspect build-log.json".into(),
@@ -613,12 +660,19 @@ impl CadWorker {
             }
             Ok(())
         };
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             result = tokio::time::timeout(Duration::from_secs(timeout), run) => result
-            .map_err(|_| ToolError::Cad("CAD build exceeded its native execution deadline".into()))?,
+            .unwrap_or_else(|_| Err(ToolError::Cad("CAD build exceeded its native execution deadline".into()))),
             _ = cancel.cancelled() => Err(ToolError::Cad("CAD build cancelled during native execution".into())),
-        }
+        };
+        drop(group);
+        child.start_kill()?;
+        child.wait().await?;
+        let log =
+            json!({"stdout":String::from_utf8_lossy(&out),"stderr":String::from_utf8_lossy(&err)});
+        std::fs::write(directory.join("build-log.json"), serde_json::to_vec(&log)?)?;
+        result
     }
 
     fn commit(
@@ -704,8 +758,8 @@ fn hash_file(path: &Path) -> Result<String, ToolError> {
 
 async fn bounded_log(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
-) -> Result<String, std::io::Error> {
-    let mut result = Vec::new();
+    result: &mut Vec<u8>,
+) -> Result<(), std::io::Error> {
     let mut buffer = [0; 8192];
     loop {
         let count = pipe.read(&mut buffer).await?;
@@ -715,7 +769,7 @@ async fn bounded_log(
         let keep = count.min((MAX_LOG_BYTES as usize).saturating_sub(result.len()));
         result.extend_from_slice(&buffer[..keep]);
     }
-    Ok(String::from_utf8_lossy(&result).into_owned())
+    Ok(())
 }
 
 struct ProcessGroup(u32);
@@ -937,6 +991,7 @@ mod tests {
             state: json!({"status":"running"}),
             cancel: cancel.clone(),
             alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            native_directory: None,
         });
         worker.workspace.configure_storage_budget(Some(1)).unwrap();
         let state = worker.build(CadRequest::Cancel(handle())).await.unwrap();
@@ -1125,6 +1180,88 @@ mod tests {
             restarted.status(handle(), false).await.unwrap()["status"],
             "interrupted"
         );
+    }
+
+    #[tokio::test]
+    async fn native_timeout_retains_logs_stage_and_only_completed_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        std::fs::write(&worker.python, br##"#!/usr/bin/python3
+import json,os,pathlib,sys,time
+os.setpgid(0, os.getpgid(os.getppid()))
+directory=pathlib.Path(sys.argv[-1])
+output=directory/'output'
+output.mkdir()
+(output/'measurements.json').write_text(json.dumps({'scope':'cad_measurements','completion':'partial','units':'mm','bounds_mm':{'size':[10,20,30]}}))
+(output/'model.step').write_text('completed STEP')
+(output/'model.stl').write_text('unfinished STL')
+(directory/'progress.json').write_text(json.dumps({'stage':'stl_export','completed_artifacts':['measurements.json','model.step']}))
+print('native stdout before timeout',flush=True)
+print('native stderr before timeout',file=sys.stderr,flush=True)
+pathlib.Path(sys.argv[-2]).touch()
+while True: time.sleep(0.02)
+"##).unwrap();
+        let mut input = serde_json::to_value(request()).unwrap();
+        input["params"]["background"] = json!(true);
+        input["params"]["timeout_seconds"] = json!(1);
+        worker
+            .build(serde_json::from_value(input).unwrap())
+            .await
+            .unwrap();
+        wait_started(&worker).await;
+        assert_eq!(
+            worker.status(handle(), false).await.unwrap()["native_stage"],
+            "stl_export"
+        );
+        let failed = terminal(&worker).await;
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["native_stage"], "stl_export");
+        let paths = failed["available_artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["artifact"]["path"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"projects/cad/builds/one/measurements.json"));
+        assert!(paths.contains(&"projects/cad/builds/one/model.step"));
+        assert!(
+            worker
+                .workspace
+                .stat_artifact("projects/cad/builds/one/model.stl")
+                .is_err()
+        );
+        assert!(
+            worker
+                .workspace
+                .stat_artifact("projects/cad/builds/one/report.json")
+                .is_err()
+        );
+        let (_, log) = worker
+            .workspace
+            .read_generated_bytes("projects/cad/builds/one/build-log.json")
+            .unwrap();
+        let log: Value = serde_json::from_slice(&log).unwrap();
+        assert!(
+            log["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("native stdout before timeout")
+        );
+        assert!(
+            log["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("native stderr before timeout")
+        );
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/cad_build/status",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .validate(&failed)
+            .unwrap();
     }
 
     #[test]

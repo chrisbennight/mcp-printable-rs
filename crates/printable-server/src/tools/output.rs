@@ -432,7 +432,10 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "phase":{"enum":["input_snapshot","native_execution","terminal"]},
                 "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
                 "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
-                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical,inspection]}
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical,inspection]},
+                "native_stage":{"type":"string"},
+                "progress_error":object(json!({"code":{"type":"string"},"message":{"type":"string"}}), &["code","message"]),
+                "available_artifacts":{"type":"array","items":object(json!({"artifact":artifact(),"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["artifact","sha256"])}
             }), &["build","status","phase"])]});
             if let Some(definitions) = definitions {
                 result["$defs"] = definitions;
