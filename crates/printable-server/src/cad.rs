@@ -542,11 +542,8 @@ impl CadWorker {
                     false,
                     MAX_LOG_BYTES * 16,
                 )?;
-                self.record_available(
-                    output,
-                    json!({"artifact":artifact,"sha256":hash_file(&log)?}),
-                )
-                .await?;
+                self.record_available(json!({"artifact":artifact,"sha256":hash_file(&log)?}))
+                    .await;
             }
             if result.is_err()
                 && let Some(progress) = &progress
@@ -559,11 +556,8 @@ impl CadWorker {
                         false,
                         u64::MAX,
                     )?;
-                    self.record_available(
-                        output,
-                        json!({"artifact":artifact,"sha256":hash_file(&path)?}),
-                    )
-                    .await?;
+                    self.record_available(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
+                        .await;
                 }
             }
             match result {
@@ -610,7 +604,7 @@ impl CadWorker {
         Ok(result)
     }
 
-    async fn record_available(&self, output: &str, artifact: Value) -> Result<(), ToolError> {
+    async fn record_available(&self, artifact: Value) {
         let mut active = self.active.lock().await;
         let state = &mut active.as_mut().expect("admitted build owns capacity").state;
         if state.get("available_artifacts").is_none() {
@@ -620,7 +614,6 @@ impl CadWorker {
             .as_array_mut()
             .expect("artifact array")
             .push(artifact);
-        self.persist_state(output, state, true)
     }
 
     async fn execute(
@@ -674,6 +667,7 @@ impl CadWorker {
             _ = cancel.cancelled() => Err(ToolError::Cad("CAD build cancelled during native execution".into())),
         };
         drop(group);
+        child.start_kill()?;
         child.wait().await?;
         let log =
             json!({"stdout":String::from_utf8_lossy(&out),"stderr":String::from_utf8_lossy(&err)});
@@ -1193,7 +1187,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let worker = lifecycle_worker(root.path());
         std::fs::write(&worker.python, br##"#!/usr/bin/python3
-import json,pathlib,sys,time
+import json,os,pathlib,sys,time
+os.setpgid(0, os.getpgid(os.getppid()))
 directory=pathlib.Path(sys.argv[-1])
 output=directory/'output'
 output.mkdir()
