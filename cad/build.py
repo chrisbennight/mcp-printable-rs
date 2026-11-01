@@ -92,7 +92,30 @@ def original_names(node, parent=""):
     return result
 
 
+def write_json(path, value):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, allow_nan=False))
+    temporary.replace(path)
+
+
+class Progress:
+    def __init__(self, directory):
+        self.directory = directory
+        self.completed = []
+
+    def advance(self, stage, *completed):
+        for name in completed:
+            if (self.directory / "output" / name).stat().st_size == 0:
+                raise ValueError(f"empty CAD artifact: {name}")
+            self.completed.append(name)
+        write_json(self.directory / "progress.json", {
+            "stage": stage, "completed_artifacts": self.completed,
+        })
+
+
 def build(request, directory):
+    progress = Progress(directory)
+    progress.advance("reading_source")
     source = directory / request["source"]
     source_metadata = {"resolved_length_unit": "mm"}
     if request["action"] == "model":
@@ -108,12 +131,20 @@ def build(request, directory):
     else:
         raise ValueError("unsupported CAD action")
 
+    progress.advance("component_inspection")
     shape = assembly.toCompound()
     if shape.isNull() or not shape.Vertices():
         raise ValueError("CAD result contains no measurable geometry")
     measured = bounds(shape)
     if not all(math.isfinite(v) for values in measured.values() for v in values):
         raise ValueError("CAD result has nonfinite dimensions")
+
+    output = directory / "output"
+    output.mkdir()
+    measurements = {"scope": "cad_measurements", "completion": "partial", "units": "mm",
+                    "cadquery_version": cq.__version__, "source": source_metadata, "bounds_mm": measured}
+    write_json(output / "measurements.json", measurements)
+    progress.advance("component_inspection", "measurements.json")
 
     components = []
     names = original_names(assembly)
@@ -128,9 +159,12 @@ def build(request, directory):
             "solids": len(component.Solids()),
         })
 
-    output = directory / "output"
-    output.mkdir()
+    write_json(output / "components.json", {"nodes": names, "components": components})
+    measurements["component_count"] = len(components)
+    write_json(output / "measurements.json", measurements)
+    progress.advance("step_export", "components.json")
     assembly.export(str(output / "model.step"), exportType="STEP", unit="MM")
+    progress.advance("stl_export", "model.step")
     if not shape.exportStl(
         str(output / "model.stl"),
         tolerance=request["linear_tolerance_mm"],
@@ -138,6 +172,7 @@ def build(request, directory):
         relative=False,
     ):
         raise ValueError("STL export failed")
+    progress.advance("glb_export", "model.stl")
     if not export_glb(
         assembly,
         str(output / "model.glb"),
@@ -145,7 +180,7 @@ def build(request, directory):
         request["angular_tolerance_rad"],
     ):
         raise ValueError("GLB export failed")
-    (output / "components.json").write_text(json.dumps({"nodes": names, "components": components}, allow_nan=False))
+    progress.advance("geometry_checks", "model.glb")
     volumes = [solid.Volume() if solid.isValid() else None for solid in shape.Solids()]
     report = {
         "cadquery_version": cq.__version__,
@@ -171,7 +206,8 @@ def build(request, directory):
         path = output / filename
         if path.stat().st_size == 0:
             raise ValueError(f"empty CAD artifact: {filename}")
-    (output / "report.json").write_text(json.dumps(report, allow_nan=False))
+    write_json(output / "report.json", report)
+    progress.advance("completed")
 
 
 if __name__ == "__main__":
