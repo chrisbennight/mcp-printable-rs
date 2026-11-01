@@ -16,7 +16,7 @@ kiwisolver==1.5.1
 llvmlite==0.49.0
 matplotlib==3.11.2
 more-itertools==11.1.0
-msgpack==1.2.2
+msgpack==1.2.4
 multidict==6.8.0
 multimethod==1.12
 nlopt==2.11.0
