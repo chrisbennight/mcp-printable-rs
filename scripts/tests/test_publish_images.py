@@ -91,6 +91,34 @@ class PublishImagesTests(unittest.TestCase):
             record.assert_not_called()
             update.assert_not_called()
 
+    def test_scan_command_checks_recorded_image_ids_without_publishing(self):
+        from publish_images import main
+        for recorded in (self.images, {}):
+            with self.subTest(recorded=bool(recorded)), TemporaryDirectory() as directory, \
+                    patch("publish_images.tested_images", return_value=self.images), \
+                    patch("publish_images.load_policy", return_value={"scanner_version": "0.110.0", "fail_on_kev": False}), \
+                    patch("publish_images.verify_grype_version"), \
+                    patch("publish_images.scan", return_value={}) as scanner, \
+                    patch("publish_images.evaluate_report", return_value=ScanEvaluation((), ())), \
+                    patch("publish_images.emit_evaluation", return_value=True), \
+                    patch("publish_images.subprocess.run") as mutation:
+                root = Path(directory)
+                manifest = root / "images.json"
+                manifest.write_text(json.dumps(recorded))
+                with patch("sys.argv", ["publish_images.py", "scan", "a" * 40, str(manifest),
+                                        "--evidence-directory", str(root)]):
+                    if recorded:
+                        main()
+                        self.assertEqual(scanner.call_count, len(self.images))
+                        for role, image in self.images.items():
+                            evidence = json.loads((root / "scans" / (role + ".json")).read_text())
+                            self.assertEqual((evidence["revision"], evidence["image_id"]), ("a" * 40, image))
+                    else:
+                        with self.assertRaises(ValueError):
+                            main()
+                        scanner.assert_not_called()
+                mutation.assert_not_called()
+
     def test_update_tag_moves_only_when_current_application_inputs_match(self):
         import shutil
         import subprocess
