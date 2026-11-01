@@ -26,6 +26,9 @@ pub(super) fn read(directory: &Path) -> Result<Option<Progress>, ToolError> {
     if ![
         "reading_source",
         "component_inspection",
+        "retaining_model",
+        "measurement",
+        "requested_exports",
         "step_export",
         "stl_export",
         "glb_export",
@@ -40,6 +43,11 @@ pub(super) fn read(directory: &Path) -> Result<Option<Progress>, ToolError> {
                 "model.step",
                 "model.stl",
                 "model.glb",
+                "model.cadmodel",
+                "selected.step",
+                "selected.stl",
+                "selected.glb",
+                "selected.svg",
             ]
             .contains(&name.as_str())
         })

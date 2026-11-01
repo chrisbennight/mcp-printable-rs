@@ -39,6 +39,7 @@ def import_step(path):
     shapes = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
     colors = XCAFDoc_DocumentTool.ColorTool_s(document.Main())
     unmatched_colors = 0
+    used_names = {"model"}
 
     def color(label):
         rgba = Quantity_ColorRGBA()
@@ -60,6 +61,12 @@ def import_step(path):
         product_name = label_name(target)
         original_name = occurrence_name or product_name or "component"
         name = original_name.replace("/", "_") + f"_{index}"
+        base = name
+        occurrence = 1
+        while name in used_names:
+            occurrence += 1
+            name = f"{base}_{occurrence}"
+        used_names.add(name)
         location = cq.Location(shapes.GetLocation_s(label))
         node = cq.Assembly(name=name, loc=location, color=color(label) or color(target), metadata={"source_name": original_name, "occurrence_name": occurrence_name, "product_name": product_name})
         if shapes.IsAssembly_s(target):

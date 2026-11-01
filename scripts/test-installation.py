@@ -98,6 +98,7 @@ def main():
             if args.evidence_dir is not None:
                 for artifact in (directory / "bracket").iterdir():
                     shutil.copyfile(artifact, args.evidence_dir / artifact.name)
+                shutil.copyfile(directory / "cad/inspection-evidence.json", args.evidence_dir / "cad-inspection-client.json")
             subprocess.run(compose + ["restart", "server", "slicer-worker"], check=True)
             subprocess.run(compose + ["up", "-d", "--wait", "--wait-timeout", "600"], check=True)
             job = json.loads((directory / "bracket" / "job.json").read_text())

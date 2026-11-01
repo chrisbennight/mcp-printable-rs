@@ -99,6 +99,7 @@ pub enum CadRequest {
     Model(BuildParams),
     ImportStep(ImportParams),
     Inspect(inspection::InspectParams),
+    Export(inspection::InspectParams),
     Status(BuildHandle),
     Cancel(BuildHandle),
 }
@@ -108,6 +109,7 @@ impl CadRequest {
         Ok(match self {
             Self::Model(params) => ("model", std::borrow::Cow::Borrowed(params)),
             Self::Inspect(params) => ("inspect", std::borrow::Cow::Owned(params.build_params())),
+            Self::Export(params) => ("export", std::borrow::Cow::Owned(params.build_params())),
             Self::ImportStep(params) => (
                 "import_step",
                 std::borrow::Cow::Owned(BuildParams {
@@ -136,8 +138,13 @@ impl CadRequest {
         if let Self::Status(handle) | Self::Cancel(handle) = self {
             return build_directory(workspace, handle);
         }
-        if let Self::Inspect(params) = self {
+        if let Self::Inspect(params) | Self::Export(params) = self {
             params.validate()?;
+            if matches!(self, Self::Export(_)) && params.exports.is_empty() {
+                return Err(ToolError::Validation(
+                    "CAD export requires at least one requested format".into(),
+                ));
+            }
         }
         let (action, p) = self.parts()?;
         p.qualification.validate()?;
@@ -168,7 +175,13 @@ impl CadRequest {
             .to_ascii_lowercase();
         if (action == "model" && extension != "py")
             || (action == "import_step" && !matches!(extension.as_str(), "step" | "stp"))
-            || (action == "inspect" && !matches!(extension.as_str(), "py" | "step" | "stp"))
+            || (matches!(action, "inspect" | "export")
+                && !match self {
+                    Self::Inspect(p) | Self::Export(p) if p.model.is_some() => {
+                        extension == "cadmodel"
+                    }
+                    _ => matches!(extension.as_str(), "py" | "step" | "stp"),
+                })
             || !(0.001..=10.0).contains(&p.linear_tolerance_mm)
             || !(0.01..=1.0).contains(&p.angular_tolerance_rad)
             || p.timeout_seconds == 0
@@ -487,8 +500,15 @@ impl CadWorker {
             Ok::<_,ToolError>(sources)
         }).await.map_err(|_| ToolError::Cad("CAD input staging task failed".into()))??;
         let mut native = json!({"action":action,"source":format!("inputs/{}",params.source),"parameters":params.parameters,"linear_tolerance_mm":params.linear_tolerance_mm,"angular_tolerance_rad":params.angular_tolerance_rad});
-        if let CadRequest::Inspect(inspection) = &request {
+        if let CadRequest::Inspect(inspection) | CadRequest::Export(inspection) = &request {
             native["inspection"] = serde_json::to_value(inspection)?;
+            if let Some(model) = &inspection.model {
+                let staged = input_root.join(&params.source);
+                if !hash_file(&staged)?.eq_ignore_ascii_case(&model.sha256) {
+                    return Err(ToolError::Validation("retained CAD model digest changed; use the original artifact or explicitly create a new model".into()));
+                }
+                native["reuse_model"] = json!(true);
+            }
         }
         std::fs::write(
             staging.path().join("request.json"),
@@ -535,7 +555,44 @@ impl CadWorker {
                 progress::observe(staging.path(), state)
             };
             let log = staging.path().join("build-log.json");
-            if log.try_exists()? {
+            if result.is_err() {
+                let mut retained = progress
+                    .map(|value| value.completed_artifacts)
+                    .unwrap_or_default();
+                retained.sort_by_key(|name| name != "measurements.json");
+                match log.try_exists() {
+                    Ok(true) => retained.push("build-log.json".into()),
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.record_publication_error(
+                            &format!("{output}/build-log.json"),
+                            &ToolError::Io(error),
+                        )
+                        .await
+                    }
+                }
+                for name in retained {
+                    let (path, maximum) = if name == "build-log.json" {
+                        (log.clone(), MAX_LOG_BYTES * 16)
+                    } else {
+                        (staging.path().join("output").join(&name), u64::MAX)
+                    };
+                    let destination = format!("{output}/{name}");
+                    let published = (|| -> Result<Value, ToolError> {
+                        let artifact = self.workspace.commit_generated_artifact_bounded(
+                            &destination,
+                            &path,
+                            false,
+                            maximum,
+                        )?;
+                        Ok(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
+                    })();
+                    match published {
+                        Ok(artifact) => self.record_available(artifact).await,
+                        Err(error) => self.record_publication_error(&destination, &error).await,
+                    }
+                }
+            } else if !matches!(action, "inspect" | "export") && log.try_exists()? {
                 let artifact = self.workspace.commit_generated_artifact_bounded(
                     &format!("{output}/build-log.json"),
                     &log,
@@ -545,23 +602,14 @@ impl CadWorker {
                 self.record_available(json!({"artifact":artifact,"sha256":hash_file(&log)?}))
                     .await;
             }
-            if result.is_err()
-                && let Some(progress) = &progress
-            {
-                for name in &progress.completed_artifacts {
-                    let path = staging.path().join("output").join(name);
-                    let artifact = self.workspace.commit_generated_artifact_bounded(
-                        &format!("{output}/{name}"),
-                        &path,
-                        false,
-                        u64::MAX,
-                    )?;
-                    self.record_available(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
-                        .await;
-                }
-            }
             match result {
-                Ok(()) if action == "inspect" => self.commit_inspection(staging.path(), output),
+                Ok(()) if matches!(action, "inspect" | "export") => {
+                    let reference = match &request {
+                        CadRequest::Inspect(p) | CadRequest::Export(p) => p.model.as_ref(),
+                        _ => unreachable!("inspection action"),
+                    };
+                    self.commit_inspection(staging.path(), output, &params.project_id, reference)
+                }
                 Ok(()) => self.commit(
                     staging.path(),
                     output,
@@ -574,28 +622,127 @@ impl CadWorker {
         }
         .await;
         if let Err(ref error) = result {
-            self.workspace.write_generated_bytes(
-                &format!("{output}/failure.json"),
+            let destination = format!("{output}/failure.json");
+            if let Err(retention_error) = self.workspace.write_generated_bytes(
+                &destination,
                 &serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 false,
-            )?;
+            ) {
+                self.record_publication_error(&destination, &retention_error.into())
+                    .await;
+            }
         }
         result
     }
 
-    fn commit_inspection(&self, staging: &Path, output: &str) -> Result<Value, ToolError> {
-        let report: inspection::Report =
+    fn commit_inspection(
+        &self,
+        staging: &Path,
+        output: &str,
+        project: &str,
+        reference: Option<&inspection::ModelReference>,
+    ) -> Result<Value, ToolError> {
+        let mut report: inspection::Report =
             serde_json::from_reader(open_native_file(&staging.join("output/report.json"))?)?;
-        let path = staging.join("output/components.json");
-        let artifact = self.workspace.commit_generated_artifact_bounded(
-            &format!("{output}/components.json"),
-            &path,
+        for export in &report.exports {
+            if matches!(export.status, inspection::ExportStatus::Completed)
+                && export.filename.as_deref() != Some(export.format.filename())
+            {
+                return Err(ToolError::Cad(
+                    "native export filename does not match its declared format".into(),
+                ));
+            }
+        }
+
+        // Preserve verified answers before optional publication can consume storage.
+        let mut measurements = serde_json::to_value(&report)?;
+        measurements
+            .as_object_mut()
+            .expect("inspection report")
+            .remove("exports");
+        measurements["scope"] = json!("cad_measurements");
+        measurements["completion"] = json!("partial");
+        let bytes = serde_json::to_vec(&measurements)?;
+        let artifact = self.workspace.write_generated_bytes(
+            &format!("{output}/measurements.json"),
+            &bytes,
             false,
-            u64::MAX,
         )?;
-        let result = json!({"completion":"completed", "scope":"cad_inspection",
-            "inspection":report, "build_directory":output,
-            "artifacts":[{"artifact":artifact,"sha256":hash_file(&path)?}]});
+        let mut artifacts =
+            vec![json!({"artifact":artifact, "sha256":projects::revisions::digest(&bytes)})];
+        let mut publication_errors = Vec::new();
+        let mut publish = |name: &str| {
+            let (path, maximum) = if name == "build-log.json" {
+                (staging.join(name), MAX_LOG_BYTES * 16)
+            } else {
+                (staging.join("output").join(name), u64::MAX)
+            };
+            let attempt = (|| -> Result<Value, ToolError> {
+                let artifact = self.workspace.commit_generated_artifact_bounded(
+                    &format!("{output}/{name}"),
+                    &path,
+                    false,
+                    maximum,
+                )?;
+                Ok(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
+            })();
+            match attempt {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    publication_errors.push(json!({"artifact":format!("{output}/{name}"),"code":error.code(),
+                        "message":"Artifact publication was not confirmed; inspect the retained output directory before retrying."}));
+                    None
+                }
+            }
+        };
+        if let Some(artifact) = publish("components.json") {
+            artifacts.push(artifact);
+        }
+        let mut model_reference = reference.map(|reference| json!({"path":reference.path,"sha256":reference.sha256.to_ascii_lowercase()}));
+        let model = staging.join("output/model.cadmodel");
+        if model.try_exists()?
+            && let Some(artifact) = publish("model.cadmodel")
+        {
+            let path = format!("{output}/model.cadmodel");
+            let project_root = projects::resolve(&self.workspace, project, "model.cadmodel")?;
+            let root = project_root
+                .strip_suffix("model.cadmodel")
+                .expect("known suffix");
+            model_reference = Some(
+                json!({"path":path.strip_prefix(root).expect("project output"),"sha256":artifact["sha256"]}),
+            );
+            artifacts.push(artifact);
+        }
+        for export in &mut report.exports {
+            if matches!(export.status, inspection::ExportStatus::Completed) {
+                match publish(export.format.filename()) {
+                    Some(artifact) => artifacts.push(artifact),
+                    None => {
+                        export.status = inspection::ExportStatus::PublicationUnconfirmed;
+                        export.error = Some("Output publication was not confirmed; inspect publication_errors and the output directory before retrying.".into());
+                    }
+                }
+            }
+        }
+        if staging.join("build-log.json").try_exists()?
+            && let Some(artifact) = publish("build-log.json")
+        {
+            artifacts.push(artifact);
+        }
+        let partial = !publication_errors.is_empty()
+            || report
+                .answers
+                .iter()
+                .any(|answer| matches!(answer.status, inspection::AnswerStatus::Unavailable))
+            || report
+                .exports
+                .iter()
+                .any(|export| !matches!(export.status, inspection::ExportStatus::Completed));
+        let mut result = json!({"completion":if partial {"partial"} else {"completed"}, "scope":"cad_inspection",
+            "inspection":report,"build_directory":output,"artifacts":artifacts,"publication_errors":publication_errors});
+        if let Some(reference) = model_reference {
+            result["model"] = reference;
+        }
         self.workspace.write_generated_bytes(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
@@ -614,6 +761,16 @@ impl CadWorker {
             .as_array_mut()
             .expect("artifact array")
             .push(artifact);
+    }
+
+    async fn record_publication_error(&self, artifact: &str, error: &ToolError) {
+        let mut active = self.active.lock().await;
+        let state = &mut active.as_mut().expect("admitted build owns capacity").state;
+        state.as_object_mut().expect("CAD state")
+            .entry("publication_errors").or_insert_with(|| json!([]))
+            .as_array_mut().expect("publication errors")
+            .push(json!({"artifact":artifact,"code":error.code(),
+                "message":"Artifact publication was not confirmed; inspect the output directory before retrying."}));
     }
 
     async fn execute(
@@ -854,7 +1011,7 @@ mod tests {
         assert!(
             !contract["outputSchema"]
                 .to_string()
-                .contains("qualification")
+                .contains("\"qualification\"")
         );
     }
 
@@ -883,9 +1040,18 @@ mod tests {
         )
         .unwrap();
         let result = worker
-            .commit_inspection(&staging, "projects/cad/inspection/one")
+            .commit_inspection(
+                &staging,
+                "projects/cad/inspection/one",
+                "cad",
+                Some(&inspection::ModelReference {
+                    path: "retained.cadmodel".into(),
+                    sha256: "A".repeat(64),
+                }),
+            )
             .unwrap();
         assert_eq!(result["scope"], "cad_inspection");
+        assert_eq!(result["model"]["sha256"], "a".repeat(64));
         assert_eq!(
             result["inspection"]["missing_component_ids"],
             json!(["absent"])
@@ -949,6 +1115,83 @@ mod tests {
     }
 
     #[test]
+    fn publication_pressure_keeps_answers_and_smaller_requested_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let worker = CadWorker::new(
+            workspace.clone(),
+            root.path().join("unused"),
+            root.path().join("unused.py"),
+        );
+        let staging = root.path().join("native");
+        std::fs::create_dir_all(staging.join("output")).unwrap();
+        for name in ["model.cadmodel", "selected.stl"] {
+            std::fs::File::create(staging.join("output").join(name))
+                .unwrap()
+                .set_len(1024 * 1024)
+                .unwrap();
+        }
+        std::fs::write(
+            staging.join("output/components.json"),
+            b"{\"nodes\":{},\"components\":[]}",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.join("output/selected.svg"),
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
+        let exported = |format: &str, units: &str| {
+            json!({"format":format,"status":"completed","filename":format!("selected.{format}"),"error":null,
+            "component_count":1,"component_scope":"components.json#/selected_component_ids","frame":"assembly","units":units,
+            "representation":if format=="svg" {"projected_preview"} else {"tessellated"}, "linear_tolerance_mm":null,"angular_tolerance_rad":null})
+        };
+        let report = json!({"cadquery_version":"test","units":"mm","frame":"assembly","bounds_method":"native_geometry_without_triangulation",
+            "component_count":1,"matched_count":1,"offset":1,"next_offset":null,"components":[],"missing_component_ids":[],
+            "answers":[{"id":"kept","kind":"validity","status":"measured","frame":"assembly","method":"native_geometry_without_triangulation",
+                "component_ids":["part"],"evidence":{"valid":true,"solid_count":1,"interpretation":"native validity"},"error":null}],
+            "exports":[exported("stl","mm"),exported("svg","px")]});
+        std::fs::write(
+            staging.join("output/report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let used = workspace.storage_usage().unwrap().charged_bytes;
+        workspace
+            .configure_storage_budget(Some(used + 64 * 1024))
+            .unwrap();
+        let result = worker
+            .commit_inspection(&staging, "projects/cad/inspection/pressure", "cad", None)
+            .unwrap();
+        assert_eq!(result["completion"], "partial");
+        assert_eq!(
+            result["inspection"]["exports"][0]["status"],
+            "publication_unconfirmed"
+        );
+        assert_eq!(result["inspection"]["exports"][1]["status"], "completed");
+        assert_eq!(result["publication_errors"].as_array().unwrap().len(), 2);
+        assert!(result.get("model").is_none());
+        let (_, bytes) = workspace
+            .read_generated_bytes("projects/cad/inspection/pressure/measurements.json")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["answers"][0]["id"],
+            "kept"
+        );
+        workspace
+            .stat_artifact("projects/cad/inspection/pressure/selected.svg")
+            .unwrap();
+        let (_, bytes) = workspace
+            .read_generated_bytes("projects/cad/inspection/pressure/report.json")
+            .unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), result);
+        jsonschema::validator_for(&crate::tools::output::cad_action_schema("export").unwrap())
+            .unwrap()
+            .validate(&result)
+            .unwrap();
+    }
+
+    #[test]
     fn large_input_selection_and_work_budget_reach_native_admission() {
         let root = tempfile::tempdir().unwrap();
         let workspace = workspace(root.path());
@@ -975,6 +1218,35 @@ mod tests {
             project_id: "cad".into(),
             output_dir: "builds/one".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn changed_native_model_is_rejected_without_replaying_source_or_starting_native_work() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        worker
+            .workspace
+            .write_artifact("projects/cad/retained.cadmodel", b"changed snapshot", false)
+            .unwrap();
+        let request: CadRequest = serde_json::from_value(json!({"action":"inspect", "params":{
+            "project_id":"cad", "output_dir":"inspection/stale", "background":false,
+            "model":{"path":"retained.cadmodel", "sha256":"0".repeat(64)}
+        }}))
+        .unwrap();
+        let error = worker.build(request).await.unwrap_err();
+        assert!(error.to_string().contains("digest changed"));
+        assert!(!root.path().join("native.calls").exists());
+        let state = worker
+            .status(
+                BuildHandle {
+                    project_id: "cad".into(),
+                    output_dir: "inspection/stale".into(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["status"], "failed");
     }
 
     #[tokio::test]
@@ -1259,6 +1531,66 @@ while True: time.sleep(0.02)
         )
         .unwrap();
         jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .validate(&failed)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_recovery_keeps_answers_when_model_and_log_publication_exceed_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        std::fs::write(&worker.python, br##"#!/usr/bin/python3
+import json,pathlib,sys,time
+directory=pathlib.Path(sys.argv[-1])
+output=directory/'output'
+output.mkdir()
+(output/'model.cadmodel').write_bytes(b'x'*262144)
+(output/'measurements.json').write_text(json.dumps({'scope':'cad_measurements','completion':'partial','units':'mm','answers':[{'id':'kept'}]}))
+(directory/'progress.json').write_text(json.dumps({'stage':'measurement','completed_artifacts':['model.cadmodel','measurements.json']}))
+print('x'*100000,flush=True)
+pathlib.Path(sys.argv[-2]).touch()
+while True: time.sleep(0.02)
+"##).unwrap();
+        let mut input = serde_json::to_value(request()).unwrap();
+        input["params"]["background"] = json!(true);
+        input["params"]["timeout_seconds"] = json!(1);
+        worker
+            .build(serde_json::from_value(input).unwrap())
+            .await
+            .unwrap();
+        wait_started(&worker).await;
+        let used = worker.workspace.storage_usage().unwrap().charged_bytes;
+        worker
+            .workspace
+            .configure_storage_budget(Some(used + 160_000))
+            .unwrap();
+        let failed = terminal(&worker).await;
+        assert_eq!(failed["status"], "failed");
+        assert!(failed["error"].as_str().unwrap().contains("deadline"));
+        assert_eq!(failed["publication_errors"].as_array().unwrap().len(), 2);
+        assert!(
+            failed["available_artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value["artifact"]["path"]
+                    == "projects/cad/builds/one/measurements.json")
+        );
+        let (_, bytes) = worker
+            .workspace
+            .read_generated_bytes("projects/cad/builds/one/measurements.json")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["answers"][0]["id"],
+            "kept"
+        );
+        let schema = crate::resources::contracts::read(
+            "printable://contracts/cad_build/status",
+            Default::default(),
+        )
+        .unwrap();
+        jsonschema::validator_for(&schema["outputSchema"])
             .unwrap()
             .validate(&failed)
             .unwrap();

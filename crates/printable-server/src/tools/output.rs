@@ -21,6 +21,10 @@ fn artifact() -> Value {
     )
 }
 
+fn publication_errors() -> Value {
+    json!({"type":"array","items":object(json!({"artifact":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}), &["artifact","code","message"])})
+}
+
 fn cad_inspection_completed() -> (Value, Map<String, Value>) {
     let mut report = serde_json::to_value(schemars::schema_for!(crate::cad::inspection::Report))
         .expect("CAD inspection schema serializes");
@@ -33,8 +37,10 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
     (
         object(
             json!({
-                "completion":{"const":"completed"}, "scope":{"const":"cad_inspection"},
+                "completion":{"enum":["completed","partial"]}, "scope":{"const":"cad_inspection"},
                 "inspection":report, "build_directory":{"type":"string"},
+                "model":object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "publication_errors":publication_errors(),
                 "artifacts":{"type":"array","items":object(json!({
                     "artifact":artifact(), "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}
                 }), &["artifact","sha256"])}
@@ -53,7 +59,7 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
 
 /// Selected inspection results exclude unrelated delivery qualification contracts.
 pub fn cad_action_schema(action: &str) -> Option<Value> {
-    if action != "inspect" {
+    if !matches!(action, "inspect" | "export") {
         return None;
     }
     let (completed, definitions) = cad_inspection_completed();
@@ -65,7 +71,7 @@ pub fn cad_action_schema(action: &str) -> Option<Value> {
             "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
             "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},
             "finished_at_unix_ms":{"type":"integer"},"execution_timeout_seconds":{"type":"integer"},
-            "error":{"type":"string"},"result":completed
+            "error":{"type":"string"},"result":completed,"publication_errors":publication_errors()
         }),
         &["build", "status", "phase"],
     );
@@ -435,6 +441,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical,inspection]},
                 "native_stage":{"type":"string"},
                 "progress_error":object(json!({"code":{"type":"string"},"message":{"type":"string"}}), &["code","message"]),
+                "publication_errors":publication_errors(),
                 "available_artifacts":{"type":"array","items":object(json!({"artifact":artifact(),"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["artifact","sha256"])}
             }), &["build","status","phase"])]});
             if let Some(definitions) = definitions {

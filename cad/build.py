@@ -18,6 +18,7 @@ from OCP.TColStd import TColStd_IndexedDataMapOfStringString
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from step import import_step
 from inspection import inspect
+from model import load_model, save_model
 
 
 def bounds(shape):
@@ -108,7 +109,8 @@ class Progress:
         for name in completed:
             if (self.directory / "output" / name).stat().st_size == 0:
                 raise ValueError(f"empty CAD artifact: {name}")
-            self.completed.append(name)
+            if name not in self.completed:
+                self.completed.append(name)
         write_json(self.directory / "progress.json", {
             "stage": stage, "completed_artifacts": self.completed,
         })
@@ -119,7 +121,9 @@ def build(request, directory):
     progress.advance("reading_source")
     source = directory / request["source"]
     source_metadata = {"resolved_length_unit": "mm"}
-    if request["action"] == "model" or (request["action"] == "inspect" and source.suffix.lower() == ".py"):
+    if request.get("reuse_model"):
+        assembly, source_metadata = load_model(source)
+    elif request["action"] == "model" or (request["action"] in {"inspect", "export"} and source.suffix.lower() == ".py"):
         sys.path.insert(0, str(directory / "inputs"))
         sys.path.insert(0, str(source.parent))
         namespace = runpy.run_path(
@@ -127,16 +131,20 @@ def build(request, directory):
             init_globals={"parameters": request["parameters"], "cq": cq},
         )
         assembly = assembly_result(namespace.get("result"))
-    elif request["action"] in {"import_step", "inspect"}:
+    elif request["action"] in {"import_step", "inspect", "export"}:
         assembly, source_metadata = import_step(source)
     else:
         raise ValueError("unsupported CAD action")
 
     progress.advance("component_inspection")
-    if request["action"] == "inspect":
+    if request["action"] in {"inspect", "export"}:
         output = directory / "output"
         output.mkdir()
-        inspect(assembly, original_names(assembly), request["inspection"], output)
+        if request["inspection"].get("retain_model", True) and not request.get("reuse_model"):
+            progress.advance("retaining_model")
+            save_model(assembly, source_metadata, output / "model.cadmodel")
+            progress.advance("component_inspection", "model.cadmodel")
+        inspect(assembly, original_names(assembly), request["inspection"], output, progress, export_glb)
         report = json.loads((output / "report.json").read_text())
         write_json(output / "measurements.json", {"scope":"cad_measurements", "completion":"partial", **report})
         progress.advance("completed", "components.json", "measurements.json")

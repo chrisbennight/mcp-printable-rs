@@ -57,7 +57,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
-| `cad_build` | `inspect`, `model`, `import_step`, `status`, `cancel` |
+| `cad_build` | `inspect`, `export`, `model`, `import_step`, `status`, `cancel` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |

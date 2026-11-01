@@ -118,7 +118,7 @@ RUN apt-get update && apt-get upgrade -y \
  && python3 -m venv /opt/cad
 COPY cad/requirements.txt /opt/printable/cad/requirements.txt
 RUN /opt/cad/bin/pip install --no-cache-dir -r /opt/printable/cad/requirements.txt
-COPY cad/build.py cad/step.py cad/inspection.py /opt/printable/cad/
+COPY cad/build.py cad/step.py cad/inspection.py cad/model.py cad/questions.py cad/delivery.py /opt/printable/cad/
 COPY --from=build /app/target/release/printable-cad-worker /usr/local/bin/printable-cad-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app

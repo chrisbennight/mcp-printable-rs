@@ -60,6 +60,7 @@ def run(client, output):
         client.download(result["build_directory"] + "/report.json", report_path)
         if json.loads(report_path.read_text()) != result:
             raise ValueError("CAD retained report differs from the public result")
+    verify_inspection(client, project, output)
     if call("inspect", "scene", {})["scene_state"] != before:
         raise ValueError("Independent CAD build changed the live Blender scene")
     print("CAD_CLIENT_OK: project build, STEP round trip, verified downloads, unchanged live scene")
@@ -75,7 +76,7 @@ def run(client, output):
     if state.get("project_id") != project_id:
         raise ValueError("Public project scene did not bind the requested identity")
     attached = call("scene", "attach_cad", {"project_id": project_id,
-        "path": "builds/import/model.glb", "expected_scene": state})
+        "path": "inspection/generated-followup/selected.glb", "expected_scene": state})
     if attached["object_count"] < 1 or attached["units"] != "mm":
         raise ValueError("Public CAD attachment returned no millimetre scene geometry")
     state = call("inspect", "scene", {})["scene_state"]
@@ -92,6 +93,45 @@ def run(client, output):
     if call("inspect", "scene", {})["scene_state"].get("project_id") != before.get("project_id"):
         raise ValueError("Public checkpoint restore lost the original project identity")
     print("PROJECT_SCENE_CLIENT_OK: guarded CAD attachment, native dimensions, restored scene")
+
+
+def verify_inspection(client, project, output):
+    """A public follow-up consumes the returned native identity, not source code."""
+    evidence = []
+    for name, source, parameters in (("generated", "part.py", {"width":42}), ("step", "builds/model/model.step", {})):
+        started = time.monotonic()
+        first = client.call("cad_build", {"action":"inspect", "params":{
+            "project_id":project["project_id"], "source":source, "parameters":parameters,
+            "output_dir":f"inspection/{name}", "background":False, "limit":1}})
+        first_seconds = time.monotonic() - started
+        identity = first["inspection"]["components"][0]["id"]
+        if first["completion"] != "completed" or any(item["artifact"]["path"].endswith((".step", ".stl", ".glb")) for item in first["artifacts"]):
+            raise ValueError("Focused inspection generated unrelated deliveries")
+        started = time.monotonic()
+        followup = client.call("cad_build", {"action":"export", "params":{
+            "project_id":project["project_id"], "model":first["model"],
+            "output_dir":f"inspection/{name}-followup", "background":False,
+            "selection":{"component_ids":[identity]}, "exports":["stl", "glb"],
+            "questions":[{"kind":"features", "id":"faces", "component_id":identity},
+                         {"kind":"validity", "id":"valid", "component_id":identity},
+                         {"kind":"validity", "id":"missing", "component_id":"absent"}]}})
+        followup_seconds = time.monotonic() - started
+        answers = {answer["id"]:answer for answer in followup["inspection"]["answers"]}
+        if (followup["completion"] != "partial" or not answers["valid"]["evidence"]["valid"]
+                or answers["missing"]["status"] != "unavailable" or not answers["faces"]["evidence"]["features"]):
+            raise ValueError("Batched native answers lost successful or unavailable evidence")
+        if {item["format"] for item in followup["inspection"]["exports"]} != {"stl", "glb"} or any(item["status"] != "completed" for item in followup["inspection"]["exports"]):
+            raise ValueError("Follow-up exported unrequested formats")
+        item = next(item for item in followup["artifacts"] if item["artifact"]["path"].endswith("selected.stl"))
+        destination = output / f"{name}-selected.stl"
+        client.download(item["artifact"]["path"], destination)
+        if hashlib.sha256(destination.read_bytes()).hexdigest() != item["sha256"]:
+            raise ValueError("Selected CAD delivery failed download verification")
+        evidence.append({"source":name, "first_answer_seconds":first_seconds, "followup_with_selected_outputs_seconds":followup_seconds,
+                         "cad_calls":2, "first_result_json_bytes":len(json.dumps(first).encode()),
+                         "followup_result_json_bytes":len(json.dumps(followup).encode()), "model_tokens":None})
+    (output / "inspection-evidence.json").write_text(json.dumps(evidence, indent=2))
+    print("CAD_INSPECTION_CLIENT_OK: generated/STEP native reuse, batched answers, selected export, explicit partial evidence")
 
 
 def verify_restored(client, output):
