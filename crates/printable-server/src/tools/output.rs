@@ -21,6 +21,60 @@ fn artifact() -> Value {
     )
 }
 
+fn cad_inspection_completed() -> (Value, Map<String, Value>) {
+    let mut report = serde_json::to_value(schemars::schema_for!(crate::cad::inspection::Report))
+        .expect("CAD inspection schema serializes");
+    let definitions = report
+        .as_object_mut()
+        .expect("report schema")
+        .remove("$defs")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    (
+        object(
+            json!({
+                "completion":{"const":"completed"}, "scope":{"const":"cad_inspection"},
+                "inspection":report, "build_directory":{"type":"string"},
+                "artifacts":{"type":"array","items":object(json!({
+                    "artifact":artifact(), "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}
+                }), &["artifact","sha256"])}
+            }),
+            &[
+                "completion",
+                "scope",
+                "inspection",
+                "build_directory",
+                "artifacts",
+            ],
+        ),
+        definitions,
+    )
+}
+
+/// Selected inspection results exclude unrelated delivery qualification contracts.
+pub fn cad_action_schema(action: &str) -> Option<Value> {
+    if action != "inspect" {
+        return None;
+    }
+    let (completed, definitions) = cad_inspection_completed();
+    let job = object(
+        json!({
+            "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
+            "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
+            "phase":{"enum":["input_snapshot","native_execution","terminal"]},
+            "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
+            "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},
+            "finished_at_unix_ms":{"type":"integer"},"execution_timeout_seconds":{"type":"integer"},
+            "error":{"type":"string"},"result":completed
+        }),
+        &["build", "status", "phase"],
+    );
+    Some(with_errors(
+        "cad_build",
+        json!({"type":"object", "anyOf":[completed,job], "$defs":definitions}),
+    ))
+}
+
 fn scene_state() -> Value {
     object(
         json!({
@@ -337,10 +391,16 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 crate::cad::qualification::Qualification
             ))
             .expect("CAD qualification schema serializes");
-            let definitions = qualification
+            let mut definitions = qualification
                 .as_object_mut()
                 .expect("schema object")
                 .remove("$defs");
+            let (inspection, inspection_definitions) = cad_inspection_completed();
+            definitions
+                .get_or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("qualification definitions")
+                .extend(inspection_definitions);
             let completed = object(
                 json!({
                     "completion": {"const":"completed"},
@@ -366,13 +426,13 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             historical["required"] = json!(["build_directory", "report", "artifacts"]);
             historical["not"] =
                 json!({"anyOf":[{"required":["completion"]},{"required":["qualification"]}]});
-            let mut result = json!({"type":"object","anyOf":[completed, object(json!({
+            let mut result = json!({"type":"object","anyOf":[completed, inspection, object(json!({
                 "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
                 "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
                 "phase":{"enum":["input_snapshot","native_execution","terminal"]},
                 "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
                 "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
-                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical]}
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical,inspection]}
             }), &["build","status","phase"])]});
             if let Some(definitions) = definitions {
                 result["$defs"] = definitions;

@@ -5,6 +5,60 @@ changing Blender's live scene. Create a project with `project`, then write or
 ingest its source and input artifacts. Paths in build requests are relative to
 that project's root.
 
+## Focused component inspection
+
+Use `cad_build` action `inspect` to find components and measure selected native
+CAD bounds without creating STEP, STL, or GLB exports, validating every solid,
+or searching every face for holes. It accepts STEP sources and Python scripts
+assigning `result`, with the same retained input and project conventions as a
+build. It leaves Blender unchanged.
+
+```json
+{
+  "action": "inspect",
+  "params": {
+    "project_id": "enclosure",
+    "source": "vendor/board.step",
+    "output_dir": "inspection/connectors",
+    "selection": {"name_contains": "USB"},
+    "frame": "assembly",
+    "limit": 10
+  }
+}
+```
+
+Inspection defaults to background admission. Use `status` or `cancel` with the
+returned build handle, as below; `background: false` waits synchronously.
+The positive `timeout_seconds` budget defaults to 600 seconds. The initial
+source import still loads the assembly; selecting a component does not promise
+partial STEP translation or reuse between separate inspection requests.
+
+The completed result has `scope: "cad_inspection"` and a typed `inspection`
+answer. It includes matching component occurrence paths, original names,
+placements, and bounds in millimetres. `frame: "assembly"` measures the placed
+component along the assembly axes; `frame: "component"` measures its own local
+axes. The placement always maps local coordinates to assembly coordinates.
+Bounds use native geometry without creating triangulation; their numerical
+precision follows the native geometry kernel, not a manufacturing tolerance.
+
+Select exact occurrence paths with `selection.component_ids`. Combine selectors
+to narrow a match. `selection.region_mm` contains `min` and `max` XYZ arrays and
+matches component bounds intersecting that region in assembly coordinates,
+regardless of the answer's frame. A bounds intersection is a search filter,
+not proof that the shapes touch. Missing requested identifiers are explicit;
+name searches return all matches rather than guessing one intended component.
+
+`offset` and the positive `limit` page the answer; the default page size is 20.
+`matched_count` and `next_offset` expose remaining matches. The retained
+`components.json` contains the complete names, hierarchy, and placement inventory
+without computing every component's bounds. Only the selected answer page is
+measured unless the requested spatial search needs bounds for filtering.
+No delivery or manufacturing qualification is inferred from inspection.
+Read `printable://contracts/cad_build/inspect` for the focused input and output
+contracts. Existing `model` and `import_step` actions retain full-build behavior.
+
+## Full CAD builds
+
 Optionally capture a [design revision](project-revisions.md) and pass its
 identity as `revision`. The build then uses verified retained source bytes and
 the revision's parameter values, returning requirement checks and a retained

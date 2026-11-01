@@ -565,7 +565,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Build project CAD from Python or STEP, retaining source, parameters and exports. Use background:true, then status or cancel with project_id/output_dir; disconnects do not cancel admitted work. Check completion and delivery qualification separately: inspection does not establish a printable part or physical suitability. Scripts assign result and read parameters; each output_dir identifies a new build. Does not change Blender or start printing.",
+        description: "Inspect project CAD components by name, occurrence or region without mesh exports; get selected bounds and placements in assembly or component coordinates. Build full CAD deliveries from Python or STEP with model/import_step. Inspect defaults to background admission; status/cancel use project_id/output_dir. Disconnects do not cancel admitted work. Scripts assign result; each output_dir is new. Inspection is geometric evidence, not manufacturing or physical qualification. Does not change Blender or start printing.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },

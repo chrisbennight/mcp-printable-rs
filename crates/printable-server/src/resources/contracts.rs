@@ -101,8 +101,13 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
         Some(action) => selected_schema(&full_schema, action)?,
         None => full_schema,
     };
-    let selected_output =
-        action.and_then(|action| crate::printers::action_output_schema(name, action));
+    let selected_output = action.and_then(|action| {
+        crate::printers::action_output_schema(name, action).or_else(|| {
+            (name == "cad_build")
+                .then(|| output::cad_action_schema(action))
+                .flatten()
+        })
+    });
     let output_scope = if selected_output.is_some() {
         "action"
     } else {

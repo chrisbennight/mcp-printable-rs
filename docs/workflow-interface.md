@@ -20,8 +20,8 @@ or `printable://contracts/{tool}` for a direct-parameter tool. For example,
 native viewport, dimensions, or overhang parameters. Input schemas are derived
 from the advertised tool schemas and include only their reachable definitions.
 The response explicitly identifies its output schema scope. Printer and print
-action contracts include only their selected action's output variants; other
-workflows currently retain tool-wide output schemas. Contract resources
+action contracts and CAD inspection include only their selected action's output
+variants; other workflows currently retain tool-wide output schemas. Contract resources
 for printer workflows also describe the rejected-call envelope, including typed
 filament deficits and validation fields. Rejections retain the MCP `isError`
 flag; other failures may use the general error envelope.
@@ -57,7 +57,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
 | `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
 | `scad_build` | `mesh`, `image`, `section` |
-| `cad_build` | `model`, `import_step`, `status`, `cancel` |
+| `cad_build` | `inspect`, `model`, `import_step`, `status`, `cancel` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |
 | `view` | `native`, `dimensions`, `section`, `overhangs` |
 | `render` | `scene`, `product`, `gallery`, `turntable` |
@@ -94,7 +94,7 @@ currently support STL; consolidating their names does not imply new formats.
 [Editing context](editor-context.md) describes paginated editor and selection
 inspection, explicit Python UI targets, and their lifetime semantics.
 
-Inspection, artifact and project listings, retained job history, frame
+The `inspect` tool, artifact and project listings, retained job history, frame
 artifacts, slicing profiles and settings, and printer and print pages accept
 positive caller counts and preserve their existing defaults. Inspection,
 artifact and project pages report `requested_limit` and `returned`. Scene pages

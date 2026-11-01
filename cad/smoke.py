@@ -23,6 +23,35 @@ def close(actual, expected):
     assert all(math.isclose(a, b, abs_tol=1e-5) for a, b in zip(actual, expected)), (actual, expected)
 
 
+def inspection_smoke(root):
+    source = ('result = cq.Assembly(name="board")\n'
+              'part = cq.Workplane().box(2, 4, 6)\n'
+              'result.add(part, name="USB_left", loc=cq.Location((10, 20, 30), (0, 0, 1), 90))\n'
+              'result.add(part, name="USB_right", loc=cq.Location((50, 20, 30)))\n')
+    reports = []
+    for name, options in [
+        ("first", {"selection": {"name_contains": "usb"}, "limit": 1}),
+        ("second", {"selection": {"name_contains": "usb"}, "offset": 1}),
+        ("local", {"selection": {"region_mm": {"min": [7, 18, 26], "max": [13, 22, 34]}}, "frame": "component"}),
+        ("missing", {"selection": {"component_ids": ["absent"]}}),
+    ]:
+        directory = root / name
+        directory.mkdir()
+        (directory / "model.py").write_text(source)
+        build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": options}, directory)
+        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json"}
+        reports.append(json.loads((directory / "output/report.json").read_text()))
+    first, second, local, missing = reports
+    assert first["matched_count"] == 2 and first["next_offset"] == 1
+    assert second["next_offset"] is None
+    assert first["components"][0]["id"] != second["components"][0]["id"]
+    close(first["components"][0]["bounds_mm"]["size"], [4, 2, 6])
+    close(first["components"][0]["bounds_mm"]["min"], [8, 19, 27])
+    assert local["matched_count"] == 1
+    close(local["components"][0]["bounds_mm"]["size"], [2, 4, 6])
+    assert missing["missing_component_ids"] == ["absent"] and not missing["components"]
+
+
 def main():
     hole_grid = [(-12, -8), (-12, 8), (12, -8), (12, 8)]
     for width in [40, 60]:
@@ -41,6 +70,7 @@ def main():
     assert vertical_holes(cq.Face.makePlane(10, 20))["status"] == "unmeasured"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
+        inspection_smoke(root)
         (root / "model.py").write_text('result = cq.Workplane().box(parameters["width"], 20, 30)\n')
         build({"action": "model", "source": "model.py", "parameters": {"width": 10},
                "linear_tolerance_mm": 0.05, "angular_tolerance_rad": 0.1}, root)
@@ -85,6 +115,14 @@ def main():
         named_assembly, _ = import_step(named)
         assert any(v["occurrence_name"] == "InstanceName" and v["product_name"] == "PartName"
                    for v in original_names(named_assembly).values())
+        inspected = root / "inspected-step"
+        inspected.mkdir()
+        (inspected / "source.step").write_bytes(named.read_bytes())
+        build({"action": "inspect", "source": "source.step", "parameters": {},
+               "inspection": {"selection": {"name_contains": "InstanceName"}}}, inspected)
+        measured = json.loads((inspected / "output/report.json").read_text())
+        assert measured["matched_count"] == 1
+        close(measured["components"][0]["bounds_mm"]["size"], [2, 3, 4])
         converted = root / "imported"
         converted.mkdir()
         (converted / "source.step").write_bytes(named.read_bytes())

@@ -1,5 +1,6 @@
 //! Project CAD builds delegated to a dedicated native worker.
 
+pub mod inspection;
 pub mod qualification;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
@@ -96,6 +97,7 @@ fn timeout_seconds() -> u64 {
 pub enum CadRequest {
     Model(BuildParams),
     ImportStep(ImportParams),
+    Inspect(inspection::InspectParams),
     Status(BuildHandle),
     Cancel(BuildHandle),
 }
@@ -104,6 +106,7 @@ impl CadRequest {
     fn parts(&self) -> Result<(&str, std::borrow::Cow<'_, BuildParams>), ToolError> {
         Ok(match self {
             Self::Model(params) => ("model", std::borrow::Cow::Borrowed(params)),
+            Self::Inspect(params) => ("inspect", std::borrow::Cow::Owned(params.build_params())),
             Self::ImportStep(params) => (
                 "import_step",
                 std::borrow::Cow::Owned(BuildParams {
@@ -131,6 +134,9 @@ impl CadRequest {
     fn validate(&self, workspace: &Workspace) -> Result<String, ToolError> {
         if let Self::Status(handle) | Self::Cancel(handle) = self {
             return build_directory(workspace, handle);
+        }
+        if let Self::Inspect(params) = self {
+            params.validate()?;
         }
         let (action, p) = self.parts()?;
         p.qualification.validate()?;
@@ -161,6 +167,7 @@ impl CadRequest {
             .to_ascii_lowercase();
         if (action == "model" && extension != "py")
             || (action == "import_step" && !matches!(extension.as_str(), "step" | "stp"))
+            || (action == "inspect" && !matches!(extension.as_str(), "py" | "step" | "stp"))
             || !(0.001..=10.0).contains(&p.linear_tolerance_mm)
             || !(0.01..=1.0).contains(&p.angular_tolerance_rad)
             || p.timeout_seconds == 0
@@ -473,7 +480,10 @@ impl CadWorker {
             }
             Ok::<_,ToolError>(sources)
         }).await.map_err(|_| ToolError::Cad("CAD input staging task failed".into()))??;
-        let native = json!({"action":action,"source":format!("inputs/{}",params.source),"parameters":params.parameters,"linear_tolerance_mm":params.linear_tolerance_mm,"angular_tolerance_rad":params.angular_tolerance_rad});
+        let mut native = json!({"action":action,"source":format!("inputs/{}",params.source),"parameters":params.parameters,"linear_tolerance_mm":params.linear_tolerance_mm,"angular_tolerance_rad":params.angular_tolerance_rad});
+        if let CadRequest::Inspect(inspection) = &request {
+            native["inspection"] = serde_json::to_value(inspection)?;
+        }
         std::fs::write(
             staging.path().join("request.json"),
             serde_json::to_vec(&native)?,
@@ -521,6 +531,7 @@ impl CadWorker {
                 )?;
             }
             match result {
+                Ok(()) if action == "inspect" => self.commit_inspection(staging.path(), output),
                 Ok(()) => self.commit(
                     staging.path(),
                     output,
@@ -540,6 +551,27 @@ impl CadWorker {
             )?;
         }
         result
+    }
+
+    fn commit_inspection(&self, staging: &Path, output: &str) -> Result<Value, ToolError> {
+        let report: inspection::Report =
+            serde_json::from_reader(open_native_file(&staging.join("output/report.json"))?)?;
+        let path = staging.join("output/components.json");
+        let artifact = self.workspace.commit_generated_artifact_bounded(
+            &format!("{output}/components.json"),
+            &path,
+            false,
+            u64::MAX,
+        )?;
+        let result = json!({"completion":"completed", "scope":"cad_inspection",
+            "inspection":report, "build_directory":output,
+            "artifacts":[{"artifact":artifact,"sha256":hash_file(&path)?}]});
+        self.workspace.write_generated_bytes(
+            &format!("{output}/report.json"),
+            &serde_json::to_vec(&result)?,
+            false,
+        )?;
+        Ok(result)
     }
 
     async fn execute(
@@ -722,6 +754,95 @@ mod tests {
 
     fn request() -> CadRequest {
         serde_json::from_value(json!({"action":"model","params":{"project_id":"cad","source":"source.py","output_dir":"builds/one"}})).unwrap()
+    }
+
+    #[test]
+    fn inspection_admission_and_selected_contract_preserve_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let input = json!({"action":"inspect","params":{
+            "project_id":"cad", "source":"source.py", "output_dir":"inspection/one",
+            "selection":{"name_contains":"USB"}, "timeout_seconds":7200
+        }});
+        let request: CadRequest = serde_json::from_value(input.clone()).unwrap();
+        assert!(request.parts().unwrap().1.background);
+        assert_eq!(
+            request.validate(&workspace).unwrap(),
+            "projects/cad/inspection/one"
+        );
+        for change in [
+            json!({"limit":0}),
+            json!({"selection":{"region_mm":{"min":[1,0,0],"max":[0,1,1]}}}),
+        ] {
+            let mut invalid = input.clone();
+            invalid["params"]
+                .as_object_mut()
+                .unwrap()
+                .extend(change.as_object().unwrap().clone());
+            assert!(
+                serde_json::from_value::<CadRequest>(invalid)
+                    .unwrap()
+                    .validate(&workspace)
+                    .is_err()
+            );
+        }
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/cad_build/inspect",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        assert_eq!(contract["output_schema_scope"], "action");
+        assert!(
+            contract["outputSchema"]
+                .to_string()
+                .contains("missing_component_ids")
+        );
+        assert!(
+            !contract["outputSchema"]
+                .to_string()
+                .contains("qualification")
+        );
+    }
+
+    #[test]
+    fn inspection_publishes_answers_without_delivery_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let worker = CadWorker::new(
+            workspace.clone(),
+            root.path().join("unused"),
+            root.path().join("unused.py"),
+        );
+        let staging = root.path().join("native");
+        std::fs::create_dir_all(staging.join("output")).unwrap();
+        let report = json!({"cadquery_version":"test", "units":"mm", "frame":"assembly",
+            "bounds_method":"native_geometry_without_triangulation", "component_count":0,
+            "matched_count":0,"offset":0,"next_offset":null,"components":[],"missing_component_ids":["absent"]});
+        std::fs::write(
+            staging.join("output/report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            staging.join("output/components.json"),
+            b"{\"nodes\":{},\"components\":[]}",
+        )
+        .unwrap();
+        let result = worker
+            .commit_inspection(&staging, "projects/cad/inspection/one")
+            .unwrap();
+        assert_eq!(result["scope"], "cad_inspection");
+        assert_eq!(
+            result["inspection"]["missing_component_ids"],
+            json!(["absent"])
+        );
+        assert!(result.get("qualification").is_none());
+        let schema =
+            serde_json::Value::Object(crate::tools::output::schema("cad_build").as_ref().clone());
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .validate(&result)
+            .unwrap();
     }
 
     #[test]
