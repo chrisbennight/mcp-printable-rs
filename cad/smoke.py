@@ -28,7 +28,8 @@ def inspection_smoke(root):
     source = ('result = cq.Assembly(name="board")\n'
               'part = cq.Workplane().box(2, 4, 6)\n'
               'result.add(part, name="USB_left", loc=cq.Location((10, 20, 30), (0, 0, 1), 90))\n'
-              'result.add(part, name="USB_right", loc=cq.Location((50, 20, 30)))\n')
+              'result.add(part, name="USB_right", loc=cq.Location((50, 20, 30)))\n'
+              'result["USB_left"].addSubshape(part.val().Faces()[0], color=cq.Color("red"))\n')
     reports = []
     for name, options in [
         ("first", {"selection": {"name_contains": "usb"}, "limit": 1}),
@@ -39,7 +40,7 @@ def inspection_smoke(root):
         directory = root / name
         directory.mkdir()
         (directory / "model.py").write_text(source)
-        build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": options}, directory)
+        build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": {"retain_model": False, **options}}, directory)
         assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json", "measurements.json"}
         reports.append(json.loads((directory / "output/report.json").read_text()))
     first, second, local, missing = reports
@@ -51,6 +52,46 @@ def inspection_smoke(root):
     assert local["matched_count"] == 1
     close(local["components"][0]["bounds_mm"]["size"], [2, 4, 6])
     assert missing["missing_component_ids"] == ["absent"] and not missing["components"]
+
+    from model import load_model
+    retained = root / "retained"
+    retained.mkdir()
+    (retained / "source.py").write_text(source)
+    build({"action":"inspect", "source":"source.py", "parameters":{}, "inspection":{
+        "selection":{"name_contains":"USB_left"}, "questions":[{"kind":"features", "id":"direct"}]}}, retained)
+    direct = json.loads((retained / "output/report.json").read_text())
+    assert direct["answers"][0]["status"] == "measured"
+    model = retained / "output/model.cadmodel"
+    restored, _ = load_model(model)
+    assert [name for _, name, _, _ in restored] == ["board/USB_left", "board/USB_right"]
+    assert list(restored["USB_left"]._subshape_colors.values()) == [cq.Color("red")]
+    close([restored.toCompound().BoundingBox().xlen], [43])
+    (retained / "source.py").write_text('raise AssertionError("source must not run again")\n')
+    followup = root / "followup"
+    followup.mkdir()
+    options = {"selection":{"component_ids":["board/USB_left"]}, "questions":[
+        {"kind":"features", "id":"faces", "component_id":"board/USB_left"},
+        {"kind":"distance", "id":"gap", "first":{"selection":{"name_contains":"USB_left"}}, "second":{"selection":{"name_contains":"USB_right"}}},
+        {"kind":"alignment", "id":"axes", "first":{"component_id":"board/USB_left", "face_index":0}, "second":{"component_id":"board/USB_right", "face_index":0}},
+        {"kind":"section", "id":"cut", "component_id":"board/USB_left", "origin_mm":[10,20,30], "normal":[0,0,1]},
+        {"kind":"validity", "id":"valid", "component_id":"board/USB_left"},
+        {"kind":"validity", "id":"missing", "component_id":"absent"},
+        {"kind":"validity", "id":"ambiguous", "selection":{"name_contains":"USB"}}], "exports":["step", "stl", "glb", "svg"]}
+    with patch("build.runpy.run_path", side_effect=AssertionError("script replay")), patch("build.import_step", side_effect=AssertionError("STEP replay")), patch("build.export_glb", side_effect=ValueError("preview unavailable")):
+        build({"action":"inspect", "source":str(model), "reuse_model":True, "inspection":options}, followup)
+    report = json.loads((followup / "output/report.json").read_text())
+    answers = {answer["id"]: answer for answer in report["answers"]}
+    assert all(answers[key]["status"] == "measured" for key in ("faces", "gap", "axes", "cut", "valid")), answers
+    assert answers["missing"]["status"] == "unavailable"
+    assert answers["ambiguous"]["status"] == "unavailable"
+    close([answers["gap"]["evidence"]["distance_mm"]], [37])
+    close([answers["axes"]["evidence"]["angle_degrees"]], [90])
+    close([answers["cut"]["evidence"]["length_mm"]], [12])
+    assert answers["valid"]["evidence"]["valid"]
+    assert {row["format"]:row["status"] for row in report["exports"]} == {"step":"completed", "stl":"completed", "glb":"failed", "svg":"completed"}
+    chosen, _ = import_step(followup / "output/selected.step")
+    close([chosen.toCompound().BoundingBox().xlen], [4])
+    assert len(chosen.toCompound().Solids()) == 1
 
 
 def main():

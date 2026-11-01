@@ -99,6 +99,7 @@ pub enum CadRequest {
     Model(BuildParams),
     ImportStep(ImportParams),
     Inspect(inspection::InspectParams),
+    Export(inspection::InspectParams),
     Status(BuildHandle),
     Cancel(BuildHandle),
 }
@@ -108,6 +109,7 @@ impl CadRequest {
         Ok(match self {
             Self::Model(params) => ("model", std::borrow::Cow::Borrowed(params)),
             Self::Inspect(params) => ("inspect", std::borrow::Cow::Owned(params.build_params())),
+            Self::Export(params) => ("export", std::borrow::Cow::Owned(params.build_params())),
             Self::ImportStep(params) => (
                 "import_step",
                 std::borrow::Cow::Owned(BuildParams {
@@ -136,8 +138,13 @@ impl CadRequest {
         if let Self::Status(handle) | Self::Cancel(handle) = self {
             return build_directory(workspace, handle);
         }
-        if let Self::Inspect(params) = self {
+        if let Self::Inspect(params) | Self::Export(params) = self {
             params.validate()?;
+            if matches!(self, Self::Export(_)) && params.exports.is_empty() {
+                return Err(ToolError::Validation(
+                    "CAD export requires at least one requested format".into(),
+                ));
+            }
         }
         let (action, p) = self.parts()?;
         p.qualification.validate()?;
@@ -168,7 +175,13 @@ impl CadRequest {
             .to_ascii_lowercase();
         if (action == "model" && extension != "py")
             || (action == "import_step" && !matches!(extension.as_str(), "step" | "stp"))
-            || (action == "inspect" && !matches!(extension.as_str(), "py" | "step" | "stp"))
+            || (matches!(action, "inspect" | "export")
+                && !match self {
+                    Self::Inspect(p) | Self::Export(p) if p.model.is_some() => {
+                        extension == "cadmodel"
+                    }
+                    _ => matches!(extension.as_str(), "py" | "step" | "stp"),
+                })
             || !(0.001..=10.0).contains(&p.linear_tolerance_mm)
             || !(0.01..=1.0).contains(&p.angular_tolerance_rad)
             || p.timeout_seconds == 0
@@ -487,8 +500,15 @@ impl CadWorker {
             Ok::<_,ToolError>(sources)
         }).await.map_err(|_| ToolError::Cad("CAD input staging task failed".into()))??;
         let mut native = json!({"action":action,"source":format!("inputs/{}",params.source),"parameters":params.parameters,"linear_tolerance_mm":params.linear_tolerance_mm,"angular_tolerance_rad":params.angular_tolerance_rad});
-        if let CadRequest::Inspect(inspection) = &request {
+        if let CadRequest::Inspect(inspection) | CadRequest::Export(inspection) = &request {
             native["inspection"] = serde_json::to_value(inspection)?;
+            if let Some(model) = &inspection.model {
+                let staged = input_root.join(&params.source);
+                if !hash_file(&staged)?.eq_ignore_ascii_case(&model.sha256) {
+                    return Err(ToolError::Validation("retained CAD model digest changed; use the original artifact or explicitly create a new model".into()));
+                }
+                native["reuse_model"] = json!(true);
+            }
         }
         std::fs::write(
             staging.path().join("request.json"),
@@ -561,7 +581,13 @@ impl CadWorker {
                 }
             }
             match result {
-                Ok(()) if action == "inspect" => self.commit_inspection(staging.path(), output),
+                Ok(()) if matches!(action, "inspect" | "export") => {
+                    let reference = match &request {
+                        CadRequest::Inspect(p) | CadRequest::Export(p) => p.model.as_ref(),
+                        _ => unreachable!("inspection action"),
+                    };
+                    self.commit_inspection(staging.path(), output, &params.project_id, reference)
+                }
                 Ok(()) => self.commit(
                     staging.path(),
                     output,
@@ -583,7 +609,13 @@ impl CadWorker {
         result
     }
 
-    fn commit_inspection(&self, staging: &Path, output: &str) -> Result<Value, ToolError> {
+    fn commit_inspection(
+        &self,
+        staging: &Path,
+        output: &str,
+        project: &str,
+        reference: Option<&inspection::ModelReference>,
+    ) -> Result<Value, ToolError> {
         let report: inspection::Report =
             serde_json::from_reader(open_native_file(&staging.join("output/report.json"))?)?;
         let path = staging.join("output/components.json");
@@ -593,9 +625,64 @@ impl CadWorker {
             false,
             u64::MAX,
         )?;
-        let result = json!({"completion":"completed", "scope":"cad_inspection",
+        let partial = report
+            .answers
+            .iter()
+            .any(|answer| matches!(answer.status, inspection::AnswerStatus::Unavailable))
+            || report
+                .exports
+                .iter()
+                .any(|export| matches!(export.status, inspection::ExportStatus::Failed));
+        let mut result = json!({"completion":if partial {"partial"} else {"completed"}, "scope":"cad_inspection",
             "inspection":report, "build_directory":output,
             "artifacts":[{"artifact":artifact,"sha256":hash_file(&path)?}]});
+        if let Some(reference) = reference {
+            result["model"] = serde_json::to_value(reference)?;
+        }
+        let model = staging.join("output/model.cadmodel");
+        if model.try_exists()? {
+            let path = format!("{output}/model.cadmodel");
+            let artifact =
+                self.workspace
+                    .commit_generated_artifact_bounded(&path, &model, false, u64::MAX)?;
+            let digest = hash_file(&model)?;
+            let project_root = projects::resolve(&self.workspace, project, "model.cadmodel")?;
+            let root = project_root
+                .strip_suffix("model.cadmodel")
+                .expect("known suffix");
+            result["model"] =
+                json!({"path":path.strip_prefix(root).expect("project output"), "sha256":digest});
+            result["artifacts"]
+                .as_array_mut()
+                .expect("artifacts")
+                .push(json!({"artifact":artifact,"sha256":digest}));
+        }
+        for export in &report.exports {
+            if matches!(export.status, inspection::ExportStatus::Completed) {
+                let name = match export.format {
+                    inspection::Format::Step => "selected.step",
+                    inspection::Format::Stl => "selected.stl",
+                    inspection::Format::Glb => "selected.glb",
+                    inspection::Format::Svg => "selected.svg",
+                };
+                if export.filename.as_deref() != Some(name) {
+                    return Err(ToolError::Cad(
+                        "native export filename does not match its declared format".into(),
+                    ));
+                }
+                let path = staging.join("output").join(name);
+                let artifact = self.workspace.commit_generated_artifact_bounded(
+                    &format!("{output}/{name}"),
+                    &path,
+                    false,
+                    u64::MAX,
+                )?;
+                result["artifacts"]
+                    .as_array_mut()
+                    .expect("artifacts")
+                    .push(json!({"artifact":artifact,"sha256":hash_file(&path)?}));
+            }
+        }
         self.workspace.write_generated_bytes(
             &format!("{output}/report.json"),
             &serde_json::to_vec(&result)?,
@@ -854,7 +941,7 @@ mod tests {
         assert!(
             !contract["outputSchema"]
                 .to_string()
-                .contains("qualification")
+                .contains("\"qualification\"")
         );
     }
 
@@ -883,7 +970,7 @@ mod tests {
         )
         .unwrap();
         let result = worker
-            .commit_inspection(&staging, "projects/cad/inspection/one")
+            .commit_inspection(&staging, "projects/cad/inspection/one", "cad", None)
             .unwrap();
         assert_eq!(result["scope"], "cad_inspection");
         assert_eq!(
@@ -975,6 +1062,35 @@ mod tests {
             project_id: "cad".into(),
             output_dir: "builds/one".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn changed_native_model_is_rejected_without_replaying_source_or_starting_native_work() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = lifecycle_worker(root.path());
+        worker
+            .workspace
+            .write_artifact("projects/cad/retained.cadmodel", b"changed snapshot", false)
+            .unwrap();
+        let request: CadRequest = serde_json::from_value(json!({"action":"inspect", "params":{
+            "project_id":"cad", "output_dir":"inspection/stale", "background":false,
+            "model":{"path":"retained.cadmodel", "sha256":"0".repeat(64)}
+        }}))
+        .unwrap();
+        let error = worker.build(request).await.unwrap_err();
+        assert!(error.to_string().contains("digest changed"));
+        assert!(!root.path().join("native.calls").exists());
+        let state = worker
+            .status(
+                BuildHandle {
+                    project_id: "cad".into(),
+                    output_dir: "inspection/stale".into(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["status"], "failed");
     }
 
     #[tokio::test]

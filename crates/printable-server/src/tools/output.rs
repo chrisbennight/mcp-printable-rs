@@ -33,8 +33,9 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
     (
         object(
             json!({
-                "completion":{"const":"completed"}, "scope":{"const":"cad_inspection"},
+                "completion":{"enum":["completed","partial"]}, "scope":{"const":"cad_inspection"},
                 "inspection":report, "build_directory":{"type":"string"},
+                "model":object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
                 "artifacts":{"type":"array","items":object(json!({
                     "artifact":artifact(), "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}
                 }), &["artifact","sha256"])}
@@ -53,7 +54,7 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
 
 /// Selected inspection results exclude unrelated delivery qualification contracts.
 pub fn cad_action_schema(action: &str) -> Option<Value> {
-    if action != "inspect" {
+    if !matches!(action, "inspect" | "export") {
         return None;
     }
     let (completed, definitions) = cad_inspection_completed();

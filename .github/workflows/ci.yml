@@ -252,6 +252,14 @@ jobs:
           path: target/installation-evidence/discovery
           if-no-files-found: ignore
           retention-days: 14
+      - name: Retain CAD workflow evidence
+        if: steps.scope.outputs.images == 'true' && (always())
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cad-inspection-evidence
+          path: target/installation-evidence/cad-inspection-client.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Check Blender capabilities and shutdown recovery
         if: steps.scope.outputs.images == 'true'
         env:

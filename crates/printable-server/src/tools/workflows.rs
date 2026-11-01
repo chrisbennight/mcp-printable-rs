@@ -565,7 +565,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cad_build",
-        description: "Inspect project CAD components by name, occurrence or region without mesh exports; get selected bounds and placements in assembly or component coordinates. Build full CAD deliveries from Python or STEP with model/import_step. Inspect defaults to background admission; status/cancel use project_id/output_dir. Disconnects do not cancel admitted work. Scripts assign result; each output_dir is new. Inspection is geometric evidence, not manufacturing or physical qualification. Does not change Blender or start printing.",
+        description: "Inspect STEP or CadQuery Python by component name, occurrence or region; reuse the returned native model identity for follow-ups without source replay. Batch features, distance, alignment, section and explicit validity questions in inspect; choose optional STEP/STL/GLB/SVG outputs there or with export. Read printable://contracts/cad_build/inspect or /export for selected contracts. Inspect/export default to background handles; status/cancel use project_id/output_dir. Each output_dir is new. Model/import_step retain full deliveries. Geometric evidence does not qualify physical fit or manufacturing. Does not change Blender or print.",
         schema: workflow_schema_of::<crate::cad::CadRequest>,
         annotations: code_annotations,
     },

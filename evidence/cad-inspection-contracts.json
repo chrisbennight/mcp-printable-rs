@@ -1,0 +1,21 @@
+{
+  "baseline_revision": "cc5f643bc48e44582afd11107a3d8d3fd6df82d4",
+  "baseline": {
+    "boundary": "compact UTF-8 JSON; default optional-worker availability; excludes transport, instructions and model token usage",
+    "full_catalog_json_bytes": 219703,
+    "cad_tool_json_bytes": 12832,
+    "contract_index_json_bytes": 2418,
+    "inspect_contract_json_bytes": null,
+    "export_contract_json_bytes": null,
+    "model_tokens": null
+  },
+  "candidate": {
+    "boundary": "compact UTF-8 JSON; default optional-worker availability; excludes transport, instructions and model token usage",
+    "full_catalog_json_bytes": 234527,
+    "cad_tool_json_bytes": 27656,
+    "contract_index_json_bytes": 2437,
+    "inspect_contract_json_bytes": 16166,
+    "export_contract_json_bytes": 16164,
+    "model_tokens": null
+  }
+}
