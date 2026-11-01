@@ -86,13 +86,17 @@ def inspect(assembly, names, request, output, progress=None, export_glb=None):
             raise ValueError(f"measurement target matched {len(candidates)} occurrences; select exactly one")
         return candidates[0]
 
-    for question in request.get("questions", []):
-        report["answers"].append(answer(question, components, frame, native_bounds, resolve_target))
+    def save_measurements():
         temporary = output / "measurements.json.tmp"
         temporary.write_text(json.dumps({"completion": "partial", "scope": "cad_measurements", **report}, allow_nan=False))
         temporary.replace(output / "measurements.json")
-    if progress and report["answers"]:
-        progress.advance("measurement", "measurements.json")
+        if progress:
+            progress.advance("measurement", "measurements.json")
+
+    save_measurements()
+    for question in request.get("questions", []):
+        report["answers"].append(answer(question, components, frame, native_bounds, resolve_target))
+        save_measurements()
     formats = request.get("exports", [])
     if formats:
         from delivery import deliver

@@ -637,7 +637,8 @@ impl CadWorker {
             "inspection":report, "build_directory":output,
             "artifacts":[{"artifact":artifact,"sha256":hash_file(&path)?}]});
         if let Some(reference) = reference {
-            result["model"] = serde_json::to_value(reference)?;
+            result["model"] =
+                json!({"path":reference.path, "sha256":reference.sha256.to_ascii_lowercase()});
         }
         let model = staging.join("output/model.cadmodel");
         if model.try_exists()? {
@@ -970,9 +971,18 @@ mod tests {
         )
         .unwrap();
         let result = worker
-            .commit_inspection(&staging, "projects/cad/inspection/one", "cad", None)
+            .commit_inspection(
+                &staging,
+                "projects/cad/inspection/one",
+                "cad",
+                Some(&inspection::ModelReference {
+                    path: "retained.cadmodel".into(),
+                    sha256: "A".repeat(64),
+                }),
+            )
             .unwrap();
         assert_eq!(result["scope"], "cad_inspection");
+        assert_eq!(result["model"]["sha256"], "a".repeat(64));
         assert_eq!(
             result["inspection"]["missing_component_ids"],
             json!(["absent"])

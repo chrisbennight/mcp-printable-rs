@@ -13,27 +13,27 @@
   "sources": {
     "generated": {
       "full_build": {
-        "seconds": 0.1354054578114301,
+        "seconds": 0.1326621670741588,
         "report_json_bytes": 1257,
         "output_bytes": 602577
       },
       "first_inspection_with_retention": {
-        "seconds": 0.01895979093387723,
+        "seconds": 0.01907983305864036,
         "report_json_bytes": 616,
         "output_bytes": 139351
       },
       "first_inspection_without_retention": {
-        "seconds": 0.015737042063847184,
+        "seconds": 0.016343166818842292,
         "report_json_bytes": 616,
         "output_bytes": 9676
       },
       "reused_measurements": {
-        "seconds": 0.008698333986103535,
+        "seconds": 0.009013958973810077,
         "report_json_bytes": 2147,
         "output_bytes": 12719
       },
       "reused_selected_step": {
-        "seconds": 0.0036279999185353518,
+        "seconds": 0.004324417095631361,
         "report_json_bytes": 921,
         "output_bytes": 33482
       },
@@ -43,27 +43,27 @@
     },
     "step": {
       "full_build": {
-        "seconds": 0.14113883394747972,
+        "seconds": 0.1415067920461297,
         "report_json_bytes": 1521,
         "output_bytes": 627939
       },
       "first_inspection_with_retention": {
-        "seconds": 0.024307416984811425,
+        "seconds": 0.02442687493748963,
         "report_json_bytes": 785,
         "output_bytes": 113321
       },
       "first_inspection_without_retention": {
-        "seconds": 0.02188033307902515,
+        "seconds": 0.022240417078137398,
         "report_json_bytes": 785,
         "output_bytes": 12216
       },
       "reused_measurements": {
-        "seconds": 0.008007708005607128,
+        "seconds": 0.008367625065147877,
         "report_json_bytes": 2661,
         "output_bytes": 15939
       },
       "reused_selected_step": {
-        "seconds": 0.0032709999941289425,
+        "seconds": 0.003528874833136797,
         "report_json_bytes": 1090,
         "output_bytes": 39114
       },

@@ -93,6 +93,34 @@ def inspection_smoke(root):
     close([chosen.toCompound().BoundingBox().xlen], [4])
     assert len(chosen.toCompound().Solids()) == 1
 
+    from inspection import answer as native_answer
+
+    def interrupted_question(question, *args):
+        if question["id"] == "later":
+            raise KeyboardInterrupt("native interruption")
+        return native_answer(question, *args)
+
+    for name, questions, exports, target, injected in [
+        ("later-question", [{"kind":"validity", "id":"first"}, {"kind":"validity", "id":"later"}], [], "inspection.answer", interrupted_question),
+        ("bounds-export", [], ["glb"], "build.export_glb", KeyboardInterrupt("native interruption")),
+    ]:
+        directory = root / name
+        directory.mkdir()
+        (directory / "part.py").write_text('result = cq.Workplane().box(10, 20, 30)\n')
+        with patch(target, side_effect=injected):
+            try:
+                build({"action":"inspect", "source":"part.py", "parameters":{}, "inspection":{
+                    "retain_model":False, "questions":questions, "exports":exports}}, directory)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("expected native interruption")
+        progress = json.loads((directory / "progress.json").read_text())
+        assert "measurements.json" in progress["completed_artifacts"]
+        partial = json.loads((directory / "output/measurements.json").read_text())
+        close(partial["components"][0]["bounds_mm"]["size"], [10,20,30])
+        assert [item["id"] for item in partial["answers"]] == (["first"] if questions else [])
+
 
 def main():
     hole_grid = [(-12, -8), (-12, 8), (12, -8), (12, 8)]

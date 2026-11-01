@@ -21,11 +21,11 @@ container CI; these timings do not predict its performance.
 
 | Native operation | Generated source | STEP source |
 | --- | ---: | ---: |
-| Full build, all delivery formats and normal checks | 0.135 s | 0.141 s |
+| Full build, all delivery formats and normal checks | 0.133 s | 0.142 s |
 | First focused inspection, retaining native geometry | 0.019 s | 0.024 s |
 | First focused inspection, no retention | 0.016 s | 0.022 s |
 | Reused features and explicit validity question | 0.009 s | 0.008 s |
-| Reused selected STEP output | 0.004 s | 0.003 s |
+| Reused selected STEP output | 0.004 s | 0.004 s |
 
 Retention stored 129,675 bytes for the generated fixture and 101,105 bytes for
 the imported fixture. Initial output files totalled 139,351 and 113,321 bytes,
