@@ -17,6 +17,7 @@ from OCP.TColStd import TColStd_IndexedDataMapOfStringString
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from step import import_step
+from inspection import inspect
 
 
 def bounds(shape):
@@ -95,7 +96,7 @@ def original_names(node, parent=""):
 def build(request, directory):
     source = directory / request["source"]
     source_metadata = {"resolved_length_unit": "mm"}
-    if request["action"] == "model":
+    if request["action"] == "model" or (request["action"] == "inspect" and source.suffix.lower() == ".py"):
         sys.path.insert(0, str(directory / "inputs"))
         sys.path.insert(0, str(source.parent))
         namespace = runpy.run_path(
@@ -103,10 +104,16 @@ def build(request, directory):
             init_globals={"parameters": request["parameters"], "cq": cq},
         )
         assembly = assembly_result(namespace.get("result"))
-    elif request["action"] == "import_step":
+    elif request["action"] in {"import_step", "inspect"}:
         assembly, source_metadata = import_step(source)
     else:
         raise ValueError("unsupported CAD action")
+
+    if request["action"] == "inspect":
+        output = directory / "output"
+        output.mkdir()
+        inspect(assembly, original_names(assembly), request["inspection"], output)
+        return
 
     shape = assembly.toCompound()
     if shape.isNull() or not shape.Vertices():
