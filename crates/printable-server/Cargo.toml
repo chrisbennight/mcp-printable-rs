@@ -58,7 +58,7 @@ subtle = "=2.6.1"
 # Clears Bambu Lab sign-in secrets from memory when they are dropped.
 zeroize = "1.9"
 # Store project bundles without optional archive codecs or encryption.
-zip = { version = "8.6", default-features = false }
+zip = { version = "9.2.1", default-features = false }
 
 jsonschema = { version = "0.52", default-features = false }
 
