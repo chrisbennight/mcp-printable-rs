@@ -464,6 +464,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         cad_endpoint: None,
         slicer_endpoint: None,
         printers: None,
+        library: None,
         flame: None,
         recon: None,
         scad_concurrency: 2,
@@ -2756,9 +2757,19 @@ async fn delivered_mutation_failures_validate_without_automatic_replay() {
         })
         .await;
         let tmp = tempfile::tempdir().unwrap();
+        // The hanging fake would otherwise hold the call for the full default
+        // transport allowance before the timeout outcome is observable.
+        let blender = BlenderClient::new(
+            fake.host(),
+            fake.port(),
+            ClientOptions {
+                default_budget: std::time::Duration::from_secs(1),
+                ..ClientOptions::default()
+            },
+        );
         let server = PrintableServer::new(
             workspace(Some(tmp.path())),
-            Arc::new(client(&fake.host(), fake.port())),
+            Arc::new(blender),
             Arc::new(settings(&fake.host(), fake.port())),
         );
         let result = server

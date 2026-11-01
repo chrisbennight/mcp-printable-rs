@@ -1463,6 +1463,15 @@ fn code_annotations() -> ToolAnnotations {
         .open_world(true)
 }
 
+/// Public model sites: reaches the internet and can write project files.
+fn library_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(true)
+        .idempotent(false)
+        .open_world(true)
+}
+
 /// The tool catalog, in a stable order.
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -5623,6 +5632,10 @@ async fn status(
         "cad": cad,
         "slicer": slicer,
         "printers": {"configured": settings.printers.is_some()},
+        "library": settings.library.as_ref().map_or_else(
+            || json!({"configured": false}),
+            |library| library.report(),
+        ),
         "flame": settings.flame.as_ref().map_or_else(
             || json!({"configured": false}),
             |library| {

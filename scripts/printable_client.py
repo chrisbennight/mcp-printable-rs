@@ -4,12 +4,15 @@
 import argparse
 import base64
 import hashlib
+from http.client import HTTPResponse
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -78,7 +81,7 @@ class Client:
             result["Mcp-Session-Id"] = self.session
         return result
 
-    def rpc(self, method, params=None, notification=False):
+    def rpc(self, method, params=None, notification=False, timeout=180, deadline=None):
         self.sequence += 1
         request = {"jsonrpc": "2.0", "method": method}
         if params is not None:
@@ -86,35 +89,51 @@ class Client:
         if not notification:
             request["id"] = self.sequence
         with self.http.open(Request(self.url, data=json.dumps(request).encode(),
-                                    headers=self.headers()), timeout=180) as response:
+                                    headers=self.headers()), timeout=timeout) as response:
             if response.headers.get("Mcp-Session-Id"):
                 self.session = response.headers["Mcp-Session-Id"]
             if notification:
                 return None
-            if response.headers.get_content_type() == "text/event-stream":
+            def chunks():
                 used = 0
-                data = []
-                for _ in range(MAX_RESPONSE):
-                    line = response.readline(MAX_RESPONSE - used + 1)
-                    used += len(line)
+                while True:
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("CAD wait expired while reading status; native work continues")
+                        if isinstance(response, HTTPResponse) and response.fp is not None:
+                            # urllib's HTTPResponse owns this socket for this request.
+                            response.fp.raw._sock.settimeout(remaining)
+                    chunk = response.read1(min(65536, MAX_RESPONSE - used + 1))
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError("CAD wait expired while reading status; native work continues")
+                    used += len(chunk)
                     if used > MAX_RESPONSE:
                         raise ValueError("MCP response exceeds client limit")
-                    if not line:
-                        break
-                    if line in (b"\n", b"\r\n") and data:
-                        payload = b"\n".join(data)
-                        data = []
-                        if not payload.strip():
-                            continue
-                        message = json.loads(payload)
-                        if message.get("id") == self.sequence:
-                            return self.result(message)
-                    elif line.startswith(b"data:"):
-                        data.append(line[5:].strip())
+                    if not chunk:
+                        return
+                    yield chunk
+
+            if response.headers.get_content_type() == "text/event-stream":
+                pending = b""
+                data = []
+                for chunk in chunks():
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, _, pending = pending.partition(b"\n")
+                        line = line.rstrip(b"\r")
+                        if not line and data:
+                            payload = b"\n".join(data)
+                            data = []
+                            if not payload.strip():
+                                continue
+                            message = json.loads(payload)
+                            if message.get("id") == self.sequence:
+                                return self.result(message)
+                        elif line.startswith(b"data:"):
+                            data.append(line[5:].strip())
                 raise ValueError("MCP response ended without the requested result")
-            body = response.read(MAX_RESPONSE + 1)
-            if len(body) > MAX_RESPONSE:
-                raise ValueError("MCP response exceeds client limit")
+            body = b"".join(chunks())
             message = json.loads(body)
             if message.get("id") != self.sequence:
                 raise ValueError("MCP response identifier mismatch")
@@ -126,8 +145,11 @@ class Client:
             raise ValueError("MCP request failed; inspect service status before retrying mutations")
         return message["result"]
 
-    def call(self, name, arguments):
-        result = self.rpc("tools/call", {"name": name, "arguments": arguments})
+    def call(self, name, arguments, *, timeout=None, deadline=None):
+        options = {} if timeout is None else {"timeout": timeout}
+        if deadline is not None:
+            options["deadline"] = deadline
+        result = self.rpc("tools/call", {"name": name, "arguments": arguments}, **options)
         if result.get("isError"):
             raise ValueError("Tool failed; inspect service status before retrying mutations")
         if "structuredContent" in result:
@@ -136,6 +158,27 @@ class Client:
         if len(texts) != 1:
             raise ValueError("Expected one JSON text result when structuredContent is absent")
         return json.loads(texts[0])
+
+    def wait_cad(self, project_id, output_dir, timeout_seconds=3600):
+        """Wait in the client runtime without replaying or cancelling native work."""
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+            raise ValueError("CAD wait budget must be a positive finite number")
+        deadline = time.monotonic() + timeout_seconds
+        handle = {"project_id": project_id, "output_dir": output_dir}
+        def remaining_budget():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("CAD wait ended; query the same build handle. Native work was not cancelled or repeated.")
+            return remaining
+        while True:
+            state = self.call("cad_build", {"action": "status", "params": handle}, timeout=min(180, remaining_budget()), deadline=deadline)
+            remaining = remaining_budget()
+            if state["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+                return state
+            if state["status"] not in {"admitted", "running"}:
+                raise ValueError("Unrecognized retained CAD state")
+            time.sleep(min(1.0, remaining))
 
     def contracts(self, tool=None, action=None):
         if action is not None and tool is None:
@@ -219,6 +262,10 @@ def main():
     call = commands.add_parser("call")
     call.add_argument("tool")
     call.add_argument("arguments", type=Path, help="JSON file containing tool arguments")
+    wait_cad = commands.add_parser("wait-cad", help="wait for an existing CAD build without resubmitting it")
+    wait_cad.add_argument("project_id")
+    wait_cad.add_argument("output_dir")
+    wait_cad.add_argument("--timeout", type=float, default=3600, help="client waiting budget in seconds; does not cancel the build")
     download = commands.add_parser("download")
     download.add_argument("artifact")
     download.add_argument("destination", type=Path)
@@ -233,6 +280,8 @@ def main():
                 result = client.contracts(args.tool, args.action)
             elif args.command == "call":
                 result = client.call(args.tool, json.loads(args.arguments.read_text()))
+            elif args.command == "wait-cad":
+                result = client.wait_cad(args.project_id, args.output_dir, args.timeout)
             else:
                 result = client.download(args.artifact, args.destination)
         print(json.dumps(result, indent=2))

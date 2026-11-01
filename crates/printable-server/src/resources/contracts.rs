@@ -101,8 +101,13 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
         Some(action) => selected_schema(&full_schema, action)?,
         None => full_schema,
     };
-    let selected_output =
-        action.and_then(|action| crate::printers::action_output_schema(name, action));
+    let selected_output = action.and_then(|action| {
+        crate::printers::action_output_schema(name, action).or_else(|| {
+            (name == "cad_build")
+                .then(|| output::cad_action_schema(action))
+                .flatten()
+        })
+    });
     let output_scope = if selected_output.is_some() {
         "action"
     } else {
@@ -168,12 +173,14 @@ mod tests {
                 reconstruct: false,
                 depth: false,
                 object: false,
+                library: false,
             },
             workflows::Availability {
                 head: true,
                 reconstruct: true,
                 depth: true,
                 object: true,
+                library: true,
             },
             workflows::Availability {
                 object: true,
@@ -217,17 +224,11 @@ mod tests {
     #[test]
     fn head_contracts_follow_model_availability() {
         let none = workflows::Availability::default();
-        let head = workflows::Availability {
-            head: true,
-            reconstruct: false,
-            depth: false,
-            object: false,
-        };
+        let head = workflows::Availability { head: true, ..none };
         let reconstruct = workflows::Availability {
             head: true,
             reconstruct: true,
-            depth: false,
-            object: false,
+            ..none
         };
         let listed = |available| {
             read(ROOT, available).unwrap()["tools"]
@@ -312,6 +313,7 @@ mod tests {
                         reconstruct: true,
                         depth: true,
                         object: true,
+                        library: true,
                     }
                 )
                 .is_none(),

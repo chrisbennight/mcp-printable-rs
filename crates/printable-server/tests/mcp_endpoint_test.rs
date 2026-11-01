@@ -60,6 +60,7 @@ fn test_settings(blender_port: u16) -> Settings {
         cad_endpoint: None,
         slicer_endpoint: None,
         printers: None,
+        library: None,
         flame: None,
         recon: None,
         scad_concurrency: 2,

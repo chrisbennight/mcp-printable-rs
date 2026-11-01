@@ -1890,6 +1890,18 @@ def gpu_cycles_smoke(host: str, port: int) -> None:
     )
 
 
+def durable_fixture(host: str, port: int) -> None:
+    """Save a minimal scene for a paired server to restore."""
+    wait_until_ready(host, port)
+    command(
+        host,
+        port,
+        "create_primitive",
+        {"primitive": "cube", "name": "DurableFixture", "size": 2.0},
+    )
+    command(host, port, "save_blend", {"path": "smoke/scene.blend"})
+
+
 def busy_wait(host: str, port: int) -> None:
     wait_until_ready(host, port)
     try:
@@ -2029,6 +2041,7 @@ def main() -> int:
         "--mode",
         choices=(
             "capabilities",
+            "durable-fixture",
             "gpu-eevee",
             "gpu-cycles",
             "ui",
@@ -2045,6 +2058,8 @@ def main() -> int:
         capability_smoke(args.host, args.port)
         from project_scene_smoke import run as project_scene_smoke
         project_scene_smoke(args.host, args.port)
+    elif args.mode == "durable-fixture":
+        durable_fixture(args.host, args.port)
     elif args.mode == "gpu-eevee":
         gpu_eevee_smoke(args.host, args.port)
     elif args.mode == "gpu-cycles":

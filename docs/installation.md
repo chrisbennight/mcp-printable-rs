@@ -86,6 +86,8 @@ root filesystems, dropped capabilities, bounded temporary storage, and no host
 display or Docker socket. Blender has no published ports and uses an internal
 control network. The server additionally has a frontend network for its
 loopback port; this configuration does not prohibit server outbound traffic.
+The server contacts public sites only when the [model library](model-library.md)
+is enabled.
 
 ## Make and retrieve a bracket
 

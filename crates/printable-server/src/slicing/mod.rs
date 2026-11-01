@@ -8,7 +8,7 @@ mod tests;
 
 use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use printable_workspace::Workspace;
-use profiles::{Category, ProfileQuery, ProfileSelection, Profiles};
+use profiles::{Category, FilamentSelection, ProfileQuery, ProfileSelection, Profiles};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -74,7 +74,7 @@ pub struct PrepareParams {
     pub printer: ProfileSelection,
     pub process: ProfileSelection,
     /// Ordered material slots, matching the source plate's filament indices.
-    pub filaments: Vec<ProfileSelection>,
+    pub filaments: Vec<FilamentSelection>,
     /// Orca plate index, one-based; zero slices every plate.
     #[serde(default = "default_plate")]
     pub plate: u16,
@@ -337,7 +337,12 @@ impl SliceWorker {
         let filaments = params
             .filaments
             .iter()
-            .map(|x| self.profiles.resolve(Category::Filament, x))
+            .map(|x| self.profiles.resolve(Category::Filament, &x.profile()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let colours = params
+            .filaments
+            .iter()
+            .map(FilamentSelection::colour)
             .collect::<Result<Vec<_>, _>>()?;
         if !profiles::compatible(&process, &params.printer.name)
             || filaments
@@ -383,8 +388,9 @@ impl SliceWorker {
             &source_path_for_evidence,
             &source_hash,
         )?;
-        let summary = setup::summary(&params, &printer, &process, &filaments);
-        let settings = json!({"build_plate":params.build_plate,"printer":printer,"process":process,"filaments":filaments});
+        let summary = setup::summary(&params, &printer, &process, &filaments, &colours);
+        let settings = json!({"build_plate":params.build_plate,"printer":printer,"process":process,"filaments":filaments,
+            "filament_colours":colours});
         for (name, value) in [
             ("printer.json", &settings["printer"]),
             ("process.json", &settings["process"]),
@@ -443,7 +449,7 @@ impl SliceWorker {
         tokio::spawn(async move {
             let _permit = permit;
             let result = worker
-                .execute(&staging, &local_source, &params, &cancel)
+                .execute(&staging, &local_source, &params, &colours, &cancel)
                 .await;
             let mut active = worker.active.lock().await;
             let mut terminal = active
@@ -508,6 +514,7 @@ impl SliceWorker {
         staging_owner: &printable_workspace::ManagedScratch,
         source: &Path,
         params: &PrepareParams,
+        colours: &[Option<String>],
         cancel: &CancellationToken,
     ) -> Result<Value, ToolError> {
         use std::os::unix::process::CommandExt;
@@ -561,7 +568,18 @@ impl SliceWorker {
                 if params.auto_arrange { "1" } else { "0" },
                 "--orient",
                 if params.auto_orient { "1" } else { "0" },
-            ])
+            ]);
+        if colours.iter().any(Option::is_some) {
+            // Orca keeps the source colour for a slot whose entry is empty.
+            command.arg("--filament-colour").arg(
+                colours
+                    .iter()
+                    .map(|colour| colour.as_deref().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            );
+        }
+        command
             .arg(source)
             .current_dir(staging)
             .env_clear()
@@ -588,7 +606,11 @@ impl SliceWorker {
         let result = tokio::select! {
             _ = cancel.cancelled() => Err(slice_error("slice cancelled")),
             _ = tokio::time::sleep(Duration::from_secs(params.timeout_seconds)) => Err(slice_error("slice exceeded its deadline")),
-            result = child.wait() => result.map_err(ToolError::from).and_then(|status| if status.success() {Ok(())} else {Err(slice_error("native slicing failed; inspect build-log.json"))})
+            status = child.wait() => match status {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(native_failure(&output, status).await),
+                Err(error) => Err(ToolError::from(error)),
+            }
         };
         drop(group);
         let _ = child.wait().await;
@@ -751,4 +773,30 @@ fn invalid(message: &str) -> ToolError {
 }
 fn slice_error(message: &str) -> ToolError {
     ToolError::Slice(message.into())
+}
+
+/// OrcaSlicer records each deliberate refusal in `result.json` with a nonzero
+/// return code. A failed exit without that record is most likely a crash, so an
+/// absent, unreadable or successful record is reported as one.
+async fn native_failure(output: &Path, status: std::process::ExitStatus) -> ToolError {
+    let reported = tokio::fs::read(output.join("result.json"))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|result| {
+            let code = result["return_code"].as_i64().filter(|code| *code != 0)?;
+            let message = result["error_string"].as_str().unwrap_or("").trim();
+            Some((code, message.to_owned()))
+        });
+    ToolError::Slice(match reported {
+        Some((code, message)) if !message.is_empty() => format!(
+            "OrcaSlicer refused the slice: {message} (return code {code}); inspect build-log.json"
+        ),
+        Some((code, _)) => {
+            format!("OrcaSlicer refused the slice with return code {code}; inspect build-log.json")
+        }
+        None => format!(
+            "OrcaSlicer exited without reporting a result ({status}), which usually means it crashed; inspect build-log.json"
+        ),
+    })
 }

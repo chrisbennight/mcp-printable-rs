@@ -72,6 +72,9 @@ pub struct Settings {
     pub slicer_endpoint: Option<String>,
     /// Optional typed printer integration; credentials remain inside its clients.
     pub printers: Option<std::sync::Arc<crate::printers::PrinterService>>,
+    /// Public model sites from `PRINTABLE_LIBRARY_SITES`; absent leaves
+    /// `library` unadvertised and makes no public internet requests.
+    pub library: Option<std::sync::Arc<crate::library::LibraryService>>,
     /// FLAME head models from `PRINTABLE_FLAME_MODEL_DIR`; absent leaves `head`
     /// unadvertised.
     pub flame: Option<std::sync::Arc<crate::flame::FlameLibrary>>,
@@ -112,6 +115,8 @@ pub enum SettingsError {
     WorkspaceBudgetRequiresWorkspace,
     #[error("printer integration setting {0} is missing or invalid")]
     Printers(&'static str),
+    #[error("model library setting {0} is missing or invalid")]
+    Library(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
@@ -201,6 +206,7 @@ impl Settings {
             cad_endpoint: nonempty(&get, "PRINTABLE_CAD_ENDPOINT"),
             slicer_endpoint: nonempty(&get, "PRINTABLE_SLICER_ENDPOINT"),
             printers: crate::printers::configure(&get)?,
+            library: crate::library::configure(&get)?,
             flame: crate::flame::configure(&get),
             recon: crate::recon::ReconClient::configure(&get)
                 .map_err(SettingsError::ReconInvalid)?,

@@ -145,6 +145,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(value.bind, "127.0.0.1")
         self.assertEqual(value.port, 9876)
         self.assertEqual(value.render_device, "CPU")
+        self.assertIsNone(value.eevee_samples)
+
+    def test_eevee_samples_are_parsed_when_set(self) -> None:
+        for raw, expected in (("1", 1), ("4096", 4096)):
+            with self.subTest(raw=raw):
+                value = BridgeConfig.from_env({"PRINTABLE_BLENDER_EEVEE_SAMPLES": raw})
+                self.assertEqual(value.eevee_samples, expected)
 
     def test_invalid_values_fail_visibly(self) -> None:
         for env in (
@@ -160,6 +167,9 @@ class ConfigTests(unittest.TestCase):
             {"PRINTABLE_BLENDER_HEARTBEAT_SECONDS": "inf"},
             {"PRINTABLE_BLENDER_RENDER_DEVICE": "CUDA"},
             {"PRINTABLE_BLENDER_WORKSPACE_ROOT": "relative"},
+            {"PRINTABLE_BLENDER_EEVEE_SAMPLES": "0"},
+            {"PRINTABLE_BLENDER_EEVEE_SAMPLES": "4097"},
+            {"PRINTABLE_BLENDER_EEVEE_SAMPLES": ""},
         ):
             with self.subTest(env=env), self.assertRaises(ConfigError):
                 BridgeConfig.from_env(env)
@@ -2244,6 +2254,7 @@ class HandlerValidationTests(unittest.TestCase):
             handlers.close()
 
     def test_job_render_views_commits_a_batch_and_restores_scene_state(self) -> None:
+        """A configured EEVEE sample count applies only while the batch renders."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             watchdog = Mock()
@@ -2261,6 +2272,7 @@ class HandlerValidationTests(unittest.TestCase):
             scene = SimpleNamespace(
                 camera=original_camera,
                 cycles=SimpleNamespace(device="CPU", samples=16),
+                eevee=SimpleNamespace(taa_render_samples=64),
                 render=render,
                 objects=[SimpleNamespace(type="LIGHT")],
                 collection=SimpleNamespace(objects=SimpleNamespace(link=Mock())),
@@ -2274,6 +2286,7 @@ class HandlerValidationTests(unittest.TestCase):
                 self.assertTrue(write_still)
                 self.assertEqual(render.image_settings.color_mode, "RGB")
                 self.assertEqual(render.image_settings.color_depth, "8")
+                self.assertEqual(scene.eevee.taa_render_samples, 1)
                 Path(render.filepath).write_bytes(b"png")
                 return {"FINISHED"}
 
@@ -2283,7 +2296,7 @@ class HandlerValidationTests(unittest.TestCase):
                 ops=SimpleNamespace(render=SimpleNamespace(render=render_still)),
             )
             handlers = BlenderHandlers(
-                config(root, 9876), lambda: False, bpy, watchdog
+                replace(config(root, 9876), eevee_samples=1), lambda: False, bpy, watchdog
             )
 
             with (
@@ -2340,6 +2353,7 @@ class HandlerValidationTests(unittest.TestCase):
                     render.filepath,
                     scene.cycles.device,
                     scene.cycles.samples,
+                    scene.eevee.taa_render_samples,
                 ),
                 (
                     "ORIGINAL",
@@ -2352,6 +2366,7 @@ class HandlerValidationTests(unittest.TestCase):
                     "original.jpg",
                     "CPU",
                     16,
+                    64,
                 ),
             )
             self.assertEqual(frame.call_count, 2)
@@ -2415,6 +2430,7 @@ class HandlerValidationTests(unittest.TestCase):
             scene = SimpleNamespace(
                 camera=None,
                 cycles=SimpleNamespace(device="CPU", samples=16),
+                eevee=SimpleNamespace(taa_render_samples=64),
                 render=render,
                 objects=[SimpleNamespace(type="LIGHT")],
                 collection=SimpleNamespace(objects=SimpleNamespace(link=Mock())),
@@ -2496,6 +2512,7 @@ class HandlerValidationTests(unittest.TestCase):
             scene = SimpleNamespace(
                 camera=original_camera,
                 cycles=SimpleNamespace(device="CPU", samples=16),
+                eevee=SimpleNamespace(taa_render_samples=64),
                 render=render,
                 objects=[light],
                 collection=SimpleNamespace(objects=SimpleNamespace(link=Mock())),

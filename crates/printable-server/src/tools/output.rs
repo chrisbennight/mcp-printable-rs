@@ -21,6 +21,66 @@ fn artifact() -> Value {
     )
 }
 
+fn publication_errors() -> Value {
+    json!({"type":"array","items":object(json!({"artifact":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}), &["artifact","code","message"])})
+}
+
+fn cad_inspection_completed() -> (Value, Map<String, Value>) {
+    let mut report = serde_json::to_value(schemars::schema_for!(crate::cad::inspection::Report))
+        .expect("CAD inspection schema serializes");
+    let definitions = report
+        .as_object_mut()
+        .expect("report schema")
+        .remove("$defs")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    (
+        object(
+            json!({
+                "completion":{"enum":["completed","partial"]}, "scope":{"const":"cad_inspection"},
+                "inspection":report, "build_directory":{"type":"string"},
+                "model":object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "publication_errors":publication_errors(),
+                "artifacts":{"type":"array","items":object(json!({
+                    "artifact":artifact(), "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}
+                }), &["artifact","sha256"])}
+            }),
+            &[
+                "completion",
+                "scope",
+                "inspection",
+                "build_directory",
+                "artifacts",
+            ],
+        ),
+        definitions,
+    )
+}
+
+/// Selected inspection results exclude unrelated delivery qualification contracts.
+pub fn cad_action_schema(action: &str) -> Option<Value> {
+    if !matches!(action, "inspect" | "export") {
+        return None;
+    }
+    let (completed, definitions) = cad_inspection_completed();
+    let job = object(
+        json!({
+            "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
+            "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
+            "phase":{"enum":["input_snapshot","native_execution","terminal"]},
+            "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
+            "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},
+            "finished_at_unix_ms":{"type":"integer"},"execution_timeout_seconds":{"type":"integer"},
+            "error":{"type":"string"},"result":completed,"publication_errors":publication_errors()
+        }),
+        &["build", "status", "phase"],
+    );
+    Some(with_errors(
+        "cad_build",
+        json!({"type":"object", "anyOf":[completed,job], "$defs":definitions}),
+    ))
+}
+
 fn scene_state() -> Value {
     object(
         json!({
@@ -337,10 +397,16 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 crate::cad::qualification::Qualification
             ))
             .expect("CAD qualification schema serializes");
-            let definitions = qualification
+            let mut definitions = qualification
                 .as_object_mut()
                 .expect("schema object")
                 .remove("$defs");
+            let (inspection, inspection_definitions) = cad_inspection_completed();
+            definitions
+                .get_or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("qualification definitions")
+                .extend(inspection_definitions);
             let completed = object(
                 json!({
                     "completion": {"const":"completed"},
@@ -366,13 +432,17 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             historical["required"] = json!(["build_directory", "report", "artifacts"]);
             historical["not"] =
                 json!({"anyOf":[{"required":["completion"]},{"required":["qualification"]}]});
-            let mut result = json!({"type":"object","anyOf":[completed, object(json!({
+            let mut result = json!({"type":"object","anyOf":[completed, inspection, object(json!({
                 "build":object(json!({"project_id":{"type":"string"},"output_dir":{"type":"string"}}), &["project_id","output_dir"]),
                 "status":{"enum":["admitted","running","completed","failed","cancelled","interrupted"]},
                 "phase":{"enum":["input_snapshot","native_execution","terminal"]},
                 "cancel_requested":{"type":"boolean"},"progress":{"type":"null"},
                 "admitted_at_unix_ms":{"type":"integer"},"native_started_at_unix_ms":{"type":"integer"},"finished_at_unix_ms":{"type":"integer"},
-                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical]}
+                "execution_timeout_seconds":{"type":"integer"},"error":{"type":"string"},"result":{"anyOf":[completed,historical,inspection]},
+                "native_stage":{"type":"string"},
+                "progress_error":object(json!({"code":{"type":"string"},"message":{"type":"string"}}), &["code","message"]),
+                "publication_errors":publication_errors(),
+                "available_artifacts":{"type":"array","items":object(json!({"artifact":artifact(),"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["artifact","sha256"])}
             }), &["build","status","phase"])]});
             if let Some(definitions) = definitions {
                 result["$defs"] = definitions;
@@ -434,6 +504,42 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
             selected_bundle(), native_bundle()
         ],"$defs":generator.take_definitions(true)})
+        }
+        "library" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let page = generator.subschema_for::<model_library::SearchPage>();
+            let detail = generator.subschema_for::<model_library::ModelDetail>();
+            let digest = json!({"type": "string", "pattern": "^[0-9a-f]{64}$"});
+            let saved = object(
+                json!({
+                    "file_id": {"type": "string"}, "name": {"type": "string"},
+                    "artifact": artifact(), "sha256": digest
+                }),
+                &["file_id", "name", "artifact", "sha256"],
+            );
+            let download = object(
+                json!({
+                    "site": {"type": "string"}, "model_id": {"type": "string"},
+                    "title": {"type": "string"}, "url": {"type": "string"},
+                    "designer": {"type": ["string", "null"]},
+                    "license": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                    "files": {"type": "array", "items": saved, "minItems": 1},
+                    "manifest": artifact()
+                }),
+                &["site", "model_id", "title", "url", "files", "manifest"],
+            );
+            let sign_in = object(
+                json!({
+                    "site": {"const": "makerworld"},
+                    "state": {"enum": ["signed_in", "code_required"]},
+                    "expires_unix_ms": {"type": ["integer", "null"], "minimum": 0},
+                    "code_source": {"enum": ["email", "authenticator"]},
+                    "instructions": {"type": "string"}
+                }),
+                &["site", "state"],
+            );
+            json!({"type": "object", "anyOf": [page, detail, download, sign_in],
+                "$defs": generator.take_definitions(true)})
         }
         "photo" => json!({"type": "object", "anyOf": [
             object(

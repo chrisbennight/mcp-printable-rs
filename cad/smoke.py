@@ -11,6 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import cadquery as cq
 
@@ -21,6 +22,115 @@ from step import import_step
 def close(actual, expected):
     assert len(actual) == len(expected)
     assert all(math.isclose(a, b, abs_tol=1e-5) for a, b in zip(actual, expected)), (actual, expected)
+
+
+def inspection_smoke(root):
+    source = ('result = cq.Assembly(name="board")\n'
+              'part = cq.Workplane().box(2, 4, 6)\n'
+              'result.add(part, name="USB_left", loc=cq.Location((10, 20, 30), (0, 0, 1), 90))\n'
+              'result.add(part, name="USB_right", loc=cq.Location((50, 20, 30)))\n'
+              'result["USB_left"].addSubshape(part.val().Faces()[0], color=cq.Color("red"))\n')
+    reports = []
+    for name, options in [
+        ("first", {"selection": {"name_contains": "usb"}, "limit": 1}),
+        ("second", {"selection": {"name_contains": "usb"}, "offset": 1}),
+        ("local", {"selection": {"region_mm": {"min": [7, 18, 26], "max": [13, 22, 34]}}, "frame": "component"}),
+        ("missing", {"selection": {"component_ids": ["absent"]}}),
+    ]:
+        directory = root / name
+        directory.mkdir()
+        (directory / "model.py").write_text(source)
+        build({"action": "inspect", "source": "model.py", "parameters": {}, "inspection": {"retain_model": False, **options}}, directory)
+        assert {path.name for path in (directory / "output").iterdir()} == {"report.json", "components.json", "measurements.json"}
+        reports.append(json.loads((directory / "output/report.json").read_text()))
+    first, second, local, missing = reports
+    assert first["matched_count"] == 2 and first["next_offset"] == 1
+    assert second["next_offset"] is None
+    assert first["components"][0]["id"] != second["components"][0]["id"]
+    close(first["components"][0]["bounds_mm"]["size"], [4, 2, 6])
+    close(first["components"][0]["bounds_mm"]["min"], [8, 19, 27])
+    assert local["matched_count"] == 1
+    close(local["components"][0]["bounds_mm"]["size"], [2, 4, 6])
+    assert missing["missing_component_ids"] == ["absent"] and not missing["components"]
+
+    from model import load_model
+    retained = root / "retained"
+    retained.mkdir()
+    (retained / "source.py").write_text(source)
+    build({"action":"inspect", "source":"source.py", "parameters":{}, "inspection":{
+        "selection":{"name_contains":"USB_left"}, "questions":[{"kind":"features", "id":"direct"}]}}, retained)
+    direct = json.loads((retained / "output/report.json").read_text())
+    assert direct["answers"][0]["status"] == "measured"
+    model = retained / "output/model.cadmodel"
+    restored, _ = load_model(model)
+    assert [name for _, name, _, _ in restored] == ["board/USB_left", "board/USB_right"]
+    assert list(restored["USB_left"]._subshape_colors.values()) == [cq.Color("red")]
+    close([restored.toCompound().BoundingBox().xlen], [43])
+    (retained / "source.py").write_text('raise AssertionError("source must not run again")\n')
+    followup = root / "followup"
+    followup.mkdir()
+    options = {"selection":{"component_ids":["board/USB_left"]}, "questions":[
+        {"kind":"features", "id":"faces", "component_id":"board/USB_left"},
+        {"kind":"distance", "id":"gap", "first":{"selection":{"name_contains":"USB_left"}}, "second":{"selection":{"name_contains":"USB_right"}}},
+        {"kind":"alignment", "id":"axes", "first":{"component_id":"board/USB_left", "face_index":0}, "second":{"component_id":"board/USB_right", "face_index":0}},
+        {"kind":"section", "id":"cut", "component_id":"board/USB_left", "origin_mm":[10,20,30], "normal":[0,0,1]},
+        {"kind":"validity", "id":"valid", "component_id":"board/USB_left"},
+        {"kind":"validity", "id":"missing", "component_id":"absent"},
+        {"kind":"validity", "id":"ambiguous", "selection":{"name_contains":"USB"}}], "exports":["step", "stl", "glb", "svg"]}
+    with patch("build.runpy.run_path", side_effect=AssertionError("script replay")), patch("build.import_step", side_effect=AssertionError("STEP replay")), patch("build.export_glb", side_effect=ValueError("preview unavailable")):
+        build({"action":"inspect", "source":str(model), "reuse_model":True, "inspection":options}, followup)
+    report = json.loads((followup / "output/report.json").read_text())
+    answers = {answer["id"]: answer for answer in report["answers"]}
+    assert all(answers[key]["status"] == "measured" for key in ("faces", "gap", "axes", "cut", "valid")), answers
+    assert answers["missing"]["status"] == "unavailable"
+    assert answers["ambiguous"]["status"] == "unavailable"
+    close([answers["gap"]["evidence"]["distance_mm"]], [37])
+    close([answers["axes"]["evidence"]["angle_degrees"]], [90])
+    close([answers["cut"]["evidence"]["length_mm"]], [12])
+    assert answers["valid"]["evidence"]["valid"]
+    assert {row["format"]:row["status"] for row in report["exports"]} == {"step":"completed", "stl":"completed", "glb":"failed", "svg":"completed"}
+    chosen, _ = import_step(followup / "output/selected.step")
+    close([chosen.toCompound().BoundingBox().xlen], [4])
+    assert len(chosen.toCompound().Solids()) == 1
+
+    surface = root / "surface"
+    surface.mkdir()
+    (surface / "part.py").write_text('result = cq.Face.makePlane(10, 20)\n')
+    build({"action":"inspect", "source":"part.py", "parameters":{}, "inspection":{
+        "retain_model":False, "questions":[
+            {"kind":"alignment", "id":"missing-index", "first":{"face_index":None}, "second":{"face_index":None}},
+            {"kind":"validity", "id":"kept"}]}}, surface)
+    surface_report = json.loads((surface / "output/report.json").read_text())
+    assert surface_report["answers"][0]["status"] == "unavailable"
+    assert surface_report["answers"][1]["status"] == "measured"
+
+    from inspection import answer as native_answer
+
+    def interrupted_question(question, *args):
+        if question["id"] == "later":
+            raise KeyboardInterrupt("native interruption")
+        return native_answer(question, *args)
+
+    for name, questions, exports, target, injected in [
+        ("later-question", [{"kind":"validity", "id":"first"}, {"kind":"validity", "id":"later"}], [], "inspection.answer", interrupted_question),
+        ("bounds-export", [], ["glb"], "build.export_glb", KeyboardInterrupt("native interruption")),
+    ]:
+        directory = root / name
+        directory.mkdir()
+        (directory / "part.py").write_text('result = cq.Workplane().box(10, 20, 30)\n')
+        with patch(target, side_effect=injected):
+            try:
+                build({"action":"inspect", "source":"part.py", "parameters":{}, "inspection":{
+                    "retain_model":False, "questions":questions, "exports":exports}}, directory)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("expected native interruption")
+        progress = json.loads((directory / "progress.json").read_text())
+        assert "measurements.json" in progress["completed_artifacts"]
+        partial = json.loads((directory / "output/measurements.json").read_text())
+        close(partial["components"][0]["bounds_mm"]["size"], [10,20,30])
+        assert [item["id"] for item in partial["answers"]] == (["first"] if questions else [])
 
 
 def main():
@@ -41,6 +151,25 @@ def main():
     assert vertical_holes(cq.Face.makePlane(10, 20))["status"] == "unmeasured"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
+        inspection_smoke(root)
+        interrupted = root / "failed-export"
+        interrupted.mkdir()
+        (interrupted / "part.py").write_text('result = cq.Workplane().box(10, 20, 30)\n')
+        with patch("build.export_glb", side_effect=ValueError("export unavailable")):
+            try:
+                build({"action":"model", "source":"part.py", "parameters":{},
+                       "linear_tolerance_mm":0.05, "angular_tolerance_rad":0.1}, interrupted)
+            except ValueError as error:
+                assert str(error) == "export unavailable"
+            else:
+                raise AssertionError("expected an export failure")
+        partial = json.loads((interrupted / "output/measurements.json").read_text())
+        close(partial["bounds_mm"]["size"], [10, 20, 30])
+        assert partial["completion"] == "partial" and "valid" not in partial
+        progress = json.loads((interrupted / "progress.json").read_text())
+        assert progress["stage"] == "glb_export"
+        assert "model.stl" in progress["completed_artifacts"]
+        assert "model.glb" not in progress["completed_artifacts"]
         (root / "model.py").write_text('result = cq.Workplane().box(parameters["width"], 20, 30)\n')
         build({"action": "model", "source": "model.py", "parameters": {"width": 10},
                "linear_tolerance_mm": 0.05, "angular_tolerance_rad": 0.1}, root)
@@ -85,6 +214,14 @@ def main():
         named_assembly, _ = import_step(named)
         assert any(v["occurrence_name"] == "InstanceName" and v["product_name"] == "PartName"
                    for v in original_names(named_assembly).values())
+        inspected = root / "inspected-step"
+        inspected.mkdir()
+        (inspected / "source.step").write_bytes(named.read_bytes())
+        build({"action": "inspect", "source": "source.step", "parameters": {},
+               "inspection": {"selection": {"name_contains": "InstanceName"}}}, inspected)
+        measured = json.loads((inspected / "output/report.json").read_text())
+        assert measured["matched_count"] == 1
+        close(measured["components"][0]["bounds_mm"]["size"], [2, 3, 4])
         converted = root / "imported"
         converted.mkdir()
         (converted / "source.step").write_bytes(named.read_bytes())

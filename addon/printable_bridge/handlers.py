@@ -3875,6 +3875,8 @@ class BlenderHandlers:
             scene.cycles.samples = samples
         else:
             self._select_eevee_engine(scene.render)
+            if self._config.eevee_samples is not None:
+                scene.eevee.taa_render_samples = self._config.eevee_samples
         scene.render.resolution_x = width
         scene.render.resolution_y = height
         scene.render.resolution_percentage = 100
@@ -3893,6 +3895,7 @@ class BlenderHandlers:
             scene.render.filepath,
             scene.cycles.device,
             scene.cycles.samples,
+            scene.eevee.taa_render_samples,
         )
 
     @staticmethod
@@ -3908,6 +3911,7 @@ class BlenderHandlers:
             scene.render.filepath,
             scene.cycles.device,
             scene.cycles.samples,
+            scene.eevee.taa_render_samples,
         ) = state
 
     def _missing_renderable_names(self, required_names: set[str]) -> list[str]:

@@ -1,0 +1,75 @@
+{
+  "environment": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "python": "3.14.9",
+    "cadquery": "2.8.0",
+    "ocp": "7.9.3.1"
+  },
+  "boundary": "native adapter in one warm Python process; excludes worker startup, MCP and download time",
+  "model_tokens": null,
+  "peak_memory_bytes": null,
+  "fixture": "generated board, placed repeated connectors and discrete components; no private vendor data",
+  "sources": {
+    "generated": {
+      "full_build": {
+        "seconds": 0.1326621670741588,
+        "report_json_bytes": 1257,
+        "output_bytes": 602577
+      },
+      "first_inspection_with_retention": {
+        "seconds": 0.01907983305864036,
+        "report_json_bytes": 616,
+        "output_bytes": 139351
+      },
+      "first_inspection_without_retention": {
+        "seconds": 0.016343166818842292,
+        "report_json_bytes": 616,
+        "output_bytes": 9676
+      },
+      "reused_measurements": {
+        "seconds": 0.009013958973810077,
+        "report_json_bytes": 2147,
+        "output_bytes": 12719
+      },
+      "reused_selected_step": {
+        "seconds": 0.004324417095631361,
+        "report_json_bytes": 921,
+        "output_bytes": 33482
+      },
+      "native_model_bytes": 129675,
+      "cad_calls_for_inspect_followup_export": 3,
+      "task_specific_scripts_required": 0
+    },
+    "step": {
+      "full_build": {
+        "seconds": 0.1415067920461297,
+        "report_json_bytes": 1521,
+        "output_bytes": 627939
+      },
+      "first_inspection_with_retention": {
+        "seconds": 0.02442687493748963,
+        "report_json_bytes": 785,
+        "output_bytes": 113321
+      },
+      "first_inspection_without_retention": {
+        "seconds": 0.022240417078137398,
+        "report_json_bytes": 785,
+        "output_bytes": 12216
+      },
+      "reused_measurements": {
+        "seconds": 0.008367625065147877,
+        "report_json_bytes": 2661,
+        "output_bytes": 15939
+      },
+      "reused_selected_step": {
+        "seconds": 0.003528874833136797,
+        "report_json_bytes": 1090,
+        "output_bytes": 39114
+      },
+      "native_model_bytes": 101105,
+      "cad_calls_for_inspect_followup_export": 3,
+      "task_specific_scripts_required": 0
+    }
+  }
+}

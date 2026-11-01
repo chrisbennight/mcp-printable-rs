@@ -16,6 +16,7 @@ flowchart LR
     server --> live[Live Blender with private display]
     server --> worker[Background Blender render worker]
     server --> files[Confined workspace]
+    server -. optional .-> sites[Public model sites]
     live --> files
     worker --> files
     cad --> files
@@ -35,6 +36,7 @@ boundaries:
 | `printable-workspace` | Capability-rooted artifact I/O and atomic promotion |
 | `printable-imaging` | Image decoding and composition |
 | `bambuddy-api` | Typed printer service requests, bounded responses and honest mutation outcomes |
+| `model-library` | Fixed-origin public model site clients, bounded responses and host-checked downloads |
 
 The first-party code in `addon/` executes inside Blender. Its supervisor and
 main-thread bridge serialize scene operations and recover from a stalled

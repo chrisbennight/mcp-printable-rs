@@ -35,7 +35,8 @@ existing generic behavior; they do not claim project-specific concurrency safety
 
 Call `scene` with `action: "attach_cad"` and `params` containing the current
 `project_id`, complete `expected_scene`, and project-relative `path` to the
-`output/model.glb` emitted by `cad_build`. The adjacent `components.json` must
+GLB emitted by `cad_build`, such as `output/model.glb` from a full build or
+`inspection/connector/selected.glb` from a selected export. The adjacent `components.json` must
 contain its complete node-name map. The same work-budget parameter applies.
 
 Blender imports a confined snapshot. External GLB buffer/image references are
@@ -50,6 +51,9 @@ The result returns source identity, object/root counts, bounded root names, and
 the number of matched and unmatched source-name records. Use `inspect` to explore
 the complete imported hierarchy. CAD source and exported artifacts remain
 independent of presentation edits, and a failed attachment does not remove them.
+For selected exports, unmatched source-name records can describe deliberately
+omitted components; inspect the export's recorded scope before treating them as
+lost names.
 The source SHA-256 identifies the original GLB bytes, before adding Blender
 metadata to the private import snapshot.
 
