@@ -93,6 +93,17 @@ def inspection_smoke(root):
     close([chosen.toCompound().BoundingBox().xlen], [4])
     assert len(chosen.toCompound().Solids()) == 1
 
+    surface = root / "surface"
+    surface.mkdir()
+    (surface / "part.py").write_text('result = cq.Face.makePlane(10, 20)\n')
+    build({"action":"inspect", "source":"part.py", "parameters":{}, "inspection":{
+        "retain_model":False, "questions":[
+            {"kind":"alignment", "id":"missing-index", "first":{"face_index":None}, "second":{"face_index":None}},
+            {"kind":"validity", "id":"kept"}]}}, surface)
+    surface_report = json.loads((surface / "output/report.json").read_text())
+    assert surface_report["answers"][0]["status"] == "unavailable"
+    assert surface_report["answers"][1]["status"] == "measured"
+
     from inspection import answer as native_answer
 
     def interrupted_question(question, *args):

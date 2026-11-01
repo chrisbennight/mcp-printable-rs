@@ -53,9 +53,9 @@ excluding transport wrappers and server instructions.
 
 | Payload | Before | With native questions and requested outputs |
 | --- | ---: | ---: |
-| Full tool catalog | 219,703 bytes | 234,957 bytes |
-| CAD tool with all its contracts | 12,832 bytes | 28,086 bytes |
-| Focused inspect contract | Unavailable | 16,596 bytes |
+| Full tool catalog | 219,703 bytes | 235,159 bytes |
+| CAD tool with all its contracts | 12,832 bytes | 28,288 bytes |
+| Focused inspect contract | Unavailable | 16,798 bytes |
 | Contract index | 2,418 bytes | 2,437 bytes |
 
 The expanded full catalog costs more. Clients supporting focused discovery can
@@ -84,6 +84,10 @@ An actual configured-storage regression rejects a large model/output publication
 while retaining completed answers, a smaller requested preview and the final
 partial report. Publication uncertainty remains explicit rather than implying
 that an errored write removed a file.
+Interrupted-recovery coverage also leaves room for answers while rejecting
+larger model and log copies, and verifies that the original native timeout is
+retained. Surface alignment with missing face indices produces one unavailable
+answer while other questions remain publishable.
 
 Focused Rust lifecycle checks verify digest mismatch before native execution,
 typed public results, retained failure evidence and caller-selected work

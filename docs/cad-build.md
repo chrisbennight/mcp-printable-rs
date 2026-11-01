@@ -262,13 +262,17 @@ Unavailable or malformed stage metadata is reported as `progress_error`; it
 does not turn a successful native operation into a failure or hide its logs.
 
 Timeout and cancellation retain the bounded stdout/stderr captured before the
-native process group was stopped. Terminal status lists committed diagnostic
+native process group was stopped when publication succeeds. Terminal status lists committed diagnostic
 and partial output references in `available_artifacts`. The worker retains only
 files the native adapter marked complete, so a partly written mesh is not
 presented as a finished export. Basic dimensions are saved before exports in
 `measurements.json`, with `scope: "cad_measurements"` and `completion: "partial"`.
 That evidence does not imply completed delivery or manufacturing qualification.
 The normal full report still requires the complete build to succeed.
+Interrupted recovery prioritizes completed measurements before larger native
+models and diagnostic logs. A publication failure is recorded in status as
+`publication_errors` while other completed files are attempted; it does not
+replace the original native failure or imply that an unconfirmed file is absent.
 
 Use the direct client's runtime wait when an admitted job needs time:
 

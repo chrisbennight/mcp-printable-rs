@@ -63,6 +63,8 @@ def answer(question, components, frame, native_bounds, resolve_target):
             evidence = {"distance_mm": first.distance(second),
                         "interpretation": "minimum separation; zero alone does not distinguish contact from overlap"}
         elif kind == "alignment":
+            if question["first"].get("face_index") is None or question["second"].get("face_index") is None:
+                raise ValueError("alignment requires explicit planar or cylindrical face indices from features")
             first, second = shape_for(question["first"]), shape_for(question["second"])
             if not isinstance(first, cq.Face) or not isinstance(second, cq.Face):
                 raise ValueError("alignment requires explicit planar or cylindrical face indices from features")
