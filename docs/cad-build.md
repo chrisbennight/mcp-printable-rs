@@ -144,12 +144,20 @@ followup = client.call("cad_build", {"action": "export", "params": {
 }})
 ```
 
-The result's `completion` is `partial` when a question is unavailable or a
-requested output fails. Check every answer and output status; a terminal job
+The result's `completion` is `partial` when a question is unavailable, a
+requested output fails, or artifact publication is unconfirmed. Check every answer and output status; a terminal job
 can complete with partial useful evidence. Detailed inventory and diagnostics
 remain artifacts. Successful deliveries are retained alongside failures, and
 completed measurement evidence is saved before optional exports. Full model
 delivery and manufacturing qualification remain separate from these questions.
+Verified answers are committed to `measurements.json` before other artifacts
+are published. `publication_errors` identifies unconfirmed artifact writes,
+and affected outputs have `status: "publication_unconfirmed"`. Inspect the
+output directory before retrying: a write error does not prove a file is absent.
+A rejected large output does not prevent a smaller requested output from being
+published. Missing model or inventory publication is also explicit in this list;
+it does not discard the saved geometric answers. The retained evidence excludes
+delivery qualification.
 See [measured workflow evidence](../evidence/cad-inspection.md) for costs and limits.
 
 ## Full CAD builds

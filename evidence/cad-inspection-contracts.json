@@ -11,11 +11,11 @@
   },
   "candidate": {
     "boundary": "compact UTF-8 JSON; default optional-worker availability; excludes transport, instructions and model token usage",
-    "full_catalog_json_bytes": 234527,
-    "cad_tool_json_bytes": 27656,
+    "full_catalog_json_bytes": 234957,
+    "cad_tool_json_bytes": 28086,
     "contract_index_json_bytes": 2437,
-    "inspect_contract_json_bytes": 16166,
-    "export_contract_json_bytes": 16164,
+    "inspect_contract_json_bytes": 16596,
+    "export_contract_json_bytes": 16594,
     "model_tokens": null
   }
 }

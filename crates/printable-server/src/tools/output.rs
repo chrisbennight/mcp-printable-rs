@@ -36,6 +36,7 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
                 "completion":{"enum":["completed","partial"]}, "scope":{"const":"cad_inspection"},
                 "inspection":report, "build_directory":{"type":"string"},
                 "model":object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
+                "publication_errors":{"type":"array","items":object(json!({"artifact":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}), &["artifact","code","message"])},
                 "artifacts":{"type":"array","items":object(json!({
                     "artifact":artifact(), "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}
                 }), &["artifact","sha256"])}

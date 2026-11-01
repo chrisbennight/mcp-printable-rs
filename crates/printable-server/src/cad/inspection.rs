@@ -67,6 +67,17 @@ pub enum Format {
     Svg,
 }
 
+impl Format {
+    pub(super) fn filename(&self) -> &'static str {
+        match self {
+            Self::Step => "selected.step",
+            Self::Stl => "selected.stl",
+            Self::Glb => "selected.glb",
+            Self::Svg => "selected.svg",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Question {
@@ -413,4 +424,5 @@ pub struct ExportOutcome {
 pub enum ExportStatus {
     Completed,
     Failed,
+    PublicationUnconfirmed,
 }

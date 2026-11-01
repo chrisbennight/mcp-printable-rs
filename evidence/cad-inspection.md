@@ -53,9 +53,9 @@ excluding transport wrappers and server instructions.
 
 | Payload | Before | With native questions and requested outputs |
 | --- | ---: | ---: |
-| Full tool catalog | 219,703 bytes | 234,527 bytes |
-| CAD tool with all its contracts | 12,832 bytes | 27,656 bytes |
-| Focused inspect contract | Unavailable | 16,166 bytes |
+| Full tool catalog | 219,703 bytes | 234,957 bytes |
+| CAD tool with all its contracts | 12,832 bytes | 28,086 bytes |
+| Focused inspect contract | Unavailable | 16,596 bytes |
 | Contract index | 2,418 bytes | 2,437 bytes |
 
 The expanded full catalog costs more. Clients supporting focused discovery can
@@ -79,6 +79,11 @@ partial success. The follow-up test changes the original script and makes any
 attempt to execute Python or import STEP fail, while reused geometry still
 answers questions. A deliberately failed GLB output leaves measured evidence
 and other outputs available.
+
+An actual configured-storage regression rejects a large model/output publication
+while retaining completed answers, a smaller requested preview and the final
+partial report. Publication uncertainty remains explicit rather than implying
+that an errored write removed a file.
 
 Focused Rust lifecycle checks verify digest mismatch before native execution,
 typed public results, retained failure evidence and caller-selected work

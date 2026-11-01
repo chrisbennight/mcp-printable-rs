@@ -616,73 +616,97 @@ impl CadWorker {
         project: &str,
         reference: Option<&inspection::ModelReference>,
     ) -> Result<Value, ToolError> {
-        let report: inspection::Report =
+        let mut report: inspection::Report =
             serde_json::from_reader(open_native_file(&staging.join("output/report.json"))?)?;
-        let path = staging.join("output/components.json");
-        let artifact = self.workspace.commit_generated_artifact_bounded(
-            &format!("{output}/components.json"),
-            &path,
-            false,
-            u64::MAX,
-        )?;
-        let partial = report
-            .answers
-            .iter()
-            .any(|answer| matches!(answer.status, inspection::AnswerStatus::Unavailable))
-            || report
-                .exports
-                .iter()
-                .any(|export| matches!(export.status, inspection::ExportStatus::Failed));
-        let mut result = json!({"completion":if partial {"partial"} else {"completed"}, "scope":"cad_inspection",
-            "inspection":report, "build_directory":output,
-            "artifacts":[{"artifact":artifact,"sha256":hash_file(&path)?}]});
-        if let Some(reference) = reference {
-            result["model"] =
-                json!({"path":reference.path, "sha256":reference.sha256.to_ascii_lowercase()});
-        }
-        let model = staging.join("output/model.cadmodel");
-        if model.try_exists()? {
-            let path = format!("{output}/model.cadmodel");
-            let artifact =
-                self.workspace
-                    .commit_generated_artifact_bounded(&path, &model, false, u64::MAX)?;
-            let digest = hash_file(&model)?;
-            let project_root = projects::resolve(&self.workspace, project, "model.cadmodel")?;
-            let root = project_root
-                .strip_suffix("model.cadmodel")
-                .expect("known suffix");
-            result["model"] =
-                json!({"path":path.strip_prefix(root).expect("project output"), "sha256":digest});
-            result["artifacts"]
-                .as_array_mut()
-                .expect("artifacts")
-                .push(json!({"artifact":artifact,"sha256":digest}));
-        }
         for export in &report.exports {
-            if matches!(export.status, inspection::ExportStatus::Completed) {
-                let name = match export.format {
-                    inspection::Format::Step => "selected.step",
-                    inspection::Format::Stl => "selected.stl",
-                    inspection::Format::Glb => "selected.glb",
-                    inspection::Format::Svg => "selected.svg",
-                };
-                if export.filename.as_deref() != Some(name) {
-                    return Err(ToolError::Cad(
-                        "native export filename does not match its declared format".into(),
-                    ));
-                }
-                let path = staging.join("output").join(name);
+            if matches!(export.status, inspection::ExportStatus::Completed)
+                && export.filename.as_deref() != Some(export.format.filename())
+            {
+                return Err(ToolError::Cad(
+                    "native export filename does not match its declared format".into(),
+                ));
+            }
+        }
+
+        // Preserve verified answers before optional publication can consume storage.
+        let mut measurements = serde_json::to_value(&report)?;
+        measurements
+            .as_object_mut()
+            .expect("inspection report")
+            .remove("exports");
+        measurements["scope"] = json!("cad_measurements");
+        measurements["completion"] = json!("partial");
+        let bytes = serde_json::to_vec(&measurements)?;
+        let artifact = self.workspace.write_generated_bytes(
+            &format!("{output}/measurements.json"),
+            &bytes,
+            false,
+        )?;
+        let mut artifacts =
+            vec![json!({"artifact":artifact, "sha256":projects::revisions::digest(&bytes)})];
+        let mut publication_errors = Vec::new();
+        let mut publish = |name: &str| {
+            let path = staging.join("output").join(name);
+            let attempt = (|| -> Result<Value, ToolError> {
                 let artifact = self.workspace.commit_generated_artifact_bounded(
                     &format!("{output}/{name}"),
                     &path,
                     false,
                     u64::MAX,
                 )?;
-                result["artifacts"]
-                    .as_array_mut()
-                    .expect("artifacts")
-                    .push(json!({"artifact":artifact,"sha256":hash_file(&path)?}));
+                Ok(json!({"artifact":artifact,"sha256":hash_file(&path)?}))
+            })();
+            match attempt {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    publication_errors.push(json!({"artifact":format!("{output}/{name}"),"code":error.code(),
+                        "message":"Artifact publication was not confirmed; inspect the retained output directory before retrying."}));
+                    None
+                }
             }
+        };
+        if let Some(artifact) = publish("components.json") {
+            artifacts.push(artifact);
+        }
+        let mut model_reference = reference.map(|reference| json!({"path":reference.path,"sha256":reference.sha256.to_ascii_lowercase()}));
+        let model = staging.join("output/model.cadmodel");
+        if model.try_exists()?
+            && let Some(artifact) = publish("model.cadmodel")
+        {
+            let path = format!("{output}/model.cadmodel");
+            let project_root = projects::resolve(&self.workspace, project, "model.cadmodel")?;
+            let root = project_root
+                .strip_suffix("model.cadmodel")
+                .expect("known suffix");
+            model_reference = Some(
+                json!({"path":path.strip_prefix(root).expect("project output"),"sha256":artifact["sha256"]}),
+            );
+            artifacts.push(artifact);
+        }
+        for export in &mut report.exports {
+            if matches!(export.status, inspection::ExportStatus::Completed) {
+                match publish(export.format.filename()) {
+                    Some(artifact) => artifacts.push(artifact),
+                    None => {
+                        export.status = inspection::ExportStatus::PublicationUnconfirmed;
+                        export.error = Some("Output publication was not confirmed; inspect publication_errors and the output directory before retrying.".into());
+                    }
+                }
+            }
+        }
+        let partial = !publication_errors.is_empty()
+            || report
+                .answers
+                .iter()
+                .any(|answer| matches!(answer.status, inspection::AnswerStatus::Unavailable))
+            || report
+                .exports
+                .iter()
+                .any(|export| !matches!(export.status, inspection::ExportStatus::Completed));
+        let mut result = json!({"completion":if partial {"partial"} else {"completed"}, "scope":"cad_inspection",
+            "inspection":report,"build_directory":output,"artifacts":artifacts,"publication_errors":publication_errors});
+        if let Some(reference) = model_reference {
+            result["model"] = reference;
         }
         self.workspace.write_generated_bytes(
             &format!("{output}/report.json"),
@@ -1043,6 +1067,83 @@ mod tests {
                 .size_bytes
                 > printable_workspace::MAX_TRANSFER_BYTES
         );
+    }
+
+    #[test]
+    fn publication_pressure_keeps_answers_and_smaller_requested_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace(root.path());
+        let worker = CadWorker::new(
+            workspace.clone(),
+            root.path().join("unused"),
+            root.path().join("unused.py"),
+        );
+        let staging = root.path().join("native");
+        std::fs::create_dir_all(staging.join("output")).unwrap();
+        for name in ["model.cadmodel", "selected.stl"] {
+            std::fs::File::create(staging.join("output").join(name))
+                .unwrap()
+                .set_len(1024 * 1024)
+                .unwrap();
+        }
+        std::fs::write(
+            staging.join("output/components.json"),
+            b"{\"nodes\":{},\"components\":[]}",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.join("output/selected.svg"),
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
+        let exported = |format: &str, units: &str| {
+            json!({"format":format,"status":"completed","filename":format!("selected.{format}"),"error":null,
+            "component_count":1,"component_scope":"components.json#/selected_component_ids","frame":"assembly","units":units,
+            "representation":if format=="svg" {"projected_preview"} else {"tessellated"}, "linear_tolerance_mm":null,"angular_tolerance_rad":null})
+        };
+        let report = json!({"cadquery_version":"test","units":"mm","frame":"assembly","bounds_method":"native_geometry_without_triangulation",
+            "component_count":1,"matched_count":1,"offset":1,"next_offset":null,"components":[],"missing_component_ids":[],
+            "answers":[{"id":"kept","kind":"validity","status":"measured","frame":"assembly","method":"native_geometry_without_triangulation",
+                "component_ids":["part"],"evidence":{"valid":true,"solid_count":1,"interpretation":"native validity"},"error":null}],
+            "exports":[exported("stl","mm"),exported("svg","px")]});
+        std::fs::write(
+            staging.join("output/report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let used = workspace.storage_usage().unwrap().charged_bytes;
+        workspace
+            .configure_storage_budget(Some(used + 64 * 1024))
+            .unwrap();
+        let result = worker
+            .commit_inspection(&staging, "projects/cad/inspection/pressure", "cad", None)
+            .unwrap();
+        assert_eq!(result["completion"], "partial");
+        assert_eq!(
+            result["inspection"]["exports"][0]["status"],
+            "publication_unconfirmed"
+        );
+        assert_eq!(result["inspection"]["exports"][1]["status"], "completed");
+        assert_eq!(result["publication_errors"].as_array().unwrap().len(), 2);
+        assert!(result.get("model").is_none());
+        let (_, bytes) = workspace
+            .read_generated_bytes("projects/cad/inspection/pressure/measurements.json")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["answers"][0]["id"],
+            "kept"
+        );
+        workspace
+            .stat_artifact("projects/cad/inspection/pressure/selected.svg")
+            .unwrap();
+        let (_, bytes) = workspace
+            .read_generated_bytes("projects/cad/inspection/pressure/report.json")
+            .unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), result);
+        jsonschema::validator_for(&crate::tools::output::cad_action_schema("export").unwrap())
+            .unwrap()
+            .validate(&result)
+            .unwrap();
     }
 
     #[test]
