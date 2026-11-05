@@ -643,11 +643,12 @@ impl ReconWorker {
             reconstruct: present(&reconstruct),
             depth: present(&depth),
             object: present(&object),
-            trellis2: self
-                .config
-                .trellis
-                .as_ref()
-                .is_some_and(|config| config.available()),
+            trellis2: self.config.device != "cpu"
+                && self
+                    .config
+                    .trellis
+                    .as_ref()
+                    .is_some_and(|config| config.available()),
             trellis2_preparation: preparation,
             photo_jobs: self.photo_jobs.has_history(),
         };

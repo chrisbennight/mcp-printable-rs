@@ -90,6 +90,9 @@ The worker runs one GPU operation at a time. Model downloads happen before
 acquiring that GPU slot. `PRINTABLE_RECON_PHOTO_QUEUE_DEPTH` (default 8) bounds
 the admitted queued and running object jobs; a full queue reports `busy`.
 Retained photographs and job metadata count towards workspace storage usage.
+An admission whose persistence cannot be confirmed returns `outcome_unknown`
+with its job identifier and does not start generation. Inspect the retained
+storage before submitting again.
 
 Jobs survive client disconnects, but execution is never replayed automatically
 after a worker restart. Unfinished work becomes `interrupted`; a restart during
@@ -282,7 +285,7 @@ together:
   output size first.
 - The sparse convolutions run on the voxels present, in plain PyTorch. They
   and the feed-forward layers work through the voxels or tokens in chunks,
-  so their temporary tensors stay small. The image needs no compiled CUDA
+  so their temporary tensors stay small. Pixal3D needs no compiled CUDA
   extensions beyond PyTorch's own.
 - The worker runs one photograph job at a time, shared with depth
   estimation and head reconstruction. Each job runs in its own process,

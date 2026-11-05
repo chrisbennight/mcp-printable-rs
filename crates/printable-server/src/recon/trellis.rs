@@ -352,7 +352,6 @@ print(json.dumps({'result':result}))
         let scratch = root.path().join("scratch");
         std::fs::create_dir(&cache).unwrap();
         std::fs::create_dir(&scratch).unwrap();
-        worker.config.device = "cuda".into();
         worker.config.trellis = Some(TrellisConfig {
             script,
             cache,
@@ -361,6 +360,10 @@ print(json.dumps({'result':result}))
             timeout: Duration::from_secs(60),
             preparation_timeout: Duration::from_secs(60),
         });
+        worker.config.device = "cpu".into();
+        let (_, cpu) = worker.readiness().await;
+        assert_eq!(cpu["capabilities"]["trellis2"], false);
+        worker.config.device = "cuda".into();
         let mut request = super::super::tests::object_request("side.png");
         request.model = ObjectModel::Trellis2;
         let (_, initial) = worker.readiness().await;

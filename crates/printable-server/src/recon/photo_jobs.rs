@@ -452,23 +452,59 @@ impl ReconWorker {
                     "the photograph job queue is full",
                 ));
             }
-            self.workspace.commit_reserved_generated_artifact_bounded(
-                &input,
-                snapshot.path(),
-                false,
-                MAX_IMAGE_BYTES,
-            )?;
-            self.photo_jobs.persist(&record)?;
             let mut order = store.order.clone();
             order.push(id.clone());
-            self.workspace.write_reserved_artifact(
-                INDEX,
-                &serde_json::to_vec(&Index {
-                    format_version: 1,
-                    jobs: order.clone(),
-                })?,
-                true,
-            )?;
+            let admission = (|| -> Result<(), ToolError> {
+                self.workspace.commit_reserved_generated_artifact_bounded(
+                    &input,
+                    snapshot.path(),
+                    false,
+                    MAX_IMAGE_BYTES,
+                )?;
+                self.photo_jobs.persist(&record)?;
+                self.workspace.write_reserved_artifact(
+                    INDEX,
+                    &serde_json::to_vec(&Index {
+                        format_version: 1,
+                        jobs: order.clone(),
+                    })?,
+                    true,
+                )?;
+                Ok(())
+            })();
+            if let Err(error) = admission {
+                // A durability error may follow index replacement. Never
+                // remove evidence that the on-disk index could reference.
+                let unlisted = match self.workspace.read_generated_bytes(INDEX) {
+                    Ok((_, bytes)) => serde_json::from_slice::<Index>(&bytes)
+                        .is_ok_and(|index| index.format_version == 1 && !index.jobs.contains(&id)),
+                    Err(printable_workspace::WsError::NotFound(_)) => true,
+                    Err(_) => false,
+                };
+                if unlisted {
+                    let mut cleanup_failed = false;
+                    for path in [record_path(&id), input.clone()] {
+                        if let Err(cleanup) = self.workspace.remove_reserved_artifact(&path) {
+                            cleanup_failed = true;
+                            tracing::error!(job_id=%id, code=cleanup.code(), "rejected photograph admission cleanup failed");
+                        }
+                    }
+                    if !cleanup_failed {
+                        return Err(error);
+                    }
+                }
+                let mut uncertain = record.clone();
+                uncertain.state = JobState::OutcomeUnknown;
+                uncertain.failure = Some(
+                    json!({"code":"persistence", "message":"admission persistence could not be confirmed; generation was not started; inspect retained job storage before retrying"}),
+                );
+                if self.photo_jobs.persist(&uncertain).is_err() {
+                    tracing::error!(job_id=%id, "uncertain photograph admission could not be persisted");
+                }
+                store.order = order;
+                store.records.insert(id, uncertain.clone());
+                return Ok(uncertain.response(false));
+            }
             store.order = order;
             store.records.insert(id.clone(), record.clone());
             store.active.insert(id.clone(), cancel.clone());
@@ -606,6 +642,65 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
             .unwrap();
         assert_eq!(page["returned"], 1);
         assert_eq!(page["jobs"][0]["job_id"], id);
+    }
+
+    #[tokio::test]
+    async fn rejected_admission_releases_the_retained_input_storage() {
+        let (_root, worker, request) = fixture();
+        worker.initialize_photo_jobs().unwrap();
+        let initial = worker.workspace.storage_usage().unwrap().charged_bytes;
+        worker
+            .workspace
+            .configure_storage_budget(Some(initial + 4096 + 222))
+            .unwrap();
+        assert_eq!(
+            worker.submit_object(request).unwrap_err().code(),
+            "storage_budget_exceeded"
+        );
+        assert!(worker.photo_jobs.lock().unwrap().order.is_empty());
+        assert!(worker.photo_jobs.lock().unwrap().active.is_empty());
+        let root = worker.workspace.resolve(ROOT, true).unwrap();
+        let directories: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.path().is_dir())
+            .collect();
+        assert_eq!(directories.len(), 1);
+        for directory in directories {
+            assert!(!directory.path().join("input.png").exists());
+            assert!(!directory.path().join("job.json").exists());
+        }
+        assert!(worker.workspace.storage_usage().unwrap().charged_bytes <= initial + 32);
+    }
+
+    #[tokio::test]
+    async fn uncertain_index_publication_keeps_evidence_without_starting_generation() {
+        let (_root, worker, request) = fixture();
+        worker.initialize_photo_jobs().unwrap();
+        std::fs::create_dir(worker.workspace.resolve(INDEX, false).unwrap()).unwrap();
+        let outcome = worker.submit_object(request).unwrap();
+        assert_eq!(outcome["state"], "outcome_unknown");
+        let id = outcome["job_id"].as_str().unwrap();
+        assert_eq!(
+            worker.photo_job_status(query(id)).unwrap()["state"],
+            "outcome_unknown"
+        );
+        assert!(worker.photo_jobs.lock().unwrap().active.is_empty());
+        assert_eq!(worker.admission.available_permits(), 1);
+        assert_eq!(
+            worker
+                .workspace
+                .read_artifact(&format!("{ROOT}/{id}/input.png"))
+                .unwrap()
+                .1,
+            b"image bytes"
+        );
+        assert!(
+            worker
+                .workspace
+                .stat_artifact("objects/figure.stl")
+                .is_err()
+        );
     }
 
     #[tokio::test]
