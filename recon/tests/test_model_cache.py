@@ -131,6 +131,25 @@ class ModelCacheTests(unittest.TestCase):
                 self.assertFalse((snapshot / "manifest.json").is_symlink())
                 self.assertEqual(json.loads((snapshot / "manifest.json").read_text()), self.manifest.document())
 
+    def test_retained_model_aliases_are_refused_before_snapshot_promotion(self):
+        for alias_kind in ("file", "directory"):
+            with self.subTest(alias=alias_kind):
+                root = self.root / alias_kind
+                pending = root / "downloads" / self.manifest.identifier
+                backing = pending / "backing" / "ckpts" / "weights.safetensors"
+                backing.parent.mkdir(parents=True)
+                backing.write_bytes(self.content)
+                if alias_kind == "directory":
+                    (pending / self.item.directory).symlink_to(pending / "backing", target_is_directory=True)
+                else:
+                    path = pending / self.item.relative_path
+                    path.parent.mkdir(parents=True)
+                    path.symlink_to(backing)
+                with self.assertRaisesRegex(PreparationError, "symbolic links"):
+                    prepare(root, self.manifest, download=self.download)
+                self.assertFalse((root / "snapshots" / self.manifest.identifier).exists())
+        self.assertEqual(self.downloads, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,11 @@ def _inside(root: Path, relative: str) -> Path:
     path = root / _relative(relative)
     if not path.resolve().is_relative_to(root.resolve()):
         raise PreparationError("a model cache path escapes its storage directory")
+    current = root
+    for part in PurePosixPath(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise PreparationError("managed model cache paths must not contain symbolic links")
     return path
 
 
