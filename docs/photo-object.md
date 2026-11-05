@@ -172,6 +172,11 @@ pages. It does not measure the container's aggregate file cache or total driver
 allocation; use host/container measurements when qualifying a resource profile.
 CPU-only CI checks the software contracts and does not establish GPU performance.
 
+[Integrated GPU measurements](../evidence/trellis2-low-vram.md) record the
+qualified inputs, peak process RAM, sampled driver memory, disk I/O and runtime,
+including the difference between an allocator-constrained card and a physical
+low-memory GPU. Generated artifacts still need topology inspection and repair.
+
 ### Persistent models and scratch storage
 
 Enable the runtime by setting `PRINTABLE_RECON_TRELLIS_CACHE` in the photograph
