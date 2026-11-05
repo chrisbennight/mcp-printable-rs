@@ -158,6 +158,7 @@ def _download(item: ModelFile, directory: Path, hub_endpoint: str) -> Path:
             filename=item.filename,
             local_dir=directory,
             endpoint=hub_endpoint,
+            token=os.environ.get("HF_TOKEN", False),
         ))
     except HfHubHTTPError as error:
         status = error.response.status_code

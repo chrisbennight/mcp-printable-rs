@@ -29,7 +29,7 @@ pub(super) async fn depth(
 }
 
 /// Generate the 3D shape of the object in a workspace photograph with
-/// Pixal3D, written as a binary STL.
+/// the selected generator, written as a binary STL.
 pub(super) async fn object(
     workspace: Arc<Workspace>,
     settings: &Settings,

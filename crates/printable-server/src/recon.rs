@@ -1,4 +1,4 @@
-//! Photo reconstruction of FLAME heads, delegated to the reconstruction worker.
+//! Photograph-based heads, depth and object shapes, delegated to the worker.
 //!
 //! The worker runs one Python reconstruction at a time with a deadline. Input
 //! photographs are copied out of the workspace into private snapshots first,
@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 use crate::error::ToolError;
+
+mod trellis;
+pub use trellis::TrellisConfig;
 
 /// Photographs accepted in one request.
 pub const MAX_IMAGES: usize = 8;
@@ -364,9 +367,24 @@ pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_00
 /// million triangles.
 const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
 
+/// The shape generator selected for an object photograph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub enum ObjectModel {
+    #[default]
+    #[serde(rename = "pixal3d")]
+    Pixal3d,
+    #[serde(rename = "trellis2")]
+    Trellis2,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectRequest {
+    /// Shape generator: `pixal3d` (the default) or the optional `trellis2`.
+    /// TRELLIS.2 streams weights from persistent disk storage and downloads
+    /// its pinned model files on first use.
+    #[serde(default)]
+    pub model: ObjectModel,
     /// Workspace photograph of one object, figure or character, JPEG, PNG or
     /// WebP. The background is removed unless the photograph already has
     /// transparency, which then marks the subject.
@@ -404,6 +422,11 @@ pub struct ObjectRequest {
     /// more; the result reports both counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_triangles: Option<u32>,
+    /// TRELLIS.2 only: simplify the generated surface (default true). False
+    /// exports every generated triangle and can produce files over 1 GB.
+    /// Cannot be combined with `target_triangles` when false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simplify: Option<bool>,
     /// Replace an existing file at `mesh_path`.
     #[serde(default)]
     pub overwrite: bool,
@@ -412,6 +435,21 @@ pub struct ObjectRequest {
 impl ObjectRequest {
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
+        if self.model == ObjectModel::Trellis2 && self.fov_degrees.is_some() {
+            return Err(ToolError::Validation(
+                "fov_degrees is supported only by Pixal3D".into(),
+            ));
+        }
+        if self.model == ObjectModel::Pixal3d && self.simplify.is_some() {
+            return Err(ToolError::Validation(
+                "simplify is supported only by TRELLIS.2".into(),
+            ));
+        }
+        if self.simplify == Some(false) && self.target_triangles.is_some() {
+            return Err(ToolError::Validation(
+                "target_triangles requires simplification".into(),
+            ));
+        }
         if !IMAGE_SUFFIXES
             .iter()
             .any(|suffix| self.image.ends_with(suffix))
@@ -522,6 +560,8 @@ pub struct ReconConfig {
     pub object_script: PathBuf,
     pub object_model: PathBuf,
     pub object_timeout: Duration,
+    /// Optional downloaded, disk-streamed TRELLIS.2 runtime.
+    pub trellis: Option<TrellisConfig>,
 }
 
 pub struct ReconWorker {
@@ -586,6 +626,11 @@ impl ReconWorker {
             reconstruct: present(&reconstruct),
             depth: present(&depth),
             object: present(&object),
+            trellis2: self
+                .config
+                .trellis
+                .as_ref()
+                .is_some_and(|config| config.available()),
         };
         let missing = json!({
             "reconstruct": describe(reconstruct),
@@ -594,7 +639,10 @@ impl ReconWorker {
         });
         let workspace_ready = self.workspace.ready();
         if workspace_ready
-            && (capabilities.reconstruct || capabilities.depth || capabilities.object)
+            && (capabilities.reconstruct
+                || capabilities.depth
+                || capabilities.object
+                || capabilities.trellis2)
         {
             (
                 true,
@@ -776,11 +824,14 @@ impl ReconWorker {
         Ok(result)
     }
 
-    /// Generate the shape of the object in one photograph with Pixal3D and
+    /// Generate the shape of the object with the selected model and
     /// write it as a binary STL.
     pub async fn generate_object(&self, request: ObjectRequest) -> Result<Value, ToolError> {
         request.validate()?;
         self.check_destination(&request.mesh_path, request.overwrite)?;
+        if request.model == ObjectModel::Trellis2 {
+            return self.generate_trellis(request).await;
+        }
         let _permit = self.permit()?;
 
         let snapshot = self
@@ -842,10 +893,21 @@ impl ReconWorker {
         timeout: Duration,
         activity: &str,
     ) -> Result<Value, ToolError> {
+        self.run_command(self.python_command(script), job, staging, timeout, activity)
+            .await
+    }
+
+    async fn run_command(
+        &self,
+        mut command: Command,
+        job: &Value,
+        staging: &Path,
+        timeout: Duration,
+        activity: &str,
+    ) -> Result<Value, ToolError> {
         let request_path = staging.join("request.json");
         std::fs::write(&request_path, serde_json::to_vec(job)?)?;
 
-        let mut command = self.python_command(script);
         command
             .arg(&request_path)
             .current_dir(staging)
@@ -930,7 +992,8 @@ impl ReconWorker {
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("OMP_NUM_THREADS", "4")
-            // The runtimes read only mounted files; nothing is fetched.
+            // Inference reads mounted files. Only the model preparation
+            // command explicitly enables downloads with an allowlisted environment.
             .env("HF_HUB_OFFLINE", "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -1052,7 +1115,7 @@ result = {"triangles": 0, "resolution": request["resolution"], "seed": request["
 print(json.dumps({"result": result}))
 "#;
 
-    fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
+    pub(super) fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");
         std::fs::create_dir(&runtime).unwrap();
@@ -1093,6 +1156,7 @@ print(json.dumps({"result": result}))
                 object_script: runtime.join("generate_object.py"),
                 object_model: runtime.join("pixal3d"),
                 object_timeout: timeout,
+                trellis: None,
             },
         );
         (root, worker)
@@ -1212,7 +1276,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": true, "object": true})
+            json!({"reconstruct": true, "depth": true, "object": true, "trellis2": false})
         );
         // A depth check that cannot run withholds depth alone.
         let mut broken = worker.config.clone();
@@ -1222,7 +1286,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": false, "object": true})
+            json!({"reconstruct": true, "depth": false, "object": true, "trellis2": false})
         );
         assert!(answer["missing"]["depth"]["error"].is_string());
         // Without any job's files the worker is not ready and says why.
@@ -1242,8 +1306,9 @@ print(json.dumps({"result": result}))
         );
     }
 
-    fn object_request(image: &str) -> ObjectRequest {
+    pub(super) fn object_request(image: &str) -> ObjectRequest {
         ObjectRequest {
+            model: ObjectModel::Pixal3d,
             image: image.into(),
             mesh_path: "objects/figure.stl".into(),
             resolution: None,
@@ -1252,6 +1317,7 @@ print(json.dumps({"result": result}))
             fov_degrees: None,
             size_mm: None,
             target_triangles: None,
+            simplify: None,
             overwrite: false,
         }
     }
@@ -1702,6 +1768,10 @@ pub struct Readiness {
     /// Every Pixal3D model file is present.
     #[serde(default)]
     pub object: bool,
+    /// TRELLIS.2 is configured with persistent model and scratch directories;
+    /// model data can be downloaded on first use.
+    #[serde(default)]
+    pub trellis2: bool,
 }
 
 /// The server's view of the reconstruction worker.
@@ -1753,9 +1823,23 @@ impl ReconClient {
         self.ready.borrow().depth
     }
 
-    /// Whether the worker last reported the Pixal3D model present.
+    /// Whether the worker can serve an object generator, including one whose
+    /// model data will be downloaded on first use.
     pub fn can_generate_objects(&self) -> bool {
-        self.ready.borrow().object
+        let ready = self.ready.borrow();
+        ready.object || ready.trellis2
+    }
+
+    pub fn object_models(&self) -> Vec<ObjectModel> {
+        let ready = self.ready.borrow();
+        let mut models = Vec::new();
+        if ready.object {
+            models.push(ObjectModel::Pixal3d);
+        }
+        if ready.trellis2 {
+            models.push(ObjectModel::Trellis2);
+        }
+        models
     }
 
     /// Permission to build a colour map, or a busy error while another is
@@ -1803,6 +1887,7 @@ impl ReconClient {
                 reconstruct = ready.reconstruct,
                 depth = ready.depth,
                 object = ready.object,
+                trellis2 = ready.trellis2,
                 "photograph worker availability changed"
             );
         }

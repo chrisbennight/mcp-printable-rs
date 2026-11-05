@@ -2,15 +2,15 @@
 
 The `photo` tool's `object` action generates the 3D shape of the one object,
 figure or character in a workspace photograph and writes it as an STL. The
-shape comes from [Pixal3D](https://github.com/TencentARC/Pixal3D), which
+By default the shape comes from [Pixal3D](https://github.com/TencentARC/Pixal3D), which
 aligns the generated geometry with the picture's pixels. Only the shape is
 generated: Pixal3D's colour stages are never run, because a single-colour
 print does not need them and skipping them saves time and memory.
 
 The action runs in the optional photograph worker, the same service that
 estimates depth and reconstructs FLAME heads, on its GPU. The `photo` tool
-offers `object` only while the worker reports every Pixal3D model file
-present.
+offers `object` while the worker reports a usable Pixal3D model or a configured
+[TRELLIS.2 runtime](#trellis2). Status lists the available object models.
 
 ## What it writes
 
@@ -32,6 +32,9 @@ unless `overwrite` is true.
 
 The other choices are:
 
+- `model`: `pixal3d` (the default) or `trellis2`, when configured. Their image
+  conditioning differs, so they can produce different plausible interpretations
+  of the same photograph. Existing requests continue to use Pixal3D.
 - `resolution`: 512, 1024 (default) or 1536 voxels across the surface. Higher
   resolutions keep finer detail and take longer, use more GPU memory and give
   larger meshes. At 1536 the shape is coarsened in steps of 128 towards 1024
@@ -46,6 +49,8 @@ The other choices are:
 - `target_triangles`: the triangles the mesh is simplified towards, 10,000
   to 4,000,000 (default 1,000,000, as Pixal3D's own export uses). See
   [Mesh size](#mesh-size).
+- `simplify`: TRELLIS.2 only, true by default. False writes every generated
+  triangle. Omit `target_triangles` when false. Full-detail files can exceed 1 GB.
 
 The result reports the triangle count written and the count generated, the
 mesh's size in millimetres, the
@@ -77,6 +82,102 @@ On that figure, simplifying 4.6 million triangles to 1 million took about
 2 seconds on the processor and kept its detail visibly intact. Raise
 `target_triangles` for a large print with fine detail; lower it for a quick
 look or a small print.
+
+## TRELLIS.2
+
+Select the optional shape generator explicitly:
+
+```json
+{"action": "object", "params": {
+  "model": "trellis2",
+  "image": "photos/figure.png",
+  "mesh_path": "objects/figure-trellis.stl",
+  "resolution": 1024,
+  "size_mm": 120,
+  "simplify": true
+}}
+```
+
+This path uses the pinned [TRELLIS.2](https://github.com/microsoft/TRELLIS.2)
+shape networks, DINOv3 image conditioning and Printable's existing BiRefNet
+background removal. Texture generation does not run. A photograph with real
+transparency supplies its own foreground mask. `fov_degrees` applies only to
+Pixal3D and is rejected for TRELLIS.2.
+
+Inactive transformer weights stay on disk. Each active block is read directly
+into GPU memory and released after execution, without retaining a CPU weight
+copy. Tiled decoding and chunked mesh extraction bound temporary tensors.
+Background removal, generation and mesh delivery run in separate processes so
+each releases its memory before the next begins. Simplified delivery coarsens
+a preparation copy on disk before the bounded final simplifier; full-detail
+delivery streams every original triangle without coarsening. Neither path
+repairs the generated surface or proves it is printable.
+Tiled decoding can produce small numerical and topology differences from
+untiled upstream inference. Inspect fine features before printing.
+
+The default PyTorch allocation budget is 4096 MiB. This is an allocator budget,
+not a limit on total driver memory, and Docker's GPU reservation does not impose
+a VRAM limit. The runtime requires Linux/amd64 and an Ampere or newer NVIDIA GPU
+with a driver compatible with the image's CUDA 13 build. Resolution, subject
+complexity, driver overhead and other GPU users affect whether a job fits.
+An out-of-memory failure is reported; the worker does not silently reduce
+requested detail. The upstream cascade may still report a lower achieved
+resolution when its token budget requires it.
+
+Results report the peak process resident memory (`peak_ram_bytes`), peak PyTorch
+GPU allocation (`peak_gpu_memory_bytes`), process times and inference stage
+times. Process resident memory includes model loading and mapped checkpoint
+pages. It does not measure the container's aggregate file cache or total driver
+allocation; use host/container measurements when qualifying a resource profile.
+CPU-only CI checks the software contracts and does not establish GPU performance.
+
+### Persistent models and scratch storage
+
+Enable the runtime by setting `PRINTABLE_RECON_TRELLIS_CACHE` in the photograph
+worker. Map that directory and `PRINTABLE_RECON_TRELLIS_SCRATCH` (default
+`/scratch/trellis2`) to disk volumes writable by uid 10001. Checkpoints are absent
+from the image. On first use the worker downloads the files in
+[the pinned model manifest](../recon/models/trellis2.json), verifies every size
+and SHA-256, then publishes one complete snapshot. Failed downloads retain
+partial files for retry; a complete verified snapshot can run offline.
+
+The manifest needs approximately 11 GB for shape and image model data. Allow
+at least 20 GB of scratch capacity for high-detail generation and delivery,
+plus space for the final workspace artifact and its atomic publication copy.
+These are initial provisioning allowances, not a measured upper bound. Model
+revisions have separate snapshots; keep room for both during upgrades. Fast
+local SSD storage is recommended because disk streaming repeatedly rereads
+transformer blocks. Slow disks can substantially increase job time. Large
+arrays and output files must not use a RAM-backed `/tmp`.
+
+Only model preparation receives `HF_ENDPOINT`, an operator-configured
+Hugging Face base URL or compatible proxy. Its default is
+`https://huggingface.co`; URLs containing credentials, a query or a fragment
+are rejected. Configure network access and sufficient download timeouts for
+first use. Inference processes receive no Hub credentials and run offline.
+
+The official [DINOv3 model](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)
+has separate license and access requirements. If needed, inject an authorized
+`HF_TOKEN` through the deployment's secret mechanism, only into the worker's
+process environment. A configured proxy may handle authorization itself. The
+worker also reuses byte-identical DINOv3 and BiRefNet files from an existing
+`PRINTABLE_RECON_OBJECT_MODEL` mount, copying and verifying them into its cache.
+It never downloads Python code at run time.
+
+[compose.photo.yaml](../compose.photo.yaml) is an optional overlay for the
+standard installation. Set `PRINTABLE_RECON_IMAGE` to the matching immutable
+reconstruction image from the same release record as the other services, then
+use `docker compose -f compose.yaml -f compose.photo.yaml up -d`. The overlay
+provides disk-backed named volumes, download egress, 8 CPUs and a 10 GiB memory
+limit with no additional swap. These are configurable starting allocations;
+qualify them against actual workloads and reserve disk capacity separately.
+It adds no public worker port.
+
+Worker settings include `PRINTABLE_RECON_TRELLIS_VRAM_MIB` (default 4096),
+`PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS` (default 21600 for inference and
+delivery together), and `PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS`
+(default 86400 for model preparation). The server reads process environment;
+it does not load `.env.example` automatically.
 
 ## Photographs that work
 
@@ -155,7 +256,7 @@ cache keeps them between jobs when the host has memory to spare.
 
 ## Supply the model
 
-The model files are not included. Put them in one directory laid out like
+The Pixal3D model files are not included. Put them in one directory laid out like
 this:
 
 ```text
@@ -209,7 +310,7 @@ a checked revision.
 
 ## Run the worker
 
-Mount the directory into the photograph worker, read-only, at
+Mount the Pixal3D directory into the photograph worker, read-only, at
 `/models/pixal3d`, or name another path with `PRINTABLE_RECON_OBJECT_MODEL`.
 Add this to the `recon-worker` service from
 [Run the worker](flame-models.md#run-the-worker):
@@ -236,7 +337,7 @@ under `missing.object`.
 
 ## From the mesh to a print
 
-The STL is the generator's surface, simplified but not checked or repaired.
+The STL is the generator's surface, optionally simplified and never checked or repaired.
 Like Pixal3D's own raw surface, it may have holes, small separate pieces,
 edges shared by more than two triangles, triangles facing inconsistently
 and self-intersections. Repair it in Blender before slicing:

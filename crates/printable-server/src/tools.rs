@@ -5659,6 +5659,7 @@ async fn status(
         "object": {
             "configured": settings.recon.is_some(),
             "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_generate_objects()),
+            "models": settings.recon.as_ref().map(|recon| recon.object_models()).unwrap_or_default(),
         },
         "workspace": {
             "confined": ws.confined,

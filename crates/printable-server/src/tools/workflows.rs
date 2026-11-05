@@ -426,7 +426,7 @@ pub struct Availability {
     pub reconstruct: bool,
     /// The photograph worker reports its depth model present.
     pub depth: bool,
-    /// The photograph worker reports its Pixal3D model present.
+    /// The photograph worker can serve at least one object generator.
     pub object: bool,
     /// At least one public model site is enabled.
     pub library: bool,
@@ -465,7 +465,7 @@ macro_rules! photo_depth_text {
 }
 macro_rules! photo_object_text {
     () => {
-        "object generates the 3D shape of the one object, figure or character in the photograph with Pixal3D and writes it as a binary STL in millimetres, Z up, standing on Z = 0; the background is removed unless the photograph has transparency, the sides the camera did not see are the model's invention, and the surface is neither checked nor repaired, so check it with validate_mesh and repair it before slicing."
+        "object generates the 3D shape of the one object, figure or character in the photograph with Pixal3D (default) or the optional TRELLIS.2 model and writes it as a binary STL in millimetres, Z up, standing on Z = 0; status lists available object models. TRELLIS.2 downloads model data to persistent storage on first use. The background is removed unless the photograph has transparency, the sides the camera did not see are the model's invention, and the surface is neither checked nor repaired, so check it with validate_mesh and repair it before slicing."
     };
 }
 
@@ -487,7 +487,7 @@ static PHOTO_OBJECT: ToolDef = ToolDef {
         photo_prefix!(),
         " ",
         photo_object_text!(),
-        " Advertised only when the worker reports its Pixal3D model present."
+        " Advertised when the worker reports at least one object generator available."
     ),
     schema: photo_object_schema,
     annotations: write_annotations,

@@ -50,7 +50,7 @@ else
       smoke/expected-tools.txt) rust=true; images=true ;;
       Dockerfile|docker-bake.hcl|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
         images=true ;;
-      compose.yaml) images=true ;;
+      compose.yaml|compose.photo.yaml) images=true ;;
       acceptance/products/*) rust=true; images=true ;;
     esac
     case "$path" in

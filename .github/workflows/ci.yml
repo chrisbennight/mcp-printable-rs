@@ -217,6 +217,12 @@ jobs:
       - name: Verify photo reconstruction
         if: steps.scope.outputs.images == 'true'
         run: |
+          PRINTABLE_SERVER_IMAGE=printable-server:ci \
+          PRINTABLE_BLENDER_IMAGE=printable-blender:ci \
+          PRINTABLE_CAD_IMAGE=printable-cad:ci \
+          PRINTABLE_SLICER_IMAGE=printable-slicer:ci \
+          PRINTABLE_RECON_IMAGE=printable-recon:ci \
+            docker compose -f compose.yaml -f compose.photo.yaml config --quiet
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg RECON_IMAGE=printable-recon:ci \
             --file recon/Dockerfile.smoke --tag printable-recon-smoke:ci .

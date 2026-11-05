@@ -1,5 +1,5 @@
 //! HTTP service that runs the photograph jobs: FLAME head reconstruction,
-//! Marigold V2 depth estimation and Pixal3D object generation, one at a time.
+//! Marigold V2 depth estimation and optional object generators, one at a time.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -11,7 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    DepthRequest, ObjectRequest, ReconConfig, ReconRequest, ReconWorker, worker_message,
+    DepthRequest, ObjectRequest, ReconConfig, ReconRequest, ReconWorker, TrellisConfig,
+    worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -105,6 +106,8 @@ async fn main() -> anyhow::Result<()> {
             ),
             object_model: path("PRINTABLE_RECON_OBJECT_MODEL", "/models/pixal3d"),
             object_timeout: Duration::from_secs(object_timeout),
+            trellis: TrellisConfig::configure(&|name| std::env::var(name).ok())
+                .map_err(anyhow::Error::msg)?,
         },
     ));
     let app = Router::new()

@@ -1,0 +1,117 @@
+{
+  "format": "printable-models 1",
+  "files": [
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "222c359ab1ed9bc6735a640a34f95d47f8681b9bc4aaa101bfb80274676253c6",
+      "bytes": 4186,
+      "filename": "pipeline.json",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "6cdfb636854f60ffcadd8c49244169cd449f34c5ccdb55b5ff7c04678f9c399e",
+      "bytes": 467,
+      "filename": "ckpts/ss_flow_img_dit_1_3B_64_bf16.json",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+      "bytes": 2584426920,
+      "filename": "ckpts/ss_flow_img_dit_1_3B_64_bf16.safetensors",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "5f1b856dffce79466fb18f5f0eefc08f08c673b24b3c05b20359c0b6d318a209",
+      "bytes": 678,
+      "filename": "ckpts/shape_dec_next_dc_f16c32_fp16.json",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "e3b718d3e43e4f8780e9a24ac6fff231811a67e3b058e336e10fe654c911d581",
+      "bytes": 948490494,
+      "filename": "ckpts/shape_dec_next_dc_f16c32_fp16.safetensors",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "ddbd7a1d34ce9a8e7af2f6ef9ae686d9ab49f69e62dacb98d8409b511cdbd5e2",
+      "bytes": 458,
+      "filename": "ckpts/slat_flow_img2shape_dit_1_3B_512_bf16.json",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f",
+      "bytes": 2584574424,
+      "filename": "ckpts/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "7ebd6d367393f52fee9e92c2b3d727a9026a338549c6a6fa84c7ea122140ffdd",
+      "bytes": 458,
+      "filename": "ckpts/slat_flow_img2shape_dit_1_3B_1024_bf16.json",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS.2-4B",
+      "revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+      "sha256": "07cd0596f634c5adc1890023d16023afc5eed02fb84b22bb23aff5bf0030fbbd",
+      "bytes": 2584574424,
+      "filename": "ckpts/slat_flow_img2shape_dit_1_3B_1024_bf16.safetensors",
+      "directory": "trellis2"
+    },
+    {
+      "repo": "microsoft/TRELLIS-image-large",
+      "revision": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
+      "sha256": "646781293f1cda74720de85d1cef50a957fb4aebd9a4bd014e454e32f2330ac5",
+      "bytes": 245,
+      "filename": "ckpts/ss_dec_conv3d_16l8_fp16.json",
+      "directory": "trellis1"
+    },
+    {
+      "repo": "microsoft/TRELLIS-image-large",
+      "revision": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
+      "sha256": "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a",
+      "bytes": 147591972,
+      "filename": "ckpts/ss_dec_conv3d_16l8_fp16.safetensors",
+      "directory": "trellis1"
+    },
+    {
+      "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+      "revision": "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+      "sha256": "135ecd23e34a70b6fbed8b083fdecb319b7e3a54e3d849258bbe4ddcf1783bb5",
+      "bytes": 745,
+      "filename": "config.json",
+      "directory": "dinov3"
+    },
+    {
+      "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+      "revision": "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+      "sha256": "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179",
+      "bytes": 1212559808,
+      "filename": "model.safetensors",
+      "directory": "dinov3"
+    },
+    {
+      "repo": "ZhengPeng7/BiRefNet",
+      "revision": "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4",
+      "directory": "birefnet",
+      "filename": "model.safetensors",
+      "sha256": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
+      "bytes": 444473596
+    }
+  ]
+}

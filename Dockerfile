@@ -173,7 +173,7 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
  && cmake --install /tmp/opencv-build \
  && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-runtime
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-base
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
@@ -182,12 +182,6 @@ RUN apt-get update && apt-get upgrade -y \
 COPY recon/requirements.txt /opt/printable/recon/requirements.txt
 RUN /opt/recon/bin/pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch==2.14.1 torchvision==0.29.1 \
  && /opt/recon/bin/pip install --no-cache-dir --no-deps -r /opt/printable/recon/requirements.txt
-COPY --from=recon-opencv /opt/opencv-python /opt/opencv-python
-# The worker installs nothing at run time, so pip leaves the environment.
-RUN site="$(/opt/recon/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
- && echo /opt/opencv-python > "${site}/printable-opencv.pth" \
- && /opt/recon/bin/python -c 'import cv2; assert not hasattr(cv2, "VideoCapture")' \
- && /opt/recon/bin/python -m pip uninstall --yes pip
 RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
  && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check \
@@ -206,12 +200,62 @@ RUN mkdir -p /opt/printable/recon/vendor/birefnet \
       "https://huggingface.co/ZhengPeng7/BiRefNet/resolve/${BIREFNET_REVISION}/BiRefNet_config.py" \
  && echo 'e7b8c2a74f6cea6a59553d517f71d47f2c1d90e670a13416af17c25fe2f3dc52  /opt/printable/recon/vendor/birefnet/BiRefNet_config.py' | sha256sum --check \
  && touch /opt/printable/recon/vendor/birefnet/__init__.py
-COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py recon/generate_object.py /opt/printable/recon/
+
+# Compile extensions against the same Python, PyTorch and C++ ABI as the worker.
+# The toolkit and build tools stay in this intermediate stage. PTX covers newer
+# NVIDIA architectures; Ada also has a native binary for the low-memory profile.
+FROM nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:0eee3094c71518ad31d011a594ae6ed6de72959ee07e318cb31cffe71690e90c AS recon-cuda
+FROM recon-base AS recon-trellis-build
+COPY --from=recon-cuda /usr/local/cuda-13.0 /usr/local/cuda
+ENV CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:${PATH} \
+    TORCH_CUDA_ARCH_LIST="8.0+PTX;8.9" \
+    MAX_JOBS=2
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential python3-dev git ninja-build \
+ && rm -rf /var/lib/apt/lists/*
+ARG TRELLIS_REVISION=75fbf0183001ed9876c8dbb35de6b68552ee08bd
+ARG FLEXGEMM_REVISION=6dd94a859c26ee8246888502eada3dd8ad85532e
+RUN mkdir -p /src /wheels \
+ && git clone https://github.com/microsoft/TRELLIS.2.git /src/trellis2 \
+ && git -C /src/trellis2 checkout "${TRELLIS_REVISION}" \
+ && test "$(git -C /src/trellis2 rev-parse HEAD)" = "${TRELLIS_REVISION}" \
+ && git -C /src/trellis2 submodule update --init o-voxel/third_party/eigen \
+ && git clone https://github.com/JeffreyXiang/FlexGEMM.git /src/flexgemm \
+ && git -C /src/flexgemm checkout "${FLEXGEMM_REVISION}" \
+ && test "$(git -C /src/flexgemm rev-parse HEAD)" = "${FLEXGEMM_REVISION}"
+COPY recon/trellis-low-memory.patch /tmp/trellis-low-memory.patch
+RUN git -C /src/trellis2 apply --check /tmp/trellis-low-memory.patch \
+ && git -C /src/trellis2 apply /tmp/trellis-low-memory.patch
+COPY recon/build_trellis.py /tmp/build_trellis.py
+RUN /opt/recon/bin/python /tmp/build_trellis.py /src
+RUN mkdir /notices \
+ && cp /src/trellis2/LICENSE /notices/TRELLIS2-MIT.txt \
+ && cp /src/flexgemm/LICENSE /notices/FlexGEMM-MIT.txt \
+ && cp /src/trellis2/o-voxel/third_party/eigen/COPYING.* /notices/
+
+FROM recon-base AS recon-runtime
+COPY --from=recon-opencv /opt/opencv-python /opt/opencv-python
+# The worker installs nothing at run time, so pip leaves the environment.
+RUN --mount=type=bind,from=recon-trellis-build,source=/wheels,target=/wheels \
+    site="$(/opt/recon/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+ && echo /opt/opencv-python > "${site}/printable-opencv.pth" \
+ && echo /opt/printable/recon/vendor/trellis2 > "${site}/printable-trellis.pth" \
+ && /opt/recon/bin/python -c 'import cv2; assert not hasattr(cv2, "VideoCapture")' \
+ && /opt/recon/bin/python -m pip install --no-deps --no-index -r /wheels/requirements.txt \
+ && /opt/recon/bin/python -m pip uninstall --yes pip
+COPY --from=recon-trellis-build /src/trellis2/trellis2 /opt/printable/recon/vendor/trellis2/trellis2
+COPY --from=recon-trellis-build /src/flexgemm/autotune_cache.json /opt/printable/recon/vendor/flex-gemm-autotune.json
+COPY --from=recon-trellis-build /notices /usr/share/doc/printable/trellis
+COPY recon/licenses /usr/share/doc/printable/trellis
+COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py recon/generate_object.py recon/generate_trellis.py /opt/printable/recon/
+COPY recon/models /opt/printable/recon/models
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+ && install -d -o 10001 -g 10001 -m 0700 /models/trellis2 /scratch/trellis2
 # Declared here so the per-commit revision leaves earlier layers cacheable.
 ARG SOURCE_REVISION
 ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs
