@@ -24,20 +24,24 @@ def stream_parameters(model: torch.nn.Module, path: Path, *, blocks: bool, evict
 
     Constructors establish working precision before storage is released. The
     checkpoint must supply every parameter, with exactly its declared shape.
-    Buffers remain small resident state; checkpoint buffers replace constructor
-    values before the checkpoint mapping closes.
+    Buffers remain small resident state. The upstream checkpoints omit derived
+    position buffers; retain their constructor values when absent and copy any
+    checkpoint buffers before the checkpoint mapping closes.
     """
     parameters = dict(model.named_parameters())
     buffers = dict(model.named_buffers())
     with safe_open(path, framework="pt") as reader:
         keys = set(reader.keys())
-        if keys != set(parameters) | set(buffers):
+        if not set(parameters) <= keys or not keys <= set(parameters) | set(buffers):
             raise ValueError("the TRELLIS checkpoint does not match its network state")
         for name, parameter in parameters.items():
             if reader.get_slice(name).get_shape() != list(parameter.shape):
                 raise ValueError("the TRELLIS checkpoint does not match its parameter shapes")
         for name, buffer in buffers.items():
-            buffer.copy_(reader.get_tensor(name))
+            if name in keys:
+                if reader.get_slice(name).get_shape() != list(buffer.shape):
+                    raise ValueError("the TRELLIS checkpoint does not match its buffer shapes")
+                buffer.copy_(reader.get_tensor(name))
     if blocks and not isinstance(getattr(model, "blocks", None), torch.nn.ModuleList):
         raise ValueError("block streaming requires a transformer block list")
     stats = {"block_loads": 0, "logical_weight_bytes": 0, "file_evictions": 0}
