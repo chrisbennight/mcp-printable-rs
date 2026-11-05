@@ -44,3 +44,36 @@ pub(super) async fn object(
     validate_scad_destination(&workspace, &request.mesh_path, ".stl", request.overwrite)?;
     client.generate_object(&request).await
 }
+
+pub(super) async fn job_status(
+    settings: &Settings,
+    request: crate::recon::PhotoJobRequest,
+) -> Result<Value, ToolError> {
+    let client = settings
+        .recon
+        .as_ref()
+        .ok_or_else(|| ToolError::Validation("the photograph worker is not configured".into()))?;
+    client.photo_job_status(&request).await
+}
+
+pub(super) async fn job_list(
+    settings: &Settings,
+    request: crate::recon::PhotoJobListRequest,
+) -> Result<Value, ToolError> {
+    let client = settings
+        .recon
+        .as_ref()
+        .ok_or_else(|| ToolError::Validation("the photograph worker is not configured".into()))?;
+    client.list_photo_jobs(&request).await
+}
+
+pub(super) async fn job_cancel(
+    settings: &Settings,
+    request: crate::recon::PhotoJobRequest,
+) -> Result<Value, ToolError> {
+    let client = settings
+        .recon
+        .as_ref()
+        .ok_or_else(|| ToolError::Validation("the photograph worker is not configured".into()))?;
+    client.cancel_photo_job(&request).await
+}

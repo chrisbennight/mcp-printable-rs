@@ -1,7 +1,7 @@
 # An object from a photograph
 
 The `photo` tool's `object` action generates the 3D shape of the one object,
-figure or character in a workspace photograph and writes it as an STL. The
+figure or character in a workspace photograph and writes it as an STL.
 By default the shape comes from [Pixal3D](https://github.com/TencentARC/Pixal3D), which
 aligns the generated geometry with the picture's pixels. Only the shape is
 generated: Pixal3D's colour stages are never run, because a single-colour
@@ -51,6 +51,9 @@ The other choices are:
   [Mesh size](#mesh-size).
 - `simplify`: TRELLIS.2 only, true by default. False writes every generated
   triangle. Omit `target_triangles` when false. Full-detail files can exceed 1 GB.
+- `background`: true runs Pixal3D as a retained job. By default Pixal3D returns
+  its result in the same request. TRELLIS.2 always uses a retained job;
+  `background: false` is rejected for that model.
 
 The result reports the triangle count written and the count generated, the
 mesh's size in millimetres, the
@@ -59,6 +62,40 @@ shape stages, the seed, the field of view and where it came from, whether the
 background was removed, the device, the time taken, each stage's time and,
 on a GPU, its peak memory, the photograph's SHA-256 and the written
 artifact.
+
+## Retained generation jobs
+
+TRELLIS.2 returns a `job_id` promptly, including when the model files still need
+downloading. The worker saves the photograph, request and resource settings
+before admitting the job. Editing the original photograph or disconnecting the
+client does not change or cancel it. Pixal3D supports the same workflow with
+`background: true`.
+
+Use the `photo` tool to inspect the job:
+
+```json
+{"action": "status", "params": {"job_id": "<returned job_id>"}}
+```
+
+Status reports the state and current phase, such as preparing models, waiting
+for the GPU, generating or delivering. A successful job includes the result and
+artifact. Add `detail: true` to inspect its retained request and source hash.
+`list` accepts `offset` and `limit` to discover recent jobs. `cancel` accepts a
+`job_id`; cancellation is available until publication starts. The job becomes
+`cancelled` after its subprocess has been killed and reaped. Check the returned
+`cancellable` and `cancellation_requested` fields rather than assuming that a
+cancellation request deleted an output.
+
+The worker runs one GPU operation at a time. Model downloads happen before
+acquiring that GPU slot. `PRINTABLE_RECON_PHOTO_QUEUE_DEPTH` (default 8) bounds
+the admitted queued and running object jobs; a full queue reports `busy`.
+Retained photographs and job metadata count towards workspace storage usage.
+
+Jobs survive client disconnects, but execution is never replayed automatically
+after a worker restart. Unfinished work becomes `interrupted`; a restart during
+publication reports `outcome_unknown`. Inspect `mesh_path` before submitting
+again. Job history remains discoverable when generation models are absent.
+These identifiers belong to `photo`; rendering jobs use the separate `job` tool.
 
 ## Mesh size
 
@@ -109,7 +146,8 @@ into GPU memory and released after execution, without retaining a CPU weight
 copy. Tiled decoding and chunked mesh extraction bound temporary tensors.
 Background removal, generation and mesh delivery run in separate processes so
 each releases its memory before the next begins. Simplified delivery coarsens
-a preparation copy on disk before the bounded final simplifier; full-detail
+a preparation copy using disk-based sorting and bounded buffers before the
+bounded final simplifier; full-detail
 delivery streams every original triangle without coarsening. Neither path
 repairs the generated surface or proves it is printable.
 Tiled decoding can produce small numerical and topology differences from
@@ -140,6 +178,12 @@ from the image. On first use the worker downloads the files in
 [the pinned model manifest](../recon/models/trellis2.json), verifies every size
 and SHA-256, then publishes one complete snapshot. Failed downloads retain
 partial files for retry; a complete verified snapshot can run offline.
+The server's `status` tool reports preparation as `not_prepared`, `preparing`,
+`prepared`, `failed` or `interrupted`, with the time of the last completed
+verification when available. This status query does not hash the checkpoints
+or contact the network. Every generation verifies them again before use, so
+`prepared` describes the last verification rather than a guarantee that files
+have not subsequently changed.
 
 The manifest needs approximately 11 GB for shape and image model data. Allow
 at least 20 GB of scratch capacity for high-detail generation and delivery,
@@ -149,6 +193,9 @@ revisions have separate snapshots; keep room for both during upgrades. Fast
 local SSD storage is recommended because disk streaming repeatedly rereads
 transformer blocks. Slow disks can substantially increase job time. Large
 arrays and output files must not use a RAM-backed `/tmp`.
+The scratch volume also retains Triton and CUDA kernel caches between jobs.
+The image supplies the compiler and headers Triton needs for its first-use
+kernel launchers; the CUDA extension build toolkit stays in the build stage.
 
 Only model preparation receives `HF_ENDPOINT`, an operator-configured
 Hugging Face base URL or compatible proxy. Its default is

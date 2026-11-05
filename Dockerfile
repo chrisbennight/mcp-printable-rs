@@ -179,9 +179,9 @@ RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/recon
+RUN /opt/recon/bin/pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch==2.14.1 torchvision==0.29.1
 COPY recon/requirements.txt /opt/printable/recon/requirements.txt
-RUN /opt/recon/bin/pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch==2.14.1 torchvision==0.29.1 \
- && /opt/recon/bin/pip install --no-cache-dir --no-deps -r /opt/printable/recon/requirements.txt
+RUN /opt/recon/bin/pip install --no-cache-dir --no-deps -r /opt/printable/recon/requirements.txt
 RUN curl --fail --location --output /opt/printable/recon/face_landmarker.task \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
  && echo '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  /opt/printable/recon/face_landmarker.task' | sha256sum --check \
@@ -202,7 +202,7 @@ RUN mkdir -p /opt/printable/recon/vendor/birefnet \
  && touch /opt/printable/recon/vendor/birefnet/__init__.py
 
 # Compile extensions against the same Python, PyTorch and C++ ABI as the worker.
-# The toolkit and build tools stay in this intermediate stage. PTX covers newer
+# The CUDA toolkit and extension build tools stay in this intermediate stage. PTX covers newer
 # NVIDIA architectures; Ada also has a native binary for the low-memory profile.
 FROM nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:0eee3094c71518ad31d011a594ae6ed6de72959ee07e318cb31cffe71690e90c AS recon-cuda
 FROM recon-base AS recon-trellis-build
@@ -235,6 +235,10 @@ RUN mkdir /notices \
  && cp /src/trellis2/o-voxel/third_party/eigen/COPYING.* /notices/
 
 FROM recon-base AS recon-runtime
+# Triton compiles its pinned kernel launchers for the installed GPU at first use.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev python3-dev \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=recon-opencv /opt/opencv-python /opt/opencv-python
 # The worker installs nothing at run time, so pip leaves the environment.
 RUN --mount=type=bind,from=recon-trellis-build,source=/wheels,target=/wheels \

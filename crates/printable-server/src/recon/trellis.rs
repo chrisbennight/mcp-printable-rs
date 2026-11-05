@@ -2,6 +2,22 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationState {
+    NotPrepared,
+    Preparing,
+    Prepared,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PreparationStatus {
+    pub state: PreparationState,
+    pub last_verified_unix_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TrellisConfig {
     pub script: PathBuf,
@@ -62,9 +78,28 @@ impl TrellisConfig {
 }
 
 impl ReconWorker {
+    pub(super) async fn preparation_status(&self) -> Option<PreparationStatus> {
+        let config = self.config.trellis.as_ref()?;
+        let mut command = self.python_command(&config.script);
+        command.arg("--status").arg(&config.cache);
+        let status = tokio::time::timeout(MODEL_CHECK_TIMEOUT, command.output()).await;
+        Some(match status {
+            Ok(Ok(output)) if output.status.success() => serde_json::from_slice(&output.stdout)
+                .unwrap_or(PreparationStatus {
+                    state: PreparationState::Failed,
+                    last_verified_unix_ms: None,
+                }),
+            _ => PreparationStatus {
+                state: PreparationState::Failed,
+                last_verified_unix_ms: None,
+            },
+        })
+    }
+
     pub(super) async fn generate_trellis(
         &self,
         request: ObjectRequest,
+        control: Option<&JobControl>,
     ) -> Result<Value, ToolError> {
         let config = self
             .config
@@ -86,12 +121,17 @@ impl ReconWorker {
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
+        if let Some(control) = control {
+            control.verify_input(snapshot.path())?;
+        }
         let staging = tempfile::Builder::new()
             .prefix("printable-trellis-")
             .tempdir_in(&config.scratch)?;
         let mesh = staging.path().join("object.stl");
         let raw = staging.path().join("raw");
         let cutout = staging.path().join("foreground.png");
+        let kernel_cache = config.scratch.join("kernels");
+        std::fs::create_dir_all(&kernel_cache)?;
         let mut job = json!({
             "image": snapshot.path(), "cutout": cutout, "raw": raw, "mesh": mesh,
             "cache": config.cache, "scratch": staging.path(),
@@ -119,6 +159,9 @@ impl ReconWorker {
                 preparation.env(name, value);
             }
         }
+        if let Some(control) = control {
+            control.enter(Phase::PreparingModels)?;
+        }
         let prepared = self
             .run_command(
                 preparation,
@@ -126,6 +169,7 @@ impl ReconWorker {
                 staging.path(),
                 config.preparation_timeout,
                 "TRELLIS.2 model preparation",
+                control,
             )
             .await?;
         job["snapshot"] = prepared
@@ -137,7 +181,7 @@ impl ReconWorker {
             })?;
         // Preparation uses no GPU. Acquire the shared lane only once the model
         // is ready, so a cold download does not block other photograph work.
-        let _permit = self.permit()?;
+        let _permit = self.job_permit(control).await?;
         let generation_started = std::time::Instant::now();
         let mut stages = vec![
             json!({"stage":"preparing_models", "seconds":prepared["seconds"], "peak_ram_bytes":prepared["peak_ram_bytes"]}),
@@ -145,6 +189,13 @@ impl ReconWorker {
         let mut result =
             json!({"model":"trellis2", "manifest":prepared["manifest"], "device":"cuda"});
         for stage in ["foreground", "generate", "deliver"] {
+            if let Some(control) = control {
+                control.enter(match stage {
+                    "foreground" => Phase::Foreground,
+                    "generate" => Phase::Generating,
+                    _ => Phase::Delivering,
+                })?;
+            }
             let remaining = config
                 .timeout
                 .checked_sub(generation_started.elapsed())
@@ -153,7 +204,11 @@ impl ReconWorker {
                     reconstruction_error("timeout", "TRELLIS.2 generation exceeded its deadline")
                 })?;
             let mut command = self.python_command(&config.script);
-            command.arg(stage).env("OMP_NUM_THREADS", "8");
+            command
+                .arg(stage)
+                .env("OMP_NUM_THREADS", "8")
+                .env("TRITON_CACHE_DIR", kernel_cache.join("triton"))
+                .env("CUDA_CACHE_PATH", kernel_cache.join("cuda"));
             let answer = self
                 .run_command(
                     command,
@@ -161,6 +216,7 @@ impl ReconWorker {
                     staging.path(),
                     remaining,
                     "TRELLIS.2 generation",
+                    control,
                 )
                 .await?;
             stages.push(json!({"stage":stage,"seconds":answer["seconds"],"peak_ram_bytes":answer["peak_ram_bytes"],"peak_gpu_memory_bytes":answer["peak_gpu_memory_bytes"]}));
@@ -182,6 +238,9 @@ impl ReconWorker {
         }
         // The workspace admits storage and rechecks overwrite atomically when
         // publishing. Generated files stream independently of inline MCP limits.
+        if let Some(control) = control {
+            control.enter(Phase::Publishing)?;
+        }
         result["artifact"] = json!(self.workspace.commit_generated_artifact(
             &request.mesh_path,
             &mesh,
@@ -214,17 +273,24 @@ mod tests {
 
     const RUNTIME: &str = r#"
 import json, os, sys
+if sys.argv[1] == '--status':
+    prepared = os.path.isfile(os.path.join(sys.argv[2], 'prepared'))
+    print(json.dumps({'state':'prepared' if prepared else 'not_prepared','last_verified_unix_ms':1 if prepared else None}))
+    sys.exit(0)
 stage = sys.argv[1]
 request = json.load(open(sys.argv[2]))
 assert os.environ['HF_HUB_OFFLINE'] == ('0' if stage == 'prepare' else '1')
 if stage == 'prepare':
     assert os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN'] == '1'
+    open(os.path.join(request['cache'], 'prepared'), 'w').close()
     result = {'snapshot':request['cache'],'manifest':'verified-model-id'}
 else:
     assert 'HF_TOKEN' not in os.environ
     if stage == 'foreground':
         result = {'background':'alpha','peak_gpu_memory_bytes':200}
     elif stage == 'generate':
+        assert os.environ['TRITON_CACHE_DIR'].endswith('/kernels/triton')
+        assert os.environ['CUDA_CACHE_PATH'].endswith('/kernels/cuda')
         result = {'resolution':512,'seed':request['seed'],'peak_gpu_memory_bytes':400,'stages':[{'stage':'shape'}]}
     else:
         assert request['resolution'] == 512
@@ -267,6 +333,9 @@ print(json.dumps({'result':result}))
         assert!(request.validate().is_err());
         request.model = ObjectModel::Trellis2;
         assert!(request.validate().is_ok());
+        request.background = Some(false);
+        assert!(request.validate().is_err());
+        request.background = None;
         request.target_triangles = Some(10000);
         assert!(request.validate().is_err());
         request.target_triangles = None;
@@ -294,6 +363,11 @@ print(json.dumps({'result':result}))
         });
         let mut request = super::super::tests::object_request("side.png");
         request.model = ObjectModel::Trellis2;
+        let (_, initial) = worker.readiness().await;
+        assert_eq!(
+            initial["capabilities"]["trellis2_preparation"]["state"],
+            "not_prepared"
+        );
         let permit = worker.permit().unwrap();
         let error = worker.generate_object(request.clone()).await.unwrap_err();
         assert_eq!(error.code(), "busy");
@@ -301,6 +375,10 @@ print(json.dumps({'result':result}))
         let (ready, answer) = worker.readiness().await;
         assert!(ready);
         assert_eq!(answer["capabilities"]["trellis2"], true);
+        assert_eq!(
+            answer["capabilities"]["trellis2_preparation"]["state"],
+            "prepared"
+        );
         let result = worker.generate_object(request.clone()).await.unwrap();
         assert_eq!(result["model"], "trellis2");
         assert_eq!(result["simplified"], true);
@@ -313,11 +391,10 @@ print(json.dumps({'result':result}))
         assert_eq!(result["simplified"], false);
         assert!(result["artifact"]["size_bytes"].as_u64().unwrap() > MAX_OBJECT_MESH_BYTES);
         assert!(root.path().join("workspace/objects/full.stl").is_file());
-        assert_eq!(
-            std::fs::read_dir(root.path().join("scratch"))
-                .unwrap()
-                .count(),
-            0
-        );
+        let retained: Vec<_> = std::fs::read_dir(root.path().join("scratch"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(retained, ["kernels"]);
     }
 }

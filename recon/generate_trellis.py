@@ -88,6 +88,12 @@ def main(argv):
     if argv == ["--version"]:
         print(VERSION)
         return 0
+    if len(argv) == 2 and argv[0] == "--status":
+        sys.path.insert(0, str(ROOT))
+        from printable_recon.model_cache import Manifest, preparation_status
+
+        print(json.dumps(preparation_status(Path(argv[1]), Manifest.read(MANIFEST))))
+        return 0
     if len(argv) != 2 or argv[0] not in STAGES:
         print(json.dumps({"error": {"code": "validation", "message": "expected a TRELLIS stage and request file"}}))
         return 2
