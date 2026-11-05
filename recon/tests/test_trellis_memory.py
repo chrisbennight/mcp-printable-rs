@@ -50,6 +50,38 @@ class ParameterTests(unittest.TestCase):
                 stream_parameters(model, path, blocks=True)
             self.assertTrue(all(parameter.numel() > 0 for parameter in model.parameters()))
 
+    def test_parameter_only_checkpoint_retains_generated_position_buffers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Network().eval()
+            phases = torch.polar(torch.ones(16, 4), torch.arange(64).reshape(16, 4).float())
+            model.register_buffer("rope_phases", phases.clone())
+            path = Path(directory) / "weights.safetensors"
+            save_file(dict(model.named_parameters()), path)
+            stream_parameters(model, path, blocks=True, evict=False)
+            self.assertTrue(torch.equal(model.rope_phases, phases))
+            self.assertTrue(all(parameter.numel() == 0 for parameter in model.parameters()))
+
+    def test_checkpoint_buffers_replace_constructor_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Network().eval()
+            model.register_buffer("position", torch.arange(8).float())
+            path = Path(directory) / "weights.safetensors"
+            save_file(model.state_dict(), path)
+            model.position.zero_()
+            stream_parameters(model, path, blocks=True, evict=False)
+            self.assertTrue(torch.equal(model.position, torch.arange(8).float()))
+
+    def test_unknown_checkpoint_state_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Network().eval()
+            state = model.state_dict()
+            state["unexpected.weight"] = torch.ones(8)
+            path = Path(directory) / "weights.safetensors"
+            save_file(state, path)
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                stream_parameters(model, path, blocks=True, evict=False)
+            self.assertTrue(all(parameter.numel() > 0 for parameter in model.parameters()))
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required to qualify disk-to-GPU parameter streaming")
     def test_streaming_preserves_results_and_releases_weights_after_use(self):
         with tempfile.TemporaryDirectory() as directory, torch.inference_mode():
