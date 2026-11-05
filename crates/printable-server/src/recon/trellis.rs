@@ -78,6 +78,32 @@ impl TrellisConfig {
 }
 
 impl ReconWorker {
+    pub fn cleanup_trellis_scratch(&self) -> Result<(), ToolError> {
+        let Some(config) = self.config.trellis.as_ref() else {
+            return Ok(());
+        };
+        let storage = Workspace::open(Some(&config.scratch), None)?;
+        let ids: Vec<_> = storage
+            .cleanup_preview()?
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        let mut pending = false;
+        for entry in storage.cleanup_scratch(&ids)? {
+            if entry.state == "pending" {
+                pending = true;
+                tracing::warn!(scratch_id=%entry.id, "TRELLIS scratch cleanup could not be confirmed");
+            }
+        }
+        if pending {
+            return Err(reconstruction_error(
+                "scratch_cleanup_pending",
+                "inspect the mapped TRELLIS scratch storage before retrying cleanup",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn preparation_status(&self) -> Option<PreparationStatus> {
         let config = self.config.trellis.as_ref()?;
         let mut command = self.python_command(&config.script);
@@ -124,9 +150,8 @@ impl ReconWorker {
         if let Some(control) = control {
             control.verify_input(snapshot.path())?;
         }
-        let staging = tempfile::Builder::new()
-            .prefix("printable-trellis-")
-            .tempdir_in(&config.scratch)?;
+        let storage = Workspace::open(Some(&config.scratch), None)?;
+        let staging = storage.scratch(0, "trellis2")?;
         let mesh = staging.path().join("object.stl");
         let raw = staging.path().join("raw");
         let cutout = staging.path().join("foreground.png");
@@ -148,6 +173,7 @@ impl ReconWorker {
             .arg("prepare")
             .env("HF_HUB_OFFLINE", "0")
             .env("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1");
+        staging.retain_for_command(preparation.as_std_mut())?;
         for name in [
             "HF_ENDPOINT",
             "HF_TOKEN",
@@ -209,6 +235,7 @@ impl ReconWorker {
                 .env("OMP_NUM_THREADS", "8")
                 .env("TRITON_CACHE_DIR", kernel_cache.join("triton"))
                 .env("CUDA_CACHE_PATH", kernel_cache.join("cuda"));
+            staging.retain_for_command(command.as_std_mut())?;
             let answer = self
                 .run_command(
                     command,
@@ -417,10 +444,49 @@ print(json.dumps({'result':result}))
         assert_eq!(result["simplified"], false);
         assert!(result["artifact"]["size_bytes"].as_u64().unwrap() > MAX_OBJECT_MESH_BYTES);
         assert!(root.path().join("workspace/objects/full.stl").is_file());
-        let retained: Vec<_> = std::fs::read_dir(root.path().join("scratch"))
+        assert!(root.path().join("scratch/kernels").is_dir());
+        let storage = Workspace::open(Some(&root.path().join("scratch")), None).unwrap();
+        assert!(storage.cleanup_preview().unwrap().is_empty());
+    }
+
+    #[test]
+    fn startup_reclaims_abandoned_scratch_after_native_ownership_ends() {
+        let (root, mut worker) = super::super::tests::worker(Duration::from_secs(60));
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let kernel_cache = scratch.join("kernels");
+        std::fs::create_dir(&kernel_cache).unwrap();
+        std::fs::write(kernel_cache.join("cached-kernel"), b"keep").unwrap();
+        worker.config.trellis = Some(TrellisConfig {
+            script: worker.config.object_script.clone(),
+            cache: root.path().join("models"),
+            scratch: scratch.clone(),
+            vram_budget_bytes: 4096 * 1024 * 1024,
+            timeout: Duration::from_secs(60),
+            preparation_timeout: Duration::from_secs(60),
+        });
+        let storage = Workspace::open(Some(&scratch), None).unwrap();
+        let staging = storage.scratch(0, "trellis2").unwrap();
+        let path = staging.path().to_owned();
+        std::fs::File::create(path.join("partial.stl"))
             .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(retained, ["kernels"]);
+            .set_len(32 * 1024 * 1024)
+            .unwrap();
+        let mut command = std::process::Command::new("python3");
+        command.args(["-c", "import time; time.sleep(60)"]);
+        staging.retain_for_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        drop(staging);
+        worker.cleanup_trellis_scratch().unwrap();
+        assert!(path.is_dir());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        worker.cleanup_trellis_scratch().unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(kernel_cache.join("cached-kernel")).unwrap(),
+            b"keep"
+        );
     }
 }

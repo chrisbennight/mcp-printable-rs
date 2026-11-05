@@ -119,6 +119,9 @@ async fn main() -> anyhow::Result<()> {
     if worker.initialize_photo_jobs().is_err() {
         tracing::warn!("retained photograph job history could not be initialized");
     }
+    if let Err(error) = worker.cleanup_trellis_scratch() {
+        tracing::warn!(code = error.code(), "TRELLIS scratch cleanup is pending");
+    }
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/readyz", get(readiness))

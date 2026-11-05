@@ -661,10 +661,10 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
     async fn rejected_admission_releases_the_retained_input_storage() {
         let (_root, worker, request) = fixture();
         worker.initialize_photo_jobs().unwrap();
-        let initial = worker.workspace.storage_usage().unwrap().charged_bytes;
+        let initial = worker.workspace.storage_usage().unwrap();
         worker
             .workspace
-            .configure_storage_budget(Some(initial + 4096 + 222))
+            .configure_storage_budget(Some(initial.charged_bytes + 4096 + 222))
             .unwrap();
         assert_eq!(
             worker.submit_object(request).unwrap_err().code(),
@@ -683,7 +683,20 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
             assert!(!directory.path().join("input.png").exists());
             assert!(!directory.path().join("job.json").exists());
         }
-        assert!(worker.workspace.storage_usage().unwrap().charged_bytes <= initial + 32);
+        // Managed input snapshots have their own leased cleanup lifecycle.
+        // Rejected admission must not retain its separate input or job record.
+        let final_usage = worker.workspace.storage_usage().unwrap();
+        let retained = |usage: &printable_workspace::StorageUsage| {
+            usage
+                .by_class
+                .get("retained_internal")
+                .copied()
+                .unwrap_or(0)
+        };
+        assert!(
+            retained(&final_usage) <= retained(&initial) + 32,
+            "{final_usage:?}"
+        );
     }
 
     #[tokio::test]

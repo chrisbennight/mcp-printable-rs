@@ -92,6 +92,8 @@ PyMODINIT_FUNC PyInit_printable_launcher_probe(void) {
 }
 '''
         with TemporaryDirectory() as cache, patch.dict(os.environ, {"TRITON_CACHE_DIR": cache}):
+            self.assertFalse(os.statvfs(cache).f_flag & os.ST_NOEXEC,
+                             "the launcher test needs an executable cache, as provided by mapped runtime scratch storage")
             module = compile_module_from_src(source, "printable_launcher_probe")
             self.assertEqual(module.answer, 42)
 

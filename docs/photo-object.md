@@ -197,6 +197,9 @@ local SSD storage is recommended because disk streaming repeatedly rereads
 transformer blocks. Slow disks can substantially increase job time. Large
 arrays and output files must not use a RAM-backed `/tmp`.
 The scratch volume also retains Triton and CUDA kernel caches between jobs.
+Job files use leased managed scratch directories. Startup reclaims inactive
+job files and protects files still owned by native processes. Kernel caches
+remain available. Failed cleanup remains pending and is logged.
 The image supplies the compiler and headers Triton needs for its first-use
 kernel launchers; the CUDA extension build toolkit stays in the build stage.
 
