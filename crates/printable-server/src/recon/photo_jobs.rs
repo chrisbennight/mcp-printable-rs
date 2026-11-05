@@ -548,6 +548,15 @@ impl ReconWorker {
 mod tests {
     use super::*;
 
+    fn check_output(value: &Value) {
+        static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> =
+            std::sync::LazyLock::new(|| {
+                let schema = Value::Object(crate::tools::output::schema("photo").as_ref().clone());
+                jsonschema::validator_for(&schema).unwrap()
+            });
+        VALIDATOR.validate(value).unwrap();
+    }
+
     const RUNTIME: &str = r#"
 import json, os, sys, time
 from pathlib import Path
@@ -583,6 +592,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let state = worker.photo_job_status(query(id)).unwrap();
+                check_output(&state);
                 if state[field] == value {
                     return state;
                 }
@@ -606,8 +616,10 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         let (root, worker, request) = fixture();
         let permit = worker.permit().unwrap();
         let accepted = worker.submit_object(request.clone()).unwrap();
+        check_output(&accepted);
         let id = accepted["job_id"].as_str().unwrap();
         let detail = worker.photo_job_status(query(id)).unwrap();
+        check_output(&detail);
         assert_eq!(detail["request"]["seed"], 7);
         let input = format!("{ROOT}/{id}/input.png");
         assert_eq!(
@@ -641,6 +653,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
             })
             .unwrap();
         assert_eq!(page["returned"], 1);
+        check_output(&page);
         assert_eq!(page["jobs"][0]["job_id"], id);
     }
 
@@ -679,6 +692,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         worker.initialize_photo_jobs().unwrap();
         std::fs::create_dir(worker.workspace.resolve(INDEX, false).unwrap()).unwrap();
         let outcome = worker.submit_object(request).unwrap();
+        check_output(&outcome);
         assert_eq!(outcome["state"], "outcome_unknown");
         let id = outcome["job_id"].as_str().unwrap();
         assert_eq!(
@@ -715,6 +729,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         assert_eq!(worker.submit_object(second).unwrap_err().code(), "busy");
         wait_for(&worker, id, "phase", "waiting_for_gpu").await;
         let requested = worker.cancel_photo_job(query(id)).unwrap();
+        check_output(&requested);
         assert_eq!(requested["cancellation_requested"], true);
         wait_for(&worker, id, "state", "cancelled").await;
         drop(permit);
@@ -829,6 +844,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         jobs.initialize().unwrap();
         for (index, id) in ids.iter().enumerate() {
             let state = jobs.status(query(id)).unwrap();
+            check_output(&state);
             assert_eq!(
                 state["state"],
                 if index == 2 {

@@ -390,7 +390,30 @@ print(json.dumps({'result':result}))
         assert_eq!(result["process_stages"].as_array().unwrap().len(), 4);
         request.mesh_path = "objects/full.stl".into();
         request.simplify = Some(false);
-        let result = worker.generate_object(request).await.unwrap();
+        let worker = Arc::new(worker);
+        let accepted = worker.submit_object(request).unwrap();
+        let schema = Value::Object(crate::tools::output::schema("photo").as_ref().clone());
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        validator.validate(&accepted).unwrap();
+        let id = accepted["job_id"].as_str().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let state = worker
+                    .photo_job_status(PhotoJobRequest {
+                        job_id: id.into(),
+                        detail: true,
+                    })
+                    .unwrap();
+                validator.validate(&state).unwrap();
+                match state["state"].as_str().unwrap() {
+                    "succeeded" => break state["result"].clone(),
+                    "failed" | "outcome_unknown" => panic!("TRELLIS fixture failed: {state}"),
+                    _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(result["simplified"], false);
         assert!(result["artifact"]["size_bytes"].as_u64().unwrap() > MAX_OBJECT_MESH_BYTES);
         assert!(root.path().join("workspace/objects/full.stl").is_file());
