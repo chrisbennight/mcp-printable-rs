@@ -1,0 +1,60 @@
+# Optional photograph worker. Use images from the same immutable release record.
+# Model and scratch volumes must be backed by disk, not tmpfs.
+services:
+  recon-worker:
+    image: ${PRINTABLE_RECON_IMAGE:?Set PRINTABLE_RECON_IMAGE to the matching photograph image}
+    platform: linux/amd64
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 10g
+    memswap_limit: 10g
+    cpus: 8
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,size=256m,uid=10001,gid=10001,mode=1770
+    volumes:
+      - workspace:/workspace
+      - trellis-models:/models/trellis2
+      - trellis-scratch:/scratch/trellis2
+    networks: [control, model-downloads]
+    environment:
+      PRINTABLE_WORKSPACE_ROOT: /workspace
+      PRINTABLE_RECON_DEVICE: cuda
+      PRINTABLE_RECON_PHOTO_QUEUE_DEPTH: ${PRINTABLE_RECON_PHOTO_QUEUE_DEPTH:-8}
+      PRINTABLE_RECON_TRELLIS_CACHE: /models/trellis2
+      PRINTABLE_RECON_TRELLIS_SCRATCH: /scratch/trellis2
+      PRINTABLE_RECON_TRELLIS_VRAM_MIB: ${PRINTABLE_RECON_TRELLIS_VRAM_MIB:-4096}
+      PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS: ${PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS:-21600}
+      PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS: ${PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS:-86400}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
+      HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
+      HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-1800}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${PRINTABLE_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+    depends_on:
+      workspace-init:
+        condition: service_completed_successfully
+
+  server:
+    environment:
+      PRINTABLE_RECON_ENDPOINT: http://recon-worker:8004
+    depends_on:
+      recon-worker:
+        condition: service_healthy
+
+networks:
+  model-downloads: {}
+
+volumes:
+  trellis-models: {}
+  trellis-scratch: {}

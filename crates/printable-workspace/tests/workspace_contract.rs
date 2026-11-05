@@ -251,6 +251,51 @@ fn reserved_namespace_has_distinct_public_and_internal_mutation_capabilities() {
 }
 
 #[test]
+fn reserved_removal_stays_confined_and_releases_only_the_named_entry() {
+    let dir = tmp();
+    let ws = ws(dir.path());
+    ws.write_artifact("ordinary.json", b"keep", false).unwrap();
+    assert_eq!(
+        ws.remove_reserved_artifact("ordinary.json")
+            .unwrap_err()
+            .code(),
+        "reserved_path"
+    );
+    assert!(
+        !ws.remove_reserved_artifact(".printable/absent/input.png")
+            .unwrap()
+    );
+    ws.write_reserved_artifact(".printable/jobs/input.png", b"discard", false)
+        .unwrap();
+    assert!(
+        ws.remove_reserved_artifact(".printable/jobs/input.png")
+            .unwrap()
+    );
+    assert!(
+        !ws.remove_reserved_artifact(".printable/jobs/input.png")
+            .unwrap()
+    );
+    std::os::unix::fs::symlink(
+        dir.path().join("ordinary.json"),
+        dir.path().join(".printable/jobs/alias.json"),
+    )
+    .unwrap();
+    assert!(
+        ws.remove_reserved_artifact(".printable/jobs/alias.json")
+            .unwrap()
+    );
+    std::os::unix::fs::symlink(dir.path(), dir.path().join(".printable/escape")).unwrap();
+    assert_eq!(
+        ws.remove_reserved_artifact(".printable/escape/ordinary.json")
+            .unwrap_err()
+            .code(),
+        "symlink_refused"
+    );
+    assert_eq!(ws.read_artifact("ordinary.json").unwrap().1, b"keep");
+    assert!(ws.remove_reserved_artifact(".printable/jobs").is_err());
+}
+
+#[test]
 fn overwrite_semantics() {
     let dir = tmp();
     let ws = ws(dir.path());

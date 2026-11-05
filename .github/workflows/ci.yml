@@ -217,12 +217,18 @@ jobs:
       - name: Verify photo reconstruction
         if: steps.scope.outputs.images == 'true'
         run: |
+          PRINTABLE_SERVER_IMAGE=printable-server:ci \
+          PRINTABLE_BLENDER_IMAGE=printable-blender:ci \
+          PRINTABLE_CAD_IMAGE=printable-cad:ci \
+          PRINTABLE_SLICER_IMAGE=printable-slicer:ci \
+          PRINTABLE_RECON_IMAGE=printable-recon:ci \
+            docker compose -f compose.yaml -f compose.photo.yaml config --quiet
           docker buildx build --builder default --platform linux/amd64 --load \
             --build-arg RECON_IMAGE=printable-recon:ci \
             --file recon/Dockerfile.smoke --tag printable-recon-smoke:ci .
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
-            --tmpfs /tmp:rw,size=1g,uid=10001,gid=10001,mode=1770 \
+            --tmpfs /tmp:rw,exec,size=1g,uid=10001,gid=10001,mode=1770 \
             --env PYTHONPATH=/opt/printable/recon --env HOME=/tmp \
             --entrypoint /opt/recon/bin/python printable-recon-smoke:ci \
             -m unittest discover -s /opt/printable/recon/tests -v

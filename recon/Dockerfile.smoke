@@ -1,3 +1,4 @@
 ARG RECON_IMAGE
 FROM ${RECON_IMAGE}
 COPY recon/tests /opt/printable/recon/tests
+COPY recon/build_trellis.py /opt/printable/recon/build_trellis.py

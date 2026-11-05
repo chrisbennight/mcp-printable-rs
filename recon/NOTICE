@@ -69,3 +69,21 @@ copyright 2021 Microsoft. It is published under the MIT License:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The optional TRELLIS.2 shape generator includes Microsoft's TRELLIS.2 and
+O-Voxel code at revision 75fbf0183001ed9876c8dbb35de6b68552ee08bd,
+with changes for disk streaming, tiled decoding, chunked mesh extraction,
+PyTorch attention and lazy imports for unused rendering operations.
+It also includes FlexGEMM at revision
+6dd94a859c26ee8246888502eada3dd8ad85532e, copyright 2025 Jianfeng Xiang,
+and Eigen headers as a build dependency. Their license texts are installed
+under /usr/share/doc/printable/trellis/.
+
+Tiled decoding derives from Espalier at revision
+b51fac8bb18f92f9f29f9aec771d0913b1b9c3c2, copyright 2026 over|yonder,
+under the MIT License. Its license is included in the same directory.
+
+No TRELLIS.2, DINOv3 or BiRefNet weights are packaged for this optional
+generator. On first use the worker downloads pinned, hash-verified model
+data to an operator-mapped persistent volume. DINOv3 weights are subject
+to the publisher's separate model license and access requirements.

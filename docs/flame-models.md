@@ -840,7 +840,8 @@ skin and clothing for the colour map.
 The same worker also estimates depth from photographs and generates objects
 from photographs; see [Depth from a photograph](photo-depth.md) and
 [An object from a photograph](photo-object.md). It offers whichever of its
-jobs have their files present.
+jobs have their required files present, plus TRELLIS.2 when its persistent
+storage is configured for first-use downloads.
 
 Each release publishes the worker as
 `ghcr.io/chrisbennight/mcp-printable-recon:sha-<commit>`, and the image-set

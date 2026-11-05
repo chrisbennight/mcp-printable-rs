@@ -142,6 +142,9 @@ workflow!(HeadRequest {
 workflow!(PhotoRequest {
     Depth(crate::recon::DepthRequest) => "printable_photo_depth",
     Object(crate::recon::ObjectRequest) => "printable_photo_object",
+    Status(crate::recon::PhotoJobRequest) => "printable_photo_job_status",
+    List(crate::recon::PhotoJobListRequest) => "printable_photo_job_list",
+    Cancel(crate::recon::PhotoJobRequest) => "printable_photo_job_cancel",
 });
 
 /// Actions that need the reconstruction worker.
@@ -156,14 +159,18 @@ fn head_schema() -> Arc<JsonObject> {
     )
 }
 
-/// The `photo` input schema with only the depth action.
+/// The `photo` input schema with depth and retained-job actions.
 fn photo_depth_schema() -> Arc<JsonObject> {
     without_actions(&workflow_schema_of::<PhotoRequest>(), &["object"])
 }
 
-/// The `photo` input schema with only the object action.
+/// The `photo` input schema with object generation and retained-job actions.
 fn photo_object_schema() -> Arc<JsonObject> {
     without_actions(&workflow_schema_of::<PhotoRequest>(), &["depth"])
+}
+
+fn photo_jobs_schema() -> Arc<JsonObject> {
+    without_actions(&workflow_schema_of::<PhotoRequest>(), &["depth", "object"])
 }
 
 /// A workflow input schema without the `removed` actions.
@@ -411,7 +418,7 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 pub const HEAD: &str = "head";
 
 /// The workflow tool that exists only while the photograph worker can
-/// estimate depth or generate objects.
+/// estimate depth, generate objects or inspect retained photograph jobs.
 pub const PHOTO: &str = "photo";
 
 /// The workflow tool that exists only while public model sites are enabled.
@@ -426,15 +433,17 @@ pub struct Availability {
     pub reconstruct: bool,
     /// The photograph worker reports its depth model present.
     pub depth: bool,
-    /// The photograph worker reports its Pixal3D model present.
+    /// The photograph worker can serve at least one object generator.
     pub object: bool,
+    /// Retained photograph jobs exist independently of current model mounts.
+    pub photo_jobs: bool,
     /// At least one public model site is enabled.
     pub library: bool,
 }
 
 /// Tools this server advertises and accepts. `head` is included only when a
 /// FLAME model is mounted, and offers `reconstruct` only when that can be
-/// served, `photo` only when depth can be estimated or objects generated,
+/// served, `photo` when generation or retained jobs can be served,
 /// offering only the actions that can be served, and `library` only when a
 /// model site is enabled, so clients never see a capability that cannot be
 /// served.
@@ -442,10 +451,13 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
     TOOLS
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
-        .filter(move |tool| tool.name != PHOTO || available.depth || available.object)
+        .filter(move |tool| {
+            tool.name != PHOTO || available.depth || available.object || available.photo_jobs
+        })
         .filter(move |tool| tool.name != LIBRARY || available.library)
         .map(move |tool| match tool.name {
             HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
+            PHOTO if !available.object && !available.depth => &PHOTO_JOBS,
             PHOTO if !available.object => &PHOTO_DEPTH,
             PHOTO if !available.depth => &PHOTO_OBJECT,
             _ => tool,
@@ -465,7 +477,7 @@ macro_rules! photo_depth_text {
 }
 macro_rules! photo_object_text {
     () => {
-        "object generates the 3D shape of the one object, figure or character in the photograph with Pixal3D and writes it as a binary STL in millimetres, Z up, standing on Z = 0; the background is removed unless the photograph has transparency, the sides the camera did not see are the model's invention, and the surface is neither checked nor repaired, so check it with validate_mesh and repair it before slicing."
+        "object generates the 3D shape of one object, figure or character with Pixal3D (default) or optional TRELLIS.2 and writes a binary STL in millimetres, Z up, standing on Z = 0. The status tool lists available object models and TRELLIS preparation state. TRELLIS.2 downloads model data to persistent storage on first use and returns a retained job_id; use photo status to obtain progress and the result, list to discover jobs, and cancel to request cancellation before publication. Pixal3D also supports background:true. The background is removed unless the photograph has transparency. Hidden sides are invented and the surface is unrepaired: validate and repair it before slicing."
     };
 }
 
@@ -475,7 +487,7 @@ static PHOTO_DEPTH: ToolDef = ToolDef {
         photo_prefix!(),
         " ",
         photo_depth_text!(),
-        " Advertised only when the worker reports its converted Marigold V2 model present."
+        " Retained photograph jobs can be inspected with status/list and cancelled with cancel. Advertised only when the worker reports its converted Marigold V2 model present."
     ),
     schema: photo_depth_schema,
     annotations: write_annotations,
@@ -487,9 +499,16 @@ static PHOTO_OBJECT: ToolDef = ToolDef {
         photo_prefix!(),
         " ",
         photo_object_text!(),
-        " Advertised only when the worker reports its Pixal3D model present."
+        " Advertised when the worker reports at least one object generator available."
     ),
     schema: photo_object_schema,
+    annotations: write_annotations,
+};
+
+static PHOTO_JOBS: ToolDef = ToolDef {
+    name: PHOTO,
+    description: "Inspect retained photograph jobs with status, list them with list, or request cancellation with cancel. Job history remains available when generation models are absent. Jobs interrupted by worker restart are never replayed automatically; inspect the output path before submitting again.",
+    schema: photo_jobs_schema,
     annotations: write_annotations,
 };
 
@@ -625,7 +644,7 @@ pub const TOOLS: &[ToolDef] = &[
             photo_depth_text!(),
             " ",
             photo_object_text!(),
-            " Each action is advertised only when the worker reports its model present."
+            " Each generation action is advertised when the worker reports its generator available."
         ),
         schema: workflow_schema_of::<PhotoRequest>,
         annotations: write_annotations,
@@ -754,6 +773,7 @@ mod tests {
                 reconstruct: false,
                 depth,
                 object: false,
+                photo_jobs: false,
                 library: false,
             })
             .map(|tool| tool.name)
@@ -794,6 +814,36 @@ mod tests {
             assert_eq!(schema.contains("mesh_path"), object);
             assert_eq!(tool.description.contains("depth writes"), depth);
             assert_eq!(tool.description.contains("object generates"), object);
+        }
+    }
+
+    #[test]
+    fn retained_photo_jobs_remain_discoverable_without_models() {
+        let tool = advertised(Availability {
+            photo_jobs: true,
+            ..Availability::default()
+        })
+        .find(|tool| tool.name == PHOTO)
+        .unwrap();
+        let schema = serde_json::to_string(&*(tool.schema)()).unwrap();
+        assert!(!schema.contains("depth_path"));
+        assert!(!schema.contains("mesh_path"));
+        for (action, operation, params) in [
+            (
+                "status",
+                "printable_photo_job_status",
+                json!({"job_id":"0123456789abcdef0123456789abcdef"}),
+            ),
+            ("list", "printable_photo_job_list", json!({"limit":10})),
+            (
+                "cancel",
+                "printable_photo_job_cancel",
+                json!({"job_id":"0123456789abcdef0123456789abcdef"}),
+            ),
+        ] {
+            assert!(schema.contains(action));
+            let call = resolve(PHOTO, json!({"action":action,"params":params})).unwrap();
+            assert_eq!(call.name, operation);
         }
     }
 
@@ -839,6 +889,7 @@ mod tests {
                 reconstruct,
                 depth: false,
                 object: false,
+                photo_jobs: false,
                 library: false,
             })
             .find(|tool| tool.name == HEAD)

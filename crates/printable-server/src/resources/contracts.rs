@@ -173,6 +173,7 @@ mod tests {
                 reconstruct: false,
                 depth: false,
                 object: false,
+                photo_jobs: false,
                 library: false,
             },
             workflows::Availability {
@@ -180,6 +181,7 @@ mod tests {
                 reconstruct: true,
                 depth: true,
                 object: true,
+                photo_jobs: true,
                 library: true,
             },
             workflows::Availability {
@@ -313,6 +315,7 @@ mod tests {
                         reconstruct: true,
                         depth: true,
                         object: true,
+                        photo_jobs: true,
                         library: true,
                     }
                 )

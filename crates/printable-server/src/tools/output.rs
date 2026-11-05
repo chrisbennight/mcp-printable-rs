@@ -21,6 +21,53 @@ fn artifact() -> Value {
     )
 }
 
+fn photo_job() -> Value {
+    let result = object(
+        json!({
+            "artifact":artifact(), "image_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "model":{"enum":["pixal3d","trellis2"]},
+            "triangles":{"type":"integer","minimum":1},
+            "generated_triangles":{"type":"integer","minimum":1},
+            "peak_ram_bytes":{"type":"integer","minimum":0},
+            "peak_gpu_memory_bytes":{"type":"integer","minimum":0},
+            "seconds":{"type":"number","minimum":0}
+        }),
+        &["artifact", "image_sha256"],
+    );
+    let mut job = object(
+        json!({
+            "job_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},
+            "state":{"enum":["queued","running","succeeded","failed","cancelled","interrupted","outcome_unknown"]},
+            "phase":{"enum":["queued","preparing_models","waiting_for_gpu","foreground","generating","delivering","publishing","finished"]},
+            "model":{"enum":["pixal3d","trellis2"]}, "mesh_path":{"type":"string"},
+            "created_unix_ms":{"type":"integer","minimum":0}, "updated_unix_ms":{"type":"integer","minimum":0},
+            "cancellation_requested":{"type":"boolean"}, "cancellable":{"type":"boolean"},
+            "result":{"anyOf":[result,{"type":"null"}]},
+            "failure":{"anyOf":[object(json!({"code":{"type":"string"},"message":{"type":"string"}}), &["code","message"]),{"type":"null"}]},
+            "request":{"type":"object"}, "execution":{"type":"object"},
+            "image_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+        }),
+        &[
+            "job_id",
+            "state",
+            "phase",
+            "model",
+            "mesh_path",
+            "created_unix_ms",
+            "updated_unix_ms",
+            "cancellation_requested",
+            "cancellable",
+            "result",
+            "failure",
+        ],
+    );
+    job["allOf"] = json!([{
+        "if":{"properties":{"state":{"const":"succeeded"}},"required":["state"]},
+        "then":{"properties":{"result":{"type":"object"}}}
+    }]);
+    job
+}
+
 fn publication_errors() -> Value {
     json!({"type":"array","items":object(json!({"artifact":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}), &["artifact","code","message"])})
 }
@@ -583,7 +630,14 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "image_sha256": {"type": "string"}
                 }),
                 &["artifact", "triangles", "generated_triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
-            )
+            ),
+            photo_job(),
+            object(json!({
+                "jobs":{"type":"array","items":photo_job()},
+                "requested_limit":{"type":"integer","minimum":1},
+                "returned":{"type":"integer","minimum":0},
+                "next_offset":{"type":["integer","null"],"minimum":0}
+            }), &["jobs","requested_limit","returned","next_offset"])
         ]}),
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),

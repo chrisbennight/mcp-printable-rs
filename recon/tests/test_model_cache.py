@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from printable_recon.model_cache import Manifest, ModelFile, PreparationError, prepare
+from printable_recon.model_cache import Manifest, ModelFile, PreparationError, _download, preparation_status, prepare
 
 
 class ModelCacheTests(unittest.TestCase):
@@ -43,6 +43,31 @@ class ModelCacheTests(unittest.TestCase):
         def offline(*_):
             self.fail("prepared model attempted a download")
         self.assertEqual(prepare(self.root, self.manifest, download=offline), snapshot)
+
+    def test_preparation_state_reports_verified_failed_and_interrupted_attempts(self):
+        self.assertEqual(preparation_status(self.root, self.manifest)["state"], "not_prepared")
+        def interrupted(*_):
+            self.assertEqual(preparation_status(self.root, self.manifest)["state"], "preparing")
+            raise KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            prepare(self.root, self.manifest, download=interrupted)
+        self.assertEqual(preparation_status(self.root, self.manifest)["state"], "interrupted")
+        snapshot = prepare(self.root, self.manifest, download=self.download)
+        status = preparation_status(self.root, self.manifest)
+        self.assertEqual(status["state"], "prepared")
+        self.assertGreater(status["last_verified_unix_ms"], 0)
+        (snapshot / self.item.relative_path).write_bytes(b"corrupt")
+        with self.assertRaises(PreparationError):
+            prepare(self.root, self.manifest, download=self.download)
+        self.assertEqual(preparation_status(self.root, self.manifest)["state"], "failed")
+
+    def test_transport_failure_is_safe_and_records_failed_preparation(self):
+        import httpx
+        with patch("huggingface_hub.hf_hub_download", side_effect=httpx.ConnectError("private endpoint")):
+            with self.assertRaises(PreparationError) as raised:
+                prepare(self.root, self.manifest, download=_download)
+        self.assertNotIn("private endpoint", str(raised.exception))
+        self.assertEqual(preparation_status(self.root, self.manifest)["state"], "failed")
 
     def test_interruption_keeps_verified_partial_files_and_retry_completes(self):
         second = replace(self.item, filename="ckpts/second.safetensors")

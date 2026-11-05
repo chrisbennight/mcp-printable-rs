@@ -15,6 +15,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import tempfile
+import time
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
@@ -158,6 +159,7 @@ def _download(item: ModelFile, directory: Path, hub_endpoint: str) -> Path:
             filename=item.filename,
             local_dir=directory,
             endpoint=hub_endpoint,
+            token=os.environ.get("HF_TOKEN", False),
         ))
     except HfHubHTTPError as error:
         status = error.response.status_code
@@ -168,6 +170,72 @@ def _download(item: ModelFile, directory: Path, hub_endpoint: str) -> Path:
         raise PreparationError(
             f"model download failed for {item.relative_path}; check endpoint reachability and download timeouts"
         ) from None
+
+
+def _preparation_file(root: Path, manifest: Manifest) -> Path:
+    return root / f"preparation-{manifest.identifier}.json"
+
+
+def _record_preparation(root: Path, manifest: Manifest, state: str) -> None:
+    document = {"format": "printable-preparation 1", "manifest": manifest.identifier, "state": state,
+                "last_verified_unix_ms": time.time_ns() // 1_000_000 if state == "prepared" else None}
+    temporary = tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".preparation-", encoding="utf-8", delete=False)
+    try:
+        with temporary:
+            json.dump(document, temporary)
+        os.replace(temporary.name, _preparation_file(root, manifest))
+    finally:
+        Path(temporary.name).unlink(missing_ok=True)
+
+
+@contextmanager
+def _preparing(root: Path, manifest: Manifest) -> Iterator[None]:
+    _record_preparation(root, manifest, "preparing")
+    try:
+        yield
+    except (PreparationError, OSError, ValueError):
+        _record_preparation(root, manifest, "failed")
+        raise
+    else:
+        _record_preparation(root, manifest, "prepared")
+
+
+def preparation_status(root: Path, manifest: Manifest) -> dict:
+    """Report the last verification attempt without rereading model tensors.
+
+    A prepared state records completed verification, not a promise that an
+    operator has not changed files since. Every inference preparation verifies
+    them again. An abandoned attempt is interrupted once its lock is free.
+    """
+    unknown = {"state": "failed", "last_verified_unix_ms": None}
+    try:
+        path = _inside(root, _preparation_file(root, manifest).name)
+        with path.open("rb") as source:
+            payload = source.read(4097)
+        if len(payload) > 4096:
+            return unknown
+        document = json.loads(payload)
+        state = document["state"]
+        verified = document["last_verified_unix_ms"]
+        if (document.get("format") != "printable-preparation 1" or document.get("manifest") != manifest.identifier
+                or state not in ("preparing", "prepared", "failed")
+                or (state != "prepared" and verified is not None)
+                or (state == "prepared" and (isinstance(verified, bool) or not isinstance(verified, int) or verified < 1))):
+            return unknown
+        if state == "preparing":
+            with _inside(root, "prepare.lock").open("a+b") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    state = "interrupted"
+        return {"state": state, "last_verified_unix_ms": verified}
+    except FileNotFoundError:
+        return {"state": "not_prepared", "last_verified_unix_ms": None}
+    except (PreparationError, OSError, ValueError, KeyError, TypeError):
+        return unknown
 
 
 def prepare(
@@ -186,7 +254,7 @@ def prepare(
     """
     hub_endpoint = endpoint()
     identifier = manifest.identifier
-    with _locked(root):
+    with _locked(root), _preparing(root, manifest):
         snapshot = _inside(root, f"snapshots/{identifier}")
         if snapshot.exists():
             verify(snapshot, manifest)

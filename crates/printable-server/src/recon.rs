@@ -1,4 +1,4 @@
-//! Photo reconstruction of FLAME heads, delegated to the reconstruction worker.
+//! Photograph-based heads, depth and object shapes, delegated to the worker.
 //!
 //! The worker runs one Python reconstruction at a time with a deadline. Input
 //! photographs are copied out of the workspace into private snapshots first,
@@ -19,6 +19,12 @@ use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 use crate::error::ToolError;
+
+mod photo_jobs;
+mod trellis;
+use photo_jobs::{JobControl, Phase, PhotoJobs};
+pub use photo_jobs::{PhotoJobListRequest, PhotoJobRequest};
+pub use trellis::{PreparationState, PreparationStatus, TrellisConfig};
 
 /// Photographs accepted in one request.
 pub const MAX_IMAGES: usize = 8;
@@ -364,9 +370,28 @@ pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_00
 /// million triangles.
 const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
 
+/// The shape generator selected for an object photograph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub enum ObjectModel {
+    #[default]
+    #[serde(rename = "pixal3d")]
+    Pixal3d,
+    #[serde(rename = "trellis2")]
+    Trellis2,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectRequest {
+    /// Shape generator: `pixal3d` (the default) or the optional `trellis2`.
+    /// TRELLIS.2 streams weights from persistent disk storage and downloads
+    /// its pinned model files on first use.
+    #[serde(default)]
+    pub model: ObjectModel,
+    /// Run as a retained job. Pixal3D defaults to false; TRELLIS.2 always
+    /// returns a retained job, so an explicit false is rejected for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
     /// Workspace photograph of one object, figure or character, JPEG, PNG or
     /// WebP. The background is removed unless the photograph already has
     /// transparency, which then marks the subject.
@@ -404,6 +429,11 @@ pub struct ObjectRequest {
     /// more; the result reports both counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_triangles: Option<u32>,
+    /// TRELLIS.2 only: simplify the generated surface (default true). False
+    /// exports every generated triangle and can produce files over 1 GB.
+    /// Cannot be combined with `target_triangles` when false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simplify: Option<bool>,
     /// Replace an existing file at `mesh_path`.
     #[serde(default)]
     pub overwrite: bool,
@@ -412,6 +442,26 @@ pub struct ObjectRequest {
 impl ObjectRequest {
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
+        if self.model == ObjectModel::Trellis2 && self.background == Some(false) {
+            return Err(ToolError::Validation(
+                "TRELLIS.2 runs as a retained job; omit background or set it to true".into(),
+            ));
+        }
+        if self.model == ObjectModel::Trellis2 && self.fov_degrees.is_some() {
+            return Err(ToolError::Validation(
+                "fov_degrees is supported only by Pixal3D".into(),
+            ));
+        }
+        if self.model == ObjectModel::Pixal3d && self.simplify.is_some() {
+            return Err(ToolError::Validation(
+                "simplify is supported only by TRELLIS.2".into(),
+            ));
+        }
+        if self.simplify == Some(false) && self.target_triangles.is_some() {
+            return Err(ToolError::Validation(
+                "target_triangles requires simplification".into(),
+            ));
+        }
         if !IMAGE_SUFFIXES
             .iter()
             .any(|suffix| self.image.ends_with(suffix))
@@ -522,20 +572,26 @@ pub struct ReconConfig {
     pub object_script: PathBuf,
     pub object_model: PathBuf,
     pub object_timeout: Duration,
+    /// Optional downloaded, disk-streamed TRELLIS.2 runtime.
+    pub trellis: Option<TrellisConfig>,
+    pub photo_queue_depth: usize,
 }
 
 pub struct ReconWorker {
     pub workspace: Arc<Workspace>,
     pub config: ReconConfig,
     pub admission: Semaphore,
+    photo_jobs: Arc<PhotoJobs>,
 }
 
 impl ReconWorker {
     pub fn new(workspace: Arc<Workspace>, config: ReconConfig) -> Self {
+        let photo_jobs = Arc::new(PhotoJobs::new(Arc::clone(&workspace)));
         Self {
             workspace,
             config,
             admission: Semaphore::new(1),
+            photo_jobs,
         }
     }
 
@@ -572,10 +628,11 @@ impl ReconWorker {
     /// absent files. Each job's check stands alone, so a check that fails
     /// withholds only its own job.
     pub async fn readiness(&self) -> (bool, Value) {
-        let (reconstruct, depth, object) = tokio::join!(
+        let (reconstruct, depth, object, preparation) = tokio::join!(
             self.missing_checkpoints(),
             self.missing_depth_files(),
-            self.missing_object_files()
+            self.missing_object_files(),
+            self.preparation_status()
         );
         let present = |check: &Result<Vec<String>, ToolError>| matches!(check, Ok(missing) if missing.is_empty());
         let describe = |check: Result<Vec<String>, ToolError>| match check {
@@ -586,6 +643,14 @@ impl ReconWorker {
             reconstruct: present(&reconstruct),
             depth: present(&depth),
             object: present(&object),
+            trellis2: self.config.device != "cpu"
+                && self
+                    .config
+                    .trellis
+                    .as_ref()
+                    .is_some_and(|config| config.available()),
+            trellis2_preparation: preparation,
+            photo_jobs: self.photo_jobs.has_history(),
         };
         let missing = json!({
             "reconstruct": describe(reconstruct),
@@ -594,7 +659,11 @@ impl ReconWorker {
         });
         let workspace_ready = self.workspace.ready();
         if workspace_ready
-            && (capabilities.reconstruct || capabilities.depth || capabilities.object)
+            && (capabilities.reconstruct
+                || capabilities.depth
+                || capabilities.object
+                || capabilities.trellis2
+                || capabilities.photo_jobs)
         {
             (
                 true,
@@ -776,16 +845,30 @@ impl ReconWorker {
         Ok(result)
     }
 
-    /// Generate the shape of the object in one photograph with Pixal3D and
+    /// Generate the shape of the object with the selected model and
     /// write it as a binary STL.
     pub async fn generate_object(&self, request: ObjectRequest) -> Result<Value, ToolError> {
+        self.generate_object_controlled(request, None).await
+    }
+
+    async fn generate_object_controlled(
+        &self,
+        request: ObjectRequest,
+        control: Option<&JobControl>,
+    ) -> Result<Value, ToolError> {
         request.validate()?;
         self.check_destination(&request.mesh_path, request.overwrite)?;
-        let _permit = self.permit()?;
+        if request.model == ObjectModel::Trellis2 {
+            return self.generate_trellis(request, control).await;
+        }
+        let _permit = self.job_permit(control).await?;
 
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
+        if let Some(control) = control {
+            control.verify_input(snapshot.path())?;
+        }
         let staging = tempfile::Builder::new()
             .prefix("printable-object-")
             .tempdir()?;
@@ -811,15 +894,22 @@ impl ReconWorker {
                 job[key] = value;
             }
         }
+        if let Some(control) = control {
+            control.enter(Phase::Generating)?;
+        }
         let mut result = self
-            .run(
-                &self.config.object_script,
+            .run_command(
+                self.python_command(&self.config.object_script),
                 &job,
                 staging.path(),
                 self.config.object_timeout,
                 "object generation",
+                control,
             )
             .await?;
+        if let Some(control) = control {
+            control.enter(Phase::Publishing)?;
+        }
         let artifact = self.workspace.commit_generated_artifact_bounded(
             &request.mesh_path,
             &mesh,
@@ -842,10 +932,35 @@ impl ReconWorker {
         timeout: Duration,
         activity: &str,
     ) -> Result<Value, ToolError> {
+        self.run_command(
+            self.python_command(script),
+            job,
+            staging,
+            timeout,
+            activity,
+            None,
+        )
+        .await
+    }
+
+    async fn run_command(
+        &self,
+        mut command: Command,
+        job: &Value,
+        staging: &Path,
+        timeout: Duration,
+        activity: &str,
+        control: Option<&JobControl>,
+    ) -> Result<Value, ToolError> {
+        if control.is_some_and(|control| control.cancel.is_cancelled()) {
+            return Err(reconstruction_error(
+                "cancelled",
+                "photograph job was cancelled",
+            ));
+        }
         let request_path = staging.join("request.json");
         std::fs::write(&request_path, serde_json::to_vec(job)?)?;
 
-        let mut command = self.python_command(script);
         command
             .arg(&request_path)
             .current_dir(staging)
@@ -866,20 +981,42 @@ impl ReconWorker {
             read?;
             Ok::<_, std::io::Error>((status?, response))
         };
-        let (status, response) = match tokio::time::timeout(timeout, run).await {
-            Ok(result) => {
-                // The child has been reaped, so its group id may be reused.
-                group.disarm();
-                result?
+        let cancelled = async {
+            match control {
+                Some(control) => control.cancel.cancelled().await,
+                None => std::future::pending::<()>().await,
             }
-            Err(_) => {
+        };
+        let outcome = tokio::select! {
+            biased;
+            _ = cancelled => None,
+            outcome = tokio::time::timeout(timeout, run) => Some(outcome),
+        };
+        let (status, response) = match outcome {
+            Some(Ok(result)) => {
+                let result = result?;
+                group.disarm();
+                result
+            }
+            outcome => {
                 drop(group);
+                // Keep the GPU lane until the killed process has actually
+                // exited, including on explicit job cancellation.
+                child.wait().await?;
                 return Err(reconstruction_error(
-                    "timeout",
-                    format!(
-                        "{activity} did not finish within {} seconds",
-                        timeout.as_secs()
-                    ),
+                    if outcome.is_none() {
+                        "cancelled"
+                    } else {
+                        "timeout"
+                    },
+                    if outcome.is_none() {
+                        format!("{activity} was cancelled")
+                    } else {
+                        format!(
+                            "{activity} did not finish within {} seconds",
+                            timeout.as_secs()
+                        )
+                    },
                 ));
             }
         };
@@ -912,6 +1049,12 @@ impl ReconWorker {
                 .map_or_else(|| format!("{activity} failed"), str::to_owned);
             return Err(reconstruction_error(code, message));
         }
+        if !status.success() {
+            return Err(reconstruction_error(
+                "failed",
+                format!("the {activity} runtime stopped unsuccessfully"),
+            ));
+        }
         envelope
             .get("result")
             .cloned()
@@ -930,7 +1073,8 @@ impl ReconWorker {
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("OMP_NUM_THREADS", "4")
-            // The runtimes read only mounted files; nothing is fetched.
+            // Inference reads mounted files. Only the model preparation
+            // command explicitly enables downloads with an allowlisted environment.
             .env("HF_HUB_OFFLINE", "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -1052,7 +1196,7 @@ result = {"triangles": 0, "resolution": request["resolution"], "seed": request["
 print(json.dumps({"result": result}))
 "#;
 
-    fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
+    pub(super) fn worker(timeout: Duration) -> (tempfile::TempDir, ReconWorker) {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");
         std::fs::create_dir(&runtime).unwrap();
@@ -1093,6 +1237,8 @@ print(json.dumps({"result": result}))
                 object_script: runtime.join("generate_object.py"),
                 object_model: runtime.join("pixal3d"),
                 object_timeout: timeout,
+                trellis: None,
+                photo_queue_depth: 8,
             },
         );
         (root, worker)
@@ -1212,7 +1358,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": true, "object": true})
+            json!({"reconstruct": true, "depth": true, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false})
         );
         // A depth check that cannot run withholds depth alone.
         let mut broken = worker.config.clone();
@@ -1222,7 +1368,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": false, "object": true})
+            json!({"reconstruct": true, "depth": false, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false})
         );
         assert!(answer["missing"]["depth"]["error"].is_string());
         // Without any job's files the worker is not ready and says why.
@@ -1242,8 +1388,10 @@ print(json.dumps({"result": result}))
         );
     }
 
-    fn object_request(image: &str) -> ObjectRequest {
+    pub(super) fn object_request(image: &str) -> ObjectRequest {
         ObjectRequest {
+            model: ObjectModel::Pixal3d,
+            background: None,
             image: image.into(),
             mesh_path: "objects/figure.stl".into(),
             resolution: None,
@@ -1252,6 +1400,7 @@ print(json.dumps({"result": result}))
             fov_degrees: None,
             size_mm: None,
             target_triangles: None,
+            simplify: None,
             overwrite: false,
         }
     }
@@ -1702,6 +1851,17 @@ pub struct Readiness {
     /// Every Pixal3D model file is present.
     #[serde(default)]
     pub object: bool,
+    /// TRELLIS.2 is configured with persistent model and scratch directories;
+    /// model data can be downloaded on first use.
+    #[serde(default)]
+    pub trellis2: bool,
+    /// State of the most recent verification attempt; inference checks every
+    /// model byte again before use.
+    #[serde(default)]
+    pub trellis2_preparation: Option<PreparationStatus>,
+    /// Retained photograph jobs remain queryable even if model mounts change.
+    #[serde(default)]
+    pub photo_jobs: bool,
 }
 
 /// The server's view of the reconstruction worker.
@@ -1753,9 +1913,31 @@ impl ReconClient {
         self.ready.borrow().depth
     }
 
-    /// Whether the worker last reported the Pixal3D model present.
+    /// Whether the worker can serve an object generator, including one whose
+    /// model data will be downloaded on first use.
     pub fn can_generate_objects(&self) -> bool {
-        self.ready.borrow().object
+        let ready = self.ready.borrow();
+        ready.object || ready.trellis2
+    }
+
+    pub fn object_models(&self) -> Vec<ObjectModel> {
+        let ready = self.ready.borrow();
+        let mut models = Vec::new();
+        if ready.object {
+            models.push(ObjectModel::Pixal3d);
+        }
+        if ready.trellis2 {
+            models.push(ObjectModel::Trellis2);
+        }
+        models
+    }
+
+    pub fn trellis_preparation(&self) -> Option<PreparationStatus> {
+        self.ready.borrow().trellis2_preparation
+    }
+
+    pub fn can_manage_photo_jobs(&self) -> bool {
+        self.ready.borrow().photo_jobs
     }
 
     /// Permission to build a colour map, or a busy error while another is
@@ -1803,6 +1985,7 @@ impl ReconClient {
                 reconstruct = ready.reconstruct,
                 depth = ready.depth,
                 object = ready.object,
+                trellis2 = ready.trellis2,
                 "photograph worker availability changed"
             );
         }
@@ -1847,7 +2030,34 @@ impl ReconClient {
         self.post(
             "object",
             request,
-            "check mesh_path before retrying, because the mesh may have been written",
+            "list photograph jobs and inspect mesh_path before retrying, because the request may have been retained or the mesh written",
+        )
+        .await
+    }
+
+    pub async fn photo_job_status(&self, request: &PhotoJobRequest) -> Result<Value, ToolError> {
+        self.post(
+            "photo/jobs/status",
+            request,
+            "retry the status query to inspect the retained job",
+        )
+        .await
+    }
+
+    pub async fn list_photo_jobs(&self, request: &PhotoJobListRequest) -> Result<Value, ToolError> {
+        self.post(
+            "photo/jobs/list",
+            request,
+            "retry the list query to inspect retained jobs",
+        )
+        .await
+    }
+
+    pub async fn cancel_photo_job(&self, request: &PhotoJobRequest) -> Result<Value, ToolError> {
+        self.post(
+            "photo/jobs/cancel",
+            request,
+            "inspect the retained job before requesting cancellation again",
         )
         .await
     }

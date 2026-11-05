@@ -204,6 +204,11 @@ impl PrintableServer {
                 .recon
                 .as_ref()
                 .is_some_and(|recon| recon.can_generate_objects()),
+            photo_jobs: self
+                .settings
+                .recon
+                .as_ref()
+                .is_some_and(|recon| recon.can_manage_photo_jobs()),
             library: self.settings.library.is_some(),
         }
     }
@@ -809,6 +814,7 @@ mod tests {
             reconstruct: true,
             depth: true,
             object: true,
+            photo_jobs: true,
             library: true,
         };
         let index = crate::resources::contracts::read(crate::resources::contracts::ROOT, available)

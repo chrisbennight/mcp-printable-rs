@@ -1,0 +1,385 @@
+diff --git a/o-voxel/o_voxel/__init__.py b/o-voxel/o_voxel/__init__.py
+index 263b753..0d6cad0 100644
+--- a/o-voxel/o_voxel/__init__.py
++++ b/o-voxel/o_voxel/__init__.py
+@@ -1,7 +1,11 @@
+-from . import (
+-    convert,
+-    io,
+-    postprocess,
+-    rasterize,
+-    serialize
+-)
+\ No newline at end of file
++import importlib
++
++__all__ = ['convert', 'io', 'postprocess', 'rasterize', 'serialize']
++
++
++def __getattr__(name):
++    if name not in __all__:
++        raise AttributeError(f"module {__name__} has no attribute {name}")
++    module = importlib.import_module(f'.{name}', __name__)
++    globals()[name] = module
++    return module
+diff --git a/o-voxel/o_voxel/convert/__init__.py b/o-voxel/o_voxel/convert/__init__.py
+index f7b6d8c..aaf519f 100644
+--- a/o-voxel/o_voxel/convert/__init__.py
++++ b/o-voxel/o_voxel/convert/__init__.py
+@@ -1,2 +1,10 @@
+ from .flexible_dual_grid import *
+-from .volumetic_attr import *
+\ No newline at end of file
++
++
++def __getattr__(name):
++    if name not in ['textured_mesh_to_volumetric_attr', 'blender_dump_to_volumetric_attr']:
++        raise AttributeError(f"module {__name__} has no attribute {name}")
++    from . import volumetic_attr
++    value = getattr(volumetic_attr, name)
++    globals()[name] = value
++    return value
+diff --git a/o-voxel/o_voxel/convert/flexible_dual_grid.py b/o-voxel/o_voxel/convert/flexible_dual_grid.py
+index 7cf1397..5f9eb5e 100644
+--- a/o-voxel/o_voxel/convert/flexible_dual_grid.py
++++ b/o-voxel/o_voxel/convert/flexible_dual_grid.py
+@@ -1,4 +1,5 @@
+ from typing import *
++import os
+ import numpy as np
+ import torch
+ from .. import _C
+@@ -219,50 +220,68 @@ def flexible_dual_grid_to_mesh(
+ 
+     # Extract mesh
+     N = dual_vertices.shape[0]
+-    mesh_vertices = (coords.float() + dual_vertices) / (2 * N) - 0.5
+ 
+     # Store active voxels into hashmap
+     hashmap = _init_hashmap(grid_size, 2 * N, device=coords.device)
+     _C.hashmap_insert_3d_idx_as_val_cuda(*hashmap, torch.cat([torch.zeros_like(coords[:, :1]), coords], dim=-1), *grid_size.tolist())
+ 
+-    # Find connected voxels
+-    edge_neighbor_voxel = coords.reshape(N, 1, 1, 3) + flexible_dual_grid_to_mesh.edge_neighbor_voxel_offset      # (N, 3, 4, 3)
+-    connected_voxel = edge_neighbor_voxel[intersected_flag]                           # (M, 4, 3)
+-    M = connected_voxel.shape[0]
+-    connected_voxel_hash_key = torch.cat([
+-        torch.zeros((M * 4, 1), dtype=torch.int, device=coords.device),
+-        connected_voxel.reshape(-1, 3)
+-    ], dim=1)
+-    connected_voxel_indices = _C.hashmap_lookup_3d_cuda(*hashmap, connected_voxel_hash_key, *grid_size.tolist()).reshape(M, 4).int()
+-    connected_voxel_valid = (connected_voxel_indices != 0xffffffff).all(dim=1)
+-    quad_indices = connected_voxel_indices[connected_voxel_valid].int()                             # (L, 4)
++    # Find connected voxels. Each voxel's quads depend only on that voxel, so this runs over chunks of voxels (the
++    # (N, 3, 4, 3) neighbour tensor is 144 bytes a voxel) and concatenates them in voxel order: the same quads in the
++    # same order as one pass. O_VOXEL_MESH_CHUNK sets the voxels per chunk, and the quads per chunk below.
++    chunk = int(os.environ.get('O_VOXEL_MESH_CHUNK', 4_000_000))
++    quad_chunks = [torch.empty((0, 4), dtype=torch.int, device=coords.device)]
++    for s in range(0, N, chunk):
++        edge_neighbor_voxel = coords[s:s + chunk].reshape(-1, 1, 1, 3) + flexible_dual_grid_to_mesh.edge_neighbor_voxel_offset      # (n, 3, 4, 3)
++        connected_voxel = edge_neighbor_voxel[intersected_flag[s:s + chunk]]              # (m, 4, 3)
++        M = connected_voxel.shape[0]
++        if M == 0:   # the lookup kernel can't launch on an empty grid
++            continue
++        connected_voxel_hash_key = torch.cat([
++            torch.zeros((M * 4, 1), dtype=torch.int, device=coords.device),
++            connected_voxel.reshape(-1, 3)
++        ], dim=1)
++        connected_voxel_indices = _C.hashmap_lookup_3d_cuda(*hashmap, connected_voxel_hash_key, *grid_size.tolist()).reshape(M, 4).int()
++        connected_voxel_valid = (connected_voxel_indices != 0xffffffff).all(dim=1)
++        quad_chunks.append(connected_voxel_indices[connected_voxel_valid].int())        # (l, 4)
++        del edge_neighbor_voxel, connected_voxel, connected_voxel_hash_key, connected_voxel_indices, connected_voxel_valid
++    del hashmap
++    quad_indices = torch.cat(quad_chunks)                                               # (L, 4)
++    del quad_chunks
+     L = quad_indices.shape[0]
+ 
+-    # Construct triangles
++    # Construct triangles. Each quad's split depends only on that quad, so inference runs over chunks of quads and
++    # concatenates them in quad order: the same triangles in the same order as one pass.
+     if not train:
+         mesh_vertices = (coords.float() + dual_vertices) * voxel_size + aabb[0].reshape(1, 3)
+-        if split_weight is None:
+-            # if split 1
+-            atempt_triangles_0 = quad_indices[:, flexible_dual_grid_to_mesh.quad_split_1]
+-            normals0 = torch.cross(mesh_vertices[atempt_triangles_0[:, 1]] - mesh_vertices[atempt_triangles_0[:, 0]], mesh_vertices[atempt_triangles_0[:, 2]] - mesh_vertices[atempt_triangles_0[:, 0]])
+-            normals1 = torch.cross(mesh_vertices[atempt_triangles_0[:, 2]] - mesh_vertices[atempt_triangles_0[:, 1]], mesh_vertices[atempt_triangles_0[:, 3]] - mesh_vertices[atempt_triangles_0[:, 1]])
+-            align0 = (normals0 * normals1).sum(dim=1, keepdim=True).abs()
+-            # if split 2
+-            atempt_triangles_1 = quad_indices[:, flexible_dual_grid_to_mesh.quad_split_2]
+-            normals0 = torch.cross(mesh_vertices[atempt_triangles_1[:, 1]] - mesh_vertices[atempt_triangles_1[:, 0]], mesh_vertices[atempt_triangles_1[:, 2]] - mesh_vertices[atempt_triangles_1[:, 0]])
+-            normals1 = torch.cross(mesh_vertices[atempt_triangles_1[:, 2]] - mesh_vertices[atempt_triangles_1[:, 1]], mesh_vertices[atempt_triangles_1[:, 3]] - mesh_vertices[atempt_triangles_1[:, 1]])
+-            align1 = (normals0 * normals1).sum(dim=1, keepdim=True).abs()
+-            # select split
+-            mesh_triangles = torch.where(align0 > align1, atempt_triangles_0, atempt_triangles_1).reshape(-1, 3)
+-        else:
+-            split_weight_ws = split_weight[quad_indices]
+-            split_weight_ws_02 = split_weight_ws[:, 0] * split_weight_ws[:, 2]
+-            split_weight_ws_13 = split_weight_ws[:, 1] * split_weight_ws[:, 3]
+-            mesh_triangles = torch.where(
+-                split_weight_ws_02 > split_weight_ws_13,
+-                quad_indices[:, flexible_dual_grid_to_mesh.quad_split_1],
+-                quad_indices[:, flexible_dual_grid_to_mesh.quad_split_2]
+-            ).reshape(-1, 3)
++        tri_chunks = [quad_indices.new_empty((0, 3))]
++        for s in range(0, L, chunk):
++            q = quad_indices[s:s + chunk]
++            if split_weight is None:
++                # if split 1
++                atempt_triangles_0 = q[:, flexible_dual_grid_to_mesh.quad_split_1]
++                normals0 = torch.cross(mesh_vertices[atempt_triangles_0[:, 1]] - mesh_vertices[atempt_triangles_0[:, 0]], mesh_vertices[atempt_triangles_0[:, 2]] - mesh_vertices[atempt_triangles_0[:, 0]])
++                normals1 = torch.cross(mesh_vertices[atempt_triangles_0[:, 2]] - mesh_vertices[atempt_triangles_0[:, 1]], mesh_vertices[atempt_triangles_0[:, 3]] - mesh_vertices[atempt_triangles_0[:, 1]])
++                align0 = (normals0 * normals1).sum(dim=1, keepdim=True).abs()
++                # if split 2
++                atempt_triangles_1 = q[:, flexible_dual_grid_to_mesh.quad_split_2]
++                normals0 = torch.cross(mesh_vertices[atempt_triangles_1[:, 1]] - mesh_vertices[atempt_triangles_1[:, 0]], mesh_vertices[atempt_triangles_1[:, 2]] - mesh_vertices[atempt_triangles_1[:, 0]])
++                normals1 = torch.cross(mesh_vertices[atempt_triangles_1[:, 2]] - mesh_vertices[atempt_triangles_1[:, 1]], mesh_vertices[atempt_triangles_1[:, 3]] - mesh_vertices[atempt_triangles_1[:, 1]])
++                align1 = (normals0 * normals1).sum(dim=1, keepdim=True).abs()
++                # select split
++                tri_chunks.append(torch.where(align0 > align1, atempt_triangles_0, atempt_triangles_1).reshape(-1, 3))
++                del atempt_triangles_0, atempt_triangles_1, normals0, normals1, align0, align1
++            else:
++                split_weight_ws = split_weight[q]
++                split_weight_ws_02 = split_weight_ws[:, 0] * split_weight_ws[:, 2]
++                split_weight_ws_13 = split_weight_ws[:, 1] * split_weight_ws[:, 3]
++                tri_chunks.append(torch.where(
++                    split_weight_ws_02 > split_weight_ws_13,
++                    q[:, flexible_dual_grid_to_mesh.quad_split_1],
++                    q[:, flexible_dual_grid_to_mesh.quad_split_2]
++                ).reshape(-1, 3))
++                del split_weight_ws, split_weight_ws_02, split_weight_ws_13
++        mesh_triangles = torch.cat(tri_chunks)
++        del tri_chunks
+     else:
+         assert split_weight is not None, "split_weight must be provided in training mode"
+         mesh_vertices = (coords.float() + dual_vertices) * voxel_size + aabb[0].reshape(1, 3)
+diff --git a/trellis2/models/sc_vaes/fdg_vae.py b/trellis2/models/sc_vaes/fdg_vae.py
+index 0209e69..e50419e 100644
+--- a/trellis2/models/sc_vaes/fdg_vae.py
++++ b/trellis2/models/sc_vaes/fdg_vae.py
+@@ -100,6 +100,9 @@ class FlexiDualGridVaeDecoder(SparseUnetVaeDecoder):
+             vertices = h.replace((1 + 2 * self.voxel_margin) * F.sigmoid(h.feats[..., 0:3]) - self.voxel_margin)
+             intersected = h.replace(h.feats[..., 3:6] > 0)
+             quad_lerp = h.replace(F.softplus(h.feats[..., 6:7]))
++            # The decoded features are not needed past this point, so they are released before the mesh extraction.
++            del decoded, h
++            out_list[0] = None
+             mesh = [Mesh(*flexible_dual_grid_to_mesh(
+                 v.coords[:, 1:], v.feats, i.feats, q.feats,
+                 aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+diff --git a/trellis2/models/sc_vaes/sparse_unet_vae.py b/trellis2/models/sc_vaes/sparse_unet_vae.py
+index b9902a1..5c2ac90 100644
+--- a/trellis2/models/sc_vaes/sparse_unet_vae.py
++++ b/trellis2/models/sc_vaes/sparse_unet_vae.py
+@@ -1,4 +1,5 @@
+ from typing import *
++import os
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+@@ -284,7 +285,14 @@ class SparseConvNeXtBlock3d(nn.Module):
+     def _forward(self, x: sp.SparseTensor) -> sp.SparseTensor:
+         h = self.conv(x)
+         h = h.replace(self.norm(h.feats))
+-        h = h.replace(self.mlp(h.feats))
++        # The MLP is per voxel, so at inference it can run over chunks of voxels. Its hidden layer is mlp_ratio times
++        # wider than the block, the largest tensor of a decoder stage the tiling leaves whole. A chunk is a smaller
++        # matrix product, which cuBLAS may compute with different kernels, so results can differ in rounding.
++        chunk = int(os.environ.get('TRELLIS_DECODE_MLP_CHUNK', 0))
++        if chunk and not self.training and h.feats.shape[0] > chunk:
++            h = h.replace(torch.cat([self.mlp(part) for part in h.feats.split(chunk)]))
++        else:
++            h = h.replace(self.mlp(h.feats))
+         return h + x
+     
+     def forward(self, x: sp.SparseTensor) -> sp.SparseTensor:
+@@ -419,6 +427,10 @@ class SparseUnetVaeDecoder(nn.Module):
+         self.pred_subdiv = pred_subdiv
+         self.dtype = torch.float16 if use_fp16 else torch.float32
+         self.low_vram = False
++        # Spatial tiling of the last upsampling stages at inference, so high resolutions fit smaller GPUs: the edge, in
++        # voxels at the tiling stage, of each tile's core. Off (None) unless TRELLIS_DECODE_TILE is set.
++        self.tile = int(os.environ.get('TRELLIS_DECODE_TILE', 0)) or None
++        self.tile_margin = int(os.environ.get('TRELLIS_DECODE_TILE_MARGIN', 8))
+         
+         self.output_layer = sp.SparseLinear(model_channels[-1], out_channels)
+         self.from_latent = sp.SparseLinear(latent_channels, model_channels[0])
+@@ -478,7 +490,9 @@ class SparseUnetVaeDecoder(nn.Module):
+     def forward(self, x: sp.SparseTensor, guide_subs: Optional[List[sp.SparseTensor]] = None, return_subs: bool = False) -> sp.SparseTensor:
+         assert guide_subs is None or self.pred_subdiv == False, "Only decoders with pred_subdiv=False can be used with guide_subs"
+         assert return_subs == False or self.pred_subdiv == True, "Only decoders with pred_subdiv=True can be used with return_subs"
+-        
++        if self.tile and not self.training:
++            return self.forward_tiled(x, guide_subs=guide_subs, return_subs=return_subs)
++
+         h = self.from_latent(x)
+         h = h.type(self.dtype)
+         subs_gt = []
+@@ -506,6 +520,75 @@ class SparseUnetVaeDecoder(nn.Module):
+             else:
+                 return h
+     
++    def _run_stage(self, i: int, h: sp.SparseTensor, guide_sub=None, subs: list = None) -> sp.SparseTensor:
++        """Stage i's blocks, ending with its upsampling block (all stages but the last), as in forward."""
++        res = self.blocks[i]
++        for j, block in enumerate(res):
++            if i < len(self.blocks) - 1 and j == len(res) - 1:
++                if self.pred_subdiv:
++                    h, sub = block(h)
++                    subs.append(sub)
++                else:
++                    h = block(h, subdiv=guide_sub)
++            else:
++                h = block(h)
++        return h
++
++    def forward_tiled(self, x: sp.SparseTensor, guide_subs: Optional[list] = None, return_subs: bool = False, split: Optional[int] = None) -> sp.SparseTensor:
++        """
++        Inference forward that runs the stages before `split` on the whole tensor and the remaining stages (the high
++        resolution ones, where activations dominate memory) one spatial tile at a time. Every layer is a 3x3x3 sparse
++        convolution or per-voxel, so a tile whose margin covers the remaining layers' reach gives its core voxels the
++        same neighbourhoods as the whole-tensor pass; only the cores are kept. With return_subs, the subdivisions of
++        the tiled stages come back as one list per tile (in tile order), which a guided decoder consumes in the same
++        tile order, since its voxels at `split` match this decoder's.
++        """
++        n = len(self.blocks)
++        # TRELLIS_DECODE_TILE_SPLIT starts the tiles at an earlier stage when the stages before n - 2 don't fit whole.
++        # The tile edge and margin are then in voxels at that stage; the margin must cover the reach of every later
++        # convolution in that stage's voxels (from stage 2 of the 1536 decoders, about 12.25).
++        split = int(os.environ.get('TRELLIS_DECODE_TILE_SPLIT', n - 2)) if split is None else split
++        h = self.from_latent(x).type(self.dtype)
++        subs = []
++        for i in range(split):
++            h = self._run_stage(i, h, guide_subs[i] if guide_subs is not None else None, subs)
++        coords, xyz = h.coords, h.coords[:, 1:]
++        lo, hi = xyz.min(0).values.tolist(), xyz.max(0).values.tolist()
++        T, M, f = self.tile, self.tile_margin, 2 ** (n - 1 - split)
++        feats_out, coords_out, tile_subs, k = [], [], [], 0
++        for tx in range(lo[0], hi[0] + 1, T):
++            for ty in range(lo[1], hi[1] + 1, T):
++                for tz in range(lo[2], hi[2] + 1, T):
++                    core_lo = torch.tensor([tx, ty, tz], device=xyz.device, dtype=xyz.dtype)
++                    core_hi = core_lo + T
++                    if not ((xyz >= core_lo) & (xyz < core_hi)).all(1).any():
++                        continue
++                    idx = ((xyz >= core_lo - M) & (xyz < core_hi + M)).all(1).nonzero()[:, 0]
++                    t = sp.SparseTensor(h.feats[idx], coords[idx])
++                    t._scale = h._scale
++                    tsubs = []
++                    for i in range(split, n):
++                        # the last stage has no upsampling block, so no subdivision to guide
++                        guide = guide_subs[split][k][i - split] if guide_subs is not None and i < n - 1 else None
++                        t = self._run_stage(i, t, guide, tsubs)
++                    t = t.type(x.dtype)
++                    t = t.replace(F.layer_norm(t.feats, t.feats.shape[-1:]))
++                    t = self.output_layer(t)
++                    anc = torch.div(t.coords[:, 1:], f, rounding_mode='floor')
++                    keep = ((anc >= core_lo) & (anc < core_hi)).all(1)
++                    feats_out.append(t.feats[keep])
++                    coords_out.append(t.coords[keep])
++                    if return_subs:
++                        tile_subs.append(tsubs)
++                    k += 1
++                    del t
++                    torch.cuda.empty_cache()
++        out = sp.SparseTensor(torch.cat(feats_out), torch.cat(coords_out))
++        out._scale = tuple(s / 2 ** (n - 1) for s in x._scale)
++        if return_subs:
++            return out, subs + [tile_subs]
++        return out
++
+     def upsample(self, x: sp.SparseTensor, upsample_times: int) -> torch.Tensor:
+         assert self.pred_subdiv == True, "Only decoders with pred_subdiv=True can be used with upsampling"
+         
+diff --git a/trellis2/modules/sparse/attention/full_attn.py b/trellis2/modules/sparse/attention/full_attn.py
+index 4eb74d2..4bd47f7 100644
+--- a/trellis2/modules/sparse/attention/full_attn.py
++++ b/trellis2/modules/sparse/attention/full_attn.py
+@@ -181,6 +181,30 @@ def sparse_scaled_dot_product_attention(*args, **kwargs):
+         v = v.unsqueeze(0)
+         mask = xops.fmha.BlockDiagonalMask.from_seqlens(q_seqlen, kv_seqlen)
+         out = xops.memory_efficient_attention(q, k, v, mask)[0]
++    elif config.ATTN == 'sdpa':
++        from contextlib import nullcontext
++        from torch.nn.attention import sdpa_kernel, SDPBackend
++        from torch.nn.functional import scaled_dot_product_attention
++        if num_all_args == 1:
++            q, k, v = qkv.unbind(dim=1)
++        elif num_all_args == 2:
++            k, v = kv.unbind(dim=1)
++        chunks, q_start, kv_start = [], 0, 0
++        for q_length, kv_length in zip(q_seqlen, kv_seqlen):
++            if not q_length or not kv_length:
++                chunks.append(q.new_zeros((q_length, q.shape[1], v.shape[-1])))
++            else:
++                query = q[q_start:q_start + q_length].transpose(0, 1).unsqueeze(0)
++                key = k[kv_start:kv_start + kv_length].transpose(0, 1).unsqueeze(0)
++                value = v[kv_start:kv_start + kv_length].transpose(0, 1).unsqueeze(0)
++                # CUDA inference must not fall back to a dense attention matrix.
++                backend = sdpa_kernel(SDPBackend.FLASH_ATTENTION) if q.is_cuda else nullcontext()
++                with backend:
++                    chunk = scaled_dot_product_attention(query, key, value)
++                chunks.append(chunk.squeeze(0).transpose(0, 1))
++            q_start += q_length
++            kv_start += kv_length
++        out = torch.cat(chunks, dim=0)
+     elif config.ATTN == 'flash_attn':
+         if 'flash_attn' not in globals():
+             import flash_attn
+diff --git a/trellis2/modules/sparse/config.py b/trellis2/modules/sparse/config.py
+index a5f4d53..b2bc9c2 100644
+--- a/trellis2/modules/sparse/config.py
++++ b/trellis2/modules/sparse/config.py
+@@ -21,7 +21,7 @@ def __from_env():
+         CONV = env_sparse_conv_backend
+     if env_sparse_debug is not None:
+         DEBUG = env_sparse_debug == '1'
+-    if env_sparse_attn_backend is not None and env_sparse_attn_backend in ['xformers', 'flash_attn', 'flash_attn_3']:
++    if env_sparse_attn_backend is not None and env_sparse_attn_backend in ['xformers', 'flash_attn', 'flash_attn_3', 'sdpa']:
+         ATTN = env_sparse_attn_backend
+         
+     print(f"[SPARSE] Conv backend: {CONV}; Attention backend: {ATTN}")
+@@ -38,6 +38,6 @@ def set_debug(debug: bool):
+     global DEBUG
+     DEBUG = debug
+ 
+-def set_attn_backend(backend: Literal['xformers', 'flash_attn']):
++def set_attn_backend(backend: Literal['xformers', 'flash_attn', 'sdpa']):
+     global ATTN
+     ATTN = backend
+diff --git a/trellis2/representations/mesh/base.py b/trellis2/representations/mesh/base.py
+index b70e4cc..4e9e1d0 100644
+--- a/trellis2/representations/mesh/base.py
++++ b/trellis2/representations/mesh/base.py
+@@ -1,7 +1,6 @@
+ from typing import *
+ import torch
+ from ..voxel import Voxel
+-import cumesh
+ from flex_gemm.ops.grid_sample import grid_sample_3d
+ 
+ 
+@@ -33,6 +32,7 @@ class Mesh:
+         return self.to('cpu')
+     
+     def fill_holes(self, max_hole_perimeter=3e-2):
++        import cumesh
+         vertices = self.vertices.cuda()
+         faces = self.faces.cuda()
+         
+@@ -57,6 +57,7 @@ class Mesh:
+         self.faces = new_faces.to(self.device)
+         
+     def remove_faces(self, face_mask: torch.Tensor):
++        import cumesh
+         vertices = self.vertices.cuda()
+         faces = self.faces.cuda()
+         
+@@ -69,6 +70,7 @@ class Mesh:
+         self.faces = new_faces.to(self.device)
+         
+     def simplify(self, target=1000000, verbose: bool=False, options: dict={}):
++        import cumesh
+         vertices = self.vertices.cuda()
+         faces = self.faces.cuda()
+         

@@ -1,5 +1,5 @@
 //! HTTP service that runs the photograph jobs: FLAME head reconstruction,
-//! Marigold V2 depth estimation and Pixal3D object generation, one at a time.
+//! Marigold V2 depth estimation and optional object generators, one at a time.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -11,7 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    DepthRequest, ObjectRequest, ReconConfig, ReconRequest, ReconWorker, worker_message,
+    DepthRequest, ObjectModel, ObjectRequest, PhotoJobListRequest, PhotoJobRequest, ReconConfig,
+    ReconRequest, ReconWorker, TrellisConfig, worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -105,14 +106,31 @@ async fn main() -> anyhow::Result<()> {
             ),
             object_model: path("PRINTABLE_RECON_OBJECT_MODEL", "/models/pixal3d"),
             object_timeout: Duration::from_secs(object_timeout),
+            trellis: TrellisConfig::configure(&|name| std::env::var(name).ok())
+                .map_err(anyhow::Error::msg)?,
+            photo_queue_depth: std::env::var("PRINTABLE_RECON_PHOTO_QUEUE_DEPTH")
+                .unwrap_or_else(|_| "8".into())
+                .parse::<usize>()
+                .ok()
+                .filter(|depth| *depth > 0)
+                .context("PRINTABLE_RECON_PHOTO_QUEUE_DEPTH must be positive")?,
         },
     ));
+    if worker.initialize_photo_jobs().is_err() {
+        tracing::warn!("retained photograph job history could not be initialized");
+    }
+    if let Err(error) = worker.cleanup_trellis_scratch() {
+        tracing::warn!(code = error.code(), "TRELLIS scratch cleanup is pending");
+    }
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/readyz", get(readiness))
         .route("/reconstruct", post(reconstruct))
         .route("/depth", post(depth))
         .route("/object", post(object))
+        .route("/photo/jobs/status", post(photo_job_status))
+        .route("/photo/jobs/list", post(photo_job_list))
+        .route("/photo/jobs/cancel", post(photo_job_cancel))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(worker);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -164,11 +182,43 @@ async fn object(
     State(worker): State<Arc<ReconWorker>>,
     Json(request): Json<ObjectRequest>,
 ) -> (StatusCode, Json<Value>) {
-    match worker.generate_object(request).await {
+    let background = request.model == ObjectModel::Trellis2 || request.background == Some(true);
+    photo_answer(if background {
+        worker.submit_object(request)
+    } else {
+        worker.generate_object(request).await
+    })
+}
+
+fn photo_answer(
+    result: Result<Value, printable_server::error::ToolError>,
+) -> (StatusCode, Json<Value>) {
+    match result {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"code": error.code(), "message": worker_message(&error)})),
         ),
     }
+}
+
+async fn photo_job_status(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<PhotoJobRequest>,
+) -> (StatusCode, Json<Value>) {
+    photo_answer(worker.photo_job_status(request))
+}
+
+async fn photo_job_list(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<PhotoJobListRequest>,
+) -> (StatusCode, Json<Value>) {
+    photo_answer(worker.list_photo_jobs(request))
+}
+
+async fn photo_job_cancel(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<PhotoJobRequest>,
+) -> (StatusCode, Json<Value>) {
+    photo_answer(worker.cancel_photo_job(request))
 }
