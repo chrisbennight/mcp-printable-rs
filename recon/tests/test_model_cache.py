@@ -115,6 +115,22 @@ class ModelCacheTests(unittest.TestCase):
             prepare(self.root, self.manifest, download=self.download)
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_retained_metadata_symlinks_cannot_overwrite_other_files(self):
+        for target_kind in ("outside", "checkpoint"):
+            with self.subTest(target=target_kind):
+                root = self.root / target_kind
+                pending = root / "downloads" / self.manifest.identifier
+                pending.mkdir(parents=True)
+                outside = Path(self.temp.name) / "unrelated.txt"
+                outside.write_bytes(b"keep unrelated data")
+                target = outside if target_kind == "outside" else pending / self.item.relative_path
+                (pending / "manifest.json").symlink_to(target)
+                snapshot = prepare(root, self.manifest, download=self.download)
+                self.assertEqual(outside.read_bytes(), b"keep unrelated data")
+                self.assertEqual((snapshot / self.item.relative_path).read_bytes(), self.content)
+                self.assertFalse((snapshot / "manifest.json").is_symlink())
+                self.assertEqual(json.loads((snapshot / "manifest.json").read_text()), self.manifest.document())
+
 
 if __name__ == "__main__":
     unittest.main()

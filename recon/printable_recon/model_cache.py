@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import tempfile
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
@@ -202,7 +203,15 @@ def prepare(
             complete += item.bytes
             if progress is not None:
                 progress({"phase": "preparing_models", "completed_bytes": complete, "total_bytes": total})
-        (pending / "manifest.json").write_text(json.dumps(manifest.document(), indent=2) + "\n", encoding="utf-8")
+        # Replace the entry itself so retained symlinks cannot redirect writes
+        # into another file, including an already-verified model checkpoint.
+        metadata = tempfile.NamedTemporaryFile(mode="w", dir=pending, prefix=".manifest-", encoding="utf-8", delete=False)
+        try:
+            with metadata:
+                metadata.write(json.dumps(manifest.document(), indent=2) + "\n")
+            os.replace(metadata.name, pending / "manifest.json")
+        finally:
+            Path(metadata.name).unlink(missing_ok=True)
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         pending.rename(snapshot)
         return snapshot
