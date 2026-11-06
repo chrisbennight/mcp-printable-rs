@@ -1,0 +1,719 @@
+{
+  "format": "printable-trellis-qualification 1",
+  "date": "2026-11-05",
+  "source_revision": "1280774529a9e4801b7a5ef72be6d89b1adea322",
+  "release_record": "ghcr.io/chrisbennight/mcp-printable-release:main@sha256:5504e0e100885b1570b3e49b70e055ddb6911b3d7bd30333b16d744a70687c72",
+  "reconstruction_image": "ghcr.io/chrisbennight/mcp-printable-recon:sha-1280774529a9@sha256:89684e85e740d7a5caad780b7fe9313d94c92450828c6f5ae5eb892a1cf52e7d",
+  "model_manifest_sha256": "0a0f4ad1e25d70bee6a0ac07d44a6ce62927d3d72750bf64b97261a4e9bbc962",
+  "hardware": {
+    "os": "Linux",
+    "architecture": "x86_64",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12600H",
+    "host_memory_bytes": 100962488320,
+    "gpu": "NVIDIA GeForce RTX 4060 Ti",
+    "reported_gpu_memory_mib": 16380,
+    "driver": "580.178.04",
+    "storage": "NVMe, disk-backed persistent model and scratch volumes"
+  },
+  "profile": {
+    "cpu_cores": 8,
+    "container_memory_max_bytes": 10737418240,
+    "container_swap_max_bytes": 0,
+    "pytorch_allocation_budget_bytes": 4294967296,
+    "generation_and_delivery_timeout_seconds": 21600,
+    "preparation_timeout_seconds": 86400,
+    "model_data_bytes": 10506698875,
+    "prepared_cache_before_successful_runs": true
+  },
+  "sampling_scope": {
+    "gpu": "Driver-attributed process allocations for selected worker cgroup members",
+    "ram": "Job stage-process resident-memory high-water mark; independent summed RSS and cgroup memory samples",
+    "io": "Physical NVMe cgroup counters; duplicate logical-volume counters excluded",
+    "limitations": [
+      "Sampled peaks can miss brief peaks.",
+      "Summed RSS may count shared pages more than once.",
+      "Container memory includes reclaimable file cache.",
+      "No physical 6 GB GPU, small-RAM host or slow-disk qualification.",
+      "No slicing, repair, wall-thickness or physical-print qualification."
+    ]
+  },
+  "inputs": {
+    "rgba": {
+      "upstream_repository": "https://github.com/microsoft/TRELLIS.2",
+      "revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+      "path": "assets/example_image/T.png",
+      "width": 1024,
+      "height": 1024,
+      "mode": "RGBA",
+      "bytes": 1718470,
+      "sha256": "db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee"
+    },
+    "rgb": {
+      "operation": "RGBA composite onto opaque white, then RGB PNG",
+      "width": 1024,
+      "height": 1024,
+      "mode": "RGB",
+      "bytes": 948483,
+      "sha256": "3e27905e15ba8381a001d27d74e07d3b3472f3e57f9d64ab3f75c9ac17028ac7"
+    }
+  },
+  "cases": [
+    {
+      "name": "rgba_compact",
+      "state": "succeeded",
+      "created_unix_ms": 1793884002952,
+      "terminal_unix_ms": 1793885016461,
+      "image_sha256": "db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee",
+      "request": {
+        "model": "trellis2",
+        "resolution": 1536,
+        "seed": 42,
+        "size_mm": 100,
+        "simplify": true
+      },
+      "result": {
+        "model": "trellis2",
+        "manifest": "0a0f4ad1e25d70bee6a0ac07d44a6ce62927d3d72750bf64b97261a4e9bbc962",
+        "device": "cuda",
+        "background": "alpha",
+        "resolution": 1536,
+        "seed": 42,
+        "steps": {
+          "structure": 12,
+          "shape": 12
+        },
+        "tokens": {
+          "structure": 3551,
+          "shape": 39604
+        },
+        "stages": [
+          {
+            "stage": "load_models",
+            "seconds": 83.47969812573865,
+            "peak_gpu_memory_bytes": 0,
+            "reserved_gpu_memory_bytes": 0
+          },
+          {
+            "stage": "image_features",
+            "seconds": 1.3843418159522116,
+            "peak_gpu_memory_bytes": 1441546752,
+            "reserved_gpu_memory_bytes": 1516240896
+          },
+          {
+            "stage": "structure",
+            "seconds": 83.44160755397752,
+            "peak_gpu_memory_bytes": 382648320,
+            "reserved_gpu_memory_bytes": 469762048
+          },
+          {
+            "stage": "shape_sampling",
+            "seconds": 480.47211672132835,
+            "peak_gpu_memory_bytes": 2375708672,
+            "reserved_gpu_memory_bytes": 2558525440
+          },
+          {
+            "stage": "shape_decoding",
+            "seconds": 127.45638421084732,
+            "peak_gpu_memory_bytes": 3779991552,
+            "reserved_gpu_memory_bytes": 4049600512
+          }
+        ],
+        "disk_streaming": {
+          "sparse_structure_flow_model": {
+            "block_loads": 660,
+            "logical_weight_bytes": 56144157712,
+            "file_evictions": 665
+          },
+          "sparse_structure_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 147585412,
+            "file_evictions": 1
+          },
+          "shape_slat_flow_model_512": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_flow_model_1024": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 1896925852,
+            "file_evictions": 2
+          }
+        },
+        "peak_gpu_memory_bytes": 3779991552,
+        "seconds": 1013.202759952,
+        "peak_ram_bytes": 6062669824,
+        "triangles": 1000000,
+        "size_mm": [
+          100,
+          91.043,
+          39.584
+        ],
+        "generated_triangles": 25575950,
+        "simplified": true,
+        "preparation": [
+          {
+            "voxels": 3,
+            "triangles": 2696451
+          }
+        ],
+        "artifact": {
+          "bytes": 50000084
+        },
+        "image_sha256": "db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee",
+        "process_stages": [
+          {
+            "stage": "preparing_models",
+            "seconds": 14.563,
+            "peak_ram_bytes": 20434944
+          },
+          {
+            "stage": "foreground",
+            "seconds": 3.736,
+            "peak_ram_bytes": 548192256,
+            "peak_gpu_memory_bytes": 0
+          },
+          {
+            "stage": "generate",
+            "seconds": 779.348,
+            "peak_ram_bytes": 6062669824,
+            "peak_gpu_memory_bytes": 3779991552
+          },
+          {
+            "stage": "deliver",
+            "seconds": 211.984,
+            "peak_ram_bytes": 1244553216,
+            "peak_gpu_memory_bytes": null
+          }
+        ]
+      },
+      "observation": {
+        "sample_interval_nominal_ms": 250,
+        "sample_count": 4051,
+        "first_sample_ms": 1793884003021,
+        "last_sample_ms": 1793885016361,
+        "maximum_sample_gap_ms": 345,
+        "peaks": {
+          "driver_gpu_bytes": 4219469824,
+          "sum_process_rss_bytes": 6057365504,
+          "container_memory_bytes": 10737029120
+        },
+        "physical_device_io": {
+          "start_ms": 1793884002786,
+          "end_ms": 1793885016361,
+          "rbytes": 225806360576,
+          "wbytes": 2889596928,
+          "rios": 1807973,
+          "wios": 27924,
+          "dbytes": 0,
+          "dios": 0
+        }
+      }
+    },
+    {
+      "name": "rgba_full",
+      "state": "succeeded",
+      "created_unix_ms": 1793885719864,
+      "terminal_unix_ms": 1793886563239,
+      "image_sha256": "db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee",
+      "request": {
+        "model": "trellis2",
+        "resolution": 1536,
+        "seed": 42,
+        "size_mm": 100,
+        "simplify": false
+      },
+      "result": {
+        "model": "trellis2",
+        "manifest": "0a0f4ad1e25d70bee6a0ac07d44a6ce62927d3d72750bf64b97261a4e9bbc962",
+        "device": "cuda",
+        "background": "alpha",
+        "resolution": 1536,
+        "seed": 42,
+        "steps": {
+          "structure": 12,
+          "shape": 12
+        },
+        "tokens": {
+          "structure": 3551,
+          "shape": 39602
+        },
+        "stages": [
+          {
+            "stage": "load_models",
+            "seconds": 103.43110801884905,
+            "peak_gpu_memory_bytes": 0,
+            "reserved_gpu_memory_bytes": 0
+          },
+          {
+            "stage": "image_features",
+            "seconds": 1.4962732577696445,
+            "peak_gpu_memory_bytes": 1441546752,
+            "reserved_gpu_memory_bytes": 1516240896
+          },
+          {
+            "stage": "structure",
+            "seconds": 100.30195587407798,
+            "peak_gpu_memory_bytes": 382648320,
+            "reserved_gpu_memory_bytes": 469762048
+          },
+          {
+            "stage": "shape_sampling",
+            "seconds": 454.3864027517848,
+            "peak_gpu_memory_bytes": 2375630336,
+            "reserved_gpu_memory_bytes": 2558525440
+          },
+          {
+            "stage": "shape_decoding",
+            "seconds": 130.4035051628016,
+            "peak_gpu_memory_bytes": 3767024640,
+            "reserved_gpu_memory_bytes": 4024434688
+          }
+        ],
+        "disk_streaming": {
+          "sparse_structure_flow_model": {
+            "block_loads": 660,
+            "logical_weight_bytes": 56144157712,
+            "file_evictions": 665
+          },
+          "sparse_structure_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 147585412,
+            "file_evictions": 1
+          },
+          "shape_slat_flow_model_512": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_flow_model_1024": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 1896925852,
+            "file_evictions": 2
+          }
+        },
+        "peak_gpu_memory_bytes": 3767024640,
+        "seconds": 842.795269758,
+        "peak_ram_bytes": 6062194688,
+        "triangles": 24560764,
+        "size_mm": [
+          100,
+          91.276,
+          39.545
+        ],
+        "generated_triangles": 24560764,
+        "simplified": false,
+        "preparation": [],
+        "artifact": {
+          "bytes": 1228038284
+        },
+        "image_sha256": "db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee",
+        "process_stages": [
+          {
+            "stage": "preparing_models",
+            "seconds": 18.691,
+            "peak_ram_bytes": 20606976
+          },
+          {
+            "stage": "foreground",
+            "seconds": 6.423,
+            "peak_ram_bytes": 547708928,
+            "peak_gpu_memory_bytes": 0
+          },
+          {
+            "stage": "generate",
+            "seconds": 792.473,
+            "peak_ram_bytes": 6062194688,
+            "peak_gpu_memory_bytes": 3767024640
+          },
+          {
+            "stage": "deliver",
+            "seconds": 19.67,
+            "peak_ram_bytes": 84238336,
+            "peak_gpu_memory_bytes": null
+          }
+        ]
+      },
+      "observation": {
+        "sample_interval_nominal_ms": 250,
+        "sample_count": 3371,
+        "first_sample_ms": 1793885719951,
+        "last_sample_ms": 1793886563190,
+        "maximum_sample_gap_ms": 414,
+        "peaks": {
+          "driver_gpu_bytes": 4196401152,
+          "sum_process_rss_bytes": 6075203584,
+          "container_memory_bytes": 10737418240
+        },
+        "physical_device_io": {
+          "start_ms": 1793885719701,
+          "end_ms": 1793886563190,
+          "rbytes": 224361897984,
+          "wbytes": 1257623552,
+          "rios": 1801805,
+          "wios": 10145,
+          "dbytes": 0,
+          "dios": 0
+        }
+      }
+    },
+    {
+      "name": "rgb_compact",
+      "state": "succeeded",
+      "created_unix_ms": 1793886649133,
+      "terminal_unix_ms": 1793887710908,
+      "image_sha256": "3e27905e15ba8381a001d27d74e07d3b3472f3e57f9d64ab3f75c9ac17028ac7",
+      "request": {
+        "model": "trellis2",
+        "resolution": 1536,
+        "seed": 42,
+        "size_mm": 100,
+        "simplify": true
+      },
+      "result": {
+        "model": "trellis2",
+        "manifest": "0a0f4ad1e25d70bee6a0ac07d44a6ce62927d3d72750bf64b97261a4e9bbc962",
+        "device": "cuda",
+        "background": "removed",
+        "resolution": 1536,
+        "seed": 42,
+        "steps": {
+          "structure": 12,
+          "shape": 12
+        },
+        "tokens": {
+          "structure": 3578,
+          "shape": 40031
+        },
+        "stages": [
+          {
+            "stage": "load_models",
+            "seconds": 110.73931891703978,
+            "peak_gpu_memory_bytes": 0,
+            "reserved_gpu_memory_bytes": 0
+          },
+          {
+            "stage": "image_features",
+            "seconds": 1.4029657901264727,
+            "peak_gpu_memory_bytes": 1441546752,
+            "reserved_gpu_memory_bytes": 1516240896
+          },
+          {
+            "stage": "structure",
+            "seconds": 104.36226643109694,
+            "peak_gpu_memory_bytes": 382648320,
+            "reserved_gpu_memory_bytes": 469762048
+          },
+          {
+            "stage": "shape_sampling",
+            "seconds": 460.3325395709835,
+            "peak_gpu_memory_bytes": 2400109056,
+            "reserved_gpu_memory_bytes": 2707423232
+          },
+          {
+            "stage": "shape_decoding",
+            "seconds": 96.00823176885024,
+            "peak_gpu_memory_bytes": 3866155008,
+            "reserved_gpu_memory_bytes": 4024434688
+          }
+        ],
+        "disk_streaming": {
+          "sparse_structure_flow_model": {
+            "block_loads": 660,
+            "logical_weight_bytes": 56144157712,
+            "file_evictions": 665
+          },
+          "sparse_structure_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 147585412,
+            "file_evictions": 1
+          },
+          "shape_slat_flow_model_512": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_flow_model_1024": {
+            "block_loads": 630,
+            "logical_weight_bytes": 53593838656,
+            "file_evictions": 635
+          },
+          "shape_slat_decoder": {
+            "block_loads": 0,
+            "logical_weight_bytes": 1896925852,
+            "file_evictions": 2
+          }
+        },
+        "peak_gpu_memory_bytes": 3866155008,
+        "seconds": 1060.79566904,
+        "peak_ram_bytes": 6110535680,
+        "triangles": 1000000,
+        "size_mm": [
+          100,
+          91.03,
+          39.677
+        ],
+        "generated_triangles": 25733710,
+        "simplified": true,
+        "preparation": [
+          {
+            "voxels": 3,
+            "triangles": 2719846
+          }
+        ],
+        "artifact": {
+          "bytes": 50000084
+        },
+        "image_sha256": "3e27905e15ba8381a001d27d74e07d3b3472f3e57f9d64ab3f75c9ac17028ac7",
+        "process_stages": [
+          {
+            "stage": "preparing_models",
+            "seconds": 17.143,
+            "peak_ram_bytes": 20598784
+          },
+          {
+            "stage": "foreground",
+            "seconds": 17.778,
+            "peak_ram_bytes": 1574174720,
+            "peak_gpu_memory_bytes": 3343810048
+          },
+          {
+            "stage": "generate",
+            "seconds": 775.957,
+            "peak_ram_bytes": 6110535680,
+            "peak_gpu_memory_bytes": 3866155008
+          },
+          {
+            "stage": "deliver",
+            "seconds": 242.265,
+            "peak_ram_bytes": 1270468608,
+            "peak_gpu_memory_bytes": null
+          }
+        ]
+      },
+      "observation": {
+        "sample_interval_nominal_ms": 250,
+        "sample_count": 4244,
+        "first_sample_ms": 1793886649357,
+        "last_sample_ms": 1793887710871,
+        "maximum_sample_gap_ms": 361,
+        "peaks": {
+          "driver_gpu_bytes": 4196401152,
+          "sum_process_rss_bytes": 6129229824,
+          "container_memory_bytes": 10737414144
+        },
+        "physical_device_io": {
+          "start_ms": 1793886649101,
+          "end_ms": 1793887710871,
+          "rbytes": 224723492864,
+          "wbytes": 2710990848,
+          "rios": 1797561,
+          "wios": 26248,
+          "dbytes": 0,
+          "dios": 0
+        }
+      }
+    }
+  ],
+  "full_stl_independent_validation": {
+    "bytes": 1228038284,
+    "triangles": 24560764,
+    "sha256": "e11e902f7e9f95731929eb78dd3373b3d18ec4dd8c1015c2a580b947ca921a2a",
+    "bounds_min_mm": [
+      -50,
+      -45.638031005859375,
+      0
+    ],
+    "bounds_max_mm": [
+      50,
+      45.638031005859375,
+      39.54497146606445
+    ],
+    "extents_mm": [
+      100,
+      91.27606201171876,
+      39.54497146606445
+    ],
+    "binary_structure_and_scale_valid": true,
+    "scope": "Streamed file verification; no topology or printability claim"
+  },
+  "compact_topology": {
+    "vertices": 461937,
+    "triangles": 1000000,
+    "bounds": {
+      "minimum_mm": [
+        -50,
+        -45.52158737182617,
+        0
+      ],
+      "maximum_mm": [
+        50,
+        45.52158737182617,
+        39.5842170715332
+      ],
+      "dimensions_mm": [
+        100,
+        91.04317474365234,
+        39.5842170715332
+      ]
+    },
+    "topology": {
+      "watertight": false,
+      "consistently_oriented": false,
+      "manifold": false,
+      "connected_components": 111,
+      "boundary_edges": null,
+      "degenerate_triangles": 0,
+      "duplicate_triangles": 21165
+    },
+    "surface_area_mm2": 42057.03980837061,
+    "signed_volume_mm3": -1293.1319913115865,
+    "overhang": {
+      "build_direction": [
+        0,
+        0,
+        1
+      ],
+      "threshold_degrees": 45,
+      "bed_contact": {
+        "faces": 0,
+        "area_mm2": 0
+      },
+      "supported": {
+        "faces": 644123,
+        "area_mm2": 26047.135427651432
+      },
+      "warning": {
+        "faces": 85574,
+        "area_mm2": 3039.470718903985
+      },
+      "severe": {
+        "faces": 270303,
+        "area_mm2": 12970.43366181428
+      },
+      "requires_support": true
+    },
+    "solid_geometry": false,
+    "printable": false,
+    "assessment": {
+      "scope": "mesh_geometry",
+      "status": "failed",
+      "criteria": {
+        "build_envelope": {
+          "status": "unmeasured"
+        },
+        "dimensional_requirements": {
+          "status": "unmeasured"
+        },
+        "finite_dimensions": {
+          "status": "passed",
+          "evidence": "/bounds"
+        },
+        "material_process": {
+          "status": "unmeasured"
+        },
+        "physical_performance": {
+          "status": "physical_test_required"
+        },
+        "solid_topology": {
+          "status": "failed",
+          "evidence": "/topology"
+        },
+        "support_free_orientation": {
+          "status": "failed",
+          "evidence": "/overhang"
+        },
+        "wall_thickness": {
+          "status": "unmeasured"
+        }
+      }
+    },
+    "issues": [
+      {
+        "severity": "error",
+        "code": "duplicate_triangles",
+        "message": "21165 triangles duplicate an earlier face",
+        "recommendation": "Remove duplicate faces before slicing."
+      },
+      {
+        "severity": "error",
+        "code": "inconsistent_winding",
+        "message": "triangles 87 and 88 traverse shared edge (70, 69) in the same direction",
+        "recommendation": "Recalculate consistent outward normals before slicing."
+      },
+      {
+        "severity": "warning",
+        "code": "support_recommended",
+        "message": "85574 warning and 270303 severe faces may require support",
+        "recommendation": "Review the heatmap, reorient the part, add support, or redesign the overhangs."
+      }
+    ]
+  },
+  "rgb_stl_independent_validation": {
+    "bytes": 50000084,
+    "triangles": 1000000,
+    "sha256": "f8e467379162bf5549b84278a95dd6b5c6b10e281a09b52e4a88fc132063e960",
+    "bounds_min_mm": [
+      -50,
+      -45.514862060546875,
+      0
+    ],
+    "bounds_max_mm": [
+      50,
+      45.514862060546875,
+      39.6767578125
+    ],
+    "extents_mm": [
+      100,
+      91.02972412109376,
+      39.6767578125
+    ],
+    "binary_structure_and_scale_valid": true,
+    "scope": "Streamed file verification; no topology or printability claim"
+  },
+  "compact_stl_independent_validation": {
+    "bytes": 50000084,
+    "triangles": 1000000,
+    "sha256": "f6dbe23fa0067a0994dd1ad35e6502fbbcfc5726395542a67e05469137325bd6",
+    "bounds_min_mm": [
+      -50.0,
+      -45.52158737182617,
+      0.0
+    ],
+    "bounds_max_mm": [
+      50.0,
+      45.52158737182617,
+      39.5842170715332
+    ],
+    "extents_mm": [
+      100.0,
+      91.04317474365234,
+      39.5842170715332
+    ],
+    "binary_structure_and_scale_valid": true,
+    "scope": "finite coordinates, binary structure, count and scale; no topology or printability claim"
+  },
+  "complete_observer": {
+    "sampling_interval_seconds": 0.25,
+    "observation_seconds": 3854.1210402916186,
+    "started_unix_ms": 1793883857361,
+    "observation_error": null,
+    "samples": 15404,
+    "sampling_errors": [],
+    "sampled_driver_gpu_bytes": 4219469824,
+    "sampled_sum_process_rss_bytes": 6129229824,
+    "sampled_container_memory_bytes": 10737418240,
+    "report_sha256": "c660d1df9117952f66e2e0b00bb80dc9f2b5438f2b1585b3daf2920a0322d026"
+  }
+}
