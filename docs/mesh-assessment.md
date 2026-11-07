@@ -15,14 +15,14 @@ measurements without duplicating them in a summary.
 | `solid_topology` | `passed` for accepted solid geometry, otherwise `failed`; see `topology` and the repair recommendations in `issues`. |
 | `finite_dimensions` | Finite bounds were measured. This does not compare them to a design requirement or establish the STL's original units. |
 | `support_free_orientation` | `passed` when the selected build direction and angle policy detect no support requirement, otherwise `failed`; inspect `overhang` and its threshold. Bridging and actual support design are not evaluated. |
-| `wall_thickness` | `unmeasured`; no general wall-thickness solver runs. |
+| `wall_thickness` | `unmeasured` unless a minimum wall is supplied and the mesh is a valid solid. Then `passed` when no measured surface point is thinner than the minimum, otherwise `failed`; see `wall_thickness` and [measure wall thickness](#measure-wall-thickness). |
 | `dimensional_requirements` | `unmeasured`; no target dimensions or tolerances were supplied to this analysis. |
 | `build_envelope` | `unmeasured`; no printer envelope was supplied. |
 | `material_process` | `unmeasured`; no material/process qualification runs. |
 | `physical_performance` | `physical_test_required`; geometric analysis cannot establish actual fit, strength, or service performance. |
 
-The assessment is `failed` if solid topology, finite dimensions, or the
-support-free orientation criterion fails. Support warnings remain in `issues`; a failure of the
+The assessment is `failed` if solid topology, finite dimensions, the
+support-free orientation criterion, or a measured wall thickness fails. Support warnings remain in `issues`; a failure of the
 support-free criterion calls for reorientation, support planning, or a design
 change, and does not assert that the part can never be manufactured. Otherwise
 the assessment is `incomplete`, because unmeasured and physical criteria remain.
@@ -36,9 +36,47 @@ python3 scripts/printable_client.py call validate_mesh examples/quickstart/valid
 
 Inspect `report.solid_geometry`, then the individual criteria and their
 evidence. A thin closed box can pass solid topology while wall thickness
-remains unmeasured. A tilted closed box can pass solid topology while failing
+remains unmeasured; supply a minimum wall to measure it. A tilted closed box can pass solid topology while failing
 the support-free orientation criterion. Neither result proves suitability for
 the intended physical use.
+
+## Measure wall thickness
+
+Pass `minimum_wall_mm` to `validate_mesh` to measure a valid solid's wall
+thickness against the thinnest wall your printer and material can make. An
+OpenSCAD build with a product `design_profile` uses the profile's
+`minimum_wall_mm` automatically.
+
+```json
+{"path": "models/bracket.stl", "minimum_wall_mm": 1.2}
+```
+
+Points are spread over the whole surface, at most the minimum wall apart on
+each triangle. From each point, one ray travels into the material along the
+inward face normal and a ring of rays surrounds it. A point's reading is the
+shortest distance at which an accepted ray leaves the solid. A ray that
+leaves through a surface turned more than 60 degrees from facing back against
+the point's inward direction is not counted, because it reached a neighbouring
+face across an edge rather than crossing a wall. Edges sharper than 60 degrees,
+such as knife edges and pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
+surfaces do not read as walls.
+
+`report.wall_thickness` contains:
+
+| Field | Meaning |
+| --- | --- |
+| `thickness_mm` | Area-weighted `minimum`, `p5`, `p50`, `p95`, and `maximum` of the readings. |
+| `thin_area_mm2`, `thin_region_count` | Surface area, and connected regions, with readings below the minimum. |
+| `thin_regions` | The largest thin regions with area, thinnest reading, its location, and bounds. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled. The spacing widens on large parts to bound the work, and is reported. |
+| `unmeasured_samples`, `measured_area_share` | Points where every ray left through a glancing surface, and the share of surface measured. |
+
+A wall is usually reported from both of its faces. Where a wall meets a face
+end-on, such as the rim on top of a thin side wall, that face reads the wall's
+height; the side wall's own faces report its thickness. Sampling can miss a
+feature narrower than the sample spacing. A `passed` result means no measured
+point was thinner than the minimum; it does not prove the part prints or is
+strong enough.
 
 ## Compatibility
 

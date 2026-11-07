@@ -876,8 +876,7 @@ fn validate_compiled_product(
             .is_none_or(|faces| faces == 0)
         || compiled["validation"]["overhang"]["threshold_degrees"] != json!(overhang_degrees)
         || compiled["validation"]["overhang"]["requires_support"] != json!(false)
-        || compiled["manufacturing_evidence"]["global_minimum_wall"]["status"]
-            != json!("not_certified")
+        || !measured_global_wall(compiled)
         || compiled["manufacturing_evidence"]["moving_clearance"]["status"] != json!("not_run")
     {
         return Err(format!(
@@ -885,6 +884,16 @@ fn validate_compiled_product(
         ));
     }
     Ok(())
+}
+
+/// The product's wall thickness was measured against its profile minimum and
+/// the evidence points at the report. Whether the design passes is the
+/// design's business, not the workflow's.
+fn measured_global_wall(compiled: &Value) -> bool {
+    let wall = &compiled["manufacturing_evidence"]["global_minimum_wall"];
+    matches!(wall["status"].as_str(), Some("passed" | "failed"))
+        && wall["evidence"] == json!("/validation/wall_thickness")
+        && compiled["validation"]["wall_thickness"]["minimum_wall_mm"] == wall["minimum_wall_mm"]
 }
 
 fn validate_hinge_clearance(assembly: &Value) -> Result<(), String> {

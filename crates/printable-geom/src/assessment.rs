@@ -40,6 +40,7 @@ impl MeshAssessment {
         solid_geometry: bool,
         finite_dimensions: bool,
         requires_support: bool,
+        thick_enough: Option<bool>,
     ) -> Self {
         use CriterionStatus::*;
         let checked = |passed, evidence| AssessmentCriterion {
@@ -48,7 +49,11 @@ impl MeshAssessment {
         };
         Self {
             scope: "mesh_geometry",
-            status: if solid_geometry && finite_dimensions && !requires_support {
+            status: if solid_geometry
+                && finite_dimensions
+                && !requires_support
+                && thick_enough != Some(false)
+            {
                 AssessmentStatus::Incomplete
             } else {
                 AssessmentStatus::Failed
@@ -62,9 +67,12 @@ impl MeshAssessment {
                 ),
                 (
                     "wall_thickness",
-                    AssessmentCriterion {
-                        status: Unmeasured,
-                        evidence: None,
+                    match thick_enough {
+                        Some(passed) => checked(passed, "/wall_thickness"),
+                        None => AssessmentCriterion {
+                            status: Unmeasured,
+                            evidence: None,
+                        },
                     },
                 ),
                 (

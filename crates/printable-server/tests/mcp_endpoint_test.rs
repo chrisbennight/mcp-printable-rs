@@ -990,7 +990,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         "pbl_shell",
         "pbl_horizontal_bore_cutter",
         "maximum_overhang_degrees",
-        "not_certified",
+        "global_minimum_wall",
         "analyze_assembly",
     ] {
         assert!(
