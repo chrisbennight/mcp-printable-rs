@@ -40,12 +40,13 @@ const MAX_EXIT_DEVIATION_DEGREES: f64 = 60.0;
 const MAX_SAMPLES: usize = 200_000;
 /// At most this many thin regions are listed, largest first.
 const MAX_REGIONS: usize = 10;
-/// Rays start this far inside the surface, as a fraction of the solid's
-/// largest extent, so that they cannot hit the face they leave.
+/// Rays start this far inside the surface, as a fraction of the largest
+/// coordinate magnitude, so that they cannot hit the face they leave.
 const RAY_START: f64 = 1e-7;
-/// Readings within this fraction of the solid's largest extent below the
-/// minimum wall are numerical noise, not thin walls.
-const THIN_TOLERANCE: f64 = 1e-5;
+/// Readings this far below the minimum wall, as a fraction of the largest
+/// coordinate magnitude, are coordinate rounding rather than thin walls: a
+/// few units of the single precision STL coordinates carry.
+const THIN_TOLERANCE: f64 = 8.0 * f32::EPSILON as f64;
 
 /// Wall thickness measured over a closed solid's surface.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -127,8 +128,14 @@ pub(crate) fn measure(
         .iter()
         .map(|triangle| unit_normal(corners(vertices, triangle)))
         .collect();
+    // Rounding depends on how large the coordinates are, not on how far apart
+    // the parts lie.
+    let magnitude = vertices
+        .iter()
+        .flatten()
+        .fold(1.0_f64, |largest, value| largest.max(value.abs()));
     let spacing = sample_spacing(vertices, triangles, minimum_wall_mm);
-    let start = RAY_START * size;
+    let start = RAY_START * magnitude;
     // Every ray from inside a closed solid leaves it within the diagonal of
     // its bounds.
     let reach = 2.0 * size * 3f64.sqrt();
@@ -171,7 +178,7 @@ pub(crate) fn measure(
         .collect();
     measured.sort_by(|a, b| a.0.total_cmp(&b.0));
     let measured_area: f64 = measured.iter().map(|(_, area)| area).sum();
-    let limit = minimum_wall_mm - THIN_TOLERANCE * size;
+    let limit = minimum_wall_mm - THIN_TOLERANCE * magnitude;
     let (thin_area_mm2, thin_region_count, thin_regions) =
         thin_regions(triangles, vertices.len(), &samples, limit);
 
@@ -196,8 +203,10 @@ pub(crate) fn measure(
 }
 
 /// The spacing between surface points: the minimum wall, widened when that
-/// would need more than [`MAX_SAMPLES`] points. Every triangle has at least
-/// one point, so widening stops once it no longer reduces the count.
+/// would need more than [`MAX_SAMPLES`] points. It starts no finer than the
+/// budget spread evenly over the surface, so the count stays finite however
+/// small the minimum. Every triangle has at least one point, so widening
+/// stops once it no longer reduces the count.
 fn sample_spacing(vertices: &[[f64; 3]], triangles: &[[u32; 3]], minimum_wall_mm: f64) -> f64 {
     let estimate = |spacing: f64| -> f64 {
         triangles
@@ -208,7 +217,11 @@ fn sample_spacing(vertices: &[[f64; 3]], triangles: &[[u32; 3]], minimum_wall_mm
             })
             .sum()
     };
-    let mut spacing = minimum_wall_mm;
+    let total: f64 = triangles
+        .iter()
+        .map(|triangle| area(corners(vertices, triangle)))
+        .sum();
+    let mut spacing = minimum_wall_mm.max((total / MAX_SAMPLES as f64).sqrt());
     let mut count = estimate(spacing);
     for _ in 0..8 {
         if count <= MAX_SAMPLES as f64 {
@@ -688,6 +701,34 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.code(), "validation");
         }
+    }
+
+    #[test]
+    fn distant_parts_do_not_hide_thin_walls() {
+        // Rounding grows with coordinate size, not with the gap between parts.
+        let mesh = join(
+            cuboid([0.0; 3], [20.0, 20.0, 1.0], false),
+            cuboid([200_000.0, 0.0, 0.0], [200_020.0, 20.0, 1.0], false),
+        );
+        let report = walls(&mesh, 2.0);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        assert!(
+            (thickness.thin_area_mm2 - 1600.0).abs() < 1e-3,
+            "{thickness:?}"
+        );
+        assert_eq!(
+            report.assessment.criteria["wall_thickness"].status,
+            CriterionStatus::Failed
+        );
+    }
+
+    #[test]
+    fn a_vanishing_minimum_still_gives_a_bounded_report() {
+        let report = walls(&cuboid([0.0; 3], [10.0; 3], false), 1e-100);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        assert!(thickness.samples <= MAX_SAMPLES, "{}", thickness.samples);
+        assert!(thickness.sample_spacing_mm > 1e-3);
+        assert_eq!(thickness.thin_area_mm2, 0.0);
     }
 
     #[test]
