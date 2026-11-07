@@ -67,7 +67,7 @@ surfaces do not read as walls.
 | Field | Meaning |
 | --- | --- |
 | `thickness_mm` | Area-weighted `minimum`, `p5`, `p50`, `p95`, and `maximum` of the readings. |
-| `thin_area_mm2`, `thin_region_count` | Surface area with readings below the minimum, and the number of thin regions. Thin readings whose surface pieces touch join one region, so both faces of a thin wall usually form one region and patches parted by thicker material stay apart. |
+| `thin_area_mm2`, `thin_region_count` | Surface area with readings below the minimum, and the number of thin regions. A region is a cluster of thin readings within about two sample spacings of each other, so both faces of a thin wall form one region and patches parted by a wider band of thicker surface stay apart. |
 | `thin_regions` | The largest thin regions with area, thinnest reading, its location, and bounds. |
 | `sample_spacing_mm`, `samples` | How densely the surface was sampled: every surface point lies within the spacing of a sample. The spacing widens on large parts so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
 | `unmeasured_samples`, `measured_area_share` | Points where every ray left through a glancing surface, and the share of surface measured. |

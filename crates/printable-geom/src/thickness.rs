@@ -43,8 +43,12 @@ const MAX_SAMPLES: usize = 200_000;
 const MAX_REGIONS: usize = 10;
 /// Rays start this far inside the surface, as a fraction of the point's
 /// coordinates along the inward normal, so that they cannot hit the face
-/// they leave.
-const RAY_START: f64 = 1e-7;
+/// they leave. Ample for double precision, and far below the rounding
+/// tolerance, so the offset cannot pass through a wall that could read thin.
+const RAY_START: f64 = 1e-9;
+/// The spacing is never finer than this fraction of the part's largest
+/// extent: single precision coordinates cannot resolve a wall below it.
+const FINEST_SPACING: f64 = 1e-6;
 /// Readings this far below the minimum wall, as a fraction of the point's
 /// coordinates along the reading's direction, are coordinate rounding rather
 /// than thin walls: two units of the single precision that STL coordinates
@@ -76,7 +80,7 @@ pub struct WallThicknessReport {
     pub thickness_mm: Option<ThicknessDistribution>,
     /// Surface area whose readings are below the minimum wall.
     pub thin_area_mm2: f64,
-    /// Number of connected thin regions, including any not listed.
+    /// Number of thin regions, including any not listed.
     pub thin_region_count: usize,
     /// The largest thin regions, largest first.
     pub thin_regions: Vec<ThinRegion>,
@@ -92,7 +96,7 @@ pub struct ThicknessDistribution {
     pub maximum: f64,
 }
 
-/// One connected region of surface thinner than the minimum wall.
+/// One cluster of nearby readings thinner than the minimum wall.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ThinRegion {
     pub area_mm2: f64,
@@ -106,8 +110,6 @@ pub struct ThinRegion {
 struct Sample {
     point: [f64; 3],
     area: f64,
-    /// Farthest distance from the point to the surface piece it stands for.
-    reach: f64,
     thickness: Option<f64>,
     /// Size of the coordinates the reading was taken across, which sets how
     /// much rounding it can carry.
@@ -145,7 +147,7 @@ pub(crate) fn measure(
         let Some(normal) = normals[index] else {
             continue;
         };
-        for (point, area, reach) in triangle_samples(corners(vertices, triangle), spacing) {
+        for (point, area) in triangle_samples(corners(vertices, triangle), spacing) {
             let inward = normal.map(|value| -value);
             let start = RAY_START * scale_along(point, inward);
             let reading = cone(inward)
@@ -165,7 +167,6 @@ pub(crate) fn measure(
             samples.push(Sample {
                 point,
                 area,
-                reach,
                 thickness: reading.map(|(thickness, _)| thickness),
                 rounding_scale: reading.map_or(1.0, |(thickness, direction)| {
                     scale_along(point, direction) + thickness
@@ -182,7 +183,8 @@ pub(crate) fn measure(
         .collect();
     measured.sort_by(|a, b| a.0.total_cmp(&b.0));
     let measured_area: f64 = measured.iter().map(|(_, area)| area).sum();
-    let (thin_area_mm2, thin_region_count, thin_regions) = thin_regions(&samples, minimum_wall_mm);
+    let (thin_area_mm2, thin_region_count, thin_regions) =
+        thin_regions(&samples, minimum_wall_mm, spacing);
 
     Ok(WallThicknessReport {
         minimum_wall_mm,
@@ -204,11 +206,11 @@ pub(crate) fn measure(
     })
 }
 
-/// The spacing between surface points: the minimum wall, widened when that
-/// would need more than [`MAX_SAMPLES`] points. The count is estimated in
-/// floating point, so however small the minimum, widening reaches the budget
-/// in a step or two. Every triangle has at least one point, so widening stops
-/// once it no longer reduces the count.
+/// The spacing between surface points: the minimum wall, but no finer than
+/// [`FINEST_SPACING`] of the part, widened when that would need more than
+/// [`MAX_SAMPLES`] points. The floor keeps the count estimate finite, and
+/// widening then reaches the budget in a step or two. Every triangle has at
+/// least one point, so widening stops once it no longer reduces the count.
 fn sample_spacing(vertices: &[[f64; 3]], triangles: &[[u32; 3]], minimum_wall_mm: f64) -> f64 {
     // Each triangle's length along its longest edge and height across it.
     let shapes: Vec<(f64, f64)> = triangles
@@ -235,7 +237,7 @@ fn sample_spacing(vertices: &[[f64; 3]], triangles: &[[u32; 3]], minimum_wall_mm
             .sum()
     };
     let budget = MAX_SAMPLES as f64;
-    let mut spacing = minimum_wall_mm;
+    let mut spacing = minimum_wall_mm.max(FINEST_SPACING * extent(vertices));
     let mut count = estimate(spacing);
     for _ in 0..64 {
         if count <= budget {
@@ -266,9 +268,8 @@ fn longest_edge([a, b, c]: [[f64; 3]; 3]) -> (f64, [[f64; 3]; 3]) {
 /// its longest edge, and each is clipped to the triangle; a non-empty piece
 /// gives its centroid and exact area. Every point of the triangle therefore
 /// lies within `spacing` of a sample, and a sliver gets one row of cells
-/// along its length. Each sample also gives the farthest distance from it to
-/// its piece.
-fn triangle_samples(points: [[f64; 3]; 3], spacing: f64) -> Vec<([f64; 3], f64, f64)> {
+/// along its length.
+fn triangle_samples(points: [[f64; 3]; 3], spacing: f64) -> Vec<([f64; 3], f64)> {
     let (longest, [p, q, r]) = longest_edge(points);
     if longest == 0.0 {
         return Vec::new();
@@ -301,19 +302,19 @@ fn triangle_samples(points: [[f64; 3]; 3], spacing: f64) -> Vec<([f64; 3], f64, 
                 column as f64 * cell,
                 ((column + 1) as f64 * cell).min(longest),
             );
-            let Some((centre, piece, reach)) = clipped(triangle, [start, low], [end, high]) else {
+            let Some((centre, piece)) = clipped(triangle, [start, low], [end, high]) else {
                 continue;
             };
             let point = [0, 1, 2].map(|axis| p[axis] + centre[0] * u[axis] + centre[1] * v[axis]);
-            samples.push((point, piece, reach));
+            samples.push((point, piece));
         }
     }
     samples
 }
 
-/// The centroid, area and farthest corner distance of a triangle clipped to
-/// an axis-aligned rectangle, or nothing when they do not overlap.
-fn clipped(triangle: [[f64; 2]; 3], low: [f64; 2], high: [f64; 2]) -> Option<([f64; 2], f64, f64)> {
+/// The centroid and area of a triangle clipped to an axis-aligned rectangle,
+/// or nothing when they do not overlap.
+fn clipped(triangle: [[f64; 2]; 3], low: [f64; 2], high: [f64; 2]) -> Option<([f64; 2], f64)> {
     let mut polygon = triangle.to_vec();
     for axis in 0..2 {
         for (bound, keep_above) in [(low[axis], true), (high[axis], false)] {
@@ -353,12 +354,7 @@ fn clipped(triangle: [[f64; 2]; 3], low: [f64; 2], high: [f64; 2]) -> Option<([f
     if doubled <= 0.0 {
         return None;
     }
-    let centre = [x / (3.0 * doubled), y / (3.0 * doubled)];
-    let reach = polygon
-        .iter()
-        .map(|corner| ((corner[0] - centre[0]).powi(2) + (corner[1] - centre[1]).powi(2)).sqrt())
-        .fold(0.0, f64::max);
-    Some((centre, 0.5 * doubled, reach))
+    Some(([x / (3.0 * doubled), y / (3.0 * doubled)], 0.5 * doubled))
 }
 
 /// The inward normal and a ring of directions around it.
@@ -380,11 +376,17 @@ fn cone(inward: [f64; 3]) -> impl Iterator<Item = [f64; 3]> {
     }))
 }
 
-/// Thin area, region count and the largest regions. Thin readings join one
-/// region when their surface pieces can touch: the points lie no farther
-/// apart than the two pieces reach. Patches parted by thicker material
-/// therefore stay apart, however the surface was triangulated.
-fn thin_regions(samples: &[Sample], minimum_wall_mm: f64) -> (f64, usize, Vec<ThinRegion>) {
+/// Thin area, region count and the largest regions. Thin readings are placed
+/// on a grid of cells one sample spacing wide; readings in the same or
+/// touching cells join one region. A region is therefore a cluster of thin
+/// readings within about two spacings of each other: both faces of a thin
+/// wall form one region, and patches parted by a wider band of thicker
+/// surface stay apart. The work grows linearly with the thin readings.
+fn thin_regions(
+    samples: &[Sample],
+    minimum_wall_mm: f64,
+    spacing: f64,
+) -> (f64, usize, Vec<ThinRegion>) {
     let thin: Vec<&Sample> = samples
         .iter()
         .filter(|sample| {
@@ -393,33 +395,24 @@ fn thin_regions(samples: &[Sample], minimum_wall_mm: f64) -> (f64, usize, Vec<Th
             })
         })
         .collect();
-    // Buckets at least as wide as any linking distance, so linked readings
-    // always lie in neighbouring buckets.
-    let link = 2.0
-        * thin
-            .iter()
-            .map(|sample| sample.reach)
-            .fold(f64::MIN_POSITIVE, f64::max);
-    let key = |point: [f64; 3]| point.map(|value| (value / link).floor() as i64);
-    let mut buckets: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
-    for (index, sample) in thin.iter().enumerate() {
-        buckets.entry(key(sample.point)).or_default().push(index);
-    }
+    let cell_of = |point: [f64; 3]| point.map(|value| (value / spacing).floor() as i64);
+    // One representative reading per occupied cell; the others join it.
     let mut parent: Vec<usize> = (0..thin.len()).collect();
+    let mut cells: HashMap<[i64; 3], usize> = HashMap::new();
     for (index, sample) in thin.iter().enumerate() {
-        let [x, y, z] = key(sample.point);
+        let first = *cells.entry(cell_of(sample.point)).or_insert(index);
+        let (a, b) = (root(&mut parent, index), root(&mut parent, first));
+        parent[a] = b;
+    }
+    for (&[x, y, z], &first) in &cells {
         for neighbour in [-1, 0, 1].into_iter().flat_map(|dx| {
             [-1, 0, 1]
                 .into_iter()
                 .flat_map(move |dy| [-1, 0, 1].map(move |dz| [x + dx, y + dy, z + dz]))
         }) {
-            for &other in buckets.get(&neighbour).into_iter().flatten() {
-                let gap = sub(thin[other].point, sample.point);
-                let reach = sample.reach + thin[other].reach;
-                if other > index && dot(gap, gap) <= reach * reach {
-                    let (a, b) = (root(&mut parent, index), root(&mut parent, other));
-                    parent[a] = b;
-                }
+            if let Some(&other) = cells.get(&neighbour) {
+                let (a, b) = (root(&mut parent, first), root(&mut parent, other));
+                parent[a] = b;
             }
         }
     }
@@ -842,6 +835,28 @@ mod tests {
     }
 
     #[test]
+    fn a_hair_thin_wall_far_from_the_origin_is_still_measured() {
+        // The ray start offset must stay inside a 0.0625 mm wall at z = 1 km.
+        let mesh = cuboid(
+            [0.0, 0.0, 1_000_000.0],
+            [20.0, 20.0, 1_000_000.062_5],
+            false,
+        );
+        let report = walls(&mesh, 1.0);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        assert!(close(thickness.thin_area_mm2, 800.0), "{thickness:?}");
+    }
+
+    #[test]
+    fn an_absurdly_small_minimum_gives_a_finite_report() {
+        let report = walls(&cuboid([0.0; 3], [10.0; 3], false), 1e-200);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        assert!(thickness.sample_spacing_mm.is_finite());
+        assert!(thickness.samples > 0 && thickness.samples <= MAX_SAMPLES);
+        assert_eq!(thickness.thin_area_mm2, 0.0);
+    }
+
+    #[test]
     fn a_needle_stays_within_the_sample_budget() {
         let report = walls(&cuboid([0.0; 3], [1000.0, 0.001, 0.001], false), 0.1);
         let thickness = report.wall_thickness.as_ref().unwrap();
@@ -868,19 +883,18 @@ mod tests {
             ([[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [20.0, 0.01, 0.0]], 0.5),
         ] {
             let samples = triangle_samples(points, spacing);
-            let total: f64 = samples.iter().map(|(_, area, _)| area).sum();
+            let total: f64 = samples.iter().map(|(_, area)| area).sum();
             assert!(close(total, area(points)));
             // Every sample lies on the triangle, and each part of the long
             // edge has a sample within the spacing.
-            for (point, _, reach) in &samples {
+            for (point, _) in &samples {
                 assert!(close(point[2], 0.0));
-                assert!(*reach <= spacing + 1e-9);
             }
             for step in 0..=80 {
                 let x = 40.0_f64.min(points[1][0]) * step as f64 / 80.0;
                 let nearest = samples
                     .iter()
-                    .map(|(point, _, _)| (point[0] - x).abs())
+                    .map(|(point, _)| (point[0] - x).abs())
                     .fold(f64::INFINITY, f64::min);
                 assert!(nearest <= spacing, "no sample near x = {x}");
             }
