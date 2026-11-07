@@ -51,9 +51,10 @@ OpenSCAD build with a product `design_profile` uses the profile's
 {"path": "models/bracket.stl", "minimum_wall_mm": 1.2}
 ```
 
-Points are spread over the whole surface, at most the minimum wall apart on
-each triangle. From each point, one ray travels into the material along the
-inward face normal and a ring of rays surrounds it. A point's reading is the
+Points are spread over the whole surface so that every part of it lies within
+the sample spacing of a point; the spacing starts at the minimum wall. From
+each point, one ray travels into the material along the inward face normal
+and a ring of rays surrounds it. A point's reading is the
 shortest distance at which an accepted ray leaves the solid. A ray that
 leaves through a surface turned more than 60 degrees from facing back against
 the point's inward direction is not counted, because it reached a neighbouring
@@ -68,7 +69,7 @@ surfaces do not read as walls.
 | `thickness_mm` | Area-weighted `minimum`, `p5`, `p50`, `p95`, and `maximum` of the readings. |
 | `thin_area_mm2`, `thin_region_count` | Surface area, and connected regions, with readings below the minimum. |
 | `thin_regions` | The largest thin regions with area, thinnest reading, its location, and bounds. |
-| `sample_spacing_mm`, `samples` | How densely the surface was sampled. The spacing widens on large parts so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled: every surface point lies within the spacing of a sample. The spacing widens on large parts so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
 | `unmeasured_samples`, `measured_area_share` | Points where every ray left through a glancing surface, and the share of surface measured. |
 
 A wall is usually reported from both of its faces. Where a wall meets a face
