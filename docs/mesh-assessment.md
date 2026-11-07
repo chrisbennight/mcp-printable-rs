@@ -15,7 +15,7 @@ measurements without duplicating them in a summary.
 | `solid_topology` | `passed` for accepted solid geometry, otherwise `failed`; see `topology` and the repair recommendations in `issues`. |
 | `finite_dimensions` | Finite bounds were measured. This does not compare them to a design requirement or establish the STL's original units. |
 | `support_free_orientation` | `passed` when the selected build direction and angle policy detect no support requirement, otherwise `failed`; inspect `overhang` and its threshold. Bridging and actual support design are not evaluated. |
-| `wall_thickness` | `unmeasured` unless a minimum wall is supplied and the mesh is a valid solid. Then `passed` when no measured surface point is thinner than the minimum, otherwise `failed`; see `wall_thickness` and [measure wall thickness](#measure-wall-thickness). |
+| `wall_thickness` | `unmeasured` unless a minimum wall is supplied and the mesh is a valid solid. Then `failed` when a measured surface point is thinner than the minimum, `unmeasured` when no point could be measured, and otherwise `passed`; see `wall_thickness` and [measure wall thickness](#measure-wall-thickness). |
 | `dimensional_requirements` | `unmeasured`; no target dimensions or tolerances were supplied to this analysis. |
 | `build_envelope` | `unmeasured`; no printer envelope was supplied. |
 | `material_process` | `unmeasured`; no material/process qualification runs. |
@@ -68,7 +68,7 @@ surfaces do not read as walls.
 | `thickness_mm` | Area-weighted `minimum`, `p5`, `p50`, `p95`, and `maximum` of the readings. |
 | `thin_area_mm2`, `thin_region_count` | Surface area, and connected regions, with readings below the minimum. |
 | `thin_regions` | The largest thin regions with area, thinnest reading, its location, and bounds. |
-| `sample_spacing_mm`, `samples` | How densely the surface was sampled. The spacing widens on large parts to bound the work, and is reported. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled. The spacing widens on large parts so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
 | `unmeasured_samples`, `measured_area_share` | Points where every ray left through a glancing surface, and the share of surface measured. |
 
 A wall is usually reported from both of its faces. Where a wall meets a face

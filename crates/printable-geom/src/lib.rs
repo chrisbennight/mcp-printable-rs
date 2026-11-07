@@ -566,7 +566,13 @@ fn prepare_mesh(
                 .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
                 .collect();
             let report = thickness::measure(&vertices, &triangles, minimum_wall_mm)?;
-            if report.thin_area_mm2 > 0.0 {
+            if report.unmeasured_samples == report.samples {
+                issues.push(warning_issue(
+                    "wall_thickness_unmeasured",
+                    "wall thickness could not be measured because every ray left the solid through a neighbouring face".to_string(),
+                    "Judge the walls from a section view or the model's dimensions.",
+                ));
+            } else if report.thin_area_mm2 > 0.0 {
                 issues.push(warning_issue(
                     "thin_walls",
                     format!(
@@ -593,9 +599,15 @@ fn prepare_mesh(
         solid_geometry,
         bounds.dimensions_mm.iter().all(|value| value.is_finite()),
         overhang.requires_support,
-        wall_thickness
-            .as_ref()
-            .map(|report| report.thin_area_mm2 == 0.0),
+        wall_thickness.as_ref().map(|report| {
+            if report.thin_area_mm2 > 0.0 {
+                CriterionStatus::Failed
+            } else if report.unmeasured_samples == report.samples {
+                CriterionStatus::Unmeasured
+            } else {
+                CriterionStatus::Passed
+            }
+        }),
     );
     Ok(PreparedMesh {
         report: ValidationReport {

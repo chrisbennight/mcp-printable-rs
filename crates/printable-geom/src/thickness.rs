@@ -627,6 +627,36 @@ mod tests {
     }
 
     #[test]
+    fn a_solid_whose_rays_all_glance_off_is_unmeasured_not_passed() {
+        // Every exit from a regular tetrahedron's face is a neighbouring face
+        // turned about 70.5 degrees from facing back, so no point is measured.
+        let mesh = TriangleMesh {
+            vertices: vec![
+                [10.0, 10.0, 10.0],
+                [10.0, -10.0, -10.0],
+                [-10.0, 10.0, -10.0],
+                [-10.0, -10.0, 10.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
+        };
+        let report = walls(&mesh, 100.0);
+        assert!(report.solid_geometry);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        assert_eq!(thickness.unmeasured_samples, thickness.samples);
+        assert_eq!(thickness.measured_area_share, 0.0);
+        assert!(thickness.thickness_mm.is_none());
+        let criterion = &report.assessment.criteria["wall_thickness"];
+        assert_eq!(criterion.status, CriterionStatus::Unmeasured);
+        assert_eq!(criterion.evidence, Some("/wall_thickness"));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "wall_thickness_unmeasured")
+        );
+    }
+
+    #[test]
     fn an_open_surface_is_not_measured() {
         let mut mesh = cuboid([0.0; 3], [10.0; 3], false);
         mesh.triangles.truncate(10);

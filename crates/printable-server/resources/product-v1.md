@@ -143,7 +143,8 @@ meaning as an alias for `solid_geometry`.
 `global_minimum_wall.status` repeats the `wall_thickness` criterion: `passed`
 when no point sampled over the final surface is thinner than the profile
 minimum, `failed` with the thin regions listed in `validation.wall_thickness`,
-or `unmeasured` when the output is not a valid solid. Sampling can miss a
+or `unmeasured` when the output is not a valid solid or no point could be
+measured. Sampling can miss a
 feature narrower than the reported spacing, so a product that requires wall
 proof must still encode exact constructive assertions.
 `moving_clearance.status` remains `not_run`; moving products must export each
