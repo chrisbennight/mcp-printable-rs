@@ -593,7 +593,7 @@ async fn run(
         }),
     )
     .await?;
-    validate_compiled_product("bracket", &compiled, "smoke-bracket.stl", 50.0, Walls::Pass)?;
+    validate_compiled_product("bracket", &compiled, "smoke-bracket.stl", 50.0)?;
     if compiled["definitions"]["names"] != product_definition_names
         || compiled["design_profile"] != design_profile
     {
@@ -665,7 +665,6 @@ difference() {
         &compiled_enclosure,
         "smoke-enclosure.stl",
         50.0,
-        Walls::Pass,
     )?;
 
     let mut thick_wall_profile = design_profile.clone();
@@ -772,7 +771,7 @@ difference() {
         }),
     )
     .await?;
-    validate_compiled_product("grip", &compiled_grip, "smoke-grip.stl", 50.0, Walls::Pass)?;
+    validate_compiled_product("grip", &compiled_grip, "smoke-grip.stl", 50.0)?;
 
     let section = call_tool(
         &http,
@@ -821,7 +820,6 @@ difference() {
         &fixed_hinge,
         "smoke-hinge-fixed.stl",
         50.0,
-        Walls::Pass,
     )?;
 
     let moving_hinge = call_tool(
@@ -839,16 +837,11 @@ difference() {
         }),
     )
     .await?;
-    // The moving body's crossbar ends beside the panel's chamfered front
-    // edge. Rays leaving past the crossbar's end read that edge as a wall over
-    // a patch smaller than a hundredth of a square millimetre, although the
-    // panel there is thick, so its walls are measured but not required to pass.
     validate_compiled_product(
         "hinge moving body",
         &moving_hinge,
         "smoke-hinge-moving.stl",
         50.0,
-        Walls::Measured,
     )?;
 
     let hinge_assembly = call_tool(
@@ -946,21 +939,11 @@ difference() {
     Ok(())
 }
 
-/// What a product's measured walls must show.
-#[derive(Clone, Copy)]
-enum Walls {
-    /// No measured point is thinner than the profile minimum.
-    Pass,
-    /// Measured against the profile minimum, with either outcome accepted.
-    Measured,
-}
-
 fn validate_compiled_product(
     product: &str,
     compiled: &Value,
     expected_path: &str,
     overhang_degrees: f64,
-    walls: Walls,
 ) -> Result<(), String> {
     if compiled["artifact"]["path"] != json!(expected_path)
         || compiled["validation"]["solid_geometry"] != json!(true)
@@ -973,7 +956,7 @@ fn validate_compiled_product(
             .is_none_or(|faces| faces == 0)
         || compiled["validation"]["overhang"]["threshold_degrees"] != json!(overhang_degrees)
         || compiled["validation"]["overhang"]["requires_support"] != json!(false)
-        || !measured_global_wall(compiled, walls)
+        || !measured_global_wall(compiled)
         || compiled["manufacturing_evidence"]["moving_clearance"]["status"] != json!("not_run")
     {
         return Err(format!(
@@ -983,17 +966,11 @@ fn validate_compiled_product(
     Ok(())
 }
 
-/// The product's wall thickness was measured against its profile minimum,
-/// with the outcome `walls` requires, and the evidence points at the report.
-fn measured_global_wall(compiled: &Value, walls: Walls) -> bool {
+/// The product's wall thickness was measured against its profile minimum and
+/// passed, and the evidence points at the report.
+fn measured_global_wall(compiled: &Value) -> bool {
     let wall = &compiled["manufacturing_evidence"]["global_minimum_wall"];
-    let accepted: &[&str] = match walls {
-        Walls::Pass => &["passed"],
-        Walls::Measured => &["passed", "failed"],
-    };
-    wall["status"]
-        .as_str()
-        .is_some_and(|status| accepted.contains(&status))
+    wall["status"] == json!("passed")
         && wall["evidence"] == json!("/validation/wall_thickness")
         && compiled["validation"]["wall_thickness"]["minimum_wall_mm"] == wall["minimum_wall_mm"]
 }
