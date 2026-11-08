@@ -2585,6 +2585,21 @@ impl ProjectIndex {
         detail
     }
 
+    /// A busy answer to a search also holds back background requests until
+    /// the time it asks for.
+    fn hold_back(&self, error: &ServiceError) {
+        if let ServiceError::Busy(wait) = error {
+            let wait = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+            let until = super::unix_ms().saturating_add(wait);
+            let mut state = self.state();
+            state.retry_after_unix_ms = Some(
+                state
+                    .retry_after_unix_ms
+                    .map_or(until, |known| known.max(until)),
+            );
+        }
+    }
+
     fn embeddings_answered(&self) {
         let mut state = self.state();
         state.retry_after_unix_ms = None;
@@ -2642,6 +2657,13 @@ impl ProjectIndex {
             degraded.push(note(Capability::Rerank, Reason::NotConfigured, None));
             false
         };
+        // A search that does not re-rank still reports the latest failure.
+        if self.reranker.is_some()
+            && !rerank
+            && let Some((reason, detail)) = self.state().reranker.clone()
+        {
+            degraded.push(note(Capability::Rerank, reason, Some(detail)));
+        }
         // Methods this query does not use still report the service's latest
         // failure, or having no vectors yet.
         let failure = self.state().embeddings.clone();
@@ -2770,6 +2792,7 @@ impl ProjectIndex {
                 None
             }
             Err(error) => {
+                self.hold_back(&error);
                 degraded.push(note(
                     Capability::Meaning,
                     reason(&error),
@@ -2854,6 +2877,7 @@ impl ProjectIndex {
                 None
             }
             Err(error) => {
+                self.hold_back(&error);
                 degraded.push(note(
                     Capability::Picture,
                     reason(&error),

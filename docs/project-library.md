@@ -360,8 +360,8 @@ starts no request after two minutes; later passes continue. A project whose
 text or picture changes is embedded again. Requests time out after 60
 seconds. When the service answers `429` or `503`, passes, including
 `index_rebuild` and `index_retry`, make no embedding requests until the time in
-its `Retry-After` header, at most an hour (a minute without one); searches
-still try. A refusal with `401`, `403`, `404` or `405`, an unreachable
+its `Retry-After` header, at most an hour (a minute without one). Searches
+still try, and a busy answer to a search holds back passes in the same way. A refusal with `401`, `403`, `404` or `405`, an unreachable
 service and other server errors stop the pass and are reported in
 `index_status`. Other refusals and unusable answers count against the projects
 in that request: each is tried again alone after 5 minutes, then 10, doubling
