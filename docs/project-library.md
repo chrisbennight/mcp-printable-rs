@@ -4,7 +4,8 @@ Each project keeps a record that a library card can show: its name and
 description, tags, when it was created and last changed, and a cover picture.
 Slices add a summary of what they were sliced for, and print records keep how
 each print ended. `card` gathers these into one library card, and `search` finds
-projects by their cards. Read `printable://contracts/project/update`,
+projects by their cards. An optional read-only [web page](#web-page) shows the
+cards to people. Read `printable://contracts/project/update`,
 `printable://contracts/project/cover`, `printable://contracts/project/card` and
 `printable://contracts/project/search` for the typed requests.
 
@@ -229,6 +230,148 @@ Only one pass runs at a time; a rebuild or retry requested during a background
 pass starts when that pass ends. To rebuild the index file offline, stop the
 server, delete `index.sqlite3` and any `index.sqlite3-wal` and
 `index.sqlite3-shm` files beside it, and start the server again.
+
+## Web page
+
+People can browse and search the library in a read-only web page. It is off
+unless `PRINTABLE_WEB_LISTEN` is set, and it has a listener of its own: it
+never shares a port or any routes with the MCP endpoint.
+
+The library page shows a grid of library cards with a search box, a sort order
+and the [search filters](#filters). Each card shows the cover picture, whether
+and how often the project was printed, its file formats, its name, the start of
+its description, filament colours and materials, printers, tags, and when it
+was created and last printed. A page holds 24 cards, and like `search` the
+pages reach only the first 1008 results; add words or filters to narrow a
+larger search. The coverage and unavailable search capabilities that `search`
+reports are shown above the grid.
+
+A project page shows the full card: the cover, description, tags and dates,
+the newest slice, print outcomes per printer, model-site downloads, and up to
+500 of the project's files with download links. The page builds the card from
+recorded slice summaries only, as `card` does. Download pages from model sites
+are shown as plain links, and no page loads anything from another site. Dates
+are shown in UTC.
+
+The page cannot change anything. It answers only `GET` and `HEAD` requests and
+has no editing and no public, guest or sharing links.
+
+### Downloads from the page
+
+A file link downloads one file from the project's directory. Paths with `.` or
+`..` components, encoded slashes or backslashes, symbolic links, unsupported
+file types and Printable's reserved records are refused. The server first
+copies the file into the workspace's temporary storage, so the bytes cannot
+change during the download, and then streams the copy. The copy counts against
+`PRINTABLE_WORKSPACE_BUDGET_MIB` until the download ends. Files are sent as
+attachments with the media type `application/octet-stream`.
+
+### Web page settings
+
+| Setting | Meaning |
+| --- | --- |
+| `PRINTABLE_WEB_LISTEN` | Socket address of the page, such as `0.0.0.0:8080`. Unset turns the page off. It needs `PRINTABLE_WORKSPACE_ROOT` and a port different from the MCP port. |
+| `PRINTABLE_WEB_TRUSTED_PROXIES` | Required with the listener. Comma-separated IP addresses or CIDR ranges of the reverse proxy that signs people in, such as `172.30.0.2` or `172.30.0.0/24`. |
+| `PRINTABLE_WEB_USER_HEADER` | Required with the listener. The request header in which the proxy names the signed-in user, such as `X-Printable-User`. |
+| `PRINTABLE_WEB_USERS` | Required with the listener. Comma-separated names of the users allowed to read the library. A name must equal the header value exactly, including letter case. |
+
+The server refuses to start when the listener is set and one of the other
+settings is missing or malformed. A range must not cover every address or set
+bits after its prefix, and IPv4 addresses are written in IPv4 form. Without
+`PRINTABLE_WEB_LISTEN` the other three settings are not read.
+
+### Security model
+
+Printable does not sign people in; it relies on the reverse proxy that does.
+Each request is checked in this order:
+
+1. The TCP peer address must be in `PRINTABLE_WEB_TRUSTED_PROXIES`. Any other
+   peer is refused with status 403 before anything else is read.
+   Forwarded-address headers are ignored.
+2. The user header must appear exactly once and name a listed user. Otherwise
+   the request is refused with status 403. Only the refusal is logged, never
+   the header's value.
+3. Methods other than `GET` and `HEAD` are refused with status 405.
+
+Every response carries a content security policy that allows styles and
+pictures only from the page itself and permits no scripts, no framing by other
+sites and no form submissions elsewhere, together with
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Pages and
+downloads are sent with `Cache-Control: no-store`. Cover pictures may be kept by
+the browser and are checked again on each view. Names, descriptions, tags,
+site text and file names are escaped and shown as text.
+
+Warning: anything that can connect to the listener from a trusted address can
+claim to be any user. Configure the proxy to set the user header on every
+request it forwards, replacing any value the browser sent. Put the listener on
+a network that only the proxy can reach, bind it to the server's address on
+that network rather than to every interface where possible, and do not publish
+its port. If another service shares a trusted address or range, that service
+can read the library as any listed user.
+
+### Reverse proxy example
+
+This nginx example asks a sign-in service whether each request is signed in and
+passes the user name it returns to Printable. The address of the check, the
+response header that carries the user name and the handling of people who are
+not signed in depend on the sign-in service; see its documentation for nginx
+`auth_request`.
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name library.example.com;
+    # Certificate settings omitted.
+
+    location = /signed-in {
+        internal;
+        proxy_pass http://sign-in:9000/verify;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    location / {
+        auth_request /signed-in;
+        auth_request_set $printable_user $upstream_http_x_user;
+        # Replaces any X-Printable-User header the browser sent.
+        proxy_set_header X-Printable-User $printable_user;
+        proxy_pass http://server:8080;
+    }
+}
+```
+
+When the variable is empty, nginx sends no user header and Printable refuses
+the request. With Compose, a network that only the server and the proxy join
+keeps other services away from the listener:
+
+```yaml
+services:
+  server:
+    networks:
+      control: {}
+      frontend: {}
+      library:
+        ipv4_address: 172.30.0.3
+    environment:
+      PRINTABLE_WEB_LISTEN: 172.30.0.3:8080
+      PRINTABLE_WEB_TRUSTED_PROXIES: 172.30.0.2
+      PRINTABLE_WEB_USER_HEADER: X-Printable-User
+      PRINTABLE_WEB_USERS: alice,bob
+  proxy:
+    networks:
+      library:
+        ipv4_address: 172.30.0.2
+
+networks:
+  library:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+```
+
+The proxy's own published HTTPS port is how people reach the page; the
+server's port 8080 is not published.
 
 ## Storage and backups
 

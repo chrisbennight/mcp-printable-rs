@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::{Project, get, modify, resolve};
 use crate::{error::ToolError, provenance, slicing::package};
 
-const MAX_COVER_BYTES: u64 = package::MAX_THUMBNAIL_BYTES;
+pub(crate) const MAX_COVER_BYTES: u64 = package::MAX_THUMBNAIL_BYTES;
 const MAX_COVER_SIDE: u32 = 8192;
 const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 /// Square size of a cover rendered from a model.

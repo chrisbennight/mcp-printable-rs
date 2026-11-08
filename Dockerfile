@@ -322,7 +322,9 @@ ENV PRINTABLE_HTTP_HOST=0.0.0.0 \
     FFMPEG_BIN=/usr/bin/ffmpeg \
     OPENSCAD_BIN=/usr/local/bin/openscad-headless \
     HOME=/tmp/printable
-EXPOSE 8000
+# 8080 is the port the documentation uses for the optional library web page,
+# which listens only when PRINTABLE_WEB_LISTEN is set.
+EXPOSE 8000 8080
 
 # Exec form: the binary's own --healthcheck hits loopback /healthz and exits 0/1
 # (no shell or curl needed in the runtime path). Deployment gates use /readyz;

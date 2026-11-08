@@ -27,4 +27,5 @@ pub mod shutdown;
 pub mod slicing;
 pub mod tools;
 pub mod upload;
+pub mod web;
 pub mod worker_health;

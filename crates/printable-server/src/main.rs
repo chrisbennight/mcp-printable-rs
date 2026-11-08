@@ -1,15 +1,16 @@
 //! Printable MCP server entry point: streamable HTTP at `/mcp`, `/healthz`
-//! liveness, and `/readyz` dependency readiness.
+//! liveness, and `/readyz` dependency readiness, plus the optional read-only
+//! library web page on a listener of its own.
 //! A `--healthcheck` self-probe supports the container HEALTHCHECK.
 
-use std::process::ExitCode;
+use std::{future::IntoFuture, net::SocketAddr, process::ExitCode};
 
 use anyhow::Context;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use printable_server::{config::Settings, server::build_router};
+use printable_server::{config::Settings, server::build_routers};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -108,6 +109,21 @@ async fn run_server(mut settings: Settings, host: String, port: u16) -> anyhow::
         .await
         .with_context(|| format!("bind {host}:{port}"))?;
     let addr = listener.local_addr().context("resolve bound address")?;
+    // The web page gets a listener of its own, bound before any work starts.
+    let web_listener = match &settings.web {
+        None => None,
+        Some(web) => {
+            if web.listen.port() == addr.port() {
+                anyhow::bail!(
+                    "PRINTABLE_WEB_LISTEN must use a different port from the MCP listener"
+                );
+            }
+            let web_listener = tokio::net::TcpListener::bind(web.listen)
+                .await
+                .with_context(|| format!("bind the web page listener {}", web.listen))?;
+            Some(web_listener)
+        }
+    };
 
     // Fold the actual bound address into Settings so printable_status reports the
     // endpoint the server is really listening on, not the requested one.
@@ -115,17 +131,35 @@ async fn run_server(mut settings: Settings, host: String, port: u16) -> anyhow::
     settings.http_port = addr.port();
 
     let cancel = CancellationToken::new();
-    let app = build_router(&settings, cancel.clone())?;
+    let routers = build_routers(&settings, cancel.clone())?;
 
     tracing::info!(%addr, "printable-server listening");
+    let web_shutdown = cancel.clone();
     let shutdown = async move {
         signal.await;
         cancel.cancel();
     };
-    axum::serve(listener, app)
+    let mcp = axum::serve(listener, routers.mcp)
         .with_graceful_shutdown(shutdown)
-        .await
-        .context("axum serve")?;
+        .into_future();
+    let (Some(web_listener), Some(web)) = (web_listener, routers.web) else {
+        mcp.await.context("axum serve")?;
+        return Ok(ExitCode::SUCCESS);
+    };
+    let web_addr = web_listener
+        .local_addr()
+        .context("resolve the web page address")?;
+    tracing::info!(addr = %web_addr, "project library web page listening");
+    // The peer address lets the web page refuse anything but its trusted proxy.
+    let web = axum::serve(
+        web_listener,
+        web.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move { web_shutdown.cancelled().await })
+    .into_future();
+    let mcp = async { mcp.await.context("axum serve") };
+    let web = async { web.await.context("web page serve") };
+    tokio::try_join!(mcp, web)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -176,6 +210,43 @@ mod tests {
         assert_eq!(healthcheck_authority("[::1]", 8000), "[::1]:8000");
         assert_eq!(healthcheck_authority("127.0.0.1", 8000), "127.0.0.1:8000");
         assert_eq!(healthcheck_authority("localhost", 8000), "localhost:8000");
+    }
+
+    #[tokio::test]
+    async fn the_web_page_never_shares_the_mcp_port() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let root = workspace.path().to_str().expect("UTF-8 path").to_string();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+        let port = free.local_addr().expect("reserved address").port();
+        drop(free);
+        let listen = format!("0.0.0.0:{port}");
+        let settings = Settings::from_lookup(|key| {
+            let value = match key {
+                "PRINTABLE_MCP_BEARER" => concat!(
+                    "0123456789abcdef",
+                    "0123456789abcdef",
+                    "0123456789abcdef",
+                    "0123456789abcdef"
+                ),
+                "PRINTABLE_WORKSPACE_ROOT" => root.as_str(),
+                "PRINTABLE_WEB_LISTEN" => listen.as_str(),
+                "PRINTABLE_WEB_TRUSTED_PROXIES" => "127.0.0.1",
+                "PRINTABLE_WEB_USER_HEADER" => "X-Printable-User",
+                "PRINTABLE_WEB_USERS" => "alice",
+                _ => return None,
+            };
+            Some(value.to_string())
+        })
+        .expect("web page settings");
+
+        let error = run_server(settings, "127.0.0.1".to_string(), port)
+            .await
+            .expect_err("the web page cannot use the MCP port");
+
+        assert_eq!(
+            error.to_string(),
+            "PRINTABLE_WEB_LISTEN must use a different port from the MCP listener"
+        );
     }
 
     #[tokio::test]

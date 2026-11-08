@@ -4788,13 +4788,26 @@ where
     T: Send + 'static,
     E: Into<ToolError> + Send + 'static,
 {
+    blocking_with(&WORKSPACE_OPS, f).await
+}
+
+/// [`blocking`] under one of `permits`, so a caller with its own concurrency
+/// bound does not take capacity from MCP tool calls.
+pub(crate) async fn blocking_with<T, E>(
+    permits: &Arc<Semaphore>,
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ToolError>
+where
+    T: Send + 'static,
+    E: Into<ToolError> + Send + 'static,
+{
     // Move an OWNED permit into the blocking job so it is released only when the
     // job finishes, not when this future is dropped. spawn_blocking detaches: a
     // cancelled request (client disconnect) frees a future-held permit while its
-    // filesystem work runs on, which would let more than
-    // MAX_CONCURRENT_WORKSPACE_OPS run at once. The semaphore is never closed, so
-    // acquire only fails while the process is tearing down.
-    let permit = Arc::clone(&WORKSPACE_OPS)
+    // filesystem work runs on, which would let more jobs than the semaphore
+    // allows run at once. The semaphores are never closed, so acquire only
+    // fails while the process is tearing down.
+    let permit = Arc::clone(permits)
         .acquire_owned()
         .await
         .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?;
