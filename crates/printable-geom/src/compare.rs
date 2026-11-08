@@ -112,7 +112,8 @@ pub struct AlignmentReport {
     /// For a best fit, the points matched in the final step.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_points: Option<usize>,
-    /// For a best fit, the point-to-plane RMS of the final step's pairs.
+    /// For a best fit, the point-to-plane RMS of the final step's pairs;
+    /// absent when no step paired enough points to move the mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rms_mm: Option<f64>,
 }
@@ -474,7 +475,7 @@ fn best_fit(
     let mut report = alignment_report(Alignment::BestFit, &pose);
     report.fit_points = Some(fit.len());
     report.matched_points = Some(matched);
-    report.rms_mm = Some(rms);
+    report.rms_mm = (matched > 0).then_some(rms);
     (pose, report)
 }
 
@@ -1441,6 +1442,23 @@ mod tests {
             "{:?}",
             pose.translation
         );
+    }
+
+    #[test]
+    fn a_best_fit_without_pairs_reports_no_residual() {
+        // A small block centred inside a large one: from every starting pose
+        // its surface lies beyond the fitting cap of the reference's.
+        let reference = block(10.0, 10.0, 10.0);
+        let inner = moved(
+            &block(2.0, 2.0, 2.0),
+            &Pose {
+                rotation: Matrix3::identity(),
+                translation: V3::new(4.0, 4.0, 4.0),
+            },
+        );
+        let report = compare(&inner, &reference, Alignment::BestFit, 0.1);
+        assert_eq!(report.alignment.matched_points, Some(0));
+        assert_eq!(report.alignment.rms_mm, None);
     }
 
     #[test]
