@@ -76,6 +76,15 @@ pub enum ToolError {
     /// message says which code and how to submit it.
     #[error("{0}")]
     LibrarySignInRequired(String),
+    /// The derived project search index could not be opened, read or written.
+    #[error("project search index: {0}")]
+    ProjectIndex(String),
+}
+
+impl From<rusqlite::Error> for ToolError {
+    fn from(error: rusqlite::Error) -> Self {
+        ToolError::ProjectIndex(error.to_string())
+    }
 }
 
 impl ToolError {
@@ -111,6 +120,7 @@ impl ToolError {
             ToolError::Library(error) => library_code(error),
             ToolError::LibraryIncomplete(_) => "library_incomplete",
             ToolError::LibrarySignInRequired(_) => "library_sign_in_required",
+            ToolError::ProjectIndex(_) => "project_index",
         }
     }
 }

@@ -70,8 +70,13 @@ pub(super) fn settings(
     }))
 }
 
+/// Workspace directory that holds one project's print records.
+pub fn project_records(project_id: &str) -> String {
+    format!("{RECORDS}/{project_id}")
+}
+
 pub fn record_path(project_id: &str, print_id: u64) -> String {
-    format!("{RECORDS}/{project_id}/{print_id}.json")
+    format!("{}/{print_id}.json", project_records(project_id))
 }
 
 /// A submitted print without a final record.
@@ -399,7 +404,7 @@ pub fn spawn(service: Arc<PrinterService>, workspace: Arc<Workspace>, cancel: Ca
 /// The recorded outcomes of one project's prints, ordered by print id.
 pub fn project_prints(workspace: &Workspace, project_id: &str) -> Result<Vec<Value>, ToolError> {
     crate::projects::get(workspace, project_id)?;
-    let files = match workspace.list_artifacts(&format!("{RECORDS}/{project_id}"), usize::MAX) {
+    let files = match workspace.list_artifacts(&project_records(project_id), usize::MAX) {
         Ok(files) => files,
         Err(WsError::NotFound(_)) => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),

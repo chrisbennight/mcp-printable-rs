@@ -28,7 +28,7 @@ const THINGIVERSE_TOKEN_SETTING: &str = "PRINTABLE_THINGIVERSE_TOKEN";
 const CONCURRENT_REQUESTS: usize = 2;
 /// Files one download request may save.
 const MAXIMUM_FILES: usize = 50;
-const MANIFEST: &str = "source.json";
+pub(crate) const MANIFEST: &str = "source.json";
 const MAXIMUM_STEM_CHARACTERS: usize = 100;
 /// The longest file or directory name Linux file systems accept.
 const MAXIMUM_COMPONENT_BYTES: usize = 255;

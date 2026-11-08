@@ -68,6 +68,10 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
             .configure_storage_budget(settings.workspace_budget_bytes)
             .context("configure shared workspace storage budget")?;
     }
+    settings
+        .project_index
+        .open()
+        .context("open the project search index")?;
     let blender = Arc::new(BlenderClient::new(
         settings.blender_host.clone(),
         settings.blender_port,
@@ -76,6 +80,14 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
     if let Some(printers) = &settings.printers {
         crate::printers::ledger::spawn(
             Arc::clone(printers),
+            Arc::clone(&workspace),
+            cancel.child_token(),
+        );
+    }
+    // Without a confined workspace there are no projects to index.
+    if workspace.confined() {
+        crate::projects::index::spawn(
+            Arc::clone(&settings.project_index),
             Arc::clone(&workspace),
             cancel.child_token(),
         );

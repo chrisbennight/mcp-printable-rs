@@ -65,6 +65,9 @@ zip = { version = "9.2.1", default-features = false, features = ["deflate-flate2
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 jsonschema = { version = "0.52", default-features = false }
+# The derived project search index. The bundled SQLite build includes FTS5 and
+# its trigram tokenizer, so the server needs no system SQLite library.
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 
 [dev-dependencies]
 wiremock = "0.6"

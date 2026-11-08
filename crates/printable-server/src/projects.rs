@@ -7,8 +7,10 @@ use serde_json::{Value, json};
 
 use crate::error::ToolError;
 
+pub mod card;
 pub mod cover;
 mod export;
+pub mod index;
 pub mod requirements;
 pub mod revisions;
 pub use export::NativeExportParams;
@@ -101,6 +103,16 @@ pub enum ProjectRequest {
     Files(FilesParams),
     Update(UpdateParams),
     Cover(cover::CoverParams),
+    /// The project's library card, built from its current records.
+    Card(ProjectParams),
+    /// Find projects by words, filters and sort order in the search index.
+    Search(index::SearchParams),
+    /// Report the search index's coverage, failures and latest pass.
+    IndexStatus(index::IndexParams),
+    /// Clear the search index and rebuild every card now.
+    IndexRebuild(index::IndexParams),
+    /// Update the search index now, trying failed projects again.
+    IndexRetry(index::IndexParams),
     ExportFiles(export::ExportFilesParams),
     ExportBlender(NativeExportParams),
 }
@@ -391,6 +403,16 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
         ProjectRequest::Cover(_) => Err(ToolError::Validation(
             "cover selection requires the OpenSCAD renderer".into(),
         )),
+        ProjectRequest::Search(_)
+        | ProjectRequest::IndexStatus(_)
+        | ProjectRequest::IndexRebuild(_)
+        | ProjectRequest::IndexRetry(_) => Err(ToolError::Validation(
+            "project search requires the server's project index".into(),
+        )),
+        ProjectRequest::Card(params) => Ok(serde_json::to_value(card::card(
+            workspace,
+            &params.project_id,
+        )?)?),
         ProjectRequest::Update(params) => Ok(serde_json::to_value(update(workspace, params)?)?),
         ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(
             workspace, params,

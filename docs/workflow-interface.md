@@ -65,7 +65,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files`, `revise`, `revision`, `export_files`, `export_blender` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `card`, `search`, `index_status`, `index_rebuild`, `index_retry`, `revise`, `revision`, `export_files`, `export_blender` |
 | `head` | `models`, `create`, `update`, `prepare_print`, and `reconstruct` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
 | `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), and retained object-job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, or retained job history; offers the available generation actions and job management |
 | `library` | `search`, `get`, `download` (find designs on public model sites and save their files into a project), `sign_in` (finish a MakerWorld sign-in with a code from the user); advertised only when [model sites](model-library.md) are enabled |
@@ -138,7 +138,8 @@ tools; loading a skill does not execute the workflow.
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
 [Project library records](project-library.md) keep each project's dates,
-editable description, tags and cover picture under an expected record version.
+editable description, tags and cover picture under an expected record version;
+library cards summarise them, and search finds projects by words and filters.
 [Design revisions](project-revisions.md) retain typed requirements, parameter
 ranges, source snapshots, and parent identities; native CAD checks the declared
 requirements against its measurements.
