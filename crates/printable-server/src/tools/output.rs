@@ -331,6 +331,35 @@ fn mesh_report() -> Value {
             "bounds",
         ],
     );
+    let volume_region = object(
+        json!({
+            "material": {"enum": ["extra", "missing"]},
+            "volume_mm3": number,
+            "centre_mm": point,
+            "bounds": bounds
+        }),
+        &["material", "volume_mm3", "centre_mm", "bounds"],
+    );
+    let volume = object(
+        json!({
+            "cell_mm": number,
+            "cells": {"type": "integer", "minimum": 1},
+            "reference_volume_mm3": number,
+            "extra_volume_mm3": number,
+            "missing_volume_mm3": number,
+            "region_count": {"type": "integer", "minimum": 0},
+            "regions": {"type": "array", "items": volume_region}
+        }),
+        &[
+            "cell_mm",
+            "cells",
+            "reference_volume_mm3",
+            "extra_volume_mm3",
+            "missing_volume_mm3",
+            "region_count",
+            "regions",
+        ],
+    );
     let comparison = object(
         json!({
             "alignment": object(
@@ -358,7 +387,8 @@ fn mesh_report() -> Value {
             ),
             "within_tolerance_share": number,
             "region_count": {"type": "integer", "minimum": 0},
-            "regions": {"type": "array", "items": deviation_region}
+            "regions": {"type": "array", "items": deviation_region},
+            "volume": volume
         }),
         &[
             "alignment",

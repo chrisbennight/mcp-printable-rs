@@ -303,9 +303,30 @@ normals.
 | `within_tolerance_share` | Share of the measured surface within `tolerance_mm` either side. |
 | `region_count`, `regions` | Clusters of points beyond the tolerance, outside and inside the reference separately, largest first. Points within about two sample spacings join one cluster, so both faces of a wall that came out thicker form one region. Each gives its area, largest deviation, where that lies, its centre, and its bounds, in the reference's frame. |
 
-Regions add a `deviation_beyond_tolerance` warning. The response also names
-the reference in `reference_artifact`. A comparison measures surfaces; it does
-not say which mesh is right.
+Surface regions add a `deviation_beyond_tolerance` warning. The response also
+names the reference in `reference_artifact`. A comparison measures shape; it
+does not say which mesh is right.
+
+Set `volume: true` to also compare the material the two meshes enclose.
+Both meshes must be closed and face outward, with any cavities facing inward.
+A mesh with an open edge, or an edge whose two faces run the same way, is
+refused with the mesh named. The space around both is divided into
+cubic cells at least `tolerance_mm` across, enlarged when needed to keep the
+grid within 8 million cells, but never larger than the space itself where
+that is over 1 mm. A cell is inside a mesh when an upward ray from
+its centre crosses more outward-facing surface than inward-facing, so parts
+that overlap count once. A cell centre inside a part turned inside out has a
+negative count, and the request is then refused with the mesh named. A part
+too thin to hold a cell centre, or a surface that encloses nothing, such as a
+sheet with faces on both sides, counts as empty. Cells inside the mesh
+and not the reference are extra material, and the reverse are missing
+material. `comparison.volume` reports:
+
+| Field | Meaning |
+| --- | --- |
+| `cell_mm`, `cells` | The cell size and the cells in the grid. |
+| `reference_volume_mm3`, `extra_volume_mm3`, `missing_volume_mm3` | The reference's volume and the extra and missing material, counted in whole cells, so each is accurate to about a layer of cells over the surfaces concerned. |
+| `region_count`, `regions` | Lumps of extra or missing material of at least eight cells joined face to face, largest first, each with its material, volume, centre and bounds in the reference's frame. A difference thinner than a cell shows only where it covers cell centres, as scattered cells or a layer one cell thick, so a thin lump's volume is only as accurate as the cell size allows. |
 
 ## Time limit and cancellation
 

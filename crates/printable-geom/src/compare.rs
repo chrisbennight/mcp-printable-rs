@@ -96,6 +96,9 @@ pub struct ComparisonOptions {
     /// is fitted, so that fixtures or supports do not pull the fit off. The
     /// whole surface is still measured.
     pub fit_region: Option<FitRegion>,
+    /// Also count missing and extra material on a grid of cells, whose
+    /// edge is at least `tolerance_mm`. Both meshes must be closed.
+    pub volume: bool,
 }
 
 /// The same place picked on the compared mesh and on the reference.
@@ -135,6 +138,8 @@ pub struct ComparisonReport {
     pub region_count: usize,
     /// The largest regions beyond the tolerance, largest first.
     pub regions: Vec<DeviationRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<crate::VolumeComparison>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -508,6 +513,10 @@ pub(crate) fn measure(
     mesh: &TriangleMesh,
     options: &ComparisonOptions,
 ) -> Result<ComparisonReport, GeometryError> {
+    if options.volume {
+        crate::volume::require_closed(mesh, "mesh")?;
+        crate::volume::require_closed(&options.reference, "reference")?;
+    }
     let reference = Reference::new(&options.reference)?;
     let diagonal = diagonal(&options.reference.vertices);
     let reach = options
@@ -592,6 +601,23 @@ pub(crate) fn measure(
         .map(|(_, area)| area)
         .sum();
     let (region_count, regions) = regions(&readings, options.tolerance_mm, spacing);
+    let volume = if options.volume {
+        let placed = TriangleMesh {
+            vertices: mesh
+                .vertices
+                .iter()
+                .map(|vertex| pose.apply(&V3::from(*vertex)).into())
+                .collect(),
+            triangles: mesh.triangles.clone(),
+        };
+        Some(crate::volume::compare(
+            &placed,
+            &options.reference,
+            options.tolerance_mm,
+        )?)
+    } else {
+        None
+    };
     Ok(ComparisonReport {
         alignment,
         tolerance_mm: options.tolerance_mm,
@@ -607,6 +633,7 @@ pub(crate) fn measure(
         within_tolerance_share: share(within, measured_area),
         region_count,
         regions,
+        volume,
     })
 }
 
@@ -1195,6 +1222,7 @@ mod tests {
                 max_distance_mm: None,
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             },
         )
         .unwrap()
@@ -1422,6 +1450,7 @@ mod tests {
                 max_distance_mm: Some(0.32),
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             },
         )
         .unwrap();
@@ -1463,6 +1492,7 @@ mod tests {
                         max_distance_mm: Some(reach),
                         start_pairs: Vec::new(),
                         fit_region: None,
+                        volume: false,
                     },
                 )
                 .unwrap()
@@ -1511,6 +1541,7 @@ mod tests {
                 max_distance_mm: Some(0.32),
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             },
         )
         .unwrap();
@@ -1578,6 +1609,7 @@ mod tests {
                 max_distance_mm: Some(0.32),
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             },
         )
         .unwrap();
@@ -1850,6 +1882,7 @@ mod tests {
                 max_distance_mm,
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             }
         };
         let block = block(1.0, 1.0, 1.0);
@@ -1944,8 +1977,76 @@ mod tests {
                 max_distance_mm: None,
                 start_pairs,
                 fit_region,
+                volume: false,
             },
         )
+    }
+
+    #[test]
+    fn volume_finds_extra_material_in_the_reference_frame() {
+        let reference = bracket();
+        // A bump standing 2 out of the bracket's back, overlapping it, which
+        // the winding count joins to it.
+        let bump = moved(
+            &block(4.0, 4.0, 3.0),
+            &Pose {
+                rotation: Matrix3::identity(),
+                translation: V3::new(15.0, 11.0, 1.0),
+            },
+        );
+        let mut bumped = reference.clone();
+        let offset = bumped.vertices.len() as u32;
+        bumped.vertices.extend(&bump.vertices);
+        bumped
+            .triangles
+            .extend(bump.triangles.iter().map(|t| t.map(|index| index + offset)));
+        let pose = Pose {
+            rotation: Rotation3::new(V3::new(0.3, -0.2, 0.9).normalize() * 2.0).into_inner(),
+            translation: V3::new(-15.0, 40.0, 7.0),
+        };
+        let options = |alignment: Alignment| ComparisonOptions {
+            reference: reference.clone(),
+            alignment,
+            tolerance_mm: 0.25,
+            max_distance_mm: None,
+            start_pairs: Vec::new(),
+            fit_region: None,
+            volume: true,
+        };
+        let aligned = measure(&bumped, &options(Alignment::None)).unwrap();
+        let volume = aligned.volume.unwrap();
+        assert!((volume.extra_volume_mm3 - 32.0).abs() < 1e-6, "{volume:?}");
+        assert_eq!(volume.missing_volume_mm3, 0.0);
+        assert!((volume.reference_volume_mm3 - 3504.0).abs() < 1e-6);
+
+        // Moved away and fitted back, the bump is found where it is on the
+        // reference, to within the cells' size.
+        let fitted = measure(&moved(&bumped, &pose), &options(Alignment::BestFit)).unwrap();
+        let volume = fitted.volume.unwrap();
+        assert!((volume.extra_volume_mm3 - 32.0).abs() < 6.0, "{volume:?}");
+        assert!(volume.missing_volume_mm3 < 2.0, "{volume:?}");
+        let lump = &volume.regions[0];
+        assert_eq!(lump.material, crate::Material::Extra);
+        let expected = [17.0, 13.0, 3.0];
+        assert!(
+            (0..3).all(|axis| (lump.centre_mm[axis] - expected[axis]).abs() < 0.25),
+            "{lump:?}"
+        );
+
+        let mut open = bumped;
+        open.triangles.pop();
+        let error = measure(&open, &options(Alignment::None)).unwrap_err();
+        assert!(matches!(error, GeometryError::InvalidOptions(_)), "{error}");
+        assert!(
+            measure(
+                &open,
+                &ComparisonOptions {
+                    volume: false,
+                    ..options(Alignment::None)
+                }
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2073,6 +2174,7 @@ mod tests {
             max_distance_mm: None,
             start_pairs: Vec::new(),
             fit_region,
+            volume: false,
         };
         let report = measure(&tetrahedron, &options(None)).unwrap();
         assert_eq!(report.samples, 4);
@@ -2150,6 +2252,7 @@ mod tests {
                         max_distance_mm: None,
                         start_pairs: Vec::new(),
                         fit_region: None,
+                        volume: false,
                     }),
                     ..ValidationOptions::default()
                 },
@@ -2202,6 +2305,7 @@ mod tests {
                 max_distance_mm: None,
                 start_pairs: Vec::new(),
                 fit_region: None,
+                volume: false,
             }),
             ..ValidationOptions::default()
         };
