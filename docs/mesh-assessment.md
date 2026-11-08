@@ -153,6 +153,53 @@ Requirements outside their tolerance add a `dimensions_out_of_tolerance`
 warning, and features that could not be fitted add `features_unmeasured`.
 These are measurements of the mesh, not of a printed part.
 
+## Check a design revision's requirements
+
+Pass `requirements` to check a mesh against the requirements declared in a
+project design revision, whatever made the mesh: OpenSCAD, Blender, an import
+or a CAD export. Name the project, and optionally a revision identity; without
+one the project's current revision is used:
+
+```json
+{"path": "projects/bracket/build/bracket.stl", "requirements": {"project_id": "bracket"}}
+```
+
+The result adds `revision`, the identity checked, and `requirements`, the same
+assessment a CAD build of that revision returns: each requirement's `status`
+and the `evidence` it was decided from, as a pointer into
+`requirement_evidence`. That object gives the mesh's size in `bounds_mm`,
+whether it is a valid solid in `valid`, and, when the revision declares
+`hole_pattern` requirements, the holes measured around the declared positions
+in `vertical_holes`.
+
+Holes are measured on the valid solid, with any overlapping shells united, so
+a bore filled by another shell is not a hole. On a mesh that is not a valid
+solid, `hole_pattern` stays `unmeasured`. Around each declared hole, every
+wall within twice the declared radius of the declared centre is fitted as a
+cylinder. Each wall is fitted from its face whose farthest corner from that
+centre lies nearest the declared radius, because a tessellated bore's corners
+lie on its circle while its flat faces cut inside. A fit counts when its axis
+is within 1 degree of vertical and its wall covers the whole circle and faces
+the axis, so bosses and partial bores do not count. Each section of a stepped
+opening that counts is reported as its own hole, so a section of another
+size or shape, such as a nut trap, cannot hide the bore. Sections with the
+same centre and radius, such as a bore on either side of a wider relief, are
+one hole, as in a CAD build. Each hole reports its fitted centre, its radius through the vertices,
+and `radius_range_mm`, the smallest and largest radius over its wall. A hole
+matches a declaration only when its centre is within the tolerance and its
+whole radius range lies within the tolerance of the declared radius, as for a
+diameter requirement. A hole that moved or changed size therefore fails rather
+than being found where it was declared, and so does a tapered bore, or one
+tessellated so coarsely that its flat faces cut well inside the circle. A
+polygonal hole such as a hexagon is judged the same way, because the mesh does
+not say whether it was meant to be round.
+
+`dimensions` and `build_envelope` compare the mesh's bounds. `clearance` stays
+`unmeasured` and `physical_test` stays `physical_test_required`, as for CAD
+builds. The tool checks the mesh it is given, not how the mesh was made, so
+build the mesh from the revision's source and parameter values for the result
+to describe that revision.
+
 ## Check mould draft
 
 Pass `draft` to `validate_mesh` to check whether a master or cavity releases

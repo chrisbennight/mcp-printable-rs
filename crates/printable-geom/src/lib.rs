@@ -47,7 +47,7 @@ pub use compare::{
 pub use draft::{DraftOptions, DraftPatch, DraftReport};
 pub use fit::{
     DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
-    Geometry, Measure, RequirementCheck, Shape,
+    Geometry, Measure, RequirementCheck, Shape, VerticalHole, vertical_holes,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
@@ -80,6 +80,9 @@ pub struct ValidationOptions {
     pub comparison: Option<ComparisonOptions>,
     /// Measure draft along the direction a mould releases the part.
     pub draft: Option<DraftOptions>,
+    /// Declared holes, each a centre in X and Y and a radius, to look for as
+    /// complete vertical inner walls of the valid solid.
+    pub holes: Vec<([f64; 2], f64)>,
 }
 
 impl Default for ValidationOptions {
@@ -92,6 +95,7 @@ impl Default for ValidationOptions {
             dimensions: None,
             comparison: None,
             draft: None,
+            holes: Vec::new(),
         }
     }
 }
@@ -229,6 +233,11 @@ pub struct ValidationReport {
     pub comparison: Option<ComparisonReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReport>,
+    /// The complete vertical inner walls found around the declared holes on
+    /// the valid solid, or None when none were declared or the mesh is not a
+    /// valid solid. Callers report them with their own evidence.
+    #[serde(skip)]
+    pub vertical_holes: Option<Vec<VerticalHole>>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -643,20 +652,36 @@ fn prepare_mesh(
         ));
     }
 
-    let wall_thickness = match (options.minimum_wall_mm, &manifold) {
-        (Some(minimum_wall_mm), Some(solid)) => {
-            // The checked solid, with any overlapping shells united, so that
-            // buried surfaces cannot read as the far side of a wall.
+    // The checked solid, with any overlapping shells united, so that buried
+    // surfaces cannot read as the far side of a wall or as a hole.
+    let united = manifold
+        .as_ref()
+        .filter(|_| options.minimum_wall_mm.is_some() || !options.holes.is_empty())
+        .map(|solid| {
             let (vertices, properties, triangles) = solid.to_mesh_f64();
-            let vertices: Vec<[f64; 3]> = vertices
-                .chunks_exact(properties)
-                .map(|vertex| [vertex[0], vertex[1], vertex[2]])
-                .collect();
-            let triangles: Vec<[u32; 3]> = triangles
-                .chunks_exact(3)
-                .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
-                .collect();
-            let report = thickness::measure(&vertices, &triangles, minimum_wall_mm, precision)?;
+            TriangleMesh {
+                vertices: vertices
+                    .chunks_exact(properties)
+                    .map(|vertex| [vertex[0], vertex[1], vertex[2]])
+                    .collect(),
+                triangles: triangles
+                    .chunks_exact(3)
+                    .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
+                    .collect(),
+            }
+        });
+    let vertical_holes = united
+        .as_ref()
+        .filter(|_| !options.holes.is_empty())
+        .map(|solid| fit::vertical_holes(solid, &options.holes));
+    let wall_thickness = match (options.minimum_wall_mm, &united) {
+        (Some(minimum_wall_mm), Some(solid)) => {
+            let report = thickness::measure(
+                &solid.vertices,
+                &solid.triangles,
+                minimum_wall_mm,
+                precision,
+            )?;
             if report.unmeasured_samples == report.samples {
                 issues.push(warning_issue(
                     "wall_thickness_unmeasured",
@@ -787,6 +812,7 @@ fn prepare_mesh(
             dimensions,
             comparison,
             draft,
+            vertical_holes,
             solid_geometry,
             printable: solid_geometry,
             issues,

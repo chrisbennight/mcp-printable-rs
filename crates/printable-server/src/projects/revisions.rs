@@ -98,7 +98,7 @@ fn directory(project: &str) -> String {
     format!(".printable/revisions/{project}")
 }
 
-fn head(workspace: &Workspace, project: &str) -> Result<Option<Identity>, ToolError> {
+pub fn head(workspace: &Workspace, project: &str) -> Result<Option<Identity>, ToolError> {
     match workspace.read_artifact(&format!("{}/head.json", directory(project))) {
         Ok((_, bytes)) => {
             let value: Identity = serde_json::from_slice(&bytes)?;

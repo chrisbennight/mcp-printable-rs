@@ -1,6 +1,5 @@
 //! Bounded asynchronous OpenSCAD subprocess execution.
 
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -125,16 +124,18 @@ impl ScadRunner {
             binary,
             _permit: permit,
             resources: Vec::new(),
-            inherited_leases: Vec::new(),
+            preparations: Vec::new(),
         })
     }
 }
 
+/// Configures a native invocation's command before it starts.
+type Preparation = Box<dyn Fn(&mut std::process::Command) -> std::io::Result<()> + Send + Sync>;
+
 pub struct ScadPermit {
     binary: PathBuf,
     _permit: OwnedSemaphorePermit,
-    // Release duplicate leases before resources attempt their normal cleanup.
-    inherited_leases: Vec<OwnedFd>,
+    preparations: Vec<Preparation>,
     resources: Vec<Box<dyn Send>>,
 }
 
@@ -148,9 +149,14 @@ impl std::fmt::Debug for ScadPermit {
 }
 
 impl ScadPermit {
-    /// Pass storage ownership to each native invocation, including after worker loss.
-    pub fn inherit_lease(mut self, lease: OwnedFd) -> Self {
-        self.inherited_leases.push(lease);
+    /// Prepare each native invocation's command before it starts, for
+    /// example so that the process keeps its inputs protected for as long as
+    /// it runs, including after worker loss.
+    pub fn prepare_each(
+        mut self,
+        preparation: impl Fn(&mut std::process::Command) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.preparations.push(Box::new(preparation));
         self
     }
 
@@ -179,14 +185,8 @@ impl ScadPermit {
         }
         let binary = self.binary.clone();
         tokio::spawn(async move {
-            let output = run_process(
-                &binary,
-                &args,
-                budget,
-                max_file_bytes,
-                &self.inherited_leases,
-            )
-            .await?;
+            let output =
+                run_process(&binary, &args, budget, max_file_bytes, &self.preparations).await?;
             Ok::<_, ScadError>((self, output))
         })
         .await
@@ -203,13 +203,8 @@ async fn run_process(
     args: &[String],
     budget: Duration,
     max_file_bytes: u64,
-    inherited_leases: &[OwnedFd],
+    preparations: &[Preparation],
 ) -> Result<RunOutput, ScadError> {
-    let leases = inherited_leases
-        .iter()
-        .map(OwnedFd::try_clone)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(ScadError::Spawn)?;
     let mut command = Command::new(binary);
     command
         .args(args)
@@ -221,12 +216,9 @@ async fn run_process(
     {
         command.process_group(0);
         // The closure runs after fork and before exec and performs only the
-        // child-local, async-signal-safe fcntl and setrlimit syscalls.
+        // child-local, async-signal-safe setrlimit syscall.
         unsafe {
             command.pre_exec(move || {
-                for lease in &leases {
-                    rustix::io::fcntl_setfd(lease, rustix::io::FdFlags::empty())?;
-                }
                 if max_file_bytes != u64::MAX {
                     setrlimit(
                         Resource::Fsize,
@@ -239,6 +231,9 @@ async fn run_process(
                 Ok(())
             });
         }
+    }
+    for preparation in preparations {
+        preparation(command.as_std_mut()).map_err(ScadError::Spawn)?;
     }
     let mut child = command.spawn().map_err(ScadError::Spawn)?;
     #[cfg(unix)]
@@ -409,6 +404,32 @@ mod tests {
 
     fn shell_runner() -> Arc<ScadRunner> {
         Arc::new(ScadRunner::discover(Some(PathBuf::from("/bin/sh")), 1))
+    }
+
+    #[tokio::test]
+    async fn every_invocation_is_prepared_before_it_starts() {
+        let (_directory, script_path) = script("printf '%s' \"$PREPARED\"");
+        let permit = shell_runner()
+            .acquire()
+            .await
+            .expect("permit")
+            .prepare_each(|command| {
+                command.env("PREPARED", "yes");
+                Ok(())
+            });
+        let args = vec![script_path.display().to_string()];
+        let (permit, first) = permit
+            .run(args.clone(), RUN_TIMEOUT, TEST_OUTPUT_LIMIT)
+            .await
+            .expect("first run");
+        let (_, second) = permit
+            .run(args, RUN_TIMEOUT, TEST_OUTPUT_LIMIT)
+            .await
+            .expect("second run");
+        assert_eq!(
+            (first.stdout.as_str(), second.stdout.as_str()),
+            ("yes", "yes")
+        );
     }
 
     #[test]

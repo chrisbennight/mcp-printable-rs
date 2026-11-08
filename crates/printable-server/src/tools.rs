@@ -1003,6 +1003,9 @@ struct ValidateMeshParams {
     /// Signed distance from a reference mesh into `comparison`: positive for
     /// extra material, negative for missing, with regions beyond tolerance.
     compare: Option<CompareParams>,
+    /// Check this mesh against a project design revision's declared
+    /// requirements into `requirements`.
+    requirements: Option<crate::projects::revisions::GetParams>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -5016,6 +5019,25 @@ async fn validate_mesh_artifact(
         validate_blender_artifact(&workspace, &compare.reference_path, ".stl", true)?;
     }
     geometry_blocking(move || {
+        let revision = params
+            .requirements
+            .map(|requested| {
+                crate::projects::get(&workspace, &requested.project_id)?;
+                let identity = match requested.revision {
+                    Some(identity) => identity,
+                    None => crate::projects::revisions::head(&workspace, &requested.project_id)?
+                        .ok_or_else(|| {
+                            ToolError::Validation(format!(
+                                "requirements: project {} has no design revision yet; create one with project.revise",
+                                requested.project_id
+                            ))
+                        })?,
+                };
+                let revision =
+                    crate::projects::revisions::get(&workspace, &requested.project_id, &identity)?;
+                Ok::<_, ToolError>((identity, revision.manifest))
+            })
+            .transpose()?;
         let snapshot = workspace.snapshot_artifact(&params.path)?;
         let artifact = snapshot.meta().clone();
         let bytes = std::fs::read(snapshot.path())?;
@@ -5052,6 +5074,10 @@ async fn validate_mesh_artifact(
                     minimum_draft_degrees: draft.minimum_draft_degrees,
                     parting_offset_mm: draft.parting_offset_mm,
                 }),
+                holes: revision
+                    .as_ref()
+                    .map(|(_, manifest)| manifest.declared_holes())
+                    .unwrap_or_default(),
             },
         )?;
         let mut result = json!({
@@ -5062,9 +5088,37 @@ async fn validate_mesh_artifact(
         if let Some(reference) = reference_artifact {
             result["reference_artifact"] = json!(reference);
         }
+        if let Some((identity, manifest)) = revision {
+            let evidence = requirement_evidence(&report, &manifest);
+            result["revision"] = json!(identity);
+            result["requirements"] = manifest.assess(&evidence);
+            result["requirement_evidence"] = evidence;
+        }
         Ok::<_, ToolError>(result)
     })
     .await
+}
+
+/// What a mesh shows of a revision's declared requirements, in the shape of
+/// a native CAD report: its size, whether it is a valid solid, and the
+/// complete vertical inner walls of that solid found around each declared
+/// hole.
+fn requirement_evidence(
+    report: &printable_geom::ValidationReport,
+    manifest: &crate::projects::requirements::Manifest,
+) -> Value {
+    let mut evidence = json!({
+        "units": "mm",
+        "valid": report.solid_geometry,
+        "bounds_mm": {"size": report.bounds.dimensions_mm},
+    });
+    if !manifest.declared_holes().is_empty() {
+        evidence["vertical_holes"] = match &report.vertical_holes {
+            Some(holes) => json!({"status": "measured", "holes": holes}),
+            None => json!({"status": "unmeasured", "holes": []}),
+        };
+    }
+    evidence
 }
 
 async fn analyze_assembly_artifacts(
@@ -5420,9 +5474,13 @@ async fn prepare_scad_job(
             output_path,
             cross_section,
         });
-        let mut permit = permit.inherit_lease(job._staging.clone_lease()?);
+        // Each OpenSCAD process keeps its staging and inputs protected for as
+        // long as it runs; the permit keeps their owners until then.
+        let staging = job._staging.child_lease()?;
+        let mut permit = permit.prepare_each(move |command| staging.retain_for_command(command));
         for snapshot in &job._snapshots {
-            permit = permit.inherit_lease(snapshot.clone_lease()?);
+            let lease = snapshot.child_lease()?;
+            permit = permit.prepare_each(move |command| lease.retain_for_command(command));
         }
         Ok::<_, ToolError>((permit.retain(Arc::clone(&job)), job))
     })
@@ -5681,6 +5739,7 @@ async fn scad_compile(
         dimensions: None,
         comparison: None,
         draft: None,
+        holes: Vec::new(),
     };
     let definition_metadata = scad_definition_metadata(&definitions);
     let source = bind_scad_variant(params.source, &definitions);

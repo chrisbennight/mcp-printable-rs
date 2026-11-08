@@ -925,7 +925,7 @@ mod tests {
         ("view", 9_400, 0),
         ("render", 10_400, 0),
         ("compare_renders", 900, 1_300),
-        ("validate_mesh", 5_500, 13_400),
+        ("validate_mesh", 5_900, 13_400),
         ("analyze_assembly", 2_400, 1_600),
         ("job", 9_600, 0),
         ("project", 11_300, 0),
