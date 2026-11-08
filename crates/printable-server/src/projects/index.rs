@@ -53,8 +53,8 @@ const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
 const PICTURES_KEY: &str = "PRINTABLE_PROJECT_PICTURES";
 const SLICER_KEY: &str = "PRINTABLE_SLICER_ENDPOINT";
 const DEFAULT_INTERVAL_SECONDS: u64 = 30;
-/// Projects whose plate picture one pass tries to make. Plans passed over
-/// while the slicer is busy do not count.
+/// Projects whose plate picture one pass makes or records a failure for.
+/// Plans deferred while the slicer is busy do not count.
 const MAX_PICTURES_MADE_PER_PASS: usize = 16;
 /// A pass starts making no picture after this long.
 const PICTURE_BUDGET: Duration = Duration::from_secs(120);
@@ -2423,7 +2423,7 @@ impl ProjectIndex {
         let guard = Arc::clone(&self.passes).lock_owned().await;
         let index = Arc::clone(self);
         let cards = Arc::clone(workspace);
-        let (report, guard) =
+        let (report, mut guard) =
             tokio::task::spawn_blocking(move || (index.pass(&cards, kind), guard))
                 .await
                 .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
@@ -2438,13 +2438,17 @@ impl ProjectIndex {
             let pictures = self.make_pictures(workspace, plans, retrying).await?;
             if pictures.made > 0 && !self.stop.is_cancelled() {
                 // Bring the cards whose pictures were just made up to date, so
-                // the pictures show and are embedded in this run.
+                // the pictures show and are embedded in this run. Like the
+                // first card pass, this one owns the guard while it runs.
                 let index = Arc::clone(self);
                 let cards = Arc::clone(workspace);
-                let refreshed =
-                    tokio::task::spawn_blocking(move || index.pass(&cards, PassKind::Incremental))
-                        .await
-                        .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+                let (refreshed, returned) = tokio::task::spawn_blocking(move || {
+                    (index.pass(&cards, PassKind::Incremental), guard)
+                })
+                .await
+                .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
+                guard = returned;
+                let refreshed = refreshed?;
                 report.rebuilt += refreshed.rebuilt;
                 report.failed += refreshed.failed;
                 report.removed += refreshed.removed;
@@ -2496,14 +2500,17 @@ impl ProjectIndex {
             {
                 continue;
             }
-            attempts += 1;
             match self.make_picture(workspace, plan, previews).await? {
                 Made::Picture => {
+                    attempts += 1;
                     report.made += 1;
                     report.waiting -= 1;
                 }
                 // A failed project still lacks a picture and waits to retry.
-                Made::Nothing => report.failed += 1,
+                Made::Nothing => {
+                    attempts += 1;
+                    report.failed += 1;
+                }
                 // The slicer is busy: later plans still copy thumbnails, but
                 // ask for no previews until a later pass.
                 Made::Deferred => {
@@ -4585,13 +4592,21 @@ mod tests {
                 .await;
             let (_root, workspace) = workspace();
             // More projects that need a preview than a pass may try, ahead of
-            // one whose 3MF carries a thumbnail.
+            // one whose 3MF carries a thumbnail. Half of them hold a 3MF
+            // without a thumbnail, which is tried and deferred, not counted.
             let previews = MAX_PICTURES_MADE_PER_PASS + 1;
+            let bare =
+                crate::slicing::package::fixture::package(&[("3D/3dmodel.model", b"<model/>")]);
             for number in 0..previews {
                 let id = format!("model-{number:02}");
                 super::record(&workspace, &id, &id, "", 1_000);
+                let (name, bytes): (&str, &[u8]) = if number % 2 == 0 {
+                    ("part.stl", b"solid part")
+                } else {
+                    ("part.3mf", &bare)
+                };
                 workspace
-                    .write_artifact(&format!("projects/{id}/part.stl"), b"solid part", false)
+                    .write_artifact(&format!("projects/{id}/{name}"), bytes, false)
                     .unwrap();
             }
             super::record(&workspace, "packaged", "packaged", "", 1_000);

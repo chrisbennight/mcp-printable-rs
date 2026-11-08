@@ -234,11 +234,14 @@ struct PreviewAdmission {
 
 impl Drop for PreviewAdmission {
     fn drop(&mut self) {
-        drop(self.permit.take());
-        *self
+        // Under the lock, so a preview admitted next sets its flag after this
+        // one clears it.
+        let mut previewing = self
             .previewing
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = false;
+            .unwrap_or_else(PoisonError::into_inner);
+        drop(self.permit.take());
+        *previewing = false;
     }
 }
 
