@@ -8,7 +8,8 @@
 //! → a real cube STL write/read round-trip → `printable_validate_mesh` →
 //! `printable_analyze_assembly` with linear and rotational clearance motion → real
 //! OpenSCAD compile, PNG render, and SVG cross-section workflows across the
-//! reference product corpus. When the paired smoke supplies a durable Blender
+//! reference product corpus → a pocket cut from an imported part's outline and
+//! checked for fit. When the paired smoke supplies a durable Blender
 //! source, the sequence continues through decoded product presentations and a
 //! complete-arc-certified mechanical video.
 //! Exits 0 on success and 1 on failure, with a diagnostic on stderr.
@@ -40,6 +41,36 @@ const BRACKET_SOURCE: &str = include_str!("../../../../acceptance/products/brack
 const ENCLOSURE_SOURCE: &str = include_str!("../../../../acceptance/products/enclosure.scad");
 const GRIP_SOURCE: &str = include_str!("../../../../acceptance/products/grip.scad");
 const HINGE_SOURCE: &str = include_str!("../../../../acceptance/products/hinge.scad");
+/// A handle-shaped part with a through hole, to be held in a pocket.
+const POCKET_PART_SOURCE: &str = r#"
+difference() {
+    hull() {
+        cylinder(h = 15, r = 15, $fn = 96);
+        translate([45, 0, 0]) cylinder(h = 10, r = 8, $fn = 64);
+    }
+    translate([0, 0, -1]) cylinder(h = 20, r = 5, $fn = 48);
+}
+"#;
+/// The pocket recipe from the product guidance, cut around the part.
+const POCKET_SOURCE: &str = r#"
+clearance = 0.5;
+depth = 12;
+base = 3;
+wall = 3;
+module outline()
+    offset(delta = clearance)
+        projection(cut = false) import("smoke-pocket-part.stl");
+difference() {
+    linear_extrude(height = base + depth) offset(r = wall) outline();
+    translate([0, 0, base]) linear_extrude(height = depth + 1) outline();
+}
+"#;
+/// The part as it sits in the pocket, raised by the base and the clearance.
+const POCKET_PLACED_SOURCE: &str = r#"translate([0, 0, 3 + 0.5]) import("smoke-pocket-part.stl");"#;
+/// The pocket's design clearance.
+const POCKET_CLEARANCE_MM: f64 = 0.5;
+/// The pocket's wall around the clearance.
+const POCKET_WALL_MM: f64 = 3.0;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -825,6 +856,46 @@ difference() {
     .await?;
     validate_hinge_clearance(&hinge_assembly)?;
 
+    // 12b. Cut a pocket from an imported part's outline, as the product
+    // guidance describes, and check that the part sits in it with the
+    // chosen clearance all round.
+    let mut dimensions = Vec::new();
+    for (id, source, path) in [
+        (140, POCKET_PART_SOURCE, "smoke-pocket-part.stl"),
+        (141, POCKET_SOURCE, "smoke-pocket.stl"),
+        (142, POCKET_PLACED_SOURCE, "smoke-pocket-placed.stl"),
+    ] {
+        let compiled = call_tool(
+            &http,
+            &mcp,
+            &session,
+            id,
+            "printable_scad_compile",
+            json!({"source": source, "path": path, "overwrite": true}),
+        )
+        .await?;
+        if compiled["validation"]["solid_geometry"] != json!(true) {
+            return Err(format!(
+                "pocket recipe build {path} was not a solid: {compiled}"
+            ));
+        }
+        dimensions.push(compiled["validation"]["bounds"]["dimensions_mm"].clone());
+    }
+    let pocket_fit = call_tool(
+        &http,
+        &mcp,
+        &session,
+        143,
+        "printable_analyze_assembly",
+        json!({
+            "fixed_path": "smoke-pocket.stl",
+            "moving_path": "smoke-pocket-placed.stl",
+            "required_clearance_mm": POCKET_CLEARANCE_MM * 0.9,
+        }),
+    )
+    .await?;
+    validate_pocket_fit(&pocket_fit, &dimensions[0], &dimensions[1])?;
+
     let Some(source_blend) = durable_source else {
         return Ok(());
     };
@@ -894,6 +965,30 @@ fn measured_global_wall(compiled: &Value) -> bool {
     matches!(wall["status"].as_str(), Some("passed" | "failed"))
         && wall["evidence"] == json!("/validation/wall_thickness")
         && compiled["validation"]["wall_thickness"]["minimum_wall_mm"] == wall["minimum_wall_mm"]
+}
+
+/// The part sits in its pocket apart from it, with close to the design
+/// clearance, and the pocket's footprint is the part's grown by the clearance
+/// and wall on every side: the outline captured the part without a loose or
+/// tight fit.
+fn validate_pocket_fit(assembly: &Value, part: &Value, pocket: &Value) -> Result<(), String> {
+    let report = &assembly["report"]["static_analysis"];
+    let clearance = report["clearance_mm"].as_f64();
+    let margin = 2.0 * (POCKET_CLEARANCE_MM + POCKET_WALL_MM);
+    let footprint_matches = (0..2).all(|axis| match (part[axis].as_f64(), pocket[axis].as_f64()) {
+        (Some(part), Some(pocket)) => (pocket - part - margin).abs() <= 0.05,
+        _ => false,
+    });
+    if report["relation"] != json!("separated")
+        || report["meets_required_clearance"] != json!(true)
+        || clearance.is_none_or(|value| (value - POCKET_CLEARANCE_MM).abs() > 0.05)
+        || !footprint_matches
+    {
+        return Err(format!(
+            "part did not fit its pocket recipe: {assembly}; part {part}, pocket {pocket}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_hinge_clearance(assembly: &Value) -> Result<(), String> {
@@ -2192,6 +2287,19 @@ mod tests {
                 .map(|tool| tool.name.to_string())
                 .collect();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn pocket_fit_rejects_an_oversized_pocket() {
+        let assembly = json!({"report": {"static_analysis": {
+            "relation": "separated",
+            "meets_required_clearance": true,
+            "clearance_mm": 0.4999,
+        }}});
+        let part = json!([68.0, 30.0, 15.0]);
+        validate_pocket_fit(&assembly, &part, &json!([74.996, 36.997, 15.0])).unwrap();
+        assert!(validate_pocket_fit(&assembly, &part, &json!([80.0, 36.997, 15.0])).is_err());
+        assert!(validate_pocket_fit(&assembly, &part, &json!([74.996, 30.0, 15.0])).is_err());
     }
 
     #[test]
