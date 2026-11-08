@@ -308,12 +308,16 @@ names the reference in `reference_artifact`. A comparison measures shape; it
 does not say which mesh is right.
 
 Set `volume: true` to also compare the material the two meshes enclose.
-Both meshes must be closed and face outward, with any cavities facing inward;
-otherwise the request is refused with the mesh named. The space around both is divided into
+Both meshes must be closed and face outward, with any cavities facing inward.
+A mesh with an open edge, or an edge whose two faces run the same way, is
+refused with the mesh named. The space around both is divided into
 cubic cells at least `tolerance_mm` across, enlarged when needed to keep the
 grid within 8 million cells. A cell is inside a mesh when an upward ray from
 its centre crosses more outward-facing surface than inward-facing, so parts
-that overlap count once. Cells inside the mesh
+that overlap count once. A cell centre inside a part turned inside out has a
+negative count, and the request is then refused with the mesh named. A part
+too thin to hold a cell centre, or a surface that encloses nothing, such as a
+sheet with faces on both sides, counts as empty. Cells inside the mesh
 and not the reference are extra material, and the reverse are missing
 material. `comparison.volume` reports:
 
