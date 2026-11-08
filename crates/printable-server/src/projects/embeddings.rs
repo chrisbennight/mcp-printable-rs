@@ -347,12 +347,15 @@ impl Embeddings {
         self.pictures
     }
 
-    /// Identifies the settings that shape stored vectors: the model name,
-    /// requested dimensions, revision label and document prefix.
+    /// Identifies the settings that shape stored vectors: the service
+    /// address, model name, requested dimensions, revision label and document
+    /// prefix. A different service may treat the same model differently,
+    /// including whether it accepts pictures.
     pub(crate) fn fingerprint(&self) -> String {
         let dimensions = self.dimensions.map_or_else(String::new, |d| d.to_string());
         let mut bytes = Vec::new();
         for part in [
+            self.endpoint.as_str(),
             self.model.as_str(),
             dimensions.as_str(),
             self.revision.as_deref().unwrap_or_default(),

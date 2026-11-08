@@ -343,9 +343,9 @@ combined order and `degraded` contains `rerank_unavailable`.
 ### Model identity and re-embedding
 
 Vectors are kept in the search index with the identity of the model that made
-them: the configured model, dimensions, revision label and document prefix;
-the model name the service reports; the vector length; and the vector of a
-fixed probe text. Each background pass first embeds the probe text once. When
+them: the service address and the configured model, dimensions, revision label
+and document prefix; the model name the service reports; the vector length;
+and the vector of a fixed probe text. Each background pass first embeds the probe text once. When
 any part of the identity differs, or the probe's vector has moved by more than
 a cosine similarity of 0.001, every stored vector is discarded and each
 project is embedded again. Until then, meaning and picture search report
