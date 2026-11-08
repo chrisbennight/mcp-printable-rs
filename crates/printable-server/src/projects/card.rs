@@ -294,7 +294,7 @@ impl Inputs {
         let project = get(workspace, project_id)?;
         let files = listing(workspace, &project.root)?;
         let prints = listing(workspace, &ledger::project_records(project_id))?;
-        let pictures = pictures::read(workspace, project_id)?;
+        let pictures = pictures::read(workspace, project_id);
         Ok(Self {
             project,
             files,

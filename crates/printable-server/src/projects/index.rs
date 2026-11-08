@@ -2435,7 +2435,7 @@ impl ProjectIndex {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner),
             );
-            let pictures = self.make_pictures(workspace, plans, retrying).await?;
+            let pictures = self.make_pictures(workspace, plans, retrying).await;
             if pictures.made > 0 && !self.stop.is_cancelled() {
                 // Bring the cards whose pictures were just made up to date, so
                 // the pictures show and are embedded in this run. Like the
@@ -2467,14 +2467,16 @@ impl ProjectIndex {
     }
 
     /// Make the plate pictures the card pass found missing, at most a pass's
-    /// share. A busy slicer ends the pass's pictures without counting a
-    /// failure, so background previews never queue behind interactive work.
+    /// share. A busy slicer defers previews without counting a failure, so
+    /// background previews never queue behind interactive work. Pictures are
+    /// optional: an error in one project's picture is logged and counted as a
+    /// failure, and the rest of the run goes on.
     async fn make_pictures(
         self: &Arc<Self>,
         workspace: &Arc<Workspace>,
         plans: Vec<pictures::Plan>,
         retrying: usize,
-    ) -> Result<PictureReport, ToolError> {
+    ) -> PictureReport {
         let mut report = PictureReport {
             waiting: plans.len() + retrying,
             ..PictureReport::default()
@@ -2500,7 +2502,19 @@ impl ProjectIndex {
             {
                 continue;
             }
-            match self.make_picture(workspace, plan, previews).await? {
+            let project_id = plan.project_id.clone();
+            let made = match self.make_picture(workspace, plan, previews).await {
+                Ok(made) => made,
+                Err(error) => {
+                    tracing::warn!(
+                        project_id = %project_id,
+                        code = error.code(),
+                        "could not make or record a project picture"
+                    );
+                    Made::Nothing
+                }
+            };
+            match made {
                 Made::Picture => {
                     attempts += 1;
                     report.made += 1;
@@ -2519,7 +2533,7 @@ impl ProjectIndex {
                 }
             }
         }
-        Ok(report)
+        report
     }
 
     /// Try a plan's steps in order and record the picture, or the failure.
@@ -4516,7 +4530,7 @@ mod tests {
                 (deferred.made, deferred.failed, deferred.waiting),
                 (1, 0, 1)
             );
-            assert_eq!(pictures::read(&workspace, "later").unwrap(), None);
+            assert_eq!(pictures::read(&workspace, "later"), None);
             let packaged = card::card(&workspace, "packaged")
                 .unwrap()
                 .pictures
@@ -4547,7 +4561,6 @@ mod tests {
             assert_eq!((refused.made, refused.failed, refused.waiting), (0, 1, 1));
             let failure = pictures::read(&workspace, "later")
                 .unwrap()
-                .unwrap()
                 .plate_failure
                 .unwrap();
             assert_eq!(failure.attempts, 1);
@@ -4571,7 +4584,6 @@ mod tests {
                 .unwrap();
             assert_eq!(retried.failed, 1);
             let failure = pictures::read(&workspace, "later")
-                .unwrap()
                 .unwrap()
                 .plate_failure
                 .unwrap();
@@ -4631,6 +4643,50 @@ mod tests {
             assert_eq!(preview_requests(&server).await.len(), 1);
             assert!(
                 card::card(&workspace, "packaged")
+                    .unwrap()
+                    .pictures
+                    .plate
+                    .is_some()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_picture_that_cannot_be_recorded_does_not_stop_the_run() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    json!({"png_base64": STANDARD.encode(coloured_png([220, 110, 70]))}),
+                ))
+                .mount(&server)
+                .await;
+            let (_root, workspace) = workspace();
+            for id in ["blocked", "fine"] {
+                super::record(&workspace, id, id, "", 1_000);
+                workspace
+                    .write_artifact(&format!("projects/{id}/part.stl"), b"solid part", false)
+                    .unwrap();
+            }
+            // A directory where the project's picture record belongs makes
+            // recording its picture fail.
+            workspace
+                .write_reserved_artifact(
+                    &format!(
+                        "{}/pictures.json/in-the-way.json",
+                        pictures::directory("blocked")
+                    ),
+                    b"{}",
+                    false,
+                )
+                .unwrap();
+            let report = pictured(&server)
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap();
+            let made = report.pictures.unwrap();
+            assert_eq!((made.made, made.failed), (1, 1));
+            assert!(
+                card::card(&workspace, "fine")
                     .unwrap()
                     .pictures
                     .plate

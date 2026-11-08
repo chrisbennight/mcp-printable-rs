@@ -730,7 +730,7 @@ async fn plate_picture(
         path,
         |workspace, project_id| {
             projects::get(workspace, project_id)?;
-            Ok(pictures::read(workspace, project_id)?
+            Ok(pictures::read(workspace, project_id)
                 .and_then(|record| record.plate(project_id).cloned())
                 .map(|plate| StoredPicture {
                     media_type: "image/png".into(),

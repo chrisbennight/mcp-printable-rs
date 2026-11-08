@@ -114,32 +114,28 @@ impl Record {
     }
 }
 
-/// Read a project's record. A missing record, or one this version cannot
-/// read, is `None`, and a record whose picture file is gone has no picture:
-/// the pictures are derived data, made again and the record replaced at the
-/// next opportunity.
-pub(crate) fn read(workspace: &Workspace, project_id: &str) -> Result<Option<Record>, ToolError> {
+/// Read a project's record. The pictures are derived data, so a record that
+/// is missing or cannot be read counts as absent, and a picture file that is
+/// gone or cannot be read counts as no picture: the picture is made again and
+/// the record replaced, and the pass reports a failure to write it. A
+/// project's card never fails because of its generated pictures.
+pub(crate) fn read(workspace: &Workspace, project_id: &str) -> Option<Record> {
     let path = record_path(project_id);
-    let bytes = match workspace.stat_artifact(&path) {
-        Ok(meta) if meta.size_bytes > MAX_RECORD_BYTES => return Ok(None),
-        Ok(_) => workspace.read_artifact(&path)?.1,
-        Err(WsError::NotFound(_)) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let Some(mut record) = serde_json::from_slice::<Record>(&bytes)
-        .ok()
-        .filter(|record| record.format_version == FORMAT_VERSION)
-    else {
-        return Ok(None);
-    };
-    if let Some(plate) = &record.plate {
-        match workspace.stat_artifact(&plate.path) {
-            Ok(_) => {}
-            Err(WsError::NotFound(_)) => record.plate = None,
-            Err(error) => return Err(error.into()),
-        }
+    if workspace.stat_artifact(&path).ok()?.size_bytes > MAX_RECORD_BYTES {
+        return None;
     }
-    Ok(Some(record))
+    let (_, bytes) = workspace.read_artifact(&path).ok()?;
+    let mut record = serde_json::from_slice::<Record>(&bytes)
+        .ok()
+        .filter(|record| record.format_version == FORMAT_VERSION)?;
+    if record
+        .plate
+        .as_ref()
+        .is_some_and(|plate| workspace.stat_artifact(&plate.path).is_err())
+    {
+        record.plate = None;
+    }
+    Some(record)
 }
 
 /// One way to make a project's plate picture; a plan tries its steps in
@@ -556,13 +552,13 @@ mod tests {
             .is_err()
         );
         record_made(&workspace, &planned, picture.clone()).unwrap();
-        let made = read(&workspace, "part").unwrap().unwrap();
+        let made = read(&workspace, "part").unwrap();
         assert_eq!(made.plate("part"), Some(&picture));
 
         let mut retry = planned.clone();
         retry.prior = Some(made);
         record_failed(&workspace, &retry, "refused", 1_000).unwrap();
-        let first = read(&workspace, "part").unwrap().unwrap();
+        let first = read(&workspace, "part").unwrap();
         assert_eq!(first.plate("part"), Some(&picture), "the picture is kept");
         let failure = first.plate_failure.clone().unwrap();
         assert_eq!(
@@ -571,11 +567,7 @@ mod tests {
         );
         retry.prior = Some(first);
         record_failed(&workspace, &retry, "refused", 1_000).unwrap();
-        let second = read(&workspace, "part")
-            .unwrap()
-            .unwrap()
-            .plate_failure
-            .unwrap();
+        let second = read(&workspace, "part").unwrap().plate_failure.unwrap();
         assert_eq!(
             (second.attempts, second.next_attempt_unix_ms),
             (2, 1_000 + 2 * FIRST_RETRY_MS)
@@ -583,7 +575,7 @@ mod tests {
 
         // A picture whose file is gone is made again.
         workspace.remove_reserved_artifact(&picture.path).unwrap();
-        let gone = read(&workspace, "part").unwrap().unwrap();
+        let gone = read(&workspace, "part").unwrap();
         assert_eq!(gone.plate, None);
         assert!(gone.plate_failure.is_some());
 
@@ -591,7 +583,7 @@ mod tests {
         workspace
             .write_reserved_artifact(&record_path("part"), b"{not json", true)
             .unwrap();
-        assert_eq!(read(&workspace, "part").unwrap(), None);
+        assert_eq!(read(&workspace, "part"), None);
     }
 
     #[test]
