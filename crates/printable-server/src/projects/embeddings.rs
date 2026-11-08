@@ -3,8 +3,9 @@
 //!
 //! The embeddings service speaks OpenAI's `POST <base>/embeddings` API, so a
 //! base URL such as `https://host/v1` works with any compatible server.
-//! Pictures travel as `image_url` content parts inside `input`, an extension
-//! that some multimodal servers accept; they are sent only when turned on. The
+//! A picture travels as an `image_url` content part in place of a string in
+//! the `input` list, an extension that some multimodal servers accept; they
+//! are sent only when turned on. The
 //! re-ranking service takes `POST <base>/rerank` with a query and documents and
 //! answers with `results[].index` and `relevance_score`.
 //!
@@ -331,6 +332,13 @@ impl ServiceError {
             Self::Incompatible | Self::TooLarge(_) => false,
         }
     }
+
+    /// Whether a refusal of pictures means the model does not accept them.
+    /// `413` says only that the request was too large, which a smaller or
+    /// later request can avoid.
+    pub(crate) fn refuses_pictures(&self) -> bool {
+        matches!(self, Self::Refused(status) if *status != 413) && !self.is_service_wide()
+    }
 }
 
 impl Embeddings {
@@ -387,10 +395,10 @@ impl Embeddings {
             .iter()
             .map(|input| match input {
                 Input::Text(text) => Value::String((*text).to_owned()),
-                Input::Picture(png) => json!([{
+                Input::Picture(png) => json!({
                     "type": "image_url",
                     "image_url": {"url": format!("data:image/png;base64,{}", STANDARD.encode(png))}
-                }]),
+                }),
             })
             .collect();
         let mut body = json!({"model": self.model, "input": input, "encoding_format": "float"});
@@ -1022,6 +1030,10 @@ mod tests {
         assert!(ServiceError::Refused(302).is_service_wide());
         assert!(!ServiceError::Refused(400).is_service_wide());
         assert!(!ServiceError::Incompatible.is_service_wide());
+        assert!(ServiceError::Refused(422).refuses_pictures());
+        assert!(!ServiceError::Refused(413).refuses_pictures());
+        assert!(!ServiceError::Refused(401).refuses_pictures());
+        assert!(!ServiceError::Failed(500).refuses_pictures());
         // Nothing listens on a port whose listener has been dropped.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -1062,7 +1074,7 @@ mod tests {
         service.embed(&[Input::Picture(&small)]).await.unwrap();
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let part = &body["input"][0][0];
+        let part = &body["input"][0];
         assert_eq!(part["type"], "image_url");
         let url = part["image_url"]["url"].as_str().unwrap();
         let encoded = url.strip_prefix("data:image/png;base64,").unwrap();
