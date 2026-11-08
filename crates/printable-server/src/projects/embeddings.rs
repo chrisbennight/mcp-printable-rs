@@ -15,7 +15,7 @@
 
 use std::{
     fmt,
-    io::Cursor,
+    io::{Cursor, Read as _},
     time::{Duration, SystemTime},
 };
 
@@ -37,6 +37,7 @@ use crate::{config::SettingsError, error::ToolError};
 const URL_KEY: &str = "PRINTABLE_EMBEDDING_URL";
 const MODEL_KEY: &str = "PRINTABLE_EMBEDDING_MODEL";
 const API_KEY: &str = "PRINTABLE_EMBEDDING_API_KEY";
+const API_KEY_FILE: &str = "PRINTABLE_EMBEDDING_API_KEY_FILE";
 const DIMENSIONS_KEY: &str = "PRINTABLE_EMBEDDING_DIMENSIONS";
 const QUERY_PREFIX_KEY: &str = "PRINTABLE_EMBEDDING_QUERY_PREFIX";
 const DOCUMENT_PREFIX_KEY: &str = "PRINTABLE_EMBEDDING_DOCUMENT_PREFIX";
@@ -45,6 +46,7 @@ const IMAGES_KEY: &str = "PRINTABLE_EMBEDDING_IMAGES";
 const RERANK_URL_KEY: &str = "PRINTABLE_RERANK_URL";
 const RERANK_MODEL_KEY: &str = "PRINTABLE_RERANK_MODEL";
 const RERANK_API_KEY: &str = "PRINTABLE_RERANK_API_KEY";
+const RERANK_API_KEY_FILE: &str = "PRINTABLE_RERANK_API_KEY_FILE";
 
 /// Longest vector accepted from a service.
 pub(crate) const MAX_DIMENSIONS: usize = 8192;
@@ -130,7 +132,7 @@ pub(crate) fn configure(get: &impl Fn(&str) -> Option<String>) -> Result<Service
         Some(raw) => Some(Embeddings {
             http: client(URL_KEY)?,
             endpoint: endpoint(&raw, URL_KEY, "embeddings")?,
-            authorization: authorization(set(API_KEY), API_KEY)?,
+            authorization: authorization(secret(&set, API_KEY, API_KEY_FILE)?, API_KEY)?,
             model: label(set(MODEL_KEY), MODEL_KEY)?
                 .ok_or(SettingsError::ProjectSearch(MODEL_KEY))?,
             dimensions: set(DIMENSIONS_KEY)
@@ -160,7 +162,10 @@ pub(crate) fn configure(get: &impl Fn(&str) -> Option<String>) -> Result<Service
         Some(raw) => Some(Reranker {
             http: client(RERANK_URL_KEY)?,
             endpoint: endpoint(&raw, RERANK_URL_KEY, "rerank")?,
-            authorization: authorization(set(RERANK_API_KEY), RERANK_API_KEY)?,
+            authorization: authorization(
+                secret(&set, RERANK_API_KEY, RERANK_API_KEY_FILE)?,
+                RERANK_API_KEY,
+            )?,
             model: label(set(RERANK_MODEL_KEY), RERANK_MODEL_KEY)?
                 .ok_or(SettingsError::ProjectSearch(RERANK_MODEL_KEY))?,
         }),
@@ -232,6 +237,31 @@ fn prefix(raw: Option<String>, key: &'static str) -> Result<String, SettingsErro
         return Err(SettingsError::ProjectSearch(key));
     }
     Ok(value)
+}
+
+/// An API key from its setting or from the file another setting names, but
+/// not both. Errors name the setting, never the key or the path.
+fn secret(
+    set: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+    file_key: &'static str,
+) -> Result<Option<String>, SettingsError> {
+    match (set(key), set(file_key)) {
+        (Some(_), Some(_)) => Err(SettingsError::ProjectSearch(file_key)),
+        (value, None) => Ok(value),
+        (None, Some(path)) => {
+            let mut text = Zeroizing::new(String::new());
+            // One byte more than a key may be, plus a line ending, so an
+            // oversized file is refused by the length check.
+            std::fs::File::open(path.trim())
+                .and_then(|file| {
+                    file.take(MAX_API_KEY_BYTES as u64 + 3)
+                        .read_to_string(&mut text)
+                })
+                .map_err(|_| SettingsError::ProjectSearch(file_key))?;
+            Ok(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
+        }
+    }
 }
 
 /// The `Authorization` header for an API key, marked sensitive so it is
@@ -680,6 +710,56 @@ mod tests {
             .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
             .unwrap();
         bytes
+    }
+
+    #[test]
+    fn api_keys_can_be_read_from_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        std::fs::write(&path, "sk-file-secret\n").unwrap();
+        let path = path.to_str().unwrap().to_owned();
+        let services = configure(&lookup(&[
+            (URL_KEY, "https://embed.example.com/v1"),
+            (MODEL_KEY, "nomic-embed-text"),
+            (API_KEY_FILE, &path),
+        ]))
+        .unwrap();
+        let header = services.embeddings.unwrap().authorization.unwrap();
+        assert_eq!(header.to_str().unwrap(), "Bearer sk-file-secret");
+        for (pairs, refused) in [
+            (
+                vec![(API_KEY, "sk-inline"), (API_KEY_FILE, path.as_str())],
+                API_KEY_FILE,
+            ),
+            (
+                vec![(API_KEY_FILE, "/nonexistent/printable-key")],
+                API_KEY_FILE,
+            ),
+        ] {
+            let mut pairs = pairs;
+            pairs.extend([
+                (URL_KEY, "https://embed.example.com/v1"),
+                (MODEL_KEY, "nomic-embed-text"),
+            ]);
+            let Err(error) = configure(&lookup(&pairs)) else {
+                panic!("{refused} is refused");
+            };
+            assert_eq!(
+                error.to_string(),
+                SettingsError::ProjectSearch(refused).to_string()
+            );
+            assert!(!error.to_string().contains("printable-key"), "{error}");
+        }
+        std::fs::write(dir.path().join("long"), "k".repeat(MAX_API_KEY_BYTES + 1)).unwrap();
+        let long = dir.path().join("long").to_str().unwrap().to_owned();
+        assert!(
+            configure(&lookup(&[
+                (URL_KEY, "https://embed.example.com/v1"),
+                (MODEL_KEY, "nomic-embed-text"),
+                (API_KEY_FILE, &long),
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

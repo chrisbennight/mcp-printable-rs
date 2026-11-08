@@ -243,6 +243,7 @@ off unless configured.
 | `PRINTABLE_EMBEDDING_URL` | unset | Base URL of an OpenAI-compatible embeddings API; requests go to `<base>/embeddings`, so `https://host/v1` works. HTTPS, or plain HTTP only to a private or loopback address or a single-label host name such as `http://embedder:8080/v1`. No credentials, query or fragment. Unset turns meaning and picture search off. |
 | `PRINTABLE_EMBEDDING_MODEL` | none | The model name to request; required with the URL |
 | `PRINTABLE_EMBEDDING_API_KEY` | unset | Sent as `Authorization: Bearer <key>` |
+| `PRINTABLE_EMBEDDING_API_KEY_FILE` | unset | A file holding the key instead, such as a mounted secret; set this or the key, not both |
 | `PRINTABLE_EMBEDDING_DIMENSIONS` | unset | Vector length to request, 1 to 8192, for models that can shorten their vectors |
 | `PRINTABLE_EMBEDDING_QUERY_PREFIX` | empty | Text put before search text, kept exactly as set, such as `query: ` for E5 models |
 | `PRINTABLE_EMBEDDING_DOCUMENT_PREFIX` | empty | Text put before project text, such as `passage: ` |
@@ -251,6 +252,7 @@ off unless configured.
 | `PRINTABLE_RERANK_URL` | unset | Base URL of a re-ranking API; requests go to `<base>/rerank`. The same address rules apply. |
 | `PRINTABLE_RERANK_MODEL` | none | The re-ranking model; required with its URL |
 | `PRINTABLE_RERANK_API_KEY` | unset | Sent as `Authorization: Bearer <key>` |
+| `PRINTABLE_RERANK_API_KEY_FILE` | unset | A file holding the re-ranking key instead; set this or the key, not both |
 
 The other embedding settings take effect only with `PRINTABLE_EMBEDDING_URL`,
 and the re-ranking ones only with `PRINTABLE_RERANK_URL`. The server refuses
