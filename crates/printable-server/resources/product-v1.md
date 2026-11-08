@@ -153,9 +153,9 @@ difference() {
 section at one height. Orient the part first so that it drops straight into the
 pocket. A through hole in the part leaves a matching post, smaller by the
 clearance, that locates the part. To leave the floor flat instead, close the
-holes with `offset(delta = r) offset(delta = -r)` around the projection, where
-`r` exceeds the largest hole radius; this also fills notches narrower than
-`2 * r`.
+holes by writing `offset(delta = -r) offset(delta = r)` before the projection.
+This grows the outline by `r` and then shrinks it back, so holes and notches
+narrower than `2 * r` close; choose `r` larger than the largest hole radius.
 
 Check the fit before printing. Build the part as it will sit, raised by the
 base and the clearance, and run `analyze_assembly` with the pocket as the
