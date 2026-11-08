@@ -40,7 +40,7 @@ use super::{
     cover,
     embeddings::{self, Embedded, Embeddings, Input, Reranker, ServiceError},
 };
-use crate::{config::SettingsError, error::ToolError, tools::blocking_with};
+use crate::{config::SettingsError, error::ToolError, slicing::summary, tools::blocking_with};
 
 const DIR_KEY: &str = "PRINTABLE_PROJECT_INDEX_DIR";
 const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
@@ -617,6 +617,9 @@ struct Entry {
     meaning: (String, String),
     /// The picture source as JSON, and a key that changes with the picture.
     picture: Option<(String, String)>,
+    /// Why the newest slice's summary is missing from the card, so the
+    /// project is counted as failed and `index_retry` tries it again.
+    summary_problem: Option<String>,
 }
 
 impl Entry {
@@ -639,6 +642,16 @@ impl Entry {
             text,
             meaning: (crate::provenance::digest(meaning.as_bytes()), meaning),
             picture,
+            summary_problem: card
+                .unreadable
+                .iter()
+                .find(|note| note.path.ends_with(&format!("/{}", summary::FILE)))
+                .map(|note| {
+                    format!(
+                        "{}: the newest slice's summary could not be read or recorded",
+                        note.code
+                    )
+                }),
         })
     }
 }
@@ -2171,8 +2184,22 @@ impl ProjectIndex {
             }
             match gathered.and_then(|inputs| Entry::new(workspace, &inputs)) {
                 Ok(entry) => {
-                    self.with_connection(|connection| Ok(store(connection, id, &hash, &entry)?))?;
-                    report.rebuilt += 1;
+                    self.with_connection(|connection| {
+                        store(connection, id, &hash, &entry)?;
+                        if let Some(problem) = &entry.summary_problem {
+                            connection.execute(
+                                "UPDATE projects SET error = ?2 WHERE project_id = ?1",
+                                params![id, problem],
+                            )?;
+                        }
+                        Ok(())
+                    })?;
+                    if entry.summary_problem.is_some() {
+                        tracing::warn!(project_id = %id, "could not record an older slice's summary for its card");
+                        report.failed += 1;
+                    } else {
+                        report.rebuilt += 1;
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(project_id = %id, code = error.code(), "could not index a project card");
