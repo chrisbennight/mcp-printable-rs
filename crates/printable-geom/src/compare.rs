@@ -480,7 +480,7 @@ fn best_fit(
 
 /// Point-to-plane iterative closest point from `pose`. Each step pairs the
 /// points with the nearest reference surface facing their way, leaves out
-/// pairs far beyond the median distance, and solves the linearised motion
+/// pairs far beyond the area-weighted median distance, and solves the linearised motion
 /// about the paired points' centroid so that parts far from the origin stay
 /// well conditioned. Returns the pose, the pairs in the last step, and their
 /// point-to-plane RMS.
@@ -499,16 +499,18 @@ fn refine(
             .iter()
             .filter_map(|(point, weight)| {
                 let position = pose.apply(&point.position);
-                let (nearest, normal, _) = reference.nearest(&position, cap)?;
-                (normal.dot(&(pose.rotation * point.normal)) >= agree).then(|| {
+                let turned = pose.rotation * point.normal;
+                let (nearest, normal) = reference.nearest_facing(&position, &turned, cap)?;
+                (normal.dot(&turned) >= agree).then(|| {
                     let distance = (position - nearest).norm();
                     (position, nearest, normal, *weight, distance)
                 })
             })
             .collect();
-        let mut distances: Vec<f64> = pairs.iter().map(|pair| pair.4).collect();
-        distances.sort_by(f64::total_cmp);
-        let Some(median) = distances.get(distances.len() / 2) else {
+        let mut distances: Vec<(f64, f64)> = pairs.iter().map(|pair| (pair.4, pair.3)).collect();
+        distances.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let paired = distances.iter().map(|(_, weight)| weight).sum();
+        let Some(median) = weighted_percentile(&distances, paired, 0.5) else {
             break;
         };
         let limit = (OUTLIER_MEDIANS * median).max(1e-9 * diagonal);
@@ -730,17 +732,6 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
     if total <= 0.0 {
         return None;
     }
-    let percentile = |share: f64| {
-        let target = share * total;
-        let mut running = 0.0;
-        for &(value, area) in sorted {
-            running += area;
-            if running >= target {
-                return value;
-            }
-        }
-        last
-    };
     let mean = sorted.iter().map(|(value, area)| value * area).sum::<f64>() / total;
     let rms = (sorted
         .iter()
@@ -750,13 +741,27 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
         .sqrt();
     Some(DeviationDistribution {
         minimum: first,
-        p5: percentile(0.05),
-        p50: percentile(0.5),
-        p95: percentile(0.95),
+        p5: weighted_percentile(sorted, total, 0.05)?,
+        p50: weighted_percentile(sorted, total, 0.5)?,
+        p95: weighted_percentile(sorted, total, 0.95)?,
         maximum: last,
         mean,
         rms,
     })
+}
+
+/// The value `share` of the way through the running weight of `sorted`, a
+/// list of values and weights ordered by value.
+fn weighted_percentile(sorted: &[(f64, f64)], total: f64, share: f64) -> Option<f64> {
+    let target = share * total;
+    let mut running = 0.0;
+    for &(value, weight) in sorted {
+        running += weight;
+        if running >= target {
+            return Some(value);
+        }
+    }
+    sorted.last().map(|(value, _)| *value)
 }
 
 /// At most `count` of `points`, each with the area it stands for in the fit.
@@ -1412,6 +1417,40 @@ mod tests {
         let reading = reference(4).reading(&point, &down, 2.0).unwrap();
         assert!((reading + 0.8).abs() < 1e-9, "{reading}");
         assert_eq!(reference(64).reading(&point, &down, 2.0), None);
+    }
+
+    #[test]
+    fn a_fitting_step_pairs_points_past_surface_facing_the_other_way() {
+        // Points facing down inside a thin slab, nearer its top than its
+        // underside: each step pairs them with the underside.
+        let reference = Reference::new(&block(4.0, 0.4, 4.0)).unwrap();
+        let points: Vec<SurfacePoint> = (0..7)
+            .flat_map(|i| (0..7).map(move |j| (i, j)))
+            .map(|(i, j)| SurfacePoint {
+                position: V3::new(0.5 + 0.5 * f64::from(i), 0.5 + 0.5 * f64::from(j), 0.3),
+                normal: -V3::z(),
+                area: 1.0,
+            })
+            .collect();
+        let fit = spread(&points, FIT_POINTS);
+        let (pose, matched, _) =
+            refine(&reference, &fit, Pose::identity(), FIT_ITERATIONS, 1.0, 6.0);
+        assert_eq!(matched, points.len());
+        assert!(
+            (pose.translation.z + 0.3).abs() < 1e-6,
+            "{:?}",
+            pose.translation
+        );
+    }
+
+    #[test]
+    fn the_outlier_median_weighs_points_by_area() {
+        // Many light points near and one heavy point far: the area-weighted
+        // median lies with the heavy point, however many light points there
+        // are.
+        let mut distances: Vec<(f64, f64)> = vec![(0.1, 0.01); 100];
+        distances.push((0.4, 2.0));
+        assert_eq!(weighted_percentile(&distances, 3.0, 0.5), Some(0.4));
     }
 
     #[test]
