@@ -155,7 +155,8 @@ rigid body separately and pass `analyze_assembly`.
 Use the same public sequence for enclosures, brackets, grips, mechanisms, and
 other hard-surface products. First agree the requirements with the user: the
 dimensions that must hold, the minimum wall and overhang the printer can make,
-and any clearances. Never claim a tolerance finer than about three times the
+and any clearances. Choose dimensional tolerances from how the part is printed
+and what the printer can hold, never finer than about three times the
 measurement noise, such as the chord error of tessellated curves.
 
 1. Compile the final printable variant with an explicit profile and require
