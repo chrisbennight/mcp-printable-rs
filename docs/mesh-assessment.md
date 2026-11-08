@@ -240,9 +240,10 @@ The server runs geometry work one operation at a time. That covers mesh
 validation, the analysis of an OpenSCAD build, assembly analysis, bust
 preparation and mechanical clearance jobs. Once an operation starts, it may
 run for 10 minutes; time spent waiting for its turn does not count. A mesh of
-many overlapping triangles can make every surface point's search visit every
-triangle, so wall thickness and comparison check the limit at each point, and
-the isolated geometry worker is stopped when the limit passes.
+many overlapping triangles or nested shells can make the analysis visit every
+triangle many times. The shell check, wall thickness and comparison therefore
+check the limit as they go, the isolated geometry worker is stopped when the
+limit passes, and a tool that writes an artifact checks it once more first.
 
 An operation that reaches the limit fails with code `geometry_time_limit`,
 writes no artifact, and frees the server for the next one. Simplify or remesh

@@ -1018,6 +1018,7 @@ fn analyze_shells(
     let mut orientation_errors = 0;
     let mut solid_regions = 0;
     for (index, (sample, _)) in shells.iter().enumerate() {
+        limit::check()?;
         let point_bounds = Aabb::new(*sample, *sample);
         let containment_depth = shell_bvh
             .intersect_aabb(&point_bounds)
@@ -2011,5 +2012,28 @@ mod tests {
         let (volume, valid) = cube_sphere_intersection(2.0, 1.5, 128);
         assert!(valid);
         assert!(volume > 4.0 && volume < 8.0);
+    }
+
+    #[test]
+    fn checking_nested_shells_stops_at_the_time_limit() {
+        let mut nested = TriangleMesh {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        };
+        for step in 0..3 {
+            let shell = cube(10.0 - 2.0 * step as f64, [step as f64; 3]);
+            let base = nested.vertices.len() as u32;
+            nested.vertices.extend(shell.vertices);
+            nested
+                .triangles
+                .extend(shell.triangles.iter().map(|t| t.map(|i| i + base)));
+        }
+        let expired = limit::WorkLimit::new(std::time::Duration::ZERO, || false);
+        let stopped = expired.apply(|| analyze_mesh(&nested, ValidationOptions::default()));
+        assert!(
+            matches!(stopped, Err(GeometryError::TimeLimit { .. })),
+            "{stopped:?}"
+        );
+        assert!(analyze_mesh(&nested, ValidationOptions::default()).is_ok());
     }
 }

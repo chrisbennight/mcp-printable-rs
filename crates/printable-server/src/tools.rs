@@ -4907,6 +4907,18 @@ where
         .acquire_owned()
         .await
         .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?;
+    blocking_holding(permit, f).await
+}
+
+/// Run `f` on the blocking pool, releasing `permit` when it returns.
+async fn blocking_holding<T, E>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ToolError>
+where
+    T: Send + 'static,
+    E: Into<ToolError> + Send + 'static,
+{
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
         f()
@@ -4967,8 +4979,15 @@ where
             None => std::future::pending().await,
         }
     };
-    let geometry_permit = tokio::select! {
-        permit = Arc::clone(&GEOMETRY_OPS).acquire_owned() => permit
+    // The lane, then a blocking-pool slot, in the order every caller takes
+    // them; a cancelled call stops waiting for either.
+    let permits = async {
+        let geometry = Arc::clone(&GEOMETRY_OPS).acquire_owned().await?;
+        let workspace = Arc::clone(&WORKSPACE_OPS).acquire_owned().await?;
+        Ok::<_, tokio::sync::AcquireError>((geometry, workspace))
+    };
+    let (geometry_permit, workspace_permit) = tokio::select! {
+        permits = permits => permits
             .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?,
         () = cancelled => return Err(GeometryError::Cancelled.into()),
     };
@@ -4977,7 +4996,7 @@ where
             .as_ref()
             .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     });
-    blocking(move || {
+    blocking_holding(workspace_permit, move || {
         let _geometry_permit = geometry_permit;
         limit.apply(f)
     })
@@ -5681,6 +5700,7 @@ async fn scad_compile(
         let _permit = permit;
         let bytes = read_generated_file(&job.output_path)?;
         let validation = analyze_stl(&bytes, validation_options)?;
+        printable_geom::limit::check()?;
         let artifact = workspace.write_generated_bytes(&params.path, &bytes, params.overwrite)?;
         let mut result = json!({
             "artifact": artifact,
