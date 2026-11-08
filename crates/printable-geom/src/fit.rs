@@ -73,6 +73,12 @@ const MAX_SOLVER_ITERATIONS: usize = 100;
 /// coordinates along the shape's normal, or of one millimetre, counts as on
 /// the shape.
 const COORDINATE_RESOLUTION: f64 = 1e-5;
+/// A hole's fit starts from a wall face within this angle of vertical.
+const HOLE_WALL_DEGREES: f64 = 10.0;
+/// A hole's fitted axis lies within this angle of vertical.
+const HOLE_AXIS_DEGREES: f64 = 1.0;
+/// A hole's wall covers its whole circle, to within rounding.
+const HOLE_ARC_DEGREES: f64 = 359.9;
 
 type V3 = Vector3<f64>;
 
@@ -371,6 +377,99 @@ pub(crate) fn criterion(report: &DimensionReport) -> Option<CriterionStatus> {
     })
 }
 
+/// A complete vertical cylindrical inner wall: a hole's centre in X and Y
+/// and its radius.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct VerticalHole {
+    pub center_mm: [f64; 2],
+    pub radius_mm: f64,
+}
+
+/// The complete vertical cylindrical inner walls around declared holes, each
+/// given as its centre in X and Y and its radius. For each declared hole a
+/// cylinder is fitted from the inward-facing wall face, within twice the
+/// declared radius of the centre, whose distance from it is nearest that
+/// radius. The fit counts when its axis is vertical, its wall covers the whole
+/// circle and faces the axis. The fitted centre and radius are reported, so a
+/// hole that moved or changed size is measured as it is, not as declared, and
+/// a hole found from several declared positions is listed once.
+pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<VerticalHole> {
+    let surface = Surface::new(mesh);
+    let level = HOLE_WALL_DEGREES.to_radians().sin();
+    // Wall faces in order of X, so each search scans only a strip.
+    let mut walls: Vec<(V3, usize)> = surface
+        .normals
+        .iter()
+        .enumerate()
+        .filter(|(_, normal)| normal.is_some_and(|normal| normal.z.abs() <= level))
+        .map(|(face, _)| (centroid(&surface.corners(face)), face))
+        .collect();
+    walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+    let mut found: Vec<(VerticalHole, f64)> = Vec::new();
+    for &(center, radius) in declared {
+        let reach = 2.0 * radius;
+        let first = walls.partition_point(|(point, _)| point.x < center[0] - reach);
+        let seed = walls[first..]
+            .iter()
+            .take_while(|(point, _)| point.x <= center[0] + reach)
+            .filter_map(|&(point, face)| {
+                let normal = surface.normals[face]?;
+                let (dx, dy) = (point.x - center[0], point.y - center[1]);
+                let distance = dx.hypot(dy);
+                (distance <= reach && normal.x * dx + normal.y * dy < 0.0)
+                    .then_some(((distance - radius).abs(), face))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((_, face)) = seed else { continue };
+        let Some((hole, sigma)) = fit_hole(&surface, face) else {
+            continue;
+        };
+        let scale = hole.center_mm[0]
+            .abs()
+            .max(hole.center_mm[1].abs())
+            .max(1.0);
+        let same = |(other, other_sigma): &(VerticalHole, f64)| {
+            let limit = SIGMA_TOLERANCE * sigma.max(*other_sigma) + COORDINATE_RESOLUTION * scale;
+            (hole.center_mm[0] - other.center_mm[0]).hypot(hole.center_mm[1] - other.center_mm[1])
+                <= limit
+                && (hole.radius_mm - other.radius_mm).abs() <= limit
+        };
+        if !found.iter().any(same) {
+            found.push((hole, sigma));
+        }
+    }
+    found.into_iter().map(|(hole, _)| hole).collect()
+}
+
+/// A complete vertical inner wall fitted from `face`, with the fit's spread.
+fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, f64)> {
+    let fit = fit_from(surface, face, Shape::Cylinder, Some(V3::z()), None).ok()?;
+    let Geometry::Cylinder {
+        axis_point_mm,
+        axis_direction,
+        radius_mm,
+        arc_degrees,
+        ..
+    } = fit.geometry
+    else {
+        return None;
+    };
+    let (point, axis) = (V3::from(axis_point_mm), V3::from(axis_direction));
+    if axis.z.abs() < HOLE_AXIS_DEGREES.to_radians().cos() || arc_degrees < HOLE_ARC_DEGREES {
+        return None;
+    }
+    // An inner wall faces its axis; a boss's wall faces away from it.
+    let offset = centroid(&surface.corners(face)) - point;
+    let radial = offset - axis * offset.dot(&axis);
+    (surface.normals[face]?.dot(&radial) < 0.0).then_some((
+        VerticalHole {
+            center_mm: [point.x, point.y],
+            radius_mm,
+        },
+        fit.sigma_mm,
+    ))
+}
+
 /// The mesh with face normals, areas and edge neighbours.
 struct Surface {
     vertices: Vec<V3>,
@@ -601,13 +700,35 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
     let Some((seed_face, seed_distance)) = seed_face(surface, &seed, request.shape, hint) else {
         return unmeasured(None, "no face near the seed agrees with the direction");
     };
-    let seed_distance = Some(seed_distance);
-    let Some((mut model, mut sigma)) = first_estimate(surface, seed_face, request.shape, hint)
-    else {
-        return unmeasured(
-            seed_distance,
-            "the surface around the seed does not curve like the requested shape",
-        );
+    match fit_from(
+        surface,
+        seed_face,
+        request.shape,
+        hint,
+        request.exclude_beyond_sigma,
+    ) {
+        Ok(fit) => FeatureFit {
+            name: request.name.clone(),
+            shape: request.shape,
+            seed_distance_mm: Some(seed_distance),
+            unmeasured_reason: None,
+            fit: Some(fit),
+        },
+        Err(reason) => unmeasured(Some(seed_distance), reason),
+    }
+}
+
+/// Fit `shape` to the region grown from `seed_face`, or say why it cannot be
+/// fitted.
+fn fit_from(
+    surface: &Surface,
+    seed_face: usize,
+    shape: Shape,
+    hint: Option<V3>,
+    exclude_beyond_sigma: Option<u8>,
+) -> Result<Fit, &'static str> {
+    let Some((mut model, mut sigma)) = first_estimate(surface, seed_face, shape, hint) else {
+        return Err("the surface around the seed does not curve like the requested shape");
     };
 
     // Grow the region on the shape, refit, and repeat until it settles.
@@ -619,14 +740,11 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
             on_shape(surface, face, &model, facing, tolerance)
         });
         let (points, weights) = surface.points(&grown);
-        if points.len() < minimum_points(request.shape) {
-            return unmeasured(
-                seed_distance,
-                "too few vertices around the seed lie on the shape",
-            );
+        if points.len() < minimum_points(shape) {
+            return Err("too few vertices around the seed lie on the shape");
         }
         let Some(next) = refit(&model, &points, &weights) else {
-            return unmeasured(seed_distance, "the fit did not converge");
+            return Err("the fit did not converge");
         };
         model = next;
         sigma = spread(&model, &points, &weights);
@@ -639,7 +757,7 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
 
     let (mut points, mut weights) = surface.points(&region);
     let mut excluded_points = 0;
-    if let Some(limit) = request.exclude_beyond_sigma {
+    if let Some(limit) = exclude_beyond_sigma {
         let limit = f64::from(limit) * sigma;
         let kept: Vec<(V3, f64)> = points
             .iter()
@@ -649,12 +767,12 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
             .collect();
         excluded_points = points.len() - kept.len();
         (points, weights) = kept.into_iter().unzip();
-        if points.len() < minimum_points(request.shape) {
-            return unmeasured(seed_distance, "too few vertices remain after the exclusion");
+        if points.len() < minimum_points(shape) {
+            return Err("too few vertices remain after the exclusion");
         }
         match refit(&model, &points, &weights) {
             Some(next) => model = next,
-            None => return unmeasured(seed_distance, "the fit did not converge"),
+            None => return Err("the fit did not converge"),
         }
         sigma = spread(&model, &points, &weights);
     }
@@ -670,23 +788,17 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
         .flat_map(|&face| surface.corners(face))
         .map(|corner| corner.into())
         .collect();
-    FeatureFit {
-        name: request.name.clone(),
-        shape: request.shape,
-        seed_distance_mm: seed_distance,
-        unmeasured_reason: None,
-        fit: Some(Fit {
-            faces: region.len(),
-            area_mm2: region.iter().map(|&face| surface.areas[face]).sum(),
-            points: points.len(),
-            excluded_points,
-            sigma_mm: sigma,
-            deviation_mm: [lowest, highest],
-            form_error_mm: highest - lowest,
-            region: crate::mesh_bounds(&region_vertices),
-            geometry: geometry(surface, &region, &model, &points),
-        }),
-    }
+    Ok(Fit {
+        faces: region.len(),
+        area_mm2: region.iter().map(|&face| surface.areas[face]).sum(),
+        points: points.len(),
+        excluded_points,
+        sigma_mm: sigma,
+        deviation_mm: [lowest, highest],
+        form_error_mm: highest - lowest,
+        region: crate::mesh_bounds(&region_vertices),
+        geometry: geometry(surface, &region, &model, &points),
+    })
 }
 
 /// The fewest vertices that fix the shape.
@@ -1616,6 +1728,110 @@ mod tests {
 
     fn close(actual: f64, expected: f64, within: f64) -> bool {
         (actual - expected).abs() <= within
+    }
+
+    /// The meshes, each moved by its offset, as one mesh.
+    fn joined(meshes: &[(TriangleMesh, [f64; 3])]) -> TriangleMesh {
+        let mut joined = TriangleMesh {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        };
+        for (mesh, offset) in meshes {
+            let base = joined.vertices.len() as u32;
+            joined.vertices.extend(
+                mesh.vertices
+                    .iter()
+                    .map(|vertex| [0, 1, 2].map(|axis| vertex[axis] + offset[axis])),
+            );
+            joined.triangles.extend(
+                mesh.triangles
+                    .iter()
+                    .map(|face| face.map(|index| index + base)),
+            );
+        }
+        joined
+    }
+
+    #[test]
+    fn declared_holes_are_measured_where_they_are() {
+        let plate = plate_with_hole(5.0, 4.0, 2.0, 32);
+        let corners = [[-12.0, -8.0], [-12.0, 8.0], [12.0, -8.0], [12.0, 8.0]];
+        let mesh = joined(&corners.map(|[x, y]| (plate.clone(), [x, y, 0.0])));
+        let declared = corners.map(|center| (center, 2.0));
+        let holes = vertical_holes(&mesh, &declared);
+        assert_eq!(holes.len(), 4, "{holes:?}");
+        for (hole, center) in holes.iter().zip(corners) {
+            assert!(close(hole.center_mm[0], center[0], 1e-9), "{hole:?}");
+            assert!(close(hole.center_mm[1], center[1], 1e-9), "{hole:?}");
+            assert!(close(hole.radius_mm, 2.0, 1e-9), "{hole:?}");
+        }
+
+        // A hole moved half a millimetre, or declared at half its size, is
+        // reported as it is.
+        let moved = joined(&[(plate.clone(), [0.5, 0.0, 0.0])]);
+        let holes = vertical_holes(&moved, &[([0.0, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 1);
+        assert!(close(holes[0].center_mm[0], 0.5, 1e-9), "{holes:?}");
+        let holes = vertical_holes(&plate, &[([0.0, 0.0], 1.0)]);
+        assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
+
+        // Two declared positions on one hole find it once.
+        let holes = vertical_holes(&plate, &[([0.0, 0.0], 2.0), ([0.2, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 1, "{holes:?}");
+
+        // Nothing near a declared position.
+        assert!(vertical_holes(&plate, &[([20.0, 0.0], 2.0)]).is_empty());
+    }
+
+    #[test]
+    fn bosses_tilted_and_partial_bores_are_not_holes() {
+        // A solid post: its wall faces away from its axis.
+        let segments = 32;
+        let mut vertices = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 4.0]];
+        for index in 0..segments {
+            let angle = std::f64::consts::TAU * index as f64 / segments as f64;
+            vertices.push([2.0 * angle.cos(), 2.0 * angle.sin(), 0.0]);
+            vertices.push([2.0 * angle.cos(), 2.0 * angle.sin(), 4.0]);
+        }
+        let mut triangles = Vec::new();
+        for i in 0..segments as u32 {
+            let j = (i + 1) % segments as u32;
+            let (low, high, next_low, next_high) = (2 + 2 * i, 3 + 2 * i, 2 + 2 * j, 3 + 2 * j);
+            let outward = V3::from(vertices[low as usize]) + V3::from(vertices[next_low as usize]);
+            for (face, wanted) in [
+                ([0, next_low, low], -V3::z()),
+                ([1, high, next_high], V3::z()),
+                ([low, next_low, next_high], outward),
+                ([low, next_high, high], outward),
+            ] {
+                triangles.push(oriented(&vertices, face, wanted));
+            }
+        }
+        let post = TriangleMesh {
+            vertices,
+            triangles,
+        };
+        assert!(vertical_holes(&post, &[([0.0, 0.0], 2.0)]).is_empty());
+
+        // A bore leaning 10 degrees.
+        let (sin, cos) = 10_f64.to_radians().sin_cos();
+        let mut tilted = plate_with_hole(5.0, 4.0, 2.0, 32);
+        for vertex in &mut tilted.vertices {
+            let [x, y, z] = *vertex;
+            *vertex = [x, y * cos - z * sin, y * sin + z * cos];
+        }
+        assert!(vertical_holes(&tilted, &[([0.0, 0.0], 2.0)]).is_empty());
+
+        // Half a bore.
+        let mut half = plate_with_hole(5.0, 4.0, 2.0, 32);
+        let vertices = half.vertices.clone();
+        half.triangles.retain(|face| {
+            face.iter()
+                .map(|&index| vertices[index as usize][0])
+                .sum::<f64>()
+                > 0.0
+        });
+        assert!(vertical_holes(&half, &[([0.0, 0.0], 2.0)]).is_empty());
     }
 
     #[test]

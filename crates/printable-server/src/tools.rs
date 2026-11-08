@@ -992,6 +992,9 @@ struct ValidateMeshParams {
     /// Signed distance from a reference mesh into `comparison`: positive for
     /// extra material, negative for missing, with regions beyond tolerance.
     compare: Option<CompareParams>,
+    /// Check this mesh against a project design revision's declared
+    /// requirements into `requirements`.
+    requirements: Option<crate::projects::revisions::GetParams>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -4954,6 +4957,25 @@ async fn validate_mesh_artifact(
         validate_blender_artifact(&workspace, &compare.reference_path, ".stl", true)?;
     }
     geometry_blocking(move || {
+        let revision = params
+            .requirements
+            .map(|requested| {
+                crate::projects::get(&workspace, &requested.project_id)?;
+                let identity = match requested.revision {
+                    Some(identity) => identity,
+                    None => crate::projects::revisions::head(&workspace, &requested.project_id)?
+                        .ok_or_else(|| {
+                            ToolError::Validation(format!(
+                                "requirements: project {} has no design revision yet; create one with project.revise",
+                                requested.project_id
+                            ))
+                        })?,
+                };
+                let revision =
+                    crate::projects::revisions::get(&workspace, &requested.project_id, &identity)?;
+                Ok::<_, ToolError>((identity, revision.manifest))
+            })
+            .transpose()?;
         let snapshot = workspace.snapshot_artifact(&params.path)?;
         let artifact = snapshot.meta().clone();
         let bytes = std::fs::read(snapshot.path())?;
@@ -5000,9 +5022,41 @@ async fn validate_mesh_artifact(
         if let Some(reference) = reference_artifact {
             result["reference_artifact"] = json!(reference);
         }
+        if let Some((identity, manifest)) = revision {
+            let evidence = requirement_evidence(&report, &bytes, &manifest)?;
+            result["revision"] = json!(identity);
+            result["requirements"] = manifest.assess(&evidence);
+            result["requirement_evidence"] = evidence;
+        }
         Ok::<_, ToolError>(result)
     })
     .await
+}
+
+/// What a mesh shows of a revision's declared requirements, in the shape of
+/// a native CAD report: its size, whether it is a valid solid, and the
+/// complete vertical inner walls found around each declared hole.
+fn requirement_evidence(
+    report: &printable_geom::ValidationReport,
+    bytes: &[u8],
+    manifest: &crate::projects::requirements::Manifest,
+) -> Result<Value, ToolError> {
+    let mut evidence = json!({
+        "units": "mm",
+        "valid": report.solid_geometry,
+        "bounds_mm": {"size": report.bounds.dimensions_mm},
+    });
+    let declared = manifest.declared_holes();
+    if !declared.is_empty() {
+        evidence["vertical_holes"] = if report.solid_geometry {
+            let mesh =
+                decode_stl(bytes).map_err(|error| ToolError::Validation(error.to_string()))?;
+            json!({"status": "measured", "holes": printable_geom::vertical_holes(&mesh, &declared)})
+        } else {
+            json!({"status": "unmeasured", "holes": []})
+        };
+    }
+    Ok(evidence)
 }
 
 async fn analyze_assembly_artifacts(

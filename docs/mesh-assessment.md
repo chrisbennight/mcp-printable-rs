@@ -150,6 +150,43 @@ Requirements outside their tolerance add a `dimensions_out_of_tolerance`
 warning, and features that could not be fitted add `features_unmeasured`.
 These are measurements of the mesh, not of a printed part.
 
+## Check a design revision's requirements
+
+Pass `requirements` to check a mesh against the requirements declared in a
+project design revision, whatever made the mesh: OpenSCAD, Blender, an import
+or a CAD export. Name the project, and optionally a revision identity; without
+one the project's current revision is used:
+
+```json
+{"path": "projects/bracket/build/bracket.stl", "requirements": {"project_id": "bracket"}}
+```
+
+The result adds `revision`, the identity checked, and `requirements`, the same
+assessment a CAD build of that revision returns: each requirement's `status`
+and the `evidence` it was decided from, as a pointer into
+`requirement_evidence`. That object gives the mesh's size in `bounds_mm`,
+whether it is a valid solid in `valid`, and, when the revision declares
+`hole_pattern` requirements, the holes measured around the declared positions
+in `vertical_holes`.
+
+Each declared hole is fitted as a cylinder from the inward-facing wall face,
+within twice the declared radius of the declared centre, whose distance from
+that centre is nearest the declared radius. It counts when its axis is within 1
+degree of vertical and its wall covers the whole circle and faces the axis, so
+bosses and partial bores do not count. The fitted centre and radius are matched
+against the declaration, so a hole that moved or changed size fails rather than
+being found where it was declared. A tessellated hole's radius is that of the
+circle through its vertices, the designed size for OpenSCAD's tessellation. A
+polygonal hole such as a hexagon counts at the radius through its corners,
+because the mesh does not say whether it was meant to be round. Holes are
+measured only on a valid solid; otherwise `hole_pattern` stays `unmeasured`.
+
+`dimensions` and `build_envelope` compare the mesh's bounds. `clearance` stays
+`unmeasured` and `physical_test` stays `physical_test_required`, as for CAD
+builds. The tool checks the mesh it is given, not how the mesh was made, so
+build the mesh from the revision's source and parameter values for the result
+to describe that revision.
+
 ## Check mould draft
 
 Pass `draft` to `validate_mesh` to check whether a master or cavity releases

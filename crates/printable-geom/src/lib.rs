@@ -46,7 +46,7 @@ pub use compare::{
 pub use draft::{DraftOptions, DraftPatch, DraftReport};
 pub use fit::{
     DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
-    Geometry, Measure, RequirementCheck, Shape,
+    Geometry, Measure, RequirementCheck, Shape, VerticalHole, vertical_holes,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};

@@ -191,6 +191,22 @@ impl Manifest {
         Ok(())
     }
 
+    /// Every declared hole as its centre in X and Y and its radius.
+    pub fn declared_holes(&self) -> Vec<([f64; 2], f64)> {
+        self.requirements
+            .values()
+            .filter_map(|requirement| match requirement {
+                Requirement::HolePattern {
+                    centers_mm,
+                    radius_mm,
+                    ..
+                } => Some(centers_mm.iter().map(|center| (*center, *radius_mm))),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
     /// Values remain in their declared parameter units; no hidden conversion.
     pub fn values(&self) -> BTreeMap<String, Value> {
         self.parameters
