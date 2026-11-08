@@ -40,8 +40,9 @@ use tokio::sync::Semaphore;
 
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
-    AssemblyOptions, DraftOptions, LinearMotion, RotationalMotion, ValidationOptions,
-    ValidationReport, analyze_stl,
+    AssemblyOptions, DimensionOptions, DimensionRequirement, DraftOptions, FeatureRequest,
+    LinearMotion, Measure, RotationalMotion, Shape, ValidationOptions, ValidationReport,
+    analyze_stl,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -999,8 +1000,101 @@ struct ValidateMeshParams {
     /// Optional minimum wall thickness in millimetres. When given, a valid solid's wall thickness is measured from points spread over its surface and reported in `wall_thickness`, with any regions below the minimum.
     #[schemars(range(min = 0.0))]
     minimum_wall_mm: Option<f64>,
+    /// Optional dimensional check. Fits planes, cylinders and spheres to the surface around seed points, reports each fit in `dimensions`, and checks diameters, distances and angles between them against a nominal and tolerance.
+    dimensions: Option<DimensionParams>,
     /// Optional mould release check. Reports how far each face leans off the pull direction, and the faces that catch on the mould.
     draft: Option<DraftParams>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DimensionParams {
+    /// Shapes to fit, at most 32.
+    features: Vec<FeatureParams>,
+    /// Checks between the fitted features, at most 64.
+    #[serde(default)]
+    requirements: Vec<DimensionRequirementParams>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct FeatureParams {
+    /// Unique name, 1 to 64 characters, used by requirements.
+    name: String,
+    shape: FeatureShape,
+    /// A point on or near the feature's surface, in millimetres. The fitted region grows from the nearest face.
+    seed_mm: [f64; 3],
+    /// Optional approximate outward normal of a plane or axis of a cylinder. The region then grows from the nearest face that agrees with it, so a seed beside an edge finds the intended surface.
+    direction: Option<[f64; 3]>,
+    /// Optional: refit without vertices farther than this many standard deviations from the first fit.
+    #[schemars(range(min = 1, max = 3))]
+    exclude_beyond_sigma: Option<u8>,
+}
+
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum FeatureShape {
+    Plane,
+    Cylinder,
+    Sphere,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DimensionRequirementParams {
+    /// `diameter` of one cylinder or sphere, or `distance` or `angle` between two features.
+    measure: DimensionMeasure,
+    /// One feature name for a diameter, two for a distance or angle.
+    features: Vec<String>,
+    /// Design value: millimetres for a diameter or distance; degrees for an angle, from 0 for parallel to 90 for perpendicular.
+    nominal: f64,
+    /// Allowed difference either side of the nominal, in the same unit.
+    #[schemars(range(min = 0.0))]
+    tolerance: f64,
+}
+
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum DimensionMeasure {
+    Diameter,
+    Distance,
+    Angle,
+}
+
+impl From<DimensionParams> for DimensionOptions {
+    fn from(params: DimensionParams) -> Self {
+        Self {
+            features: params
+                .features
+                .into_iter()
+                .map(|feature| FeatureRequest {
+                    name: feature.name,
+                    shape: match feature.shape {
+                        FeatureShape::Plane => Shape::Plane,
+                        FeatureShape::Cylinder => Shape::Cylinder,
+                        FeatureShape::Sphere => Shape::Sphere,
+                    },
+                    seed_mm: feature.seed_mm,
+                    direction: feature.direction,
+                    exclude_beyond_sigma: feature.exclude_beyond_sigma,
+                })
+                .collect(),
+            requirements: params
+                .requirements
+                .into_iter()
+                .map(|requirement| DimensionRequirement {
+                    measure: match requirement.measure {
+                        DimensionMeasure::Diameter => Measure::Diameter,
+                        DimensionMeasure::Distance => Measure::Distance,
+                        DimensionMeasure::Angle => Measure::Angle,
+                    },
+                    features: requirement.features,
+                    nominal: requirement.nominal,
+                    tolerance: requirement.tolerance,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1576,6 +1670,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_project_cover",
+        description: "Set, replace or remove a project's library cover picture under the expected record version. Sources: a project image, a sliced 3MF plate thumbnail, an isometric OpenSCAD view of an STL, or automatic (newest sliced thumbnail, else newest STL view). The picture is copied into retained storage.",
+        schema: schema_of::<crate::projects::cover::CoverParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_project_export_blender",
         description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using an isolated child under the caller's work budget without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
         schema: schema_of::<crate::projects::NativeExportParams>,
@@ -1649,7 +1749,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, and optional mould draft along a pull direction. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional mould draft along a pull direction, and optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -1890,6 +1990,12 @@ pub(crate) async fn dispatch_with_content(
         "printable_scad_render" => {
             let params: ScadRenderParams = de(args)?;
             scad_render(Arc::clone(workspace), Arc::clone(scad), params).await
+        }
+        "printable_project_cover" => {
+            let params: crate::projects::cover::CoverParams = de(args)?;
+            project_cover(Arc::clone(workspace), Arc::clone(scad), params)
+                .await
+                .map(ToolOutput::without_inline)
         }
         "printable_render_job_submit" => {
             let params: RenderJobSubmitParams = de(args)?;
@@ -4709,6 +4815,7 @@ async fn validate_mesh_artifact(
                 overhang_angle_degrees: params.overhang_angle_degrees,
                 density_g_cm3: params.density_g_cm3,
                 minimum_wall_mm: params.minimum_wall_mm,
+                dimensions: params.dimensions.map(DimensionOptions::from),
                 draft: params.draft.map(|draft| DraftOptions {
                     pull_direction: draft.pull_direction,
                     minimum_draft_degrees: draft.minimum_draft_degrees,
@@ -5315,6 +5422,7 @@ async fn scad_compile(
         minimum_wall_mm: product_profile
             .as_ref()
             .map(|profile| profile.manufacturing.minimum_wall_mm),
+        dimensions: None,
         draft: None,
     };
     let definition_metadata = scad_definition_metadata(&definitions);
@@ -5424,6 +5532,63 @@ async fn scad_render(
         })
     })
     .await
+}
+
+async fn project_cover(
+    workspace: Arc<Workspace>,
+    runner: Arc<ScadRunner>,
+    params: crate::projects::cover::CoverParams,
+) -> Result<Value, ToolError> {
+    use crate::projects::cover::{self, MODEL_VIEW_SIZE, Picture, Plan};
+    let budget = validate_work_budget(params.timeout_seconds)?;
+    let params = Arc::new(params);
+    // Reading, decoding and storing a picture happen under the single visual
+    // slot, so concurrent cover requests never hold or decode several large
+    // pictures at once. Only a model render leaves the slot to run OpenSCAD.
+    let request = Arc::clone(&params);
+    let planning = Arc::clone(&workspace);
+    let model = visual_blocking(move || match cover::plan(&planning, &request)? {
+        Plan::Remove => cover::commit(&planning, &request, None).map(Err),
+        Plan::Store(picture) => cover::commit(&planning, &request, Some(picture)).map(Err),
+        Plan::RenderModel { model } => Ok(Ok(model)),
+    })
+    .await?;
+    let model = match model {
+        Ok(model) => model,
+        Err(project) => return Ok(serde_json::to_value(project)?),
+    };
+    let (permit, job) = prepare_scad_job(
+        Arc::clone(&workspace),
+        runner,
+        cover::model_view_source(&model),
+        ".png",
+        None,
+        false,
+        false,
+    )
+    .await?;
+    let args = printable_scad::render_args(
+        &job.output_path.to_string_lossy(),
+        &job.source_path.to_string_lossy(),
+        "iso",
+        MODEL_VIEW_SIZE,
+        true,
+        &[],
+    )
+    .ok_or_else(|| ToolError::Validation("unknown OpenSCAD view".to_string()))?;
+    let (permit, _output) = permit.run(args, budget, u64::MAX).await?;
+    let project = visual_blocking(move || {
+        let _permit = permit;
+        let bytes = read_generated_file(&job.output_path)?;
+        validate_png(
+            &bytes,
+            u64::from(MODEL_VIEW_SIZE),
+            u64::from(MODEL_VIEW_SIZE),
+        )?;
+        cover::commit(&workspace, &params, Some(Picture::rendered(bytes, model)))
+    })
+    .await?;
+    Ok(serde_json::to_value(project)?)
 }
 
 async fn scad_cross_section(

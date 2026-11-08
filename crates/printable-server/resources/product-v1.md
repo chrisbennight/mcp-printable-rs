@@ -195,6 +195,13 @@ proof must still encode exact constructive assertions.
 `moving_clearance.status` remains `not_run`; moving products must export each
 rigid body separately and pass `analyze_assembly`.
 
+Compile does not check named dimensions. To check a hole's diameter, a
+thickness, or an angle on the built STL, run `validate_mesh` with `dimensions`.
+Fit planes, cylinders and spheres around seed points taken from the design,
+and give each requirement a nominal and a tolerance. A diameter passes only
+when the faceted surface stays within the tolerance, so a coarse `$fn` can fail
+a hole that must fit a pin or screw.
+
 ## Complete product workflow
 
 Use the same public sequence for enclosures, brackets, grips, mechanisms, and

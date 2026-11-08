@@ -233,6 +233,68 @@ fn mesh_report() -> Value {
             "thin_regions",
         ],
     );
+    let bounds = object(
+        json!({"minimum_mm": point, "maximum_mm": point, "dimensions_mm": point}),
+        &["minimum_mm", "maximum_mm", "dimensions_mm"],
+    );
+    let feature = object(
+        json!({
+            "name": {"type": "string"},
+            "shape": {"enum": ["plane", "cylinder", "sphere"]},
+            "seed_distance_mm": number,
+            "unmeasured_reason": {"type": "string"},
+            "fit": object(
+                json!({
+                    "faces": {"type": "integer", "minimum": 0},
+                    "area_mm2": number,
+                    "points": {"type": "integer", "minimum": 0},
+                    "excluded_points": {"type": "integer", "minimum": 0},
+                    "sigma_mm": number,
+                    "deviation_mm": {"type": "array", "items": number, "minItems": 2, "maxItems": 2},
+                    "form_error_mm": number,
+                    "region": bounds,
+                    "plane": object(json!({"point_mm": point, "normal": point}), &["point_mm", "normal"]),
+                    "cylinder": object(
+                        json!({
+                            "axis_point_mm": point,
+                            "axis_direction": point,
+                            "radius_mm": number,
+                            "diameter_mm": number,
+                            "length_mm": number,
+                            "arc_degrees": number
+                        }),
+                        &["axis_point_mm", "axis_direction", "radius_mm", "diameter_mm", "length_mm", "arc_degrees"]
+                    ),
+                    "sphere": object(
+                        json!({"centre_mm": point, "radius_mm": number, "diameter_mm": number}),
+                        &["centre_mm", "radius_mm", "diameter_mm"]
+                    )
+                }),
+                &["faces", "area_mm2", "points", "excluded_points", "sigma_mm", "deviation_mm", "form_error_mm", "region"]
+            )
+        }),
+        &["name", "shape"],
+    );
+    let requirement = object(
+        json!({
+            "measure": {"enum": ["diameter", "distance", "angle"]},
+            "features": {"type": "array", "items": {"type": "string"}},
+            "nominal": number,
+            "tolerance": number,
+            "status": {"enum": ["passed", "failed", "unmeasured"]},
+            "measured": number,
+            "range": {"type": "array", "items": number, "minItems": 2, "maxItems": 2},
+            "nominal_far_from_measured": {"type": "boolean"}
+        }),
+        &["measure", "features", "nominal", "tolerance", "status"],
+    );
+    let dimensions = object(
+        json!({
+            "features": {"type": "array", "items": feature},
+            "requirements": {"type": "array", "items": requirement}
+        }),
+        &["features", "requirements"],
+    );
     let faces = object(
         json!({"faces": {"type": "integer", "minimum": 0}, "area_mm2": number}),
         &["faces", "area_mm2"],
@@ -288,6 +350,7 @@ fn mesh_report() -> Value {
     object(
         json!({
             "wall_thickness": wall_thickness,
+            "dimensions": dimensions,
             "draft": draft,
             "solid_geometry": {"type": "boolean"},
             "printable": {"type": "boolean", "deprecated": true,
@@ -428,7 +491,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
-            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}}
+            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
+                "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
         ]}),
         "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(
@@ -645,9 +709,10 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "project" => {
             let mut generator = schemars::SchemaGenerator::default();
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
+            let project = generator.subschema_for::<crate::projects::Project>();
             json!({"type":"object","anyOf":[
             revision,
-            serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
+            project,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),

@@ -16,13 +16,14 @@ measurements without duplicating them in a summary.
 | `finite_dimensions` | Finite bounds were measured. This does not compare them to a design requirement or establish the STL's original units. |
 | `support_free_orientation` | `passed` when the selected build direction and angle policy detect no support requirement, otherwise `failed`; inspect `overhang` and its threshold. Bridging and actual support design are not evaluated. |
 | `wall_thickness` | `unmeasured` unless a minimum wall is supplied and the mesh is a valid solid. Then `failed` when a measured surface point is thinner than the minimum, `unmeasured` when no point could be measured, and otherwise `passed`; see `wall_thickness` and [measure wall thickness](#measure-wall-thickness). |
-| `dimensional_requirements` | `unmeasured`; no target dimensions or tolerances were supplied to this analysis. |
+| `dimensional_requirements` | `unmeasured` unless dimensional requirements are supplied. Then `failed` when any requirement is outside its tolerance, `unmeasured` when a feature it uses could not be fitted, and otherwise `passed`; see `dimensions` and [check dimensions](#check-dimensions). |
 | `build_envelope` | `unmeasured`; no printer envelope was supplied. |
 | `material_process` | `unmeasured`; no material/process qualification runs. |
 | `physical_performance` | `physical_test_required`; geometric analysis cannot establish actual fit, strength, or service performance. |
 
 The assessment is `failed` if solid topology, finite dimensions, the
-support-free orientation criterion, or a measured wall thickness fails. Support warnings remain in `issues`; a failure of the
+support-free orientation criterion, a measured wall thickness, or a dimensional
+requirement fails. Support warnings remain in `issues`; a failure of the
 support-free criterion calls for reorientation, support planning, or a design
 change, and does not assert that the part can never be manufactured. Otherwise
 the assessment is `incomplete`, because unmeasured and physical criteria remain.
@@ -78,6 +79,76 @@ height; the side wall's own faces report its thickness. Sampling can miss a
 feature narrower than the sample spacing. A `passed` result means no measured
 point was thinner than the minimum; it does not prove the part prints or is
 strong enough.
+
+## Check dimensions
+
+Pass `dimensions` to `validate_mesh` to measure features of any STL, whether
+it came from OpenSCAD, Blender, CadQuery or a download. Name each feature,
+give its shape (`plane`, `cylinder` or `sphere`) and a seed point on or near
+its surface, then list requirements as a nominal value and a tolerance either
+side:
+
+```json
+{"path": "models/bracket.stl", "dimensions": {
+  "features": [
+    {"name": "bore", "shape": "cylinder", "seed_mm": [24, 0, 5], "direction": [0, 0, 1]},
+    {"name": "top", "shape": "plane", "seed_mm": [10, 10, 10]},
+    {"name": "bottom", "shape": "plane", "seed_mm": [10, 10, 0]}
+  ],
+  "requirements": [
+    {"measure": "diameter", "features": ["bore"], "nominal": 8, "tolerance": 0.1},
+    {"measure": "distance", "features": ["top", "bottom"], "nominal": 10, "tolerance": 0.05},
+    {"measure": "angle", "features": ["bore", "top"], "nominal": 90, "tolerance": 0.5}
+  ]
+}}
+```
+
+Each feature grows from the face nearest its seed across shared edges. A face
+joins while its corners lie on the fitted shape, within three times the fit's
+spread or the coordinates' rounding, whichever is larger, and its normal agrees
+with the shape's to within 45 degrees. The shape
+is refitted to the region's vertices until the region stops changing, so the
+fit stops where the surface leaves the shape, such as at an edge or where a
+chamfer or fillet begins. A side tapering by less than 1 degree from a
+cylinder's axis counts as part of the cylinder. A seed beside an
+edge can land on the neighbouring face. Give `direction`, a plane's outward
+normal or a cylinder's axis, and the region starts from the nearest face that
+agrees with it. `exclude_beyond_sigma` (1, 2 or 3) refits without vertices
+farther than that many standard deviations from the first fit, and reports how
+many were left out.
+
+`report.dimensions.features` gives each fit, or `unmeasured_reason` when the
+surface around the seed does not have the requested shape:
+
+| Field | Meaning |
+| --- | --- |
+| `seed_distance_mm` | Distance from the seed to the face the region grew from. A large value means the seed missed the intended surface. |
+| `faces`, `area_mm2`, `region` | The faces fitted, their area, and their bounds. |
+| `points`, `excluded_points`, `sigma_mm` | The vertices fitted, those left out, and their root-mean-square distance from the shape. |
+| `deviation_mm`, `form_error_mm` | The region surface's largest distance inside and outside the shape, and their difference. Distances run along a plane's normal, or away from a cylinder's axis or a sphere's centre. |
+| `plane`, `cylinder`, `sphere` | The fitted shape. A cylinder reports its axis point midway along the region, axis direction, radius, diameter, length, and `arc_degrees`, how much of the circle its faces cover. A radius fitted to a small arc is less certain. |
+
+A tessellated curve has its vertices on the designed circle and flat faces
+between them that cut inside it. The fitted radius therefore reports the
+designed size, and `deviation_mm` reports the facets' departure: on a hole the
+flats come closer to the axis than the vertices do. A diameter requirement
+passes only when the whole range in `range`, from the facets' diameter to the
+vertices' diameter, lies within the tolerance. An 8 mm hole built with
+OpenSCAD's default resolution has thirteen sides and spans about 7.77 to 8 mm,
+so it fails 8 mm plus or minus 0.1 mm; raise `$fn` or lower `$fs` to pass.
+
+`report.dimensions.requirements` gives each check's `status` (`passed`,
+`failed` or `unmeasured`), `measured` value, and `range` for diameters.
+Distance is measured to a plane when either feature is one, otherwise to a
+cylinder's axis, otherwise between sphere centres. Between two planes or two
+axes it is the mean of each centre's distance to the other. An angle runs from
+0 for parallel to 90 for perpendicular, between two planes, two axes, or an
+axis and a plane. `nominal_far_from_measured` marks a failure far outside the
+tolerance, which more often means a mistyped nominal, such as a radius given
+for a diameter, or a seed on the wrong feature than a manufacturing error.
+Requirements outside their tolerance add a `dimensions_out_of_tolerance`
+warning, and features that could not be fitted add `features_unmeasured`.
+These are measurements of the mesh, not of a printed part.
 
 ## Check mould draft
 
