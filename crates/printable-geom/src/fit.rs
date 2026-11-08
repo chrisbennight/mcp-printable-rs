@@ -321,20 +321,26 @@ pub(crate) fn validate(options: &DimensionOptions) -> Result<(), GeometryError> 
 }
 
 /// Fit every requested feature and check every requirement.
-pub(crate) fn measure(mesh: &TriangleMesh, options: &DimensionOptions) -> DimensionReport {
+pub(crate) fn measure(
+    mesh: &TriangleMesh,
+    options: &DimensionOptions,
+) -> Result<DimensionReport, GeometryError> {
     // Requirements name features, so without features there is nothing to do.
     if options.features.is_empty() {
-        return DimensionReport {
+        return Ok(DimensionReport {
             features: Vec::new(),
             requirements: Vec::new(),
-        };
+        });
     }
     let surface = Surface::new(mesh);
     let features: Vec<FeatureFit> = options
         .features
         .iter()
-        .map(|request| fit_feature(&surface, request))
-        .collect();
+        .map(|request| {
+            crate::limit::check()?;
+            Ok(fit_feature(&surface, request))
+        })
+        .collect::<Result<_, GeometryError>>()?;
     let fits: HashMap<&str, &FeatureFit> = features
         .iter()
         .map(|feature| (feature.name.as_str(), feature))
@@ -344,10 +350,10 @@ pub(crate) fn measure(mesh: &TriangleMesh, options: &DimensionOptions) -> Dimens
         .iter()
         .map(|requirement| check(requirement, &fits))
         .collect();
-    DimensionReport {
+    Ok(DimensionReport {
         features,
         requirements,
-    }
+    })
 }
 
 /// The dimensional criterion: failed if any requirement failed, unmeasured
@@ -1631,7 +1637,8 @@ mod tests {
                     requirement(Measure::Diameter, &["bore"], 8.0, 0.005),
                 ],
             },
-        );
+        )
+        .unwrap();
         let bore = &report.features[0];
         let (radius, axis, length, arc) = cylinder(bore);
         assert!(close(radius, 4.0, 1e-9), "{bore:?}");
@@ -1669,7 +1676,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, [4.0, 0.3, 5.0])],
                 requirements: vec![requirement(Measure::Diameter, &["bore"], 8.0, 0.1)],
             },
-        );
+        )
+        .unwrap();
         let check = &report.requirements[0];
         assert_eq!(check.status, CriterionStatus::Failed, "{check:?}");
         let inscribed = 8.0 * (std::f64::consts::PI / 12.0).cos();
@@ -1688,7 +1696,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, seed)],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         assert!(
             without.features[0].fit.is_none(),
             "{:?}",
@@ -1704,7 +1713,8 @@ mod tests {
                 features: vec![hinted],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let (radius, ..) = cylinder(&with.features[0]);
         assert!(close(radius, 4.0, 1e-9));
         assert_eq!(with.features[0].fit.as_ref().unwrap().faces, 96);
@@ -1719,7 +1729,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, [4.0, 0.3, 4.0])],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let (radius, _, length, _) = cylinder(&report.features[0]);
         assert!(close(radius, 4.0, 1e-9));
         assert!(close(length, 9.0, 1e-9));
@@ -1749,7 +1760,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, [101.6, 100.05, 2.0])],
                 requirements: vec![requirement(Measure::Diameter, &["bore"], 3.2, 0.01)],
             },
-        );
+        )
+        .unwrap();
         let (radius, ..) = cylinder(&report.features[0]);
         assert!(close(radius, 1.6, 1e-3), "{radius}");
         assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 128);
@@ -1776,7 +1788,8 @@ mod tests {
                     requirement(Measure::Angle, &["side", "top"], 90.0, 0.1),
                 ],
             },
-        );
+        )
+        .unwrap();
         let top = report.features[0].fit.as_ref().unwrap();
         assert_eq!(top.faces, 96, "{top:?}");
         assert!(top.form_error_mm < 1e-9);
@@ -1799,7 +1812,8 @@ mod tests {
                 features: vec![feature("ball", Shape::Sphere, [7.2, 2.0, 3.0])],
                 requirements: vec![requirement(Measure::Diameter, &["ball"], 12.0, 0.5)],
             },
-        );
+        )
+        .unwrap();
         let fit = report.features[0].fit.as_ref().unwrap();
         let Geometry::Sphere {
             centre_mm,
@@ -1895,7 +1909,8 @@ mod tests {
                 features: vec![feature("face", Shape::Plane, [15.3, 15.6, 0.0])],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let fit = report.features[0].fit.as_ref().unwrap();
         assert!(fit.faces * 10 >= sheet.triangles.len() * 9, "{fit:?}");
         assert!(close(fit.sigma_mm, level, 0.25 * level), "{fit:?}");
@@ -1910,7 +1925,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, [4.0, 0.01, 5.0])],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let (radius, axis, ..) = cylinder(&report.features[0]);
         assert!(close(radius, 4.0, 1e-9));
         assert!(close(axis[2].abs(), 1.0, 1e-9));
@@ -1939,7 +1955,8 @@ mod tests {
                     features: vec![request],
                     requirements: Vec::new(),
                 },
-            );
+            )
+            .unwrap();
             let (radius, _, length, _) = cylinder(&report.features[0]);
             assert!(close(radius, 4.0, 1e-9), "{top} {direction:?} {radius}");
             assert!(close(length, 1.0, 1e-9));
@@ -1959,7 +1976,8 @@ mod tests {
                 features: vec![request],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let (radius, axis, ..) = cylinder(&report.features[0]);
         assert!(close(radius, 4.0, 1e-9));
         assert!(close(axis[2].abs(), 1.0, 1e-9));
@@ -2009,7 +2027,8 @@ mod tests {
                     ],
                     requirements: vec![requirement(Measure::Angle, &["flat", "turned"], 0.0, 0.5)],
                 },
-            );
+            )
+            .unwrap();
             for fit in &report.features {
                 assert_eq!(fit.fit.as_ref().unwrap().faces, 100, "{angle} {fit:?}");
             }
@@ -2060,7 +2079,8 @@ mod tests {
                 features: vec![feature("bore", Shape::Cylinder, [4.0, 0.3, 5.0])],
                 requirements: vec![requirement(Measure::Diameter, &["bore"], 4.0, 0.1)],
             },
-        );
+        )
+        .unwrap();
         let check = &report.requirements[0];
         assert_eq!(check.status, CriterionStatus::Failed);
         assert!(check.nominal_far_from_measured);
@@ -2077,7 +2097,8 @@ mod tests {
                 features: vec![request],
                 requirements: Vec::new(),
             },
-        );
+        )
+        .unwrap();
         let fit = report.features[0].fit.as_ref().unwrap();
         assert_eq!(fit.points + fit.excluded_points, 96);
     }

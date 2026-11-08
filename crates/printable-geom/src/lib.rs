@@ -689,7 +689,8 @@ fn prepare_mesh(
     let dimensions = options
         .dimensions
         .as_ref()
-        .map(|dimensions| fit::measure(mesh, dimensions));
+        .map(|dimensions| fit::measure(mesh, dimensions))
+        .transpose()?;
     if let Some(report) = &dimensions {
         let unfitted: Vec<&str> = report
             .features

@@ -4979,23 +4979,27 @@ where
             None => std::future::pending().await,
         }
     };
-    // The lane, then a blocking-pool slot, in the order every caller takes
-    // them; a cancelled call stops waiting for either.
-    let permits = async {
-        let geometry = Arc::clone(&GEOMETRY_OPS).acquire_owned().await?;
-        let workspace = Arc::clone(&WORKSPACE_OPS).acquire_owned().await?;
-        Ok::<_, tokio::sync::AcquireError>((geometry, workspace))
+    tokio::pin!(cancelled);
+    let shutting_down = |_| ToolError::Validation("server is shutting down".to_string());
+    let geometry_permit = tokio::select! {
+        permit = Arc::clone(&GEOMETRY_OPS).acquire_owned() => permit.map_err(shutting_down)?,
+        () = &mut cancelled => return Err(GeometryError::Cancelled.into()),
     };
-    let (geometry_permit, workspace_permit) = tokio::select! {
-        permits = permits => permits
-            .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?,
-        () = cancelled => return Err(GeometryError::Cancelled.into()),
-    };
+    // The limit runs from when the lane is taken, including any wait for a
+    // blocking-pool slot, which every caller takes after the lane.
+    let token = cancellation.clone();
     let limit = WorkLimit::new(time_limit, move || {
-        cancellation
+        token
             .as_ref()
             .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     });
+    let workspace_permit = tokio::select! {
+        permit = Arc::clone(&WORKSPACE_OPS).acquire_owned() => permit.map_err(shutting_down)?,
+        () = &mut cancelled => return Err(GeometryError::Cancelled.into()),
+        () = tokio::time::sleep(time_limit) => return Err(GeometryError::TimeLimit {
+            seconds: time_limit.as_secs_f64(),
+        }.into()),
+    };
     blocking_holding(workspace_permit, move || {
         let _geometry_permit = geometry_permit;
         limit.apply(f)
