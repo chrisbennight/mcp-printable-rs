@@ -389,11 +389,12 @@ pub struct VerticalHole {
 
 /// The complete vertical cylindrical inner walls around declared holes, each
 /// given as its centre in X and Y and its radius. For each declared hole a
-/// cylinder is fitted from the inward-facing wall face, with its corners
-/// within twice the declared radius of the centre, whose farthest corner lies
-/// nearest that radius: a tessellated bore's corners lie on its circle while
-/// its flats cut inside. The fit counts when its axis is vertical, its wall
-/// covers the whole circle and faces the axis. The fitted centre and radius
+/// cylinder is fitted from the inward-facing wall faces, with their corners
+/// within twice the declared radius of the centre, in order of how near
+/// their farthest corner lies to that radius: a tessellated bore's corners
+/// lie on its circle while its flats cut inside. The first fit counts whose
+/// axis is vertical and whose wall covers the whole circle and faces the
+/// axis. The fitted centre and radius
 /// are reported, so a hole that moved or changed size is measured as it is,
 /// not as declared, and a hole whose wall another declared hole already
 /// found is listed once.
@@ -414,7 +415,7 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
         let first = walls.partition_point(|(point, _)| point.x < center[0] - reach);
-        let seed = walls[first..]
+        let mut seeds: Vec<(f64, usize)> = walls[first..]
             .iter()
             .take_while(|(point, _)| point.x <= center[0] + reach)
             .filter_map(|&(point, face)| {
@@ -428,16 +429,31 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
                     .fold(0.0, f64::max);
                 (inward && farthest <= reach).then_some(((farthest - radius).abs(), face))
             })
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((_, face)) = seed else { continue };
-        if found
-            .iter()
-            .any(|(_, wall)| wall.binary_search(&face).is_ok())
-        {
-            continue;
-        }
-        if let Some(hole) = fit_hole(&surface, face) {
-            found.push(hole);
+            .collect();
+        seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // A wall that is not a whole cylinder, such as a nut trap's flats,
+        // is passed over with every wall face joined to it, so that it cannot
+        // hide a bore beside it and each face is tried at most once.
+        let mut passed = HashSet::new();
+        for (_, face) in seeds {
+            if passed.contains(&face) {
+                continue;
+            }
+            if found
+                .iter()
+                .any(|(_, wall)| wall.binary_search(&face).is_ok())
+            {
+                break;
+            }
+            match fit_hole(&surface, face) {
+                Some(hole) => {
+                    found.push(hole);
+                    break;
+                }
+                None => passed.extend(surface.grow(face, |_, next| {
+                    surface.normals[next].is_some_and(|normal| normal.z.abs() <= level)
+                })),
+            }
         }
     }
     found.into_iter().map(|(hole, _)| hole).collect()
@@ -1885,6 +1901,30 @@ mod tests {
         assert!(close(holes[0].radius_range_mm[1], 2.0, 1e-9), "{holes:?}");
         let both = vertical_holes(&stepped, &[([0.0, 0.0], 2.0), ([0.0, 0.0], 2.012)]);
         assert_eq!(both.len(), 2, "{both:?}");
+    }
+
+    #[test]
+    fn a_section_of_another_shape_does_not_hide_the_bore() {
+        // A bore 2.02 mm in radius below a square opening whose corners lie
+        // 2.01 mm from the axis, nearer the declared 2 mm than the bore's.
+        let mut stepped = plate(
+            5.0,
+            8.0,
+            &[(2.02, 0.0), (2.02, 4.0), (2.01, 4.0), (2.01, 8.0)],
+            32,
+        );
+        for segment in 0..32 {
+            for ring in [2, 3] {
+                let vertex = &mut stepped.vertices[6 * segment + ring];
+                let scale =
+                    2.01 / (std::f64::consts::SQRT_2 * vertex[0].abs().max(vertex[1].abs()));
+                vertex[0] *= scale;
+                vertex[1] *= scale;
+            }
+        }
+        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 1, "{holes:?}");
+        assert!(close(holes[0].radius_mm, 2.02, 1e-9), "{holes:?}");
     }
 
     #[test]

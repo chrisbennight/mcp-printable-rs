@@ -175,13 +175,15 @@ in `vertical_holes`.
 Holes are measured on the valid solid, with any overlapping shells united, so
 a bore filled by another shell is not a hole. On a mesh that is not a valid
 solid, `hole_pattern` stays `unmeasured`. Each declared hole is fitted as a
-cylinder from an inward-facing wall face within twice the declared radius of
-the declared centre: the one whose farthest corner from that centre lies
-nearest the declared radius, because a tessellated bore's corners lie on its
-circle while its flat faces cut inside. Each section of a stepped bore is its
-own hole. It counts when its axis is within 1 degree of vertical and its wall
-covers the whole circle and faces the axis, so bosses and partial bores do not
-count. Each hole reports its fitted centre, its radius through the vertices,
+cylinder from the inward-facing wall faces within twice the declared radius of
+the declared centre, starting with the one whose farthest corner from that
+centre lies nearest the declared radius, because a tessellated bore's corners
+lie on its circle while its flat faces cut inside. Each section of a stepped
+bore is its own hole. A fit counts when its axis is within 1 degree of
+vertical and its wall covers the whole circle and faces the axis, so bosses
+and partial bores do not count. When a wall does not count, such as the flats
+of a nut trap, the next wall is tried, so another section cannot hide the
+bore. Each hole reports its fitted centre, its radius through the vertices,
 and `radius_range_mm`, the smallest and largest radius over its wall. A hole
 matches a declaration only when its centre is within the tolerance and its
 whole radius range lies within the tolerance of the declared radius, as for a
