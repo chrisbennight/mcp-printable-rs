@@ -59,8 +59,11 @@ and a ring of rays surrounds it. A point's reading is the
 shortest distance at which an accepted ray leaves the solid. A ray that
 leaves through a surface turned more than 60 degrees from facing back against
 the point's inward direction is not counted, because it reached a neighbouring
-face across an edge rather than crossing a wall. Edges sharper than 60 degrees,
-such as knife edges and pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
+face across an edge rather than crossing a wall. Nor is a ray that leaves more
+than 45 degrees from square on, because it cut across a corner, such as where
+one body ends beside another's chamfered edge; the narrowest way across a wall
+leaves it square on. Edges sharper than 60 degrees, such as knife edges and
+pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
 surfaces do not read as walls. A reading below the minimum by no more than the
 coordinates' rounding counts as meeting it: ASCII STL, which OpenSCAD writes,
 keeps about six significant digits, so a wall drawn at exactly the minimum

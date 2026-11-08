@@ -236,6 +236,7 @@ fn mesh_report() -> Value {
             "cone_half_angle_degrees": number,
             "rays_per_sample": {"type": "integer", "minimum": 1},
             "max_exit_deviation_degrees": number,
+            "max_exit_obliquity_degrees": number,
             "sample_spacing_mm": number,
             "samples": {"type": "integer", "minimum": 0},
             "unmeasured_samples": {"type": "integer", "minimum": 0},
