@@ -36,10 +36,21 @@ const MAX_NORMAL_DEVIATION_DEGREES: f64 = 45.0;
 const MAX_START_DIHEDRAL_DEGREES: f64 = 45.0;
 /// Edge steps from the seed face in the patch used for a first estimate.
 const START_RING: usize = 8;
-/// Neighbouring faces bending less than this are treated as coplanar when
-/// estimating an axis.
+/// Faces bending less than this from the seed are treated as coplanar with
+/// it when estimating an axis.
 const AXIS_MIN_BEND_DEGREES: f64 = 0.5;
-/// Axis estimates from neighbouring faces within this angle agree.
+/// Faces within this angle of running along an axis support it.
+const ALONG_AXIS_DEGREES: f64 = 5.0;
+/// Axis directions tried, and faces scored against each, at most.
+const MAX_AXIS_CANDIDATES: usize = 200;
+const MAX_AXIS_FACES: usize = 2_000;
+/// A curved shape's starting patch widens until its normals turn this far
+/// from the seed's.
+const START_TURN_DEGREES: f64 = 20.0;
+/// A plane starts from nearby faces whose normals agree with the seed's
+/// within this angle.
+const PLANE_START_DEGREES: f64 = 5.0;
+/// Axis directions within this angle of the best agree with it.
 const AXIS_AGREEMENT_DEGREES: f64 = 2.0;
 /// A direction hint selects faces within this many degrees of it.
 const HINT_DEGREES: f64 = 30.0;
@@ -297,6 +308,13 @@ pub(crate) fn validate(options: &DimensionOptions) -> Result<(), GeometryError> 
 
 /// Fit every requested feature and check every requirement.
 pub(crate) fn measure(mesh: &TriangleMesh, options: &DimensionOptions) -> DimensionReport {
+    // Requirements name features, so without features there is nothing to do.
+    if options.features.is_empty() {
+        return DimensionReport {
+            features: Vec::new(),
+            requirements: Vec::new(),
+        };
+    }
     let surface = Surface::new(mesh);
     let features: Vec<FeatureFit> = options
         .features
@@ -374,11 +392,13 @@ impl Surface {
         edges.sort_unstable();
         let mut neighbours = vec![Vec::new(); mesh.triangles.len()];
         for group in edges.chunk_by(|a, b| a.0 == b.0) {
-            for (index, (_, face)) in group.iter().enumerate() {
-                for (other_index, (_, other)) in group.iter().enumerate() {
-                    if index != other_index && face != other {
-                        neighbours[*face].push(*other);
-                    }
+            // Faces on an edge shared by more than two link through the
+            // first of them, so the lists grow linearly with the mesh.
+            let (_, first) = group[0];
+            for &(_, face) in &group[1..] {
+                if face != first {
+                    neighbours[first].push(face);
+                    neighbours[face].push(first);
                 }
             }
         }
@@ -689,23 +709,27 @@ fn first_estimate(
         matches!((surface.normals[from], surface.normals[to]), (Some(a), Some(b)) if a.dot(&b) >= limit)
     };
     match shape {
-        Shape::Plane => Some((
-            Model::Plane {
-                point: surface.corners(seed)[0],
-                normal: seed_normal,
-            },
-            0.0,
-        )),
+        Shape::Plane => {
+            // Nearby faces that agree with the seed, so the plane starts with
+            // the surface's own noise rather than one exact triangle.
+            let agree = PLANE_START_DEGREES.to_radians().cos();
+            let patch = surface.ring(seed, START_RING, |_, to| {
+                surface.normals[to].is_some_and(|normal| normal.dot(&seed_normal) >= agree)
+            });
+            let (points, weights) = surface.points(&patch);
+            let model = fit_plane(&points, &weights, seed_normal)?;
+            Some((model, spread(&model, &points, &weights)))
+        }
         Shape::Cylinder => {
             let axis = match hint {
                 Some(axis) => axis,
-                None => axis_from_normals(surface, &surface.ring(seed, START_RING, smooth))?,
+                None => axis_from_normals(surface, seed, &start_patch(surface, seed, &smooth))?,
             };
             // The first circle uses only faces that run along the axis, which
             // leaves out a chamfer or the face across an end. Across a coarse
             // polygon these faces meet at sharp angles.
             let along = HINT_DEGREES.to_radians().sin();
-            let patch = surface.ring(seed, START_RING, |_, to| {
+            let patch = start_patch(surface, seed, &|_, to| {
                 surface.normals[to].is_some_and(|normal| normal.dot(&axis).abs() <= along)
             });
             let (points, weights) = surface.points(&patch);
@@ -713,12 +737,36 @@ fn first_estimate(
             Some((model, spread(&model, &points, &weights)))
         }
         Shape::Sphere => {
-            let patch = surface.ring(seed, START_RING, smooth);
+            let patch = start_patch(surface, seed, &smooth);
             let (points, weights) = surface.points(&patch);
             let model = sphere_estimate(&points, &weights)?;
             Some((model, spread(&model, &points, &weights)))
         }
     }
+}
+
+/// The faces around the seed that `accept` admits, widened until their
+/// normals turn far enough from the seed's to fix a curved shape, or until
+/// they stop growing. A fine tessellation turns little over a few faces.
+fn start_patch(
+    surface: &Surface,
+    seed: usize,
+    accept: &impl Fn(usize, usize) -> bool,
+) -> Vec<usize> {
+    let turned = START_TURN_DEGREES.to_radians().cos();
+    let mut patch = Vec::new();
+    for steps in [START_RING, 4 * START_RING, 16 * START_RING] {
+        let wider = surface.ring(seed, steps, accept);
+        let enough = matches!(surface.normals[seed], Some(seed_normal) if wider.iter().any(|&face| {
+            surface.normals[face].is_some_and(|normal| normal.dot(&seed_normal) <= turned)
+        }));
+        let settled = wider.len() == patch.len();
+        patch = wider;
+        if enough || settled {
+            break;
+        }
+    }
+    patch
 }
 
 /// Whether a curved shape's faces point away from its axis or centre (+1),
@@ -800,47 +848,54 @@ fn fit_plane(points: &[V3], weights: &[f64], facing: V3) -> Option<Model> {
     })
 }
 
-/// The axis of a curved patch. Two neighbouring faces of a cylinder both
-/// lie along its axis, so the cross product of their normals points along
-/// it; pairs where the cylinder meets a chamfer or fillet point in
-/// directions that change around the rim. The direction most pairs agree
-/// on, weighted by area, is the axis. None when no neighbouring faces bend,
-/// as on a flat patch.
-fn axis_from_normals(surface: &Surface, patch: &[usize]) -> Option<V3> {
-    let inside: HashSet<usize> = patch.iter().copied().collect();
+/// The axis of a curved patch. The seed face and any other face of a
+/// cylinder both lie along its axis, so the cross product of their normals
+/// points along it. Each such direction is scored by the area of the patch's
+/// faces that run along it, which a chamfer or fillet beside the seed cannot
+/// win, and the directions agreeing with the best are averaged. None when no
+/// face bends away from the seed, as on a flat patch.
+fn axis_from_normals(surface: &Surface, seed: usize, patch: &[usize]) -> Option<V3> {
+    let seed_normal = surface.normals[seed]?;
+    let faces: Vec<(V3, f64)> = patch
+        .iter()
+        .filter_map(|&face| surface.normals[face].map(|normal| (normal, surface.areas[face])))
+        .collect();
     let bend = AXIS_MIN_BEND_DEGREES.to_radians().sin();
-    let mut candidates: Vec<(V3, f64)> = Vec::new();
-    for &face in patch {
-        for &next in &surface.neighbours[face] {
-            if next <= face || !inside.contains(&next) {
-                continue;
-            }
-            if let (Some(a), Some(b)) = (surface.normals[face], surface.normals[next]) {
-                let cross = a.cross(&b);
-                if cross.norm() > bend {
-                    candidates.push((cross.normalize(), surface.areas[face] + surface.areas[next]));
-                }
-            }
-        }
-    }
-    let agree = AXIS_AGREEMENT_DEGREES.to_radians().cos();
+    let candidates: Vec<V3> = faces
+        .iter()
+        .filter_map(|(normal, _)| {
+            let cross = seed_normal.cross(normal);
+            (cross.norm() > bend).then(|| cross.normalize())
+        })
+        .collect();
+    let candidates = evenly(&candidates, MAX_AXIS_CANDIDATES);
+    let scored = evenly(&faces, MAX_AXIS_FACES);
+    let along = ALONG_AXIS_DEGREES.to_radians().sin();
     let support = |axis: &V3| -> f64 {
-        candidates
+        scored
             .iter()
-            .filter(|(other, _)| axis.dot(other).abs() >= agree)
-            .map(|(_, weight)| weight)
+            .filter(|(normal, _)| normal.dot(axis).abs() <= along)
+            .map(|(_, area)| area)
             .sum()
     };
-    let (best, _) = candidates
+    let best = candidates
         .iter()
-        .map(|(axis, _)| (*axis, support(axis)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        .map(|axis| (*axis, support(axis)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?
+        .0;
+    let agree = AXIS_AGREEMENT_DEGREES.to_radians().cos();
     let mean = candidates
         .iter()
-        .filter(|(other, _)| best.dot(other).abs() >= agree)
-        .map(|(other, weight)| other * best.dot(other).signum() * *weight)
+        .filter(|other| best.dot(other).abs() >= agree)
+        .map(|other| other * best.dot(other).signum())
         .sum::<V3>();
     unit(mean)
+}
+
+/// At most `count` items taken evenly through `items`.
+fn evenly<T: Copy>(items: &[T], count: usize) -> Vec<T> {
+    let step = items.len().div_ceil(count).max(1);
+    items.iter().step_by(step).copied().collect()
 }
 
 /// A cylinder along `axis` through the algebraic circle fitted to the
@@ -1745,6 +1800,67 @@ mod tests {
         assert!(axis.z.abs() > (0.1_f64).to_radians().cos());
         let sigma = spread(&fitted, &tube, &weights);
         assert!(close(sigma, level, 0.1 * level), "{sigma}");
+    }
+
+    #[test]
+    fn a_noisy_plane_grows_over_its_surface() {
+        let level = 0.01;
+        let mut state = 11;
+        let mut vertices = Vec::new();
+        for j in 0..=30 {
+            for i in 0..=30 {
+                vertices.push([f64::from(i), f64::from(j), level * noise(&mut state)]);
+            }
+        }
+        let at = |i: u32, j: u32| j * 31 + i;
+        let mut triangles = Vec::new();
+        for j in 0..30 {
+            for i in 0..30 {
+                triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        let sheet = TriangleMesh {
+            vertices,
+            triangles,
+        };
+        let report = measure(
+            &sheet,
+            &DimensionOptions {
+                features: vec![feature("face", Shape::Plane, [15.3, 15.6, 0.0])],
+                requirements: Vec::new(),
+            },
+        );
+        let fit = report.features[0].fit.as_ref().unwrap();
+        assert!(fit.faces * 10 >= sheet.triangles.len() * 9, "{fit:?}");
+        assert!(close(fit.sigma_mm, level, 0.25 * level), "{fit:?}");
+    }
+
+    #[test]
+    fn a_finely_tessellated_bore_fits_without_a_direction() {
+        let mesh = plate_with_hole(20.0, 10.0, 4.0, 1024);
+        let report = measure(
+            &mesh,
+            &DimensionOptions {
+                features: vec![feature("bore", Shape::Cylinder, [4.0, 0.01, 5.0])],
+                requirements: Vec::new(),
+            },
+        );
+        let (radius, axis, ..) = cylinder(&report.features[0]);
+        assert!(close(radius, 4.0, 1e-9));
+        assert!(close(axis[2].abs(), 1.0, 1e-9));
+        assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 2048);
+    }
+
+    #[test]
+    fn faces_sharing_one_edge_link_linearly() {
+        let copies = 2_000;
+        let mesh = TriangleMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]; copies],
+        };
+        let links: usize = Surface::new(&mesh).neighbours.iter().map(Vec::len).sum();
+        assert!(links <= 6 * copies, "{links}");
     }
 
     #[test]
