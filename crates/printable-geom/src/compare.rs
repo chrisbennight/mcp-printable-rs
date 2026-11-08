@@ -15,6 +15,7 @@
 //! other's. The pose whose capped distances to surface facing each point's
 //! way are smallest over every fitting point is refined further and kept.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use nalgebra::{Matrix3, Matrix6, Rotation3, Vector3, Vector6};
@@ -29,8 +30,8 @@ use crate::{GeometryError, MeshBounds, TriangleMesh};
 
 /// At most this many regions are listed, largest first.
 const MAX_REGIONS: usize = 10;
-/// Points used to fit the alignment and to score each starting pose,
-/// spread evenly over the surface samples.
+/// Points used to fit the alignment and to score each starting pose, drawn
+/// over the surface by area.
 const FIT_POINTS: usize = 4_000;
 /// Points used to refine each starting pose before it is scored.
 const START_POINTS: usize = 1_000;
@@ -47,9 +48,11 @@ const PAIR_NORMAL_DEGREES: f64 = 60.0;
 /// Without `max_distance_mm`, points farther than this share of the
 /// reference's diagonal from any surface facing their way are unmeasured.
 const DEFAULT_REACH_SHARE: f64 = 0.1;
-/// Points within this fraction of their own coordinates' size, or of one
-/// millimetre, lie on a surface.
-const ON_SURFACE: f64 = 1e-9;
+/// A search for reference surface facing a point's way gives up after
+/// checking this many faces and leaves the point unmeasured, so a mesh
+/// whose faces turn away from the reference's, such as one with reversed
+/// normals, costs work in proportion to its size.
+const FACING_SEARCH_FACES: usize = 1_024;
 /// A barycentric weight this small puts a point on the opposite edge.
 const EDGE_WEIGHT: f64 = 1e-9;
 
@@ -264,18 +267,16 @@ impl Reference {
 
     /// Signed distance from the nearest reference surface that faces the
     /// way `normal` does. When the nearest surface faces the other way, as
-    /// across a thin wall, the reading is taken from the nearest face that
-    /// faces the point's way, along that face's outward normal. A point on
-    /// the surface reads zero, whichever face of an edge its nearest point
-    /// is credited to.
+    /// across a thin wall or where a surface turned over touches the
+    /// reference, the reading is taken from the nearest face that faces the
+    /// point's way, along that face's outward normal.
     fn reading(&self, point: &V3, normal: &V3, reach: f64) -> Option<f64> {
-        if let Some((nearest, surface_normal, inside)) = self.nearest(point, reach) {
+        let facing = self
+            .nearest(point, reach)
+            .filter(|(_, surface_normal, _)| surface_normal.dot(normal) > 0.0);
+        if let Some((nearest, _, inside)) = facing {
             let distance = (point - nearest).norm();
-            let on_surface = distance == 0.0
-                || distance <= rounding_along(point, &((point - nearest) / distance));
-            if on_surface || surface_normal.dot(normal) > 0.0 {
-                return Some(if inside { -distance } else { distance });
-            }
+            return Some(if inside { -distance } else { distance });
         }
         let (nearest, face_normal) = self.nearest_facing(point, normal, reach)?;
         let offset = point - nearest;
@@ -288,13 +289,24 @@ impl Reference {
     }
 
     /// The nearest point within `reach` on a reference face that faces the
-    /// way `normal` does, and that face's normal.
+    /// way `normal` does, and that face's normal. None when there is no such
+    /// face, or when finding it would mean checking more than
+    /// `FACING_SEARCH_FACES` faces.
     fn nearest_facing(&self, point: &V3, normal: &V3, reach: f64) -> Option<(V3, V3)> {
         let query = to_parry(point);
-        let (_, (_, found)) = self.surface.bvh().find_best(
+        let (checked, gave_up) = (Cell::new(0), Cell::new(false));
+        let found = self.surface.bvh().find_best(
             reach,
-            |node, _| node.aabb().distance_to_local_point(query, true),
+            |node, best| {
+                let distance = node.aabb().distance_to_local_point(query, true);
+                if distance < best && checked.get() >= FACING_SEARCH_FACES {
+                    gave_up.set(true);
+                    return f64::MAX;
+                }
+                distance
+            },
             |face, _| {
+                checked.set(checked.get() + 1);
                 let face_normal = self.face_normals.get(face as usize).copied().flatten()?;
                 if face_normal.dot(normal) <= 0.0 {
                     return None;
@@ -307,17 +319,12 @@ impl Reference {
                 );
                 Some(((nearest - point).norm(), (nearest, face_normal)))
             },
-        )?;
-        Some(found)
+        );
+        if gave_up.get() {
+            return None;
+        }
+        found.map(|(_, (_, found))| found)
     }
-}
-
-/// The rounding a point's coordinates can carry along `direction`: points
-/// this close to a surface in that direction lie on it. Rounding in a
-/// coordinate moves a distance only through that direction, so a part far
-/// from the origin across it keeps full precision.
-fn rounding_along(point: &V3, direction: &V3) -> f64 {
-    ON_SURFACE * point.component_mul(direction).abs().sum().max(1.0)
 }
 
 /// A nearest point on a triangle's edge or corner can be reported as on its
@@ -752,18 +759,24 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
     })
 }
 
-/// At most `count` of `points`: those with the lowest hash of their index,
-/// which spreads them over every surface whatever order the facets come in.
+/// At most `count` of `points`, drawn by area: weighted sampling without
+/// replacement, with a fixed hash of each point's index in place of a random
+/// draw. A broad surface sampled coarsely keeps its points beside a small,
+/// finely tessellated patch, and the facet order does not matter.
 fn spread(points: &[SurfacePoint], count: usize) -> Vec<&SurfacePoint> {
     if points.len() <= count {
         return points.iter().collect();
     }
-    let mut ranked: Vec<(u64, &SurfacePoint)> = points
+    let mut ranked: Vec<(f64, &SurfacePoint)> = points
         .iter()
         .enumerate()
-        .map(|(index, point)| (scatter(index as u64), point))
+        .map(|(index, point)| {
+            // A uniform draw in (0, 1) from the hash's top 53 bits.
+            let draw = ((scatter(index as u64) >> 11) as f64 + 0.5) / (1_u64 << 53) as f64;
+            (-draw.ln() / point.area, point)
+        })
         .collect();
-    ranked.select_nth_unstable_by_key(count - 1, |(rank, _)| *rank);
+    ranked.select_nth_unstable_by(count - 1, |a, b| a.0.total_cmp(&b.0));
     ranked.truncate(count);
     ranked.into_iter().map(|(_, point)| point).collect()
 }
@@ -1076,8 +1089,12 @@ mod tests {
     #[test]
     fn a_plate_lifted_clear_of_the_reference_is_measured_on_both_faces() {
         // The lifted underside's nearest reference surface is the top, which
-        // faces the other way; the matching underside lies beyond it.
-        for shift in [0.0, 1_000_000.0, 1_000_000_000.0] {
+        // faces the other way; the matching underside lies beyond it. Lifted
+        // by exactly its thickness, the underside touches the top.
+        for (shift, lift) in [0.0, 1_000_000.0, 1_000_000_000.0]
+            .into_iter()
+            .flat_map(|shift| [(shift, 0.5), (shift, 0.4)])
+        {
             let along = |mesh: &TriangleMesh, lift: f64| {
                 moved(
                     mesh,
@@ -1088,22 +1105,25 @@ mod tests {
                 )
             };
             let reference = along(&block(40.0, 0.4, 40.0), 0.0);
-            let lifted = along(&block(40.0, 0.4, 40.0), 0.5);
+            let lifted = along(&block(40.0, 0.4, 40.0), lift);
             let report = compare(&lifted, &reference, Alignment::None, 0.05);
-            // A point exactly over the reference's outer edge casts along its
-            // side and can miss; every other point is measured.
-            assert!(report.measured_area_share > 0.9999, "{shift} {report:?}");
+            // Allow for points exactly over the reference's outer edges;
+            // every other point is measured.
+            assert!(
+                report.measured_area_share > 0.9999,
+                "{shift} {lift} {report:?}"
+            );
             let lowest = report
                 .regions
                 .iter()
                 .min_by(|a, b| a.extreme_mm.total_cmp(&b.extreme_mm))
                 .unwrap();
             assert!(
-                (lowest.extreme_mm + 0.5).abs() < 1e-6,
-                "{shift} {:?}",
+                (lowest.extreme_mm + lift).abs() < 1e-6,
+                "{shift} {lift} {:?}",
                 report.regions
             );
-            assert!(lowest.area_mm2 > 1500.0);
+            assert!(lowest.area_mm2 > 1500.0, "{shift} {lift}");
         }
     }
 
@@ -1343,6 +1363,63 @@ mod tests {
             "{:?}",
             report.alignment
         );
+    }
+
+    #[test]
+    fn a_search_past_too_many_faces_turned_away_leaves_the_point_unmeasured() {
+        // An upward sheet over a small downward face: a point above the
+        // sheet facing down searches past the sheet's faces to the face
+        // below, and gives up when there are too many of them.
+        let reference = |cells: u32| {
+            let size = 1.0 / f64::from(cells);
+            let mut vertices = Vec::new();
+            for j in 0..=cells {
+                for i in 0..=cells {
+                    vertices.push([f64::from(i) * size, f64::from(j) * size, 0.0]);
+                }
+            }
+            let at = |i: u32, j: u32| j * (cells + 1) + i;
+            let mut triangles = Vec::new();
+            for j in 0..cells {
+                for i in 0..cells {
+                    triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                    triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+                }
+            }
+            let corner = vertices.len() as u32;
+            for [x, y] in [[0.4, 0.4], [0.6, 0.4], [0.5, 0.6]] {
+                vertices.push([x, y, -0.5]);
+            }
+            triangles.push([corner, corner + 2, corner + 1]);
+            Reference::new(&TriangleMesh {
+                vertices,
+                triangles,
+            })
+            .unwrap()
+        };
+        let (point, down) = (V3::new(0.5, 0.5, 0.3), -V3::z());
+        let reading = reference(4).reading(&point, &down, 2.0).unwrap();
+        assert!((reading + 0.8).abs() < 1e-9, "{reading}");
+        assert_eq!(reference(64).reading(&point, &down, 2.0), None);
+    }
+
+    #[test]
+    fn fit_points_are_drawn_by_area() {
+        // A broad surface sampled by a few points, beside a small patch
+        // sampled by many: every fit keeps all the broad surface's points.
+        let point = |area: f64| SurfacePoint {
+            position: V3::zeros(),
+            normal: V3::z(),
+            area,
+        };
+        let mut points: Vec<SurfacePoint> = (0..12).map(|_| point(1600.0 / 12.0)).collect();
+        points.extend((0..20_000).map(|_| point(1.0 / 20_000.0)));
+        for count in [START_POINTS, FIT_POINTS] {
+            let chosen = spread(&points, count);
+            assert_eq!(chosen.len(), count);
+            let broad = chosen.iter().filter(|point| point.area > 1.0).count();
+            assert_eq!(broad, 12, "{count}");
+        }
     }
 
     #[test]

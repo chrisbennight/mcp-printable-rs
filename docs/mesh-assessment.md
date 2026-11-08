@@ -213,13 +213,16 @@ wall is not measured against the other side. Deviation is measured along that
 surface's outward normal: positive outside it, where the mesh has extra
 material, and negative inside it, where material is missing. A point with no reference surface facing its way
 within `max_distance_mm`, a tenth of the reference's diagonal by default, is
-unmeasured.
+unmeasured. So is a point whose search for that surface would pass more than
+1,024 reference faces turned the other way, which keeps the work in proportion
+to the mesh when its faces turn away from the reference's, as with reversed
+normals.
 
 | Field | Meaning |
 | --- | --- |
 | `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference. |
 | `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. The spacing widens on large meshes so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
-| `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, and the share of the surface measured. |
+| `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, or whose search for it gave up, and the share of the surface measured. |
 | `deviation_mm` | Area-weighted minimum, 5th, 50th and 95th percentiles, maximum, mean and RMS of the measured deviation. |
 | `within_tolerance_share` | Share of the measured surface within `tolerance_mm` either side. |
 | `region_count`, `regions` | Clusters of points beyond the tolerance, outside and inside the reference separately, largest first. Points within about two sample spacings join one cluster, so both faces of a wall that came out thicker form one region. Each gives its area, largest deviation, where that lies, its centre, and its bounds, in the reference's frame. |
