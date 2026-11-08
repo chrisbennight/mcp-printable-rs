@@ -167,7 +167,13 @@ pub(crate) fn unix_ms() -> u64 {
 }
 
 fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, ToolError> {
-    let mut normalized: Vec<String> = Vec::new();
+    let too_many = || ToolError::Validation(format!("a project can have at most {MAX_TAGS} tags"));
+    // Duplicates may legitimately exceed the limit, but not by this much.
+    if tags.len() > MAX_TAGS * 4 {
+        return Err(too_many());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::new();
     for tag in tags {
         let tag = tag.trim();
         if tag.is_empty()
@@ -178,17 +184,12 @@ fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, ToolError> {
                 "tags must be 1 to {MAX_TAG_CHARS} characters without control characters"
             )));
         }
-        if !normalized
-            .iter()
-            .any(|existing| existing.to_lowercase() == tag.to_lowercase())
-        {
+        if seen.insert(tag.to_lowercase()) {
             normalized.push(tag.to_owned());
+            if normalized.len() > MAX_TAGS {
+                return Err(too_many());
+            }
         }
-    }
-    if normalized.len() > MAX_TAGS {
-        return Err(ToolError::Validation(format!(
-            "a project can have at most {MAX_TAGS} tags"
-        )));
     }
     Ok(normalized)
 }
@@ -734,5 +735,22 @@ mod record_tests {
         assert!(!created.created_estimated);
         assert_eq!(created.created_unix_ms, created.updated_unix_ms);
         assert_eq!(create(&workspace, params).unwrap(), created);
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn duplicates_merge_and_oversized_lists_are_refused_early() {
+        let copies = vec!["Desk".to_owned(); MAX_TAGS * 4];
+        assert_eq!(normalize_tags(copies).unwrap(), ["Desk"]);
+        let flood: Vec<String> = (0..=MAX_TAGS * 4)
+            .map(|index| format!("t{index}"))
+            .collect();
+        assert!(normalize_tags(flood).is_err());
+        let distinct: Vec<String> = (0..=MAX_TAGS).map(|index| format!("t{index}")).collect();
+        assert!(normalize_tags(distinct).is_err());
     }
 }
