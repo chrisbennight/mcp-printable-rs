@@ -107,7 +107,15 @@ pub(crate) fn compare(
         }
     }
     let extent: [f64; 3] = std::array::from_fn(|axis| high[axis] - low[axis]);
-    let mut cell = minimum_cell.max((extent.iter().product::<f64>() / MAX_CELLS as f64).cbrt());
+    let longest = extent.iter().copied().fold(0.0, f64::max);
+    // No side may need more cells than the budget on its own, so each step
+    // below grows the cell; and a cell need never be larger than the space,
+    // which keeps every volume finite.
+    let mut cell = minimum_cell
+        .max((extent.iter().product::<f64>() / MAX_CELLS as f64).cbrt())
+        .max(longest / MAX_CELLS as f64)
+        .max(f64::MIN_POSITIVE)
+        .min(longest.max(1.0));
     // Rounding each side up to whole cells can overshoot on a thin box.
     let size = loop {
         let size = extent.map(|side| ((side / cell).ceil() as usize).max(1));
@@ -399,6 +407,24 @@ mod tests {
             (report.reference_volume_mm3 - 300.0).abs() < 15.0,
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn extreme_tolerances_still_size_the_grid() {
+        // A flat, double-sided sheet has no thickness to divide.
+        let sheet = TriangleMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2], [0, 2, 1]],
+        };
+        let report = compare(&sheet, &sheet, 1e-323).unwrap();
+        assert!(report.cells <= MAX_CELLS, "{report:?}");
+        assert_eq!(report.reference_volume_mm3, 0.0);
+        // A cell never grows past the space, so the volumes stay finite.
+        let block = cuboid([0.0; 3], [1.0, 1.0, 1.0]);
+        let report = compare(&block, &block, 1e200).unwrap();
+        assert_eq!(report.cell_mm, 1.0);
+        assert_eq!(report.reference_volume_mm3, 1.0);
+        assert_eq!(report.missing_volume_mm3, 0.0);
     }
 
     #[test]

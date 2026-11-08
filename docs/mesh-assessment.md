@@ -312,7 +312,8 @@ Both meshes must be closed and face outward, with any cavities facing inward.
 A mesh with an open edge, or an edge whose two faces run the same way, is
 refused with the mesh named. The space around both is divided into
 cubic cells at least `tolerance_mm` across, enlarged when needed to keep the
-grid within 8 million cells. A cell is inside a mesh when an upward ray from
+grid within 8 million cells, but never larger than the space itself where
+that is over 1 mm. A cell is inside a mesh when an upward ray from
 its centre crosses more outward-facing surface than inward-facing, so parts
 that overlap count once. A cell centre inside a part turned inside out has a
 negative count, and the request is then refused with the mesh named. A part
