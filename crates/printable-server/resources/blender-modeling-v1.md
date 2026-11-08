@@ -124,8 +124,15 @@ do not certify the evaluated/exported solid. Assembly clearance requires its
 separate analysis workflow. Render smoothing must not substitute for actual
 modeled edge breaks.
 
+Before the first edit, agree the requirements with the user: the dimensions
+that must hold, the printer's minimum wall and overhang, and any clearances.
+Choose tolerances from how the part will be made, never finer than about three
+times the measurement noise, such as the chord error of the mesh. After each
+group of changes, measure again and work on the worst remaining problem first.
+
 In the final report, label each conclusion as measured, partly supported, or
-inferred, and name the measurement behind a measured one. Report unmeasured
+inferred, and name the measurement behind a measured one. Report an assumed
+design value beside the measured value, never in its place. Report unmeasured
 criteria as unmeasured, never as passed, and say "not done" with the remaining
 gaps when an agreed requirement is not met.
 

@@ -173,9 +173,12 @@ measurement noise, such as the chord error of tessellated curves.
    `mechanical_rotation` job. Treat any completed frame without a stored passing
    full-arc certificate as invalid.
 
-Report each conclusion as measured, partly supported, or inferred, and name the
-result behind a measured one. An unmeasured criterion is not a pass. When a
-requirement is not met, end with "not done" and the remaining gaps.
+After each group of changes, compile and measure again, and work on the worst
+remaining problem first. Report each conclusion as measured, partly supported,
+or inferred, and name the result behind a measured one. Report an assumed
+design value, such as the drawn 6 mm bore, beside the measured value rather
+than in its place. An unmeasured criterion is not a pass. When a requirement is
+not met, end with "not done" and the remaining gaps.
 
 The repository's reference corpus applies this workflow to a rounded enclosure,
 a support-free mounting bracket, a capsule/taper grip, and one articulated
