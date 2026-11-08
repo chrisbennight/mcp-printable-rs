@@ -718,6 +718,9 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         "printable://modeling/blender-v1",
         "printable://design/product-v1",
         "printable://render/product-v1",
+        "measured, partly supported, or inferred",
+        "unmeasured is not passed",
+        "say not done when an agreed target is unmet",
     ] {
         assert!(
             instructions.contains(required),

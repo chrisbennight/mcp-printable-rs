@@ -25,6 +25,7 @@ mod assembly;
 mod assessment;
 mod bust;
 mod compare;
+mod draft;
 mod fit;
 mod intersect;
 mod isosurface;
@@ -42,6 +43,7 @@ pub use compare::{
     Alignment, AlignmentReport, ComparisonOptions, ComparisonReport, DeviationDistribution,
     DeviationRegion,
 };
+pub use draft::{DraftOptions, DraftPatch, DraftReport};
 pub use fit::{
     DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
     Geometry, Measure, RequirementCheck, Shape,
@@ -75,6 +77,8 @@ pub struct ValidationOptions {
     pub dimensions: Option<DimensionOptions>,
     /// Measure the surface's deviation from a reference mesh.
     pub comparison: Option<ComparisonOptions>,
+    /// Measure draft along the direction a mould releases the part.
+    pub draft: Option<DraftOptions>,
 }
 
 impl Default for ValidationOptions {
@@ -86,6 +90,7 @@ impl Default for ValidationOptions {
             minimum_wall_mm: None,
             dimensions: None,
             comparison: None,
+            draft: None,
         }
     }
 }
@@ -213,6 +218,8 @@ pub struct ValidationReport {
     pub dimensions: Option<DimensionReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReport>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -311,6 +318,28 @@ fn prepare_mesh(
     if let Some(comparison) = &options.comparison {
         compare::validate(comparison)?;
     }
+    let pull_direction = options
+        .draft
+        .map(|draft| {
+            if !draft.minimum_draft_degrees.is_finite()
+                || !(0.0..90.0).contains(&draft.minimum_draft_degrees)
+            {
+                return Err(GeometryError::InvalidOptions(
+                    "draft.minimum_draft_degrees must be finite, at least 0 and below 90"
+                        .to_string(),
+                ));
+            }
+            if draft
+                .parting_offset_mm
+                .is_some_and(|offset| !offset.is_finite())
+            {
+                return Err(GeometryError::InvalidOptions(
+                    "draft.parting_offset_mm must be finite".to_string(),
+                ));
+            }
+            normalized_direction(draft.pull_direction, "draft.pull_direction")
+        })
+        .transpose()?;
     for (index, vertex) in mesh.vertices.iter().enumerate() {
         if vertex.iter().any(|coordinate| !coordinate.is_finite()) {
             return Err(GeometryError::NonFiniteVertex { index });
@@ -579,6 +608,22 @@ fn prepare_mesh(
             "Review the heatmap, reorient the part, add support, or redesign the overhangs.",
         ));
     }
+    let draft = options
+        .draft
+        .zip(pull_direction)
+        .map(|(draft, pull)| draft::analyze(mesh, pull, draft));
+    if let Some(draft) = &draft
+        && draft.undercut.faces > 0
+    {
+        issues.push(warning_issue(
+            "mould_undercuts",
+            format!(
+                "{:.1} mm2 of surface in {} patches faces back against the pull direction",
+                draft.undercut.area_mm2, draft.undercut_patch_count
+            ),
+            "Add draft, split the mould at a parting plane, or confirm that a flexible mould material can release these undercuts.",
+        ));
+    }
 
     let wall_thickness = match (options.minimum_wall_mm, &manifold) {
         (Some(minimum_wall_mm), Some(solid)) => {
@@ -722,6 +767,7 @@ fn prepare_mesh(
             wall_thickness,
             dimensions,
             comparison,
+            draft,
             solid_geometry,
             printable: solid_geometry,
             issues,

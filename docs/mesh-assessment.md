@@ -149,6 +149,40 @@ Requirements outside their tolerance add a `dimensions_out_of_tolerance`
 warning, and features that could not be fitted add `features_unmeasured`.
 These are measurements of the mesh, not of a printed part.
 
+## Check mould draft
+
+Pass `draft` to `validate_mesh` to check whether a master or cavity releases
+from a mould. Give the pull direction: the direction the material on the other
+side of the surface moves away. For a master resting on its base, that is the
+direction the mould lifts off it. For a cavity or printed mould, it is the
+direction the cast part comes out.
+
+```json
+{"path": "models/master.stl", "draft": {"pull_direction": [0, 0, 1], "minimum_draft_degrees": 1}}
+```
+
+A face's draft is the angle it leans off the pull. It is positive when the face
+slides free, zero for a wall parallel to the pull, and negative when the face
+leans back and catches on the mould. `report.draft` sorts faces into four groups:
+
+| Group | Meaning |
+| --- | --- |
+| `base` | Faces on the part's lowest plane facing against the pull, which rest on the tray floor or the mould's open face. |
+| `released` | Faces with at least `minimum_draft_degrees` of draft (default 1). |
+| `shallow` | Faces leaning less than the minimum, including straight walls. |
+| `undercut` | Faces leaning back against the pull. |
+
+Each group reports its face count and area. `shallow_patches` and
+`undercut_patches` list the largest connected patches, with area, most negative
+and mean draft, centre, and bounds. Undercuts add a `mould_undercuts` warning
+but do not change the assessment: a flexible material can release a small
+undercut, so the caller decides. For a two-part mould, `parting_offset_mm`
+gives the parting plane's distance along the pull from the part's lowest
+point. Faces below it are judged against the opposite direction, and there is
+no `base` group. A face crossing the plane is split there, so each part is
+judged against its own half, and no patch spans both halves. A face lying on
+the plane belongs to the half it faces.
+
 ## Compare with a reference
 
 Pass `compare` to `validate_mesh` to measure how far the mesh's surface lies

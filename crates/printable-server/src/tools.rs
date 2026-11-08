@@ -41,8 +41,8 @@ use tokio::sync::Semaphore;
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
     Alignment, AssemblyOptions, ComparisonOptions, DimensionOptions, DimensionRequirement,
-    FeatureRequest, LinearMotion, Measure, RotationalMotion, Shape, ValidationOptions,
-    ValidationReport, analyze_stl, decode_stl,
+    DraftOptions, FeatureRequest, LinearMotion, Measure, RotationalMotion, Shape,
+    ValidationOptions, ValidationReport, analyze_stl, decode_stl,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -1002,6 +1002,8 @@ struct ValidateMeshParams {
     minimum_wall_mm: Option<f64>,
     /// Optional dimensional check. Fits planes, cylinders and spheres to the surface around seed points, reports each fit in `dimensions`, and checks diameters, distances and angles between them against a nominal and tolerance.
     dimensions: Option<DimensionParams>,
+    /// Optional mould release check. Reports how far each face leans off the pull direction, and the faces that catch on the mould.
+    draft: Option<DraftParams>,
     /// Optional comparison with a reference mesh. Reports the signed distance of this mesh's surface from the reference in `comparison`: positive where this mesh has extra material, negative where material is missing, with the regions beyond the tolerance.
     compare: Option<CompareParams>,
 }
@@ -1119,6 +1121,23 @@ impl From<DimensionParams> for DimensionOptions {
                 .collect(),
         }
     }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DraftParams {
+    /// Direction the material on the other side of the surface moves away: the mould, or its upper half, lifting off a master that rests on its base, or the cast part coming out of a cavity. Magnitude is normalized.
+    pull_direction: [f64; 3],
+    /// Faces leaning less than this many degrees off the pull are reported as shallow (default 1). Use 0 when straight walls release, as in flexible silicone.
+    #[serde(default = "default_minimum_draft")]
+    #[schemars(range(min = 0.0, max = 89.0))]
+    minimum_draft_degrees: f64,
+    /// Optional distance along the pull from the part's lowest point to the parting plane of a two-part mould. Faces below it release in the opposite direction.
+    parting_offset_mm: Option<f64>,
+}
+
+fn default_minimum_draft() -> f64 {
+    1.0
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1750,7 +1769,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances, and optional signed deviation from a reference mesh after an optional rigid best fit. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional mould draft along a pull direction, optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances, and optional signed deviation from a reference mesh after an optional rigid best fit. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -4834,6 +4853,11 @@ async fn validate_mesh_artifact(
                 minimum_wall_mm: params.minimum_wall_mm,
                 dimensions: params.dimensions.map(DimensionOptions::from),
                 comparison,
+                draft: params.draft.map(|draft| DraftOptions {
+                    pull_direction: draft.pull_direction,
+                    minimum_draft_degrees: draft.minimum_draft_degrees,
+                    parting_offset_mm: draft.parting_offset_mm,
+                }),
             },
         )?;
         let mut result = json!({
@@ -5441,6 +5465,7 @@ async fn scad_compile(
             .map(|profile| profile.manufacturing.minimum_wall_mm),
         dimensions: None,
         comparison: None,
+        draft: None,
     };
     let definition_metadata = scad_definition_metadata(&definitions);
     let source = bind_scad_variant(params.source, &definitions);
