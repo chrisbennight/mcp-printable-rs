@@ -17,8 +17,8 @@ use crate::{GeometryError, MeshBounds, TriangleMesh};
 
 /// Cells in the grid, at most.
 const MAX_CELLS: usize = 8_000_000;
-/// Lumps with fewer cells are counted in the totals but not listed: a
-/// difference thinner than a cell shows only as scattered cells.
+/// Lumps with fewer cells are counted in the totals but not listed, as too
+/// small to locate.
 const MIN_REGION_CELLS: usize = 8;
 /// Lumps listed, at most.
 const MAX_REGIONS: usize = 10;
@@ -62,8 +62,9 @@ pub struct VolumeRegion {
     pub bounds: MeshBounds,
 }
 
-/// Refuse a mesh whose inside is undefined: one with open or flipped edges,
-/// or one turned inside out.
+/// Refuse a mesh whose inside is undefined because its faces do not close up
+/// consistently. A mesh turned inside out is refused while its cells are
+/// counted.
 pub(crate) fn require_closed(mesh: &TriangleMesh, name: &str) -> Result<(), GeometryError> {
     // Each edge of a closed, consistently oriented surface is used once in
     // each direction.
@@ -84,19 +85,6 @@ pub(crate) fn require_closed(mesh: &TriangleMesh, name: &str) -> Result<(), Geom
     if balance.values().any(|&count| count != 0) {
         return Err(GeometryError::InvalidOptions(format!(
             "comparison volume needs closed meshes with consistently oriented faces; the {name} has open or flipped edges, so repair it or leave volume off"
-        )));
-    }
-    let enclosed: f64 = mesh
-        .triangles
-        .iter()
-        .map(|triangle| {
-            let [a, b, c] = triangle.map(|index| Vector::from_array(mesh.vertices[index as usize]));
-            a.dot(b.cross(c)) / 6.0
-        })
-        .sum();
-    if enclosed <= 0.0 {
-        return Err(GeometryError::InvalidOptions(format!(
-            "comparison volume needs the {name} to enclose material, but it is turned inside out or empty"
         )));
     }
     Ok(())
@@ -175,7 +163,9 @@ pub(crate) fn compare(
                     }
                 }
                 // Walking down the column, each crossing passed adds its sign
-                // to the winding count.
+                // to the winding count. A cavity's inward faces bring it back
+                // to zero; only faces turned inside out around material take
+                // it below.
                 crossings.sort_by(|a, b| b.0.total_cmp(&a.0));
                 let mut above = crossings.iter().peekable();
                 let mut winding = 0;
@@ -183,6 +173,11 @@ pub(crate) fn compare(
                     let level = centre(2, z);
                     while let Some((_, sign)) = above.next_if(|(height, _)| *height > level) {
                         winding += sign;
+                    }
+                    if winding < 0 {
+                        return Err(GeometryError::InvalidOptions(format!(
+                            "comparison volume needs the {name} to face outward, but part of it is turned inside out; recalculate its normals or leave volume off"
+                        )));
                     }
                     if winding > 0 {
                         state[(z * size[1] + y) * size[0] + x] |= flag;
@@ -427,13 +422,34 @@ mod tests {
         let mut flipped = block.clone();
         flipped.triangles[0].swap(1, 2);
         assert!(require_closed(&flipped, "mesh").is_err());
-        let mut inside_out = block;
+        let mut inside_out = cuboid([12.0, 0.0, 0.0], [14.0, 2.0, 2.0]);
         for triangle in &mut inside_out.triangles {
             triangle.swap(1, 2);
         }
-        let error = require_closed(&inside_out, "reference")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("turned inside out"), "{error}");
+        let error = compare(&block, &inside_out, 0.5).unwrap_err().to_string();
+        assert!(error.contains("reference to face outward"), "{error}");
+        // An inside-out part beside an outward one is found too, although
+        // the whole mesh still encloses a positive volume.
+        let mixed = joined(&[block.clone(), inside_out]);
+        assert!(require_closed(&mixed, "mesh").is_ok());
+        let error = compare(&mixed, &block, 0.5).unwrap_err().to_string();
+        assert!(error.contains("mesh to face outward"), "{error}");
+    }
+
+    #[test]
+    fn a_cavity_facing_inward_is_empty() {
+        let block = cuboid([0.0; 3], [10.0, 10.0, 10.0]);
+        let mut cavity = cuboid([3.0; 3], [7.0; 3]);
+        for triangle in &mut cavity.triangles {
+            triangle.swap(1, 2);
+        }
+        let hollow = joined(&[block.clone(), cavity]);
+        let report = compare(&hollow, &block, 0.5).unwrap();
+        assert_eq!(report.extra_volume_mm3, 0.0);
+        assert!(
+            (report.missing_volume_mm3 - 64.0).abs() < 1e-9,
+            "{report:?}"
+        );
+        assert_eq!(report.regions[0].material, Material::Missing);
     }
 }
