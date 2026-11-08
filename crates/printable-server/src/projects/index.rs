@@ -1209,6 +1209,14 @@ impl VectorKind {
         }
     }
 
+    /// The search method these vectors serve.
+    fn capability(self) -> Capability {
+        match self {
+            Self::Text => Capability::Meaning,
+            Self::Picture => Capability::Picture,
+        }
+    }
+
     /// The `projects` columns holding the input and its key.
     fn columns(self) -> (&'static str, &'static str) {
         match self {
@@ -1775,12 +1783,14 @@ fn rank(
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut positions: HashMap<i64, usize> = HashMap::new();
     let mut unloaded = 0;
+    let mut word_matching = Matching::Words;
     if !query.words.is_empty() {
         let mut matched = MatchKind::Words;
         let (mut total, mut found) =
             query.matches(connection, Matching::Words, MAX_WORD_CANDIDATES)?;
         if total == 0 && !query.pieces().is_empty() {
             matched = MatchKind::Near;
+            word_matching = Matching::Near;
             (total, found) = query.matches(connection, Matching::Near, MAX_WORD_CANDIDATES)?;
         }
         unloaded = total.saturating_sub(found.len());
@@ -1815,6 +1825,10 @@ fn rank(
     ] {
         let Some(vector) = vector else { continue };
         let (indexed, embedded) = vector_coverage(connection, kind)?;
+        if embedded == 0 {
+            notes.push(note(kind.capability(), Reason::NotReady, None));
+            continue;
+        }
         if embedded < indexed {
             notes.push(vectors_incomplete(kind, embedded, indexed));
         }
@@ -1838,6 +1852,24 @@ fn rank(
             }
         }
         lists.push((kind, similar));
+    }
+    // A candidate found by meaning or picture may be one of the word matches
+    // that were not loaded; `unloaded` already counts it.
+    let added: Vec<i64> = candidates
+        .iter()
+        .filter(|candidate| candidate.scores.words.is_none())
+        .map(|candidate| candidate.row)
+        .collect();
+    if unloaded > 0 && !added.is_empty() {
+        let (inner, outer, mut values) = query.selection(word_matching);
+        let rows = vec!["?"; added.len()].join(", ");
+        let outer = if outer.is_empty() {
+            format!("WHERE id IN ({rows})")
+        } else {
+            format!("{outer} AND id IN ({rows})")
+        };
+        values.extend(added.iter().map(|row| Sql::Integer(*row)));
+        unloaded = unloaded.saturating_sub(Query::count(connection, &inner, &outer, &values)?);
     }
     for (kind, similar) in lists {
         for scored in similar {
@@ -2207,6 +2239,8 @@ impl ProjectIndex {
             report.deferred = true;
             return Ok(report);
         }
+        // The budget for starting requests includes the probe.
+        let deadline = Instant::now() + EMBEDDING_BUDGET;
         let probe = match service.embed(&[Input::Text(PROBE_TEXT)]).await {
             Ok(probe) => probe,
             Err(error) => {
@@ -2229,7 +2263,7 @@ impl ProjectIndex {
             identity: &identity,
             now,
             retry: kind == PassKind::Retry,
-            deadline: Instant::now() + EMBEDDING_BUDGET,
+            deadline,
         };
         let more = self.embed_texts(&step, &mut report).await?;
         if more && pictures && identity.pictures_refused.is_none() {
@@ -2349,6 +2383,10 @@ impl ProjectIndex {
             }
             if ready.is_empty() {
                 continue;
+            }
+            // Preparing pictures may have waited for image-processing capacity.
+            if self.out_of_time(step, report) {
+                return Ok(());
             }
             let inputs: Vec<Input<'_>> = pictures
                 .iter()
@@ -2794,6 +2832,7 @@ impl ProjectIndex {
         &self,
         identity: Option<&Identity>,
         state: &ServiceState,
+        rows: &[VectorRow],
     ) -> (SearchMethods, Vec<Degradation>) {
         let service = match (&self.embeddings, &state.embeddings, identity) {
             (None, ..) => Some((Reason::NotConfigured, None)),
@@ -2801,9 +2840,16 @@ impl ProjectIndex {
             (Some(_), None, None) => Some((Reason::NotReady, None)),
             (Some(_), None, Some(_)) => None,
         };
-        let meaning = service
-            .clone()
-            .map(|(reason, detail)| note(Capability::Meaning, reason, detail));
+        // A method with no current vectors cannot find anything yet.
+        let texts = rows.iter().any(|row| row.text.embedded);
+        let pictures = rows
+            .iter()
+            .any(|row| row.picture.as_ref().is_some_and(|slot| slot.embedded));
+        let meaning = match &service {
+            Some((reason, detail)) => Some(note(Capability::Meaning, *reason, detail.clone())),
+            None if !texts => Some(note(Capability::Meaning, Reason::NotReady, None)),
+            None => None,
+        };
         let picture = match (&self.embeddings, identity) {
             (None, _) => Some(note(Capability::Picture, Reason::NotConfigured, None)),
             (Some(embeddings), _) if !embeddings.pictures() => {
@@ -2820,7 +2866,11 @@ impl ProjectIndex {
                 Reason::PicturesRejected,
                 Some(detail.clone()),
             )),
-            _ => service.map(|(reason, detail)| note(Capability::Picture, reason, detail)),
+            _ => match service {
+                Some((reason, detail)) => Some(note(Capability::Picture, reason, detail)),
+                None if !pictures => Some(note(Capability::Picture, Reason::NotReady, None)),
+                None => None,
+            },
         };
         let rerank = match (&self.reranker, &state.reranker) {
             (None, _) => Some(note(Capability::Rerank, Reason::NotConfigured, None)),
@@ -2872,7 +2922,7 @@ impl ProjectIndex {
                 .is_some_and(|service| identity.current(service))
         });
         let state = self.state().clone();
-        let (methods, unavailable) = self.availability(identity.as_ref(), &state);
+        let (methods, unavailable) = self.availability(identity.as_ref(), &state, &rows);
         Ok(IndexStatus {
             storage: self.storage_kind(),
             projects: coverage.total,
