@@ -505,7 +505,7 @@ async fn previews_export_the_plate_picture_without_slicing() {
     let arrange = argv.iter().position(|arg| arg == "--arrange").unwrap();
     assert_eq!(argv[arrange + 1], "1", "a bare mesh is placed on the plate");
     assert_eq!(worker.admission.available_permits(), 1);
-    assert!(!worker.previewing.load(Ordering::SeqCst));
+    assert!(!*worker.previewing.lock().unwrap());
     assert!(matches!(
         worker.preview(preview_params("notes.txt")).await,
         Err(PreviewError::Failed(_))
@@ -535,7 +535,7 @@ async fn previews_yield_to_slices_and_slices_wait_for_previews() {
     let preview =
         tokio::spawn(async move { previewing.preview(preview_params("source.stl")).await });
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !worker.previewing.load(Ordering::SeqCst) {
+        while !*worker.previewing.lock().unwrap() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

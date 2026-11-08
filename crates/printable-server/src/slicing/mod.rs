@@ -18,10 +18,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, PoisonError},
     time::Duration,
 };
 use tokio::{
@@ -220,8 +217,11 @@ pub struct SliceWorker {
     binary: PathBuf,
     admission: Arc<Semaphore>,
     active: Mutex<Option<Active>>,
-    /// True while a plate preview holds admission.
-    previewing: Arc<AtomicBool>,
+    /// True while a plate preview holds admission. A preview takes admission
+    /// and sets this under its lock, and an interactive request tries
+    /// admission and reads it under the same lock, so the request never sees
+    /// a preview's permit without the flag.
+    previewing: Arc<std::sync::Mutex<bool>>,
 }
 
 /// Admission held by a plate preview. Admission is released before the
@@ -229,13 +229,16 @@ pub struct SliceWorker {
 /// admitted rather than refused.
 struct PreviewAdmission {
     permit: Option<OwnedSemaphorePermit>,
-    previewing: Arc<AtomicBool>,
+    previewing: Arc<std::sync::Mutex<bool>>,
 }
 
 impl Drop for PreviewAdmission {
     fn drop(&mut self) {
         drop(self.permit.take());
-        self.previewing.store(false, Ordering::SeqCst);
+        *self
+            .previewing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
     }
 }
 
@@ -279,7 +282,7 @@ impl SliceWorker {
             binary,
             admission: Arc::new(Semaphore::new(1)),
             active: Mutex::new(None),
-            previewing: Arc::new(AtomicBool::new(false)),
+            previewing: Arc::new(std::sync::Mutex::new(false)),
         }
     }
 
@@ -287,14 +290,17 @@ impl SliceWorker {
     /// interactive request waits for a running one to finish instead of being
     /// refused; other work refuses it at once with `busy`.
     async fn admit(&self, busy: &str) -> Result<OwnedSemaphorePermit, ToolError> {
-        if let Ok(permit) = Arc::clone(&self.admission).try_acquire_owned() {
-            return Ok(permit);
-        }
-        if !self.previewing.load(Ordering::SeqCst) {
-            // A preview may have finished between the two checks.
-            return Arc::clone(&self.admission)
-                .try_acquire_owned()
-                .map_err(|_| slice_error(busy));
+        {
+            let previewing = self
+                .previewing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Ok(permit) = Arc::clone(&self.admission).try_acquire_owned() {
+                return Ok(permit);
+            }
+            if !*previewing {
+                return Err(slice_error(busy));
+            }
         }
         tokio::time::timeout(
             PREVIEW_TIMEOUT + Duration::from_secs(5),
@@ -319,10 +325,17 @@ impl SliceWorker {
             .to_owned();
         let source = projects::resolve(&self.workspace, &params.project_id, &params.source)
             .map_err(failed)?;
-        let permit = Arc::clone(&self.admission)
-            .try_acquire_owned()
-            .map_err(|_| PreviewError::Busy)?;
-        self.previewing.store(true, Ordering::SeqCst);
+        let permit = {
+            let mut previewing = self
+                .previewing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let permit = Arc::clone(&self.admission)
+                .try_acquire_owned()
+                .map_err(|_| PreviewError::Busy)?;
+            *previewing = true;
+            permit
+        };
         let _admission = PreviewAdmission {
             permit: Some(permit),
             previewing: Arc::clone(&self.previewing),

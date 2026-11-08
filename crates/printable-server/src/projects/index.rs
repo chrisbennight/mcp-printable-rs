@@ -53,7 +53,8 @@ const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
 const PICTURES_KEY: &str = "PRINTABLE_PROJECT_PICTURES";
 const SLICER_KEY: &str = "PRINTABLE_SLICER_ENDPOINT";
 const DEFAULT_INTERVAL_SECONDS: u64 = 30;
-/// Plate pictures one pass makes.
+/// Projects whose plate picture one pass tries to make. Plans passed over
+/// while the slicer is busy do not count.
 const MAX_PICTURES_MADE_PER_PASS: usize = 16;
 /// A pass starts making no picture after this long.
 const PICTURE_BUDGET: Duration = Duration::from_secs(120);
@@ -2476,11 +2477,26 @@ impl ProjectIndex {
         };
         let deadline = Instant::now() + PICTURE_BUDGET;
         let mut previews = true;
-        for plan in plans.into_iter().take(MAX_PICTURES_MADE_PER_PASS) {
+        let mut attempts = 0;
+        for plan in plans {
             if self.stop.is_cancelled() || Instant::now() >= deadline {
                 report.stopped = true;
                 break;
             }
+            if attempts == MAX_PICTURES_MADE_PER_PASS {
+                break;
+            }
+            // While the slicer is busy, a plan that can only ask for a
+            // preview waits for a later pass at no cost.
+            if !previews
+                && plan
+                    .steps
+                    .iter()
+                    .all(|step| matches!(step, pictures::Step::Preview { .. }))
+            {
+                continue;
+            }
+            attempts += 1;
             match self.make_picture(workspace, plan, previews).await? {
                 Made::Picture => {
                     report.made += 1;
@@ -4553,6 +4569,58 @@ mod tests {
                 .plate_failure
                 .unwrap();
             assert_eq!(failure.attempts, 2);
+        }
+
+        #[tokio::test]
+        async fn a_busy_slicer_still_lets_stored_thumbnails_through() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(
+                    ResponseTemplate::new(409).set_body_json(
+                        json!({"code": "slicer_busy", "error": "the slicer is busy"}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            let (_root, workspace) = workspace();
+            // More projects that need a preview than a pass may try, ahead of
+            // one whose 3MF carries a thumbnail.
+            let previews = MAX_PICTURES_MADE_PER_PASS + 1;
+            for number in 0..previews {
+                let id = format!("model-{number:02}");
+                super::record(&workspace, &id, &id, "", 1_000);
+                workspace
+                    .write_artifact(&format!("projects/{id}/part.stl"), b"solid part", false)
+                    .unwrap();
+            }
+            super::record(&workspace, "packaged", "packaged", "", 1_000);
+            let package = crate::slicing::package::fixture::package(&[(
+                "Metadata/plate_1.png",
+                &coloured_png([10, 200, 10]),
+            )]);
+            workspace
+                .write_artifact("projects/packaged/design.3mf", &package, false)
+                .unwrap();
+            let report = pictured(&server)
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert!(report.deferred);
+            assert_eq!(
+                (report.made, report.failed, report.waiting),
+                (1, 0, previews)
+            );
+            assert_eq!(preview_requests(&server).await.len(), 1);
+            assert!(
+                card::card(&workspace, "packaged")
+                    .unwrap()
+                    .pictures
+                    .plate
+                    .is_some()
+            );
         }
 
         #[test]
