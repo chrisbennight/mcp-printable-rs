@@ -2434,7 +2434,21 @@ impl ProjectIndex {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner),
             );
-            report.pictures = Some(self.make_pictures(workspace, plans, retrying).await?);
+            let pictures = self.make_pictures(workspace, plans, retrying).await?;
+            if pictures.made > 0 && !self.stop.is_cancelled() {
+                // Bring the cards whose pictures were just made up to date, so
+                // the pictures show and are embedded in this run.
+                let index = Arc::clone(self);
+                let cards = Arc::clone(workspace);
+                let refreshed =
+                    tokio::task::spawn_blocking(move || index.pass(&cards, PassKind::Incremental))
+                        .await
+                        .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+                report.rebuilt += refreshed.rebuilt;
+                report.failed += refreshed.failed;
+                report.removed += refreshed.removed;
+            }
+            report.pictures = Some(pictures);
             report.finished_unix_ms = super::unix_ms();
             self.remember(&report);
         }
@@ -2461,21 +2475,24 @@ impl ProjectIndex {
             ..PictureReport::default()
         };
         let deadline = Instant::now() + PICTURE_BUDGET;
+        let mut previews = true;
         for plan in plans.into_iter().take(MAX_PICTURES_MADE_PER_PASS) {
             if self.stop.is_cancelled() || Instant::now() >= deadline {
                 report.stopped = true;
                 break;
             }
-            match self.make_picture(workspace, plan).await? {
+            match self.make_picture(workspace, plan, previews).await? {
                 Made::Picture => {
                     report.made += 1;
                     report.waiting -= 1;
                 }
                 // A failed project still lacks a picture and waits to retry.
                 Made::Nothing => report.failed += 1,
+                // The slicer is busy: later plans still copy thumbnails, but
+                // ask for no previews until a later pass.
                 Made::Deferred => {
                     report.deferred = true;
-                    break;
+                    previews = false;
                 }
             }
         }
@@ -2483,16 +2500,21 @@ impl ProjectIndex {
     }
 
     /// Try a plan's steps in order and record the picture, or the failure.
+    /// Without `previews`, or while the slicer is busy, a preview step is
+    /// skipped; a plan that made nothing then waits for a later pass rather
+    /// than recording a failure.
     async fn make_picture(
         &self,
         workspace: &Arc<Workspace>,
         plan: pictures::Plan,
+        previews: bool,
     ) -> Result<Made, ToolError> {
         let slicer = self
             .pictures
             .as_ref()
             .and_then(|settings| settings.slicer.clone());
         let mut problem = "no way to make a picture was available".to_owned();
+        let mut deferred = false;
         for step in &plan.steps {
             let files = Arc::clone(workspace);
             let project_id = plan.project_id.clone();
@@ -2525,7 +2547,8 @@ impl ProjectIndex {
                     }
                 }
                 pictures::Step::Preview { model, relative } => {
-                    let Some(endpoint) = &slicer else {
+                    let Some(endpoint) = slicer.as_ref().filter(|_| previews) else {
+                        deferred |= slicer.is_some();
                         continue;
                     };
                     let request = pictures::preview_request(&project_id, &relative);
@@ -2543,7 +2566,10 @@ impl ProjectIndex {
                             })
                             .await
                         }
-                        Err(slicing::PreviewError::Busy) => return Ok(Made::Deferred),
+                        Err(slicing::PreviewError::Busy) => {
+                            deferred = true;
+                            continue;
+                        }
                         Err(slicing::PreviewError::Failed(message)) => {
                             Err(ToolError::Slice(message))
                         }
@@ -2567,6 +2593,9 @@ impl ProjectIndex {
                 }
                 Err(error) => problem = error.to_string(),
             }
+        }
+        if deferred {
+            return Ok(Made::Deferred);
         }
         tracing::warn!(project_id = %plan.project_id, "could not make a project picture");
         let workspace = Arc::clone(workspace);
@@ -4412,26 +4441,36 @@ mod tests {
                     .is_none()
             );
 
-            // The next pass shows the pictures and makes nothing new.
-            let quiet = index.run(&workspace, PassKind::Incremental).await.unwrap();
-            assert_eq!(quiet.pictures.unwrap(), PictureReport::default());
-            let shown: HashMap<String, Option<card::PictureKind>> =
-                find(&index, &workspace, json!({}))
-                    .await
-                    .results
+            // The same run published the pictures; the next makes nothing new.
+            let shown = |results: Vec<SearchResult>| -> HashMap<String, Option<card::PictureKind>> {
+                results
                     .into_iter()
                     .map(|result| (result.card.project_id, result.card.picture))
-                    .collect();
-            assert_eq!(shown["part"], Some(card::PictureKind::Plate));
-            assert_eq!(shown["sliced"], Some(card::PictureKind::Plate));
-            assert_eq!(shown["boxed"], Some(card::PictureKind::Cover));
-            assert_eq!(shown["empty"], None);
+                    .collect()
+            };
+            let listed = shown(find(&index, &workspace, json!({})).await.results);
+            assert_eq!(listed["part"], Some(card::PictureKind::Plate));
+            assert_eq!(listed["sliced"], Some(card::PictureKind::Plate));
+            assert_eq!(listed["boxed"], Some(card::PictureKind::Cover));
+            assert_eq!(listed["empty"], None);
+            let quiet = index.run(&workspace, PassKind::Incremental).await.unwrap();
+            assert_eq!(quiet.pictures.unwrap(), PictureReport::default());
+            assert_eq!(quiet.rebuilt, 0);
             assert_eq!(preview_requests(&server).await.len(), 1);
 
-            // A busy slicer defers the picture without recording a failure.
+            // A busy slicer defers previews without recording a failure, and
+            // a later project's stored thumbnail is still copied.
             super::record(&workspace, "later", "later", "", 2_000);
             workspace
                 .write_artifact("projects/later/later.stl", b"solid later", false)
+                .unwrap();
+            super::record(&workspace, "packaged", "packaged", "", 2_000);
+            let package = crate::slicing::package::fixture::package(&[(
+                "Metadata/plate_1.png",
+                &coloured_png([10, 200, 10]),
+            )]);
+            workspace
+                .write_artifact("projects/packaged/design.3mf", &package, false)
                 .unwrap();
             server.reset().await;
             Mock::given(method("POST"))
@@ -4452,9 +4491,20 @@ mod tests {
             assert!(deferred.deferred);
             assert_eq!(
                 (deferred.made, deferred.failed, deferred.waiting),
-                (0, 0, 1)
+                (1, 0, 1)
             );
             assert_eq!(pictures::read(&workspace, "later").unwrap(), None);
+            let packaged = card::card(&workspace, "packaged")
+                .unwrap()
+                .pictures
+                .plate
+                .unwrap();
+            assert_eq!(packaged.origin, pictures::Origin::PackageThumbnail);
+            assert_eq!(
+                preview_requests(&server).await.len(),
+                1,
+                "a busy slicer is asked once a pass"
+            );
 
             // A refusal is recorded and waits, unless a retry pass asks again.
             server.reset().await;

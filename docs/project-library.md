@@ -112,7 +112,9 @@ Pictures are stored as PNG files in `.printable/pictures/<project_id>/`, named
 by their SHA-256 digest, with `pictures.json` beside them recording what each
 shows. Making a picture never changes the project record or its files, so it
 never conflicts with an edit. A pass makes at most 16 pictures and starts none
-after two minutes. A plate preview is skipped while the slicer is busy and made
+after two minutes, and updates the cards of the projects it pictured, so new
+pictures show in the same pass. While the slicer is busy, the pass makes no
+more plate previews but still copies stored thumbnails; the previews are made
 in a later pass. A picture that cannot be made is tried again after 5 minutes,
 then after twice the previous wait, up to a day; `project reindex` with
 `"mode": "retry"` tries it again at once. An earlier picture is shown until a
