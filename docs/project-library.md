@@ -20,11 +20,11 @@ version 2:
 | `tags` | Up to 32 tags, omitted when empty |
 | `cover` | The stored cover picture, omitted when there is none |
 
-Records written before version 2 stay at format version 1 and are read
-unchanged. They report `record_version: 0` and have no dates, tags or cover.
-The first `update` or `cover` call rewrites such a record as version 2. Its
-`created_unix_ms` is then estimated from the record file's modification time,
-and `created_estimated: true` says so.
+Records written before version 2 stay at format version 1 and are not
+rewritten by reading them. They report `record_version: 0`, no tags or cover,
+and creation and update times taken from the record file's modification time
+with `created_estimated: true`. The first `update` or `cover` call rewrites
+such a record as version 2 and keeps that estimated creation time.
 
 Creating a project again with the same name and description returns the
 current record. A different name or description is refused; use `update` to
@@ -60,7 +60,7 @@ record. An edit that finds the lock held is refused as busy rather than queued.
 | `{"image": {"path": "photos/finished.png"}}` | A PNG, JPEG or WebP file in the project |
 | `{"slice_thumbnail": {"package": "slice-1/model.gcode.3mf", "plate": 1}}` | A plate thumbnail stored in a sliced 3MF; `plate` defaults to 1 |
 | `{"model_view": {"model": "parts/body.stl"}}` | An isometric 512-pixel OpenSCAD view of an STL |
-| `"automatic"` | The first plate thumbnail of the newest sliced 3MF; otherwise a view of the newest STL |
+| `"automatic"` | The first plate thumbnail of the newest sliced 3MF; otherwise a view of the newest STL; otherwise no cover |
 | `"none"` | Remove the cover |
 
 Paths are relative to the project directory. A model view runs OpenSCAD under

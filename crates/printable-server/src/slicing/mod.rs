@@ -303,6 +303,9 @@ impl SliceWorker {
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
             return Ok(state);
         }
+        // Retained state needs no lock; summarising an older slice can take a
+        // while and must not delay the active slice's progress or controls.
+        drop(active);
         let (meta, bytes) = self
             .workspace
             .read_generated_bytes(&format!("{output}/state.json"))?;

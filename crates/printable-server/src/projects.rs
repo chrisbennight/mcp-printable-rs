@@ -213,8 +213,16 @@ fn project_root(id: &str) -> String {
     format!("projects/{id}")
 }
 
+/// Read a project. Version 1 records report the record file's time as their
+/// creation and update times, marked as estimated; the stored file is unchanged.
 pub fn get(workspace: &Workspace, id: &str) -> Result<Project, ToolError> {
-    read_record(workspace, id).map(|(project, _)| project)
+    let (mut project, modified_ms) = read_record(workspace, id)?;
+    if project.format_version == 1 {
+        project.created_unix_ms = Some(modified_ms);
+        project.updated_unix_ms = Some(modified_ms);
+        project.created_estimated = true;
+    }
+    Ok(project)
 }
 
 /// Read a project record with the file's modification time in Unix milliseconds.
@@ -629,5 +637,102 @@ mod adoption_tests {
         );
         std::os::unix::fs::symlink(root.path(), root.path().join("alias")).unwrap();
         assert!(workspace.create_public_directory("alias").is_err());
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+
+    fn legacy(workspace: &Workspace) {
+        workspace
+            .write_reserved_artifact(
+                ".printable/projects/bracket.json",
+                br#"{"format_version":1,"project_id":"bracket","name":"Bracket","description":"Old","root":"projects/bracket"}"#,
+                false,
+            )
+            .unwrap();
+    }
+
+    fn update(version: u64, description: Option<&str>, tags: Option<&[&str]>) -> ProjectRequest {
+        ProjectRequest::Update(UpdateParams {
+            project_id: "bracket".into(),
+            expected_record_version: version,
+            description: description.map(str::to_owned),
+            tags: tags.map(|tags| tags.iter().map(|tag| (*tag).to_owned()).collect()),
+        })
+    }
+
+    #[test]
+    fn version_1_records_report_estimates_and_upgrade_on_their_first_edit() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        legacy(&workspace);
+        let read = get(&workspace, "bracket").unwrap();
+        assert_eq!((read.format_version, read.record_version), (1, 0));
+        assert!(read.created_estimated && read.created_unix_ms.is_some());
+        let stored = std::fs::read(root.path().join(".printable/projects/bracket.json")).unwrap();
+        assert!(!String::from_utf8(stored).unwrap().contains("created"));
+        let edited = dispatch(
+            &workspace,
+            update(0, None, Some(&[" desk ", "Desk", "storage"])),
+        )
+        .unwrap();
+        assert_eq!(edited["format_version"], 2);
+        assert_eq!(edited["record_version"], 1);
+        assert_eq!(edited["created_estimated"], true);
+        assert_eq!(edited["created_unix_ms"], json!(read.created_unix_ms));
+        assert_eq!(edited["tags"], json!(["desk", "storage"]));
+        assert_eq!(edited["description"], "Old");
+        assert_eq!(
+            serde_json::to_value(get(&workspace, "bracket").unwrap()).unwrap(),
+            edited
+        );
+    }
+
+    #[test]
+    fn stale_busy_empty_and_invalid_edits_are_refused_without_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        legacy(&workspace);
+        dispatch(&workspace, update(0, Some("New"), None)).unwrap();
+        let before = get(&workspace, "bracket").unwrap();
+        let stale = dispatch(&workspace, update(0, Some("Other"), None)).unwrap_err();
+        assert!(stale.to_string().contains("record changed"), "{stale}");
+        let held = workspace
+            .try_lock_reserved(".printable/projects/bracket.lock")
+            .unwrap();
+        let busy = dispatch(&workspace, update(1, Some("Other"), None)).unwrap_err();
+        assert!(busy.to_string().contains("busy"), "{busy}");
+        drop(held);
+        for request in [
+            update(1, None, None),
+            update(1, None, Some(&[""])),
+            update(1, None, Some(&["bad\ntag"])),
+            update(1, None, Some(&[&"x".repeat(65)])),
+        ] {
+            assert!(dispatch(&workspace, request).is_err());
+        }
+        let too_many: Vec<String> = (0..33).map(|index| format!("tag-{index}")).collect();
+        let too_many: Vec<&str> = too_many.iter().map(String::as_str).collect();
+        assert!(dispatch(&workspace, update(1, None, Some(&too_many))).is_err());
+        assert_eq!(get(&workspace, "bracket").unwrap(), before);
+    }
+
+    #[test]
+    fn new_projects_start_at_version_2_and_repeat_creation_returns_them() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let params = CreateParams {
+            project_id: "desk".into(),
+            name: "Desk".into(),
+            description: "Organizer".into(),
+            adopt_existing: false,
+        };
+        let created = create(&workspace, params.clone()).unwrap();
+        assert_eq!((created.format_version, created.record_version), (2, 1));
+        assert!(!created.created_estimated);
+        assert_eq!(created.created_unix_ms, created.updated_unix_ms);
+        assert_eq!(create(&workspace, params).unwrap(), created);
     }
 }

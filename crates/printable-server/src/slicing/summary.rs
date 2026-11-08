@@ -34,9 +34,11 @@ pub fn summarize(
         .map(|slot| {
             let chosen = configured.get(slot).unwrap_or(&Value::Null);
             let packaged = facts.filaments.get(slot);
+            // Resolved Orca profiles store some values as one-element arrays.
             let pick = |value: &Value, fallback: Option<&String>| {
                 value
                     .as_str()
+                    .or_else(|| value.get(0).and_then(Value::as_str))
                     .map(str::to_owned)
                     .or_else(|| fallback.cloned())
             };
@@ -109,7 +111,7 @@ mod tests {
                 "printer": {"name": "Bambu Lab X1 Carbon 0.4 nozzle"},
                 "process": {"name": "0.20mm Standard @BBL X1C"},
                 "filaments": [{"slice_material_index": 0, "colour": null,
-                    "profile": {"name": "Bambu PLA Basic @BBL X1C", "filament_type": "PLA"}}],
+                    "profile": {"name": "Bambu PLA Basic @BBL X1C", "filament_type": ["PLA"]}}],
             },
         });
         if let Some(finished) = finished {
@@ -122,7 +124,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(Some(root.path()), None).unwrap();
         let settings =
-            json!({"filament_colour": ["#00aa00", "#ffffff"], "filament_type": ["PLA", "PETG"],
+            json!({"filament_colour": ["#00aa00", "#ffffff"], "filament_type": ["ABS", "PETG"],
             "filament_settings_id": ["Bambu PLA Basic @BBL X1C", "Bambu PETG HF @BBL X1C"]})
             .to_string();
         let thumbnail = fixture::png(2, 2);
@@ -152,6 +154,7 @@ mod tests {
             summary["filaments"][0]["profile"],
             "Bambu PLA Basic @BBL X1C"
         );
+        assert_eq!(summary["filaments"][0]["filament_type"], "PLA");
         assert_eq!(summary["filaments"][1]["filament_type"], "PETG");
         assert_eq!(summary["process"], "0.20mm Standard @BBL X1C");
     }

@@ -85,7 +85,8 @@ fn first_plate() -> u32 {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoverSource {
     /// The first plate thumbnail of the newest sliced 3MF package in the
-    /// project; otherwise an isometric view of its newest STL model.
+    /// project; otherwise an isometric view of its newest STL model;
+    /// otherwise no cover.
     Automatic,
     /// Remove the cover.
     None,
@@ -202,15 +203,12 @@ fn automatic(workspace: &Workspace, project: &Project) -> Result<Plan, ToolError
             }));
         }
     }
-    entries
+    Ok(entries
         .iter()
         .find(|entry| require_model(&entry.path).is_ok())
-        .map(|entry| Plan::RenderModel {
+        .map_or(Plan::Remove, |entry| Plan::RenderModel {
             model: entry.path.clone(),
-        })
-        .ok_or_else(|| {
-            invalid("the project has no sliced 3MF thumbnail or STL model to make a cover from")
-        })
+        }))
 }
 
 /// Validate the request and gather the picture, deferring only model renders.
@@ -427,11 +425,12 @@ mod tests {
     #[test]
     fn automatic_prefers_the_newest_sliced_thumbnail_then_a_model_view() {
         let (_root, workspace) = workspace();
-        assert!(apply(&workspace, &params(1, CoverSource::Automatic)).is_err());
+        let empty = apply(&workspace, &params(1, CoverSource::Automatic)).unwrap();
+        assert_eq!((empty.cover, empty.record_version), (None, 2));
         workspace
             .write_artifact("projects/desk/desk.stl", b"solid desk", false)
             .unwrap();
-        let rendered = apply(&workspace, &params(1, CoverSource::Automatic)).unwrap();
+        let rendered = apply(&workspace, &params(2, CoverSource::Automatic)).unwrap();
         assert_eq!(
             rendered.cover.unwrap().origin,
             CoverOrigin::ModelView {
@@ -446,7 +445,7 @@ mod tests {
         workspace
             .write_artifact("projects/desk/slice-1/model.gcode.3mf", &package, false)
             .unwrap();
-        let sliced = apply(&workspace, &params(2, CoverSource::Automatic)).unwrap();
+        let sliced = apply(&workspace, &params(3, CoverSource::Automatic)).unwrap();
         assert_eq!(
             sliced.cover.unwrap().origin,
             CoverOrigin::SliceThumbnail {
