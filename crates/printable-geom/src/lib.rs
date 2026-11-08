@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 mod assembly;
 mod assessment;
 mod bust;
+mod draft;
 mod fit;
 mod intersect;
 mod isosurface;
@@ -37,6 +38,7 @@ pub use bust::{
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, MAX_RAISED_SHARE,
     Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust,
 };
+pub use draft::{DraftOptions, DraftPatch, DraftReport};
 pub use fit::{
     DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
     Geometry, Measure, RequirementCheck, Shape,
@@ -68,6 +70,8 @@ pub struct ValidationOptions {
     pub minimum_wall_mm: Option<f64>,
     /// Fit shapes around seed points and check dimensions between them.
     pub dimensions: Option<DimensionOptions>,
+    /// Measure draft along the direction a mould releases the part.
+    pub draft: Option<DraftOptions>,
 }
 
 impl Default for ValidationOptions {
@@ -78,6 +82,7 @@ impl Default for ValidationOptions {
             density_g_cm3: None,
             minimum_wall_mm: None,
             dimensions: None,
+            draft: None,
         }
     }
 }
@@ -203,6 +208,8 @@ pub struct ValidationReport {
     pub wall_thickness: Option<WallThicknessReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dimensions: Option<DimensionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReport>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -296,6 +303,28 @@ fn prepare_mesh(
     if let Some(dimensions) = &options.dimensions {
         fit::validate(dimensions)?;
     }
+    let pull_direction = options
+        .draft
+        .map(|draft| {
+            if !draft.minimum_draft_degrees.is_finite()
+                || !(0.0..90.0).contains(&draft.minimum_draft_degrees)
+            {
+                return Err(GeometryError::InvalidOptions(
+                    "draft.minimum_draft_degrees must be finite, at least 0 and below 90"
+                        .to_string(),
+                ));
+            }
+            if draft
+                .parting_offset_mm
+                .is_some_and(|offset| !offset.is_finite())
+            {
+                return Err(GeometryError::InvalidOptions(
+                    "draft.parting_offset_mm must be finite".to_string(),
+                ));
+            }
+            normalized_direction(draft.pull_direction, "draft.pull_direction")
+        })
+        .transpose()?;
     for (index, vertex) in mesh.vertices.iter().enumerate() {
         if vertex.iter().any(|coordinate| !coordinate.is_finite()) {
             return Err(GeometryError::NonFiniteVertex { index });
@@ -564,6 +593,22 @@ fn prepare_mesh(
             "Review the heatmap, reorient the part, add support, or redesign the overhangs.",
         ));
     }
+    let draft = options
+        .draft
+        .zip(pull_direction)
+        .map(|(draft, pull)| draft::analyze(mesh, pull, draft));
+    if let Some(draft) = &draft
+        && draft.undercut.faces > 0
+    {
+        issues.push(warning_issue(
+            "mould_undercuts",
+            format!(
+                "{:.1} mm2 of surface in {} patches faces back against the pull direction",
+                draft.undercut.area_mm2, draft.undercut_patch_count
+            ),
+            "Add draft, split the mould at a parting plane, or confirm that a flexible mould material can release these undercuts.",
+        ));
+    }
 
     let wall_thickness = match (options.minimum_wall_mm, &manifold) {
         (Some(minimum_wall_mm), Some(solid)) => {
@@ -686,6 +731,7 @@ fn prepare_mesh(
             overhang,
             wall_thickness,
             dimensions,
+            draft,
             solid_geometry,
             printable: solid_geometry,
             issues,

@@ -295,10 +295,63 @@ fn mesh_report() -> Value {
         }),
         &["features", "requirements"],
     );
+    let faces = object(
+        json!({"faces": {"type": "integer", "minimum": 0}, "area_mm2": number}),
+        &["faces", "area_mm2"],
+    );
+    let patch = object(
+        json!({
+            "area_mm2": number,
+            "faces": {"type": "integer", "minimum": 1},
+            "minimum_draft_degrees": number,
+            "mean_draft_degrees": number,
+            "centre_mm": point,
+            "bounds": object(
+                json!({"minimum_mm": point, "maximum_mm": point, "dimensions_mm": point}),
+                &["minimum_mm", "maximum_mm", "dimensions_mm"]
+            )
+        }),
+        &[
+            "area_mm2",
+            "faces",
+            "minimum_draft_degrees",
+            "mean_draft_degrees",
+            "centre_mm",
+            "bounds",
+        ],
+    );
+    let draft = object(
+        json!({
+            "pull_direction": point,
+            "minimum_draft_degrees": number,
+            "parting_offset_mm": number,
+            "base": faces,
+            "released": faces,
+            "shallow": faces,
+            "undercut": faces,
+            "shallow_patch_count": {"type": "integer", "minimum": 0},
+            "shallow_patches": {"type": "array", "items": patch},
+            "undercut_patch_count": {"type": "integer", "minimum": 0},
+            "undercut_patches": {"type": "array", "items": patch}
+        }),
+        &[
+            "pull_direction",
+            "minimum_draft_degrees",
+            "base",
+            "released",
+            "shallow",
+            "undercut",
+            "shallow_patch_count",
+            "shallow_patches",
+            "undercut_patch_count",
+            "undercut_patches",
+        ],
+    );
     object(
         json!({
             "wall_thickness": wall_thickness,
             "dimensions": dimensions,
+            "draft": draft,
             "solid_geometry": {"type": "boolean"},
             "printable": {"type": "boolean", "deprecated": true,
                 "description": "Compatibility alias for solid_geometry only. Does not establish manufacturing qualification."},

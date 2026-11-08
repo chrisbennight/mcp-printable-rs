@@ -2520,6 +2520,66 @@ async fn mesh_validation_measures_wall_thickness_against_a_requested_minimum() {
 }
 
 #[tokio::test]
+async fn mesh_validation_reports_mould_draft_along_a_pull_direction() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    ws.write_artifact("models/cube.stl", &cube_stl(10.0), false)
+        .expect("seed cube STL");
+    let validator = jsonschema::validator_for(
+        &printable_server::resources::contracts::read(
+            "printable://contracts/validate_mesh",
+            Default::default(),
+        )
+        .unwrap()["outputSchema"],
+    )
+    .unwrap();
+    let (uploads, client, settings) = (uploads(), client("127.0.0.1", 9), settings("127.0.0.1", 9));
+    let validate = |draft: Value| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": "models/cube.stl", "draft": draft}),
+        )
+    };
+
+    // A cube's walls run straight along the pull, so they are shallow at
+    // the default minimum draft and nothing catches.
+    let straight = validate(json!({"pull_direction": [0.0, 0.0, 1.0]}))
+        .await
+        .expect("validate cube draft");
+    validator.validate(&straight).unwrap();
+    let draft = &straight["report"]["draft"];
+    assert_eq!(draft["minimum_draft_degrees"], json!(1.0));
+    assert_eq!(draft["base"]["faces"], json!(2));
+    assert_eq!(draft["shallow"]["area_mm2"], json!(400.0));
+    assert_eq!(draft["undercut"]["faces"], json!(0));
+
+    // Pulled sideways, the face at the low end of the pull is the base and
+    // the side walls release with no minimum draft.
+    let sideways =
+        validate(json!({"pull_direction": [1.0, 0.0, 0.0], "minimum_draft_degrees": 0.0}))
+            .await
+            .expect("validate sideways draft");
+    validator.validate(&sideways).unwrap();
+    assert_eq!(
+        sideways["report"]["draft"]["undercut"]["area_mm2"],
+        json!(0.0)
+    );
+    assert_eq!(
+        sideways["report"]["draft"]["base"]["area_mm2"],
+        json!(100.0)
+    );
+
+    let error = validate(json!({"pull_direction": [0.0, 0.0, 0.0]}))
+        .await
+        .expect_err("reject a zero pull direction");
+    assert!(error.to_string().contains("pull_direction"), "{error}");
+}
+
+#[tokio::test]
 async fn mesh_validation_fits_features_and_checks_dimensions() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));

@@ -160,7 +160,11 @@ a hole that must fit a pin or screw.
 ## Complete product workflow
 
 Use the same public sequence for enclosures, brackets, grips, mechanisms, and
-other hard-surface products:
+other hard-surface products. First agree the requirements with the user: the
+dimensions that must hold, the minimum wall and overhang the printer can make,
+and any clearances. Choose dimensional tolerances from how the part is printed
+and what the printer can hold, never finer than about three times the
+measurement noise, such as the chord error of tessellated curves.
 
 1. Compile the final printable variant with an explicit profile and require
    `validation.assessment.criteria.solid_topology.status` and
@@ -176,6 +180,13 @@ other hard-surface products:
 4. For articulated video, save the classified fixed/moving scene and submit a
    `mechanical_rotation` job. Treat any completed frame without a stored passing
    full-arc certificate as invalid.
+
+After each group of changes, compile and measure again, and work on the worst
+remaining problem first. Report each conclusion as measured, partly supported,
+or inferred, and name the result behind a measured one. Report an assumed
+design value, such as the drawn 6 mm bore, beside the measured value rather
+than in its place. An unmeasured criterion is not a pass. When a requirement is
+not met, end with "not done" and the remaining gaps.
 
 The repository's reference corpus applies this workflow to a rounded enclosure,
 a support-free mounting bracket, a capsule/taper grip, and one articulated

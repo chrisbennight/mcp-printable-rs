@@ -40,8 +40,9 @@ use tokio::sync::Semaphore;
 
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
-    AssemblyOptions, DimensionOptions, DimensionRequirement, FeatureRequest, LinearMotion, Measure,
-    RotationalMotion, Shape, ValidationOptions, ValidationReport, analyze_stl,
+    AssemblyOptions, DimensionOptions, DimensionRequirement, DraftOptions, FeatureRequest,
+    LinearMotion, Measure, RotationalMotion, Shape, ValidationOptions, ValidationReport,
+    analyze_stl,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -1001,6 +1002,8 @@ struct ValidateMeshParams {
     minimum_wall_mm: Option<f64>,
     /// Optional dimensional check. Fits planes, cylinders and spheres to the surface around seed points, reports each fit in `dimensions`, and checks diameters, distances and angles between them against a nominal and tolerance.
     dimensions: Option<DimensionParams>,
+    /// Optional mould release check. Reports how far each face leans off the pull direction, and the faces that catch on the mould.
+    draft: Option<DraftParams>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1092,6 +1095,23 @@ impl From<DimensionParams> for DimensionOptions {
                 .collect(),
         }
     }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DraftParams {
+    /// Direction the material on the other side of the surface moves away: the mould, or its upper half, lifting off a master that rests on its base, or the cast part coming out of a cavity. Magnitude is normalized.
+    pull_direction: [f64; 3],
+    /// Faces leaning less than this many degrees off the pull are reported as shallow (default 1). Use 0 when straight walls release, as in flexible silicone.
+    #[serde(default = "default_minimum_draft")]
+    #[schemars(range(min = 0.0, max = 89.0))]
+    minimum_draft_degrees: f64,
+    /// Optional distance along the pull from the part's lowest point to the parting plane of a two-part mould. Faces below it release in the opposite direction.
+    parting_offset_mm: Option<f64>,
+}
+
+fn default_minimum_draft() -> f64 {
+    1.0
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1723,7 +1743,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, and optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional mould draft along a pull direction, and optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -4784,6 +4804,11 @@ async fn validate_mesh_artifact(
                 density_g_cm3: params.density_g_cm3,
                 minimum_wall_mm: params.minimum_wall_mm,
                 dimensions: params.dimensions.map(DimensionOptions::from),
+                draft: params.draft.map(|draft| DraftOptions {
+                    pull_direction: draft.pull_direction,
+                    minimum_draft_degrees: draft.minimum_draft_degrees,
+                    parting_offset_mm: draft.parting_offset_mm,
+                }),
             },
         )?;
         Ok::<_, ToolError>(json!({
@@ -5386,6 +5411,7 @@ async fn scad_compile(
             .as_ref()
             .map(|profile| profile.manufacturing.minimum_wall_mm),
         dimensions: None,
+        draft: None,
     };
     let definition_metadata = scad_definition_metadata(&definitions);
     let source = bind_scad_variant(params.source, &definitions);

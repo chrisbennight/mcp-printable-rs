@@ -30,6 +30,27 @@ opening, remaining floor thickness, and removal direction. Simply negating the
 heights does not design a usable cavity. If the form needs undercuts, use suitable
 split geometry or a different modeling method.
 
+## Set the target and report against it
+
+Before the first change, state the target the result must meet. That means
+the finished size and relief depth, and the narrowest stroke and thinnest wall
+the printer can make. It also means the release direction, any undercuts the
+mould material can tolerate, and the casting clearances. Choose tolerances
+from the casting process and the printer, never finer than about three times
+the noise of the measurement, such as the error of an estimated depth map or
+the chord error of the mesh. Ask the user once for the defaults and approach
+that matter, then work without repeated questions.
+
+After each group of changes, measure again and work on the worst remaining
+problem first.
+
+In the final report, label each conclusion as measured, partly supported, or
+inferred, and name the result a measured conclusion comes from. Report an
+assumed design value beside the measured value, never in its place. Report a
+criterion that was not measured as unmeasured, and never count it as passed.
+If the target is not met, say "not done" and list what remains instead of
+declaring success.
+
 ## Author calibrated heights
 
 For flat artwork, identify feature regions and assign deliberate heights. Image
@@ -124,6 +145,18 @@ direction, and remaining base thickness. Interpret Euler characteristic against
 the design; intentional holes need not produce a value of two. For a tray, also
 measure side gaps, wall thickness, fill level, cover, and freeboard. Report a
 relevant property as unmeasured when the available check cannot establish it.
+
+Check release with `validate_mesh` and its `draft` option along the declared
+release direction. For the master, the pull is the direction the mould lifts
+off it; for the printed mould, it is the direction the cast part comes out.
+Faces that lean back against the pull are reported as
+undercut patches, with their area and location. Faces that lean less than
+`minimum_draft_degrees` are reported as shallow patches. Use 0 for flexible
+silicone, where straight walls release, and a degree or two for a rigid or
+printed mould. For a two-part mould, give `parting_offset_mm` so each half is
+judged against its own direction. Report the undercuts you keep as accepted
+for the material, and change or split the design for the ones it cannot
+release.
 
 Re-read the exported STL or 3MF and verify that its geometry matches the validated
 source. Render the imported export or the same verified vertices, using
