@@ -13,6 +13,8 @@ repository.workspace = true
 # extra system libraries. The sys crate clones and compiles manifold3d on the
 # first build (internet required once) and caches it thereafter.
 manifold-csg = { version = "0.4.0", default-features = false }
+# Symmetric eigen decomposition and small dense solves for shape fitting.
+nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
 parry3d-f64 = { version = "0.30.0", default-features = false, features = ["alloc", "required-features", "std"] }
 # Adaptive exact orientation predicates for self-intersection detection and
 # winding counts.

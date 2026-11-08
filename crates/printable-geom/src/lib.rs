@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 mod assembly;
 mod assessment;
 mod bust;
+mod fit;
 mod intersect;
 mod isosurface;
 mod print_check;
@@ -35,6 +36,10 @@ pub use bust::{
     Body, BodyKind, BodyReport, BustReport, BustRequest, DetailPercentiles, Displacement,
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, MAX_RAISED_SHARE,
     Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust,
+};
+pub use fit::{
+    DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
+    Geometry, Measure, RequirementCheck, Shape,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
@@ -53,7 +58,7 @@ pub struct TriangleMesh {
 }
 
 /// Caller-selected print analysis parameters.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidationOptions {
     pub build_direction: [f64; 3],
     pub overhang_angle_degrees: f64,
@@ -61,6 +66,8 @@ pub struct ValidationOptions {
     /// Measure wall thickness against this minimum, in millimetres, when the
     /// mesh is a valid solid.
     pub minimum_wall_mm: Option<f64>,
+    /// Fit shapes around seed points and check dimensions between them.
+    pub dimensions: Option<DimensionOptions>,
 }
 
 impl Default for ValidationOptions {
@@ -70,6 +77,7 @@ impl Default for ValidationOptions {
             overhang_angle_degrees: 45.0,
             density_g_cm3: None,
             minimum_wall_mm: None,
+            dimensions: None,
         }
     }
 }
@@ -193,6 +201,8 @@ pub struct ValidationReport {
     pub overhang: OverhangReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wall_thickness: Option<WallThicknessReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<DimensionReport>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -282,6 +292,9 @@ fn prepare_mesh(
         return Err(GeometryError::InvalidOptions(
             "minimum_wall_mm must be a finite positive number".to_string(),
         ));
+    }
+    if let Some(dimensions) = &options.dimensions {
+        fit::validate(dimensions)?;
     }
     for (index, vertex) in mesh.vertices.iter().enumerate() {
         if vertex.iter().any(|coordinate| !coordinate.is_finite()) {
@@ -595,6 +608,42 @@ fn prepare_mesh(
         (None, _) => None,
     };
 
+    let dimensions = options
+        .dimensions
+        .as_ref()
+        .map(|dimensions| fit::measure(mesh, dimensions));
+    if let Some(report) = &dimensions {
+        let unfitted: Vec<&str> = report
+            .features
+            .iter()
+            .filter(|feature| feature.fit.is_none())
+            .map(|feature| feature.name.as_str())
+            .collect();
+        if !unfitted.is_empty() {
+            issues.push(warning_issue(
+                "features_unmeasured",
+                format!("no shape could be fitted for {}", unfitted.join(", ")),
+                "Move the seed onto the feature's surface, or give the direction of a plane's normal or a cylinder's axis.",
+            ));
+        }
+        let failed = report
+            .requirements
+            .iter()
+            .filter(|requirement| requirement.status == CriterionStatus::Failed)
+            .count();
+        if failed > 0 {
+            issues.push(warning_issue(
+                "dimensions_out_of_tolerance",
+                format!(
+                    "{failed} of {} dimensional requirements are outside their tolerance",
+                    report.requirements.len()
+                ),
+                "Compare each measured value and range with its nominal, then correct the design, the nominal, or the feature's seed.",
+            ));
+        }
+    }
+    let dimensional = dimensions.as_ref().and_then(fit::criterion);
+
     let assessment = MeshAssessment::new(
         solid_geometry,
         bounds.dimensions_mm.iter().all(|value| value.is_finite()),
@@ -608,6 +657,7 @@ fn prepare_mesh(
                 CriterionStatus::Passed
             }
         }),
+        dimensional,
     );
     Ok(PreparedMesh {
         report: ValidationReport {
@@ -635,6 +685,7 @@ fn prepare_mesh(
             assessment,
             overhang,
             wall_thickness,
+            dimensions,
             solid_geometry,
             printable: solid_geometry,
             issues,
