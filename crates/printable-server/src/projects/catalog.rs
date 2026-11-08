@@ -149,7 +149,7 @@ mod tests {
 
     use super::*;
     use crate::projects::{
-        card::{CompactCard, Dates},
+        card::{CompactCard, Dates, PictureKind},
         index::MethodScores,
     };
 
@@ -160,6 +160,7 @@ mod tests {
                 name: "Spiral vase".into(),
                 description: String::new(),
                 cover_path: Some(".printable/covers/vase/a.png".into()),
+                picture: Some(PictureKind::Cover),
                 dates: Dates {
                     created_unix_ms: 1_780_488_000_000,
                     created_estimated: false,

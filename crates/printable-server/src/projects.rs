@@ -13,6 +13,7 @@ pub mod cover;
 mod embeddings;
 mod export;
 pub mod index;
+pub mod pictures;
 pub mod requirements;
 pub mod revisions;
 pub use export::NativeExportParams;

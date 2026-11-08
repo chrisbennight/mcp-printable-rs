@@ -18,14 +18,17 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     net::unix::pipe,
     process::Command,
-    sync::{Mutex, Semaphore},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -59,6 +62,82 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
         ));
     }
     Ok(value)
+}
+
+/// Longest OrcaSlicer may take to export a plate preview.
+pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(120);
+/// Largest preview answer read: a base64 thumbnail and its JSON envelope.
+const MAX_PREVIEW_RESPONSE: usize = 24 * 1024 * 1024;
+
+/// A request for OrcaSlicer's plate picture of one model, made without
+/// slicing it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewParams {
+    pub project_id: String,
+    /// Project-relative STL, OBJ or 3MF.
+    pub source: String,
+}
+
+/// Why a plate preview was not made.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PreviewError {
+    /// The slicer is running other work; ask again later.
+    #[error("the slicer is busy")]
+    Busy,
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// Ask the slicer worker for OrcaSlicer's plate picture of a model. The
+/// answer is the PNG that OrcaSlicer stores as `Metadata/plate_1.png`.
+pub async fn preview(endpoint: &str, params: &PreviewParams) -> Result<Vec<u8>, PreviewError> {
+    let failed = |message: &str| PreviewError::Failed(message.to_owned());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(PREVIEW_TIMEOUT + Duration::from_secs(30))
+        .build()
+        .map_err(|_| failed("cannot initialize slicer connection"))?;
+    let mut response = client
+        .post(format!("{}/preview", endpoint.trim_end_matches('/')))
+        .json(params)
+        .send()
+        .await
+        .map_err(|_| failed("slicer connection failed"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::CONFLICT {
+        return Err(PreviewError::Busy);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| failed("slicer response interrupted"))?
+    {
+        if bytes.len() + chunk.len() > MAX_PREVIEW_RESPONSE {
+            return Err(failed("slicer answered with a preview that is too large"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| failed("slicer answered with an unreadable preview"))?;
+    if !status.is_success() {
+        return Err(failed(
+            value["error"]
+                .as_str()
+                .unwrap_or("slicer refused the preview"),
+        ));
+    }
+    use base64::Engine as _;
+    value["png_base64"]
+        .as_str()
+        .and_then(|encoded| {
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()
+        })
+        .ok_or_else(|| failed("slicer answered without a preview picture"))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -141,6 +220,23 @@ pub struct SliceWorker {
     binary: PathBuf,
     admission: Arc<Semaphore>,
     active: Mutex<Option<Active>>,
+    /// True while a plate preview holds admission.
+    previewing: Arc<AtomicBool>,
+}
+
+/// Admission held by a plate preview. Admission is released before the
+/// preview flag, so an interactive request waiting on the preview is
+/// admitted rather than refused.
+struct PreviewAdmission {
+    permit: Option<OwnedSemaphorePermit>,
+    previewing: Arc<AtomicBool>,
+}
+
+impl Drop for PreviewAdmission {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        self.previewing.store(false, Ordering::SeqCst);
+    }
 }
 
 impl SliceWorker {
@@ -183,7 +279,120 @@ impl SliceWorker {
             binary,
             admission: Arc::new(Semaphore::new(1)),
             active: Mutex::new(None),
+            previewing: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Admit an interactive operation. A plate preview is short, so an
+    /// interactive request waits for a running one to finish instead of being
+    /// refused; other work refuses it at once with `busy`.
+    async fn admit(&self, busy: &str) -> Result<OwnedSemaphorePermit, ToolError> {
+        if let Ok(permit) = Arc::clone(&self.admission).try_acquire_owned() {
+            return Ok(permit);
+        }
+        if !self.previewing.load(Ordering::SeqCst) {
+            // A preview may have finished between the two checks.
+            return Arc::clone(&self.admission)
+                .try_acquire_owned()
+                .map_err(|_| slice_error(busy));
+        }
+        tokio::time::timeout(
+            PREVIEW_TIMEOUT + Duration::from_secs(5),
+            Arc::clone(&self.admission).acquire_owned(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(|| slice_error(busy))
+    }
+
+    /// Export OrcaSlicer's plate picture of a project model without slicing
+    /// it. Previews are background work: one is refused as busy while any
+    /// other operation holds the slicer.
+    pub async fn preview(&self, params: PreviewParams) -> Result<Vec<u8>, PreviewError> {
+        let failed = |error: ToolError| PreviewError::Failed(error.to_string());
+        let extension = Path::new(&params.source)
+            .extension()
+            .and_then(|x| x.to_str())
+            .filter(|x| ["stl", "obj", "3mf"].contains(x))
+            .ok_or_else(|| PreviewError::Failed("a plate preview needs an STL, OBJ or 3MF".into()))?
+            .to_owned();
+        let source = projects::resolve(&self.workspace, &params.project_id, &params.source)
+            .map_err(failed)?;
+        let permit = Arc::clone(&self.admission)
+            .try_acquire_owned()
+            .map_err(|_| PreviewError::Busy)?;
+        self.previewing.store(true, Ordering::SeqCst);
+        let _admission = PreviewAdmission {
+            permit: Some(permit),
+            previewing: Arc::clone(&self.previewing),
+        };
+        self.export_preview(&source, &extension)
+            .await
+            .map_err(failed)
+    }
+
+    async fn export_preview(&self, source: &str, extension: &str) -> Result<Vec<u8>, ToolError> {
+        use std::os::unix::process::CommandExt;
+        let staging = self
+            .workspace
+            .scratch(self.workspace.stat_artifact(source)?.size_bytes, "preview")?;
+        let local_source = staging.path().join(format!("source.{extension}"));
+        let workspace = Arc::clone(&self.workspace);
+        let (from, to) = (source.to_owned(), local_source.clone());
+        tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
+            let snapshot = workspace.snapshot_artifact(&from)?;
+            std::fs::copy(snapshot.path(), &to)?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| slice_error("preview source snapshot task failed"))??;
+        let output = staging.path().join("output");
+        std::fs::create_dir(&output)?;
+        let mut command = Command::new(&self.binary);
+        // A 3MF keeps its own arrangement; a bare mesh is placed on the plate.
+        command
+            .args([
+                "--arrange",
+                if extension == "3mf" { "0" } else { "1" },
+                "--export-3mf",
+                "preview.3mf",
+                "--outputdir",
+            ])
+            .arg(&output)
+            .arg(&local_source)
+            .current_dir(staging.path())
+            .env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", staging.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        staging.retain_for_command(command.as_std_mut())?;
+        let mut child = command.spawn()?;
+        let group = ProcessGroup(child.id().expect("spawned child"));
+        let waited = tokio::time::timeout(PREVIEW_TIMEOUT, child.wait()).await;
+        drop(group);
+        let _ = child.wait().await;
+        match waited {
+            Err(_) => return Err(slice_error("plate preview exceeded its deadline")),
+            Ok(Err(error)) => return Err(error.into()),
+            Ok(Ok(status)) if !status.success() => {
+                return Err(ToolError::Slice(format!(
+                    "OrcaSlicer could not export a plate preview ({status})"
+                )));
+            }
+            Ok(Ok(_)) => {}
+        }
+        let package = output.join("preview.3mf");
+        tokio::task::spawn_blocking(move || {
+            let _staging = staging;
+            package::plate_thumbnail(&package, 1)
+        })
+        .await
+        .map_err(|_| slice_error("preview thumbnail task failed"))?
     }
 
     pub async fn dispatch(self: &Arc<Self>, request: SliceRequest) -> Result<Value, ToolError> {
@@ -226,11 +435,9 @@ impl SliceWorker {
                 "toolpath must belong to the selected slice directory",
             ));
         }
-        let permit = Arc::clone(&self.admission)
-            .try_acquire_owned()
-            .map_err(|_| {
-                slice_error("slicer is busy; retry review after the active operation completes")
-            })?;
+        let permit = self
+            .admit("slicer is busy; retry review after the active operation completes")
+            .await?;
         let workspace = Arc::clone(&self.workspace);
         let slice_provenance = state.get("provenance").cloned();
         tokio::task::spawn_blocking(move || {
@@ -378,9 +585,9 @@ impl SliceWorker {
                 "resolved printer profile lacks its native start G-code",
             ));
         }
-        let permit = Arc::clone(&self.admission)
-            .try_acquire_owned()
-            .map_err(|_| slice_error("slicer is busy; inspect the active slice before retrying"))?;
+        let permit = self
+            .admit("slicer is busy; inspect the active slice before retrying")
+            .await?;
         let staging = Arc::new(self.workspace.scratch(
             self.workspace.stat_artifact(&source_path)?.size_bytes,
             "slice",

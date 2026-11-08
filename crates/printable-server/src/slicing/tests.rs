@@ -462,3 +462,88 @@ async fn cancellation_releases_admission_and_unknown_running_state_is_interrupte
         "interrupted"
     );
 }
+
+/// Replace the fake slicer with one that exports a plate preview after
+/// `delay` seconds, and otherwise slices as the fixture's does.
+fn fake_preview(root: &Path, delay: f64) -> Vec<u8> {
+    use base64::Engine as _;
+    let mut png = Vec::new();
+    image::RgbImage::from_pixel(8, 6, image::Rgb([220, 110, 70]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let script = format!(
+        "#!/usr/bin/python3\nimport base64,json,pathlib,sys,time,zipfile\npathlib.Path({argv:?}).write_text(json.dumps(sys.argv))\np=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])\nif 'preview.3mf' in sys.argv:\n time.sleep({delay})\n with zipfile.ZipFile(p/'preview.3mf','w') as z:\n  z.writestr('Metadata/plate_1.png', base64.b64decode({png:?}))\nelse:\n (p/'model.gcode.3mf').write_bytes(b'fake3mf')\n (p/'plate_1.gcode').write_text('M83\\n')\n",
+        argv = root.join("slicer-argv.json").to_str().unwrap(),
+        png = base64::engine::general_purpose::STANDARD.encode(&png),
+    );
+    let binary = root.join("fake-slicer");
+    std::fs::write(&binary, script).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    png
+}
+
+fn preview_params(source: &str) -> PreviewParams {
+    PreviewParams {
+        project_id: "part".into(),
+        source: source.into(),
+    }
+}
+
+#[tokio::test]
+async fn previews_export_the_plate_picture_without_slicing() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    let png = fake_preview(directory.path(), 0.0);
+    assert_eq!(
+        worker.preview(preview_params("source.stl")).await.unwrap(),
+        png
+    );
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(directory.path().join("slicer-argv.json")).unwrap())
+            .unwrap();
+    assert!(!argv.iter().any(|arg| arg == "--slice"), "{argv:?}");
+    let arrange = argv.iter().position(|arg| arg == "--arrange").unwrap();
+    assert_eq!(argv[arrange + 1], "1", "a bare mesh is placed on the plate");
+    assert_eq!(worker.admission.available_permits(), 1);
+    assert!(!worker.previewing.load(Ordering::SeqCst));
+    assert!(matches!(
+        worker.preview(preview_params("notes.txt")).await,
+        Err(PreviewError::Failed(_))
+    ));
+    assert!(matches!(
+        worker.preview(preview_params("../outside.stl")).await,
+        Err(PreviewError::Failed(_))
+    ));
+}
+
+#[tokio::test]
+async fn previews_yield_to_slices_and_slices_wait_for_previews() {
+    let directory = tempfile::tempdir().unwrap();
+    // A running slice refuses a preview as busy.
+    let worker = fixture(directory.path(), true);
+    worker.prepare(params()).await.unwrap();
+    assert_eq!(
+        worker.preview(preview_params("source.stl")).await,
+        Err(PreviewError::Busy)
+    );
+    worker.status(handle(), true).await.unwrap();
+    terminal(&worker).await;
+
+    // A slice requested during a preview waits for it instead of failing.
+    fake_preview(directory.path(), 1.0);
+    let previewing = Arc::clone(&worker);
+    let preview =
+        tokio::spawn(async move { previewing.preview(preview_params("source.stl")).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !worker.previewing.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut next = params();
+    next.output_dir = "second".into();
+    let started = worker.prepare(next).await.unwrap();
+    assert_eq!(started["status"], "running");
+    assert!(preview.await.unwrap().is_ok());
+}

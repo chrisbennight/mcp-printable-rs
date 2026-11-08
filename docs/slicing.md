@@ -116,6 +116,22 @@ positive image dimensions without fixed count ceilings; their caller-selected
 storage controls remain separate runtime boundaries. Neither preparation nor review uploads a
 job to a printer or starts physical work.
 
+## Plate previews
+
+The worker also exports OrcaSlicer's plate picture of a model without slicing
+it, for [generated project pictures](project-library.md#generated-pictures).
+The server sends `POST /preview` to the worker with a project and a
+project-relative STL, OBJ or 3MF. The worker runs OrcaSlicer with
+`--export-3mf` and no `--slice`, placing a bare mesh on the plate with
+`--arrange 1` while a 3MF keeps its own arrangement, and answers with the
+exported `Metadata/plate_1.png`. A preview may take two minutes. It is not an
+action of the `slice` tool.
+
+Previews are background work. One is refused with HTTP 409 while any other
+operation holds the slicer, and the server makes it in a later pass. A slice or
+toolpath review requested while a preview runs waits for the preview to finish
+instead of being refused as busy.
+
 ## Updating the packaged Orca release
 
 The overrideable setting names live in
