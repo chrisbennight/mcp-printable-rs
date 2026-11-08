@@ -382,6 +382,8 @@ fn format_of(path: &str) -> Option<&'static str> {
         "gcode" => "gcode",
         "dxf" => "dxf",
         "svg" => "svg",
+        "py" => "py",
+        "cadmodel" => "cadmodel",
         _ => return None,
     })
 }
