@@ -48,8 +48,13 @@ const DEFAULT_INTERVAL_SECONDS: u64 = 30;
 const MAX_INTERVAL_SECONDS: u64 = 86_400;
 const FILE_NAME: &str = "index.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Stored as SQLite's `user_version`; a different value recreates the tables.
-const SCHEMA_VERSION: i64 = 2;
+/// Stored as SQLite's `user_version`; a different value recreates the tables,
+/// except for the upgrade from [`PICTURE_SHAPE_VERSION`].
+const SCHEMA_VERSION: i64 = 3;
+/// Indexes at this version have the current tables but may hold a picture
+/// refusal answered to an earlier picture request shape, or to a request that
+/// was only too large. Upgrading clears it so pictures are tried again.
+const PICTURE_SHAPE_VERSION: i64 = 2;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 pub(crate) const MAX_OFFSET: usize = 1000;
@@ -67,8 +72,10 @@ const WEIGHTS: &str = "10.0, 5.0, 3.0, 2.0, 1.0";
 const MAX_TEXTS_PER_PASS: usize = 256;
 /// Project pictures one pass embeds.
 const MAX_PICTURES_PER_PASS: usize = 32;
-/// Pictures sent in one request.
-const PICTURE_BATCH: usize = 4;
+/// Pictures sent in one request. A picture may take several MiB once
+/// encoded, so each goes alone to stay within the request size limits of
+/// services and the proxies in front of them.
+const PICTURE_BATCH: usize = 1;
 /// A pass starts no embedding request after this long.
 const EMBEDDING_BUDGET: Duration = Duration::from_secs(120);
 /// The wait before a failed vector is tried again; it doubles with each
@@ -733,7 +740,10 @@ impl Entry {
 fn prepare_schema(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != SCHEMA_VERSION {
+    if version == PICTURE_SHAPE_VERSION {
+        transaction.execute("UPDATE identity SET pictures_refused = NULL", [])?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    } else if version != SCHEMA_VERSION {
         transaction.execute_batch(
             "DROP TABLE IF EXISTS facets;
              DROP TABLE IF EXISTS projects;
@@ -2540,7 +2550,7 @@ impl ProjectIndex {
                     return Ok(());
                 }
                 Err(ServiceError::Refused(status))
-                    if !ServiceError::Refused(status).is_service_wide() =>
+                    if ServiceError::Refused(status).refuses_pictures() =>
                 {
                     self.refuse_pictures(step.identity, pictures_refused_with(status))
                         .await?;
@@ -2953,7 +2963,7 @@ impl ProjectIndex {
                 None
             }
             Err(ServiceError::Refused(status))
-                if !ServiceError::Refused(status).is_service_wide() =>
+                if ServiceError::Refused(status).refuses_pictures() =>
             {
                 let detail = pictures_refused_with(status);
                 self.refuse_pictures(identity, detail.clone()).await?;
@@ -3912,6 +3922,8 @@ mod tests {
             /// Changes every text vector, as a retrained model would.
             shifted: Arc<AtomicBool>,
             refuse_pictures: bool,
+            /// Pictures are answered with HTTP 413 while this is set.
+            pictures_too_large: Arc<AtomicBool>,
             /// Texts containing this word are refused with HTTP 400.
             refuse_word: Option<&'static str>,
         }
@@ -3922,6 +3934,7 @@ mod tests {
                     model: "fake-embed-1",
                     shifted: Arc::new(AtomicBool::new(false)),
                     refuse_pictures: false,
+                    pictures_too_large: Arc::new(AtomicBool::new(false)),
                     refuse_word: None,
                 }
             }
@@ -3944,8 +3957,8 @@ mod tests {
                 vector
             }
 
-            fn picture(parts: &Value) -> Vec<f32> {
-                let url = parts[0]["image_url"]["url"].as_str().unwrap();
+            fn picture(part: &Value) -> Vec<f32> {
+                let url = part["image_url"]["url"].as_str().unwrap();
                 let png = STANDARD
                     .decode(url.strip_prefix("data:image/png;base64,").unwrap())
                     .unwrap();
@@ -3978,7 +3991,11 @@ mod tests {
                             self.text(text)
                         }
                         _ if self.refuse_pictures => return ResponseTemplate::new(400),
-                        parts => Self::picture(parts),
+                        _ if self.pictures_too_large.load(Ordering::SeqCst) => {
+                            return ResponseTemplate::new(413);
+                        }
+                        part if part["type"] == "image_url" => Self::picture(part),
+                        _ => return ResponseTemplate::new(422),
                     };
                     data.push(
                         json!({"object": "embedding", "index": index, "embedding": embedding}),
@@ -4131,7 +4148,7 @@ mod tests {
             bodies(server)
                 .await
                 .iter()
-                .filter(|body| body["input"][0].is_array())
+                .filter(|body| body["input"][0]["type"] == "image_url")
                 .count()
         }
 
@@ -4440,6 +4457,117 @@ mod tests {
                 Some(Reason::PicturesRejected)
             );
             assert_eq!(picture_requests(&server).await, 1);
+        }
+
+        #[tokio::test]
+        async fn pictures_too_large_for_the_service_are_retried_not_refused() {
+            let server = MockServer::start().await;
+            let model = FakeModel::new();
+            let too_large = Arc::clone(&model.pictures_too_large);
+            too_large.store(true, Ordering::SeqCst);
+            served(&server, model).await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            set_cover(&workspace, "vase", [220, 30, 30]);
+            set_cover(&workspace, "hook", [30, 200, 40]);
+            let index = configured(&server, &[("PRINTABLE_EMBEDDING_IMAGES", "on")]);
+            let first = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .embedding
+                .unwrap();
+            assert_eq!((first.texts, first.pictures, first.failed), (4, 0, 2));
+            assert_eq!(
+                picture_requests(&server).await,
+                2,
+                "one picture per request"
+            );
+            let status = index.status(&workspace).unwrap();
+            assert_eq!(
+                noted(&status.unavailable, "picture_search_unavailable")
+                    .unwrap()
+                    .reason,
+                Some(Reason::NotReady),
+                "pictures are waiting for a retry, not refused"
+            );
+            workspace
+                .write_artifact("queries/red.png", &coloured_png([250, 0, 0]), false)
+                .unwrap();
+            let found = find(&index, &workspace, json!({"picture": "queries/red.png"})).await;
+            assert_eq!(
+                noted(&found.degraded, "picture_search_unavailable")
+                    .unwrap()
+                    .reason,
+                Some(Reason::Refused)
+            );
+
+            too_large.store(false, Ordering::SeqCst);
+            let retried = index
+                .run(&workspace, PassKind::Retry)
+                .await
+                .unwrap()
+                .embedding
+                .unwrap();
+            assert_eq!((retried.pictures, retried.failed), (2, 0));
+            let found = find(&index, &workspace, json!({"picture": "queries/red.png"})).await;
+            assert_eq!(found.results[0].card.project_id, "vase");
+            assert!(noted(&found.degraded, "picture_search_unavailable").is_none());
+        }
+
+        #[tokio::test]
+        async fn upgrading_an_index_tries_refused_pictures_again() {
+            let server = MockServer::start().await;
+            served(
+                &server,
+                FakeModel {
+                    refuse_pictures: true,
+                    ..FakeModel::new()
+                },
+            )
+            .await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            set_cover(&workspace, "vase", [220, 30, 30]);
+            let directory = tempfile::tempdir().unwrap();
+            let dir = directory.path().to_str().unwrap().to_owned();
+            let open = || {
+                configured(
+                    &server,
+                    &[
+                        (DIR_KEY, dir.as_str()),
+                        ("PRINTABLE_EMBEDDING_IMAGES", "on"),
+                    ],
+                )
+            };
+            let refused = open();
+            refused
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap();
+            assert!(!refused.status(&workspace).unwrap().methods.picture);
+            drop(refused);
+            let connection = Connection::open(directory.path().join(FILE_NAME)).unwrap();
+            connection
+                .pragma_update(None, "user_version", PICTURE_SHAPE_VERSION)
+                .unwrap();
+            drop(connection);
+
+            server.reset().await;
+            served(&server, FakeModel::new()).await;
+            let upgraded = open();
+            let report = upgraded
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .embedding
+                .unwrap();
+            assert_eq!(
+                (report.texts, report.pictures),
+                (0, 1),
+                "text vectors are kept"
+            );
+            assert!(upgraded.status(&workspace).unwrap().methods.picture);
         }
 
         #[tokio::test]
