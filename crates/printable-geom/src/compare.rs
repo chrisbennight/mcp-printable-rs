@@ -29,6 +29,11 @@ use crate::{GeometryError, MeshBounds, TriangleMesh};
 
 /// At most this many regions are listed, largest first.
 const MAX_REGIONS: usize = 10;
+/// At most this many surface points are measured.
+const MAX_POINTS: usize = 200_000;
+/// A reading along a point's normal steps past at most this many reference
+/// surfaces that face the other way.
+const MAX_RAY_SURFACES: usize = 8;
 /// Points used to fit the alignment and to score each starting pose,
 /// spread evenly over the surface samples.
 const FIT_POINTS: usize = 4_000;
@@ -278,27 +283,45 @@ impl Reference {
         }
         [1.0, -1.0]
             .into_iter()
-            .filter_map(|direction: f64| {
-                let ray = Ray::new(to_parry(point), to_parry(&(normal * direction)));
-                let hit = self
-                    .surface
-                    .cast_local_ray_and_get_normal(&ray, reach, false)?;
-                let FeatureId::Face(face) = hit.feature else {
-                    return None;
-                };
-                // Faces seen from behind are numbered after the others.
-                let face_normal = self.face_normals[face as usize % self.face_normals.len()]?;
-                // Reference surface ahead along the outward normal means the
-                // point lies inside the reference.
-                (face_normal.dot(normal) > 0.0).then_some(-direction * hit.time_of_impact)
-            })
+            .filter_map(|direction: f64| self.along(point, &(normal * direction), normal, reach))
             .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+    }
+
+    /// Signed distance along `ray_direction` to the first reference surface
+    /// that faces the way `normal` does, stepping past surfaces that face the
+    /// other way. Surface ahead along the outward normal means the point lies
+    /// on the inner side of it.
+    fn along(&self, point: &V3, ray_direction: &V3, normal: &V3, reach: f64) -> Option<f64> {
+        let step = self.on_surface * 1000.0;
+        let (mut origin, mut travelled) = (*point, 0.0);
+        for _ in 0..MAX_RAY_SURFACES {
+            let ray = Ray::new(to_parry(&origin), to_parry(ray_direction));
+            let hit = self
+                .surface
+                .cast_local_ray_and_get_normal(&ray, reach - travelled, false)?;
+            let FeatureId::Face(face) = hit.feature else {
+                return None;
+            };
+            travelled += hit.time_of_impact;
+            // Faces seen from behind are numbered after the others.
+            let face_normal = self.face_normals[face as usize % self.face_normals.len()]?;
+            if face_normal.dot(normal) > 0.0 {
+                return Some(-ray_direction.dot(normal) * travelled);
+            }
+            origin += ray_direction * (hit.time_of_impact + step);
+            travelled += step;
+            if travelled >= reach {
+                return None;
+            }
+        }
+        None
     }
 }
 
 /// A nearest point on a triangle's edge or corner can be reported as on its
-/// face with a barycentric weight of zero, or within rounding of it. It belongs to the edge or vertex,
-/// whose pseudonormal faces between the faces that meet there.
+/// face with a barycentric weight of zero, or within rounding of it. It
+/// belongs to the edge or vertex, whose pseudonormal faces between the
+/// faces that meet there.
 fn on_edge_or_vertex(location: TrianglePointLocation) -> TrianglePointLocation {
     let TrianglePointLocation::OnFace(_, weights) = location else {
         return location;
@@ -339,6 +362,19 @@ pub(crate) fn measure(
                 area,
             });
         }
+    }
+    // Every triangle keeps a point, so a dense mesh can exceed the budget;
+    // points are then taken evenly, each standing for those it replaces.
+    if points.len() > MAX_POINTS {
+        let stride = points.len().div_ceil(MAX_POINTS);
+        points = points
+            .into_iter()
+            .step_by(stride)
+            .map(|point| SurfacePoint {
+                area: point.area * stride as f64,
+                ..point
+            })
+            .collect();
     }
 
     let (pose, alignment) = match options.alignment {
@@ -607,7 +643,7 @@ fn alignment_report(method: Alignment, pose: &Pose) -> AlignmentReport {
     }
 }
 
-/// Connected regions beyond the tolerance, outside and inside the reference
+/// Regions beyond the tolerance, outside and inside the reference
 /// separately. Readings are placed on a grid of cells one sample spacing
 /// wide; readings of the same sign in the same or touching cells join one
 /// region.
@@ -1031,6 +1067,63 @@ mod tests {
             "{:?}",
             report.regions
         );
+    }
+
+    #[test]
+    fn a_plate_lifted_clear_of_the_reference_is_measured_on_both_faces() {
+        // The lifted underside's nearest reference surface is the top, which
+        // faces the other way; the matching underside lies beyond it.
+        let reference = block(40.0, 0.4, 40.0);
+        let lifted = moved(
+            &reference,
+            &Pose {
+                rotation: Matrix3::identity(),
+                translation: V3::new(0.0, 0.0, 0.5),
+            },
+        );
+        let report = compare(&lifted, &reference, Alignment::None, 0.05);
+        // A point exactly over the reference's outer edge casts along its
+        // side and can miss; every other point is measured.
+        assert!(report.measured_area_share > 0.9999, "{report:?}");
+        let lowest = report
+            .regions
+            .iter()
+            .min_by(|a, b| a.extreme_mm.total_cmp(&b.extreme_mm))
+            .unwrap();
+        assert!(
+            (lowest.extreme_mm + 0.5).abs() < 1e-9,
+            "{:?}",
+            report.regions
+        );
+        assert!(lowest.area_mm2 > 1500.0);
+    }
+
+    #[test]
+    fn a_dense_mesh_is_measured_within_the_point_budget() {
+        let cells = 360;
+        let mut vertices = Vec::new();
+        for j in 0..=cells {
+            for i in 0..=cells {
+                vertices.push([f64::from(i) / 9.0, f64::from(j) / 9.0, 5.0]);
+            }
+        }
+        let at = |i: u32, j: u32| j * (cells + 1) + i;
+        let mut triangles = Vec::new();
+        for j in 0..cells {
+            for i in 0..cells {
+                triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        let sheet = TriangleMesh {
+            vertices,
+            triangles,
+        };
+        assert!(sheet.triangles.len() > MAX_POINTS);
+        let report = compare(&sheet, &block(40.0, 5.0, 40.0), Alignment::None, 0.05);
+        assert!(report.samples <= MAX_POINTS, "{}", report.samples);
+        assert_eq!(report.unmeasured_samples, 0);
+        assert!((report.within_tolerance_share - 1.0).abs() < 1e-12);
     }
 
     #[test]

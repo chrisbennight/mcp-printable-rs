@@ -217,11 +217,11 @@ unmeasured.
 | Field | Meaning |
 | --- | --- |
 | `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference. |
-| `sample_spacing_mm`, `samples` | How densely the surface was sampled. Large meshes are sampled more coarsely so that the work stays bounded. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. Large meshes are sampled more coarsely, and at most 200,000 points are measured, so that the work stays bounded. |
 | `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, and the share of the surface measured. |
 | `deviation_mm` | Area-weighted minimum, 5th, 50th and 95th percentiles, maximum, mean and RMS of the measured deviation. |
 | `within_tolerance_share` | Share of the measured surface within `tolerance_mm` either side. |
-| `region_count`, `regions` | Connected patches beyond the tolerance, outside and inside the reference separately, largest first. Each gives its area, largest deviation, where that lies, its centre, and its bounds, in the reference's frame. |
+| `region_count`, `regions` | Clusters of points beyond the tolerance, outside and inside the reference separately, largest first. Points within about two sample spacings join one cluster, so both faces of a wall that came out thicker form one region. Each gives its area, largest deviation, where that lies, its centre, and its bounds, in the reference's frame. |
 
 Regions add a `deviation_beyond_tolerance` warning. The response also names
 the reference in `reference_artifact`. A comparison measures surfaces; it does
