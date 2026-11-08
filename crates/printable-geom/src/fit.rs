@@ -79,6 +79,11 @@ const HOLE_WALL_DEGREES: f64 = 10.0;
 const HOLE_AXIS_DEGREES: f64 = 1.0;
 /// A hole's wall covers its whole circle, to within rounding.
 const HOLE_ARC_DEGREES: f64 = 359.9;
+/// A hole's wall faces point at its axis to within this angle, seen from
+/// above. A bore's facets point through the axis, and their triangles stray
+/// from that by about 11 degrees at most, on a hexagonal bore. The sides of a
+/// slot or a side passage turn further away.
+const HOLE_FACING_DEGREES: f64 = 20.0;
 
 type V3 = Vector3<f64>;
 
@@ -399,18 +404,21 @@ const SAME_HOLE_MM: f64 = 1e-7;
 /// The complete vertical cylindrical inner walls around declared holes, each
 /// given as its centre in X and Y and its radius. Every inward-facing wall
 /// face with its corners within twice the declared radius of the centre may
-/// seed a cylinder fit. Each group of wall faces joined across edges is
-/// fitted once, from its face whose farthest corner lies nearest the
-/// declared radius: a tessellated bore's corners lie on its circle while its
-/// flats cut inside. A fit counts when its axis is vertical and its wall
-/// covers the whole circle and faces the axis, so every section of a stepped
-/// opening that is a complete hole is reported, and one that is not, such as
-/// a nut trap's flats, hides nothing. The fitted centre and radius are
-/// reported, so a hole that moved or changed size is measured as it is, not
-/// as declared. A wall that more than one declaration reaches is fitted and
-/// listed once, and sections of one bore with the same centre and radius
-/// are one hole.
-pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<VerticalHole> {
+/// seed a cylinder fit, those whose corners all lie nearest the declared
+/// radius first: a tessellated bore's corners lie on its circle while its
+/// flats cut inside. A fit counts when its axis is vertical and its wall, the
+/// faces joined to it that point at the axis, goes all the way round, so
+/// every section of a stepped opening that is a complete hole is reported,
+/// and one that is not, such as a nut trap's flats, hides nothing. A found
+/// wall, or a flat patch whose fit failed, is not tried again by any
+/// declaration. The fitted centre and radius are reported, so a hole that
+/// moved or changed size is measured as it is, not as declared, and sections
+/// of one bore with the same centre and radius are one hole. Stops with the
+/// geometry time limit when one applies.
+pub fn vertical_holes(
+    mesh: &TriangleMesh,
+    declared: &[([f64; 2], f64)],
+) -> Result<Vec<VerticalHole>, GeometryError> {
     let surface = Surface::new(mesh);
     let level = HOLE_WALL_DEGREES.to_radians().sin();
     let is_wall = |face: usize| surface.normals[face].is_some_and(|normal| normal.z.abs() <= level);
@@ -421,8 +429,8 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
         .collect();
     walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
     let mut found: Vec<VerticalHole> = Vec::new();
-    // Each group of joined wall faces is fitted once, whichever declarations
-    // reach it.
+    // The faces of the walls found, and of the flat patches whose fit
+    // failed, which no declaration tries again.
     let mut tried = HashSet::new();
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
@@ -434,23 +442,49 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
                 let normal = surface.normals[face]?;
                 let inward =
                     normal.x * (point.x - center[0]) + normal.y * (point.y - center[1]) < 0.0;
-                let farthest = surface
+                let distances = surface
                     .corners(face)
-                    .map(|corner| (corner.x - center[0]).hypot(corner.y - center[1]))
+                    .map(|corner| (corner.x - center[0]).hypot(corner.y - center[1]));
+                let farthest = distances.into_iter().fold(0.0, f64::max);
+                // A tessellated bore's corners lie on its circle while its
+                // flats cut inside, and a face a slot or passage cut across a
+                // facet has a corner inside, so the face whose corners all lie
+                // nearest the declared radius comes first.
+                let worst = distances
                     .into_iter()
+                    .map(|distance| (distance - radius).abs())
                     .fold(0.0, f64::max);
-                (inward && farthest <= reach).then_some(((farthest - radius).abs(), face))
+                (inward && farthest <= reach).then_some((worst, face))
             })
             .collect();
-        seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Faces placed equally well are tried largest first: a sliver left
+        // beside a cut gives an unsteady fit.
+        let resolution = COORDINATE_RESOLUTION * radius.max(1.0);
+        seeds.sort_by(|a, b| {
+            (a.0 / resolution)
+                .round()
+                .total_cmp(&(b.0 / resolution).round())
+                .then(surface.areas[b.1].total_cmp(&surface.areas[a.1]))
+        });
         for (_, face) in seeds {
             if tried.contains(&face) {
                 continue;
             }
-            tried.extend(surface.grow(face, |_, next| is_wall(next)));
-            let Some((hole, _)) = fit_hole(&surface, face) else {
+            crate::limit::check()?;
+            let Some((hole, wall)) = fit_hole(&surface, face) else {
+                // A flat patch, such as the side of a nut trap or one facet
+                // of a bore, is passed over as a whole.
+                let Some(flat) = surface.normals[face] else {
+                    continue;
+                };
+                tried.extend(surface.grow(face, |_, next| {
+                    surface.normals[next].is_some_and(|normal| {
+                        normal.dot(&flat) >= PLANE_EXACT_DEGREES.to_radians().cos()
+                    })
+                }));
                 continue;
             };
+            tried.extend(wall);
             // Sections of one bore on either side of a wider relief are one
             // hole, as in a CAD build, spanning both sections' radii.
             match found.iter_mut().find(|known| {
@@ -471,7 +505,19 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
             }
         }
     }
-    found
+    Ok(found)
+}
+
+/// Whether a face points at the axis through `point` along `axis`, to within
+/// [`HOLE_FACING_DEGREES`] seen along the axis, as a hole's wall does.
+fn points_at_axis(surface: &Surface, face: usize, point: V3, axis: V3) -> bool {
+    let offset = centroid(&surface.corners(face)) - point;
+    let radial = offset - axis * offset.dot(&axis);
+    surface.normals[face].is_some_and(|normal| {
+        let across = normal - axis * normal.dot(&axis);
+        -across.dot(&radial)
+            >= HOLE_FACING_DEGREES.to_radians().cos() * across.norm() * radial.norm()
+    })
 }
 
 /// A complete vertical inner wall fitted from `face`, with its wall's faces
@@ -482,32 +528,36 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)
         axis_point_mm,
         axis_direction,
         radius_mm,
-        arc_degrees,
         ..
     } = fit.geometry
     else {
         return None;
     };
     let (point, axis) = (V3::from(axis_point_mm), V3::from(axis_direction));
-    if axis.z.abs() < HOLE_AXIS_DEGREES.to_radians().cos() || arc_degrees < HOLE_ARC_DEGREES {
+    if axis.z.abs() < HOLE_AXIS_DEGREES.to_radians().cos() {
         return None;
     }
-    // An inner wall faces its axis; a boss's wall faces away from it.
-    let facing_axis = |face: usize| {
-        let offset = centroid(&surface.corners(face)) - point;
-        let radial = offset - axis * offset.dot(&axis);
-        surface.normals[face].is_some_and(|normal| normal.dot(&radial) < 0.0)
-    };
+    // An inner wall faces its axis; a boss's wall faces away from it, and the
+    // sides of a slot or passage leading off the hole face across it.
+    let facing_axis = |face: usize| points_at_axis(surface, face, point, axis);
     if !facing_axis(face) {
         return None;
     }
     // The whole wall runs from the seed over faces that stay nearly vertical
-    // and face the axis, ending at rims, chamfers and steps. The fit can stop
-    // short of it on a taper, so the radius range is taken over all of it.
+    // and face the axis, ending at rims, chamfers, steps, and slots or
+    // passages that lead off it. The fit can stop short of it on a taper, so
+    // the radius range is taken over all of it.
     let level = HOLE_WALL_DEGREES.to_radians().sin();
     let wall = surface.grow(face, |_, next| {
         surface.normals[next].is_some_and(|normal| normal.z.abs() <= level) && facing_axis(next)
     });
+    // Where a slot or passage cuts across a facet, the faces left have
+    // corners inside the circle, so the fit's own region leaves them out. The
+    // wall keeps them, so the wall decides whether the hole goes all the way
+    // round.
+    if arc_degrees(surface, &wall, point, axis) < HOLE_ARC_DEGREES {
+        return None;
+    }
     let model = Model::Cylinder {
         point,
         axis,
@@ -1847,7 +1897,7 @@ mod tests {
         let corners = [[-12.0, -8.0], [-12.0, 8.0], [12.0, -8.0], [12.0, 8.0]];
         let mesh = joined(&corners.map(|[x, y]| (plate.clone(), [x, y, 0.0])));
         let declared = corners.map(|center| (center, 2.0));
-        let holes = vertical_holes(&mesh, &declared);
+        let holes = vertical_holes(&mesh, &declared).unwrap();
         assert_eq!(holes.len(), 4, "{holes:?}");
         for (hole, center) in holes.iter().zip(corners) {
             assert!(close(hole.center_mm[0], center[0], 1e-9), "{hole:?}");
@@ -1862,18 +1912,22 @@ mod tests {
         // A hole moved half a millimetre, or declared at half its size, is
         // reported as it is.
         let moved = joined(&[(plate.clone(), [0.5, 0.0, 0.0])]);
-        let holes = vertical_holes(&moved, &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&moved, &[([0.0, 0.0], 2.0)]).unwrap();
         assert_eq!(holes.len(), 1);
         assert!(close(holes[0].center_mm[0], 0.5, 1e-9), "{holes:?}");
-        let holes = vertical_holes(&plate, &[([0.0, 0.0], 1.0)]);
+        let holes = vertical_holes(&plate, &[([0.0, 0.0], 1.0)]).unwrap();
         assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
 
         // Two declared positions on one hole find it once.
-        let holes = vertical_holes(&plate, &[([0.0, 0.0], 2.0), ([0.2, 0.0], 2.0)]);
+        let holes = vertical_holes(&plate, &[([0.0, 0.0], 2.0), ([0.2, 0.0], 2.0)]).unwrap();
         assert_eq!(holes.len(), 1, "{holes:?}");
 
         // Nothing near a declared position.
-        assert!(vertical_holes(&plate, &[([20.0, 0.0], 2.0)]).is_empty());
+        assert!(
+            vertical_holes(&plate, &[([20.0, 0.0], 2.0)])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1890,12 +1944,12 @@ mod tests {
         let rings: Vec<(f64, f64)> = (0..=10)
             .map(|step| (1.95 + 0.01 * f64::from(step), 2.0 * f64::from(step)))
             .collect();
-        let holes = vertical_holes(&plate(5.0, 20.0, &rings, 32), &[([0.0, 0.0], 2.01)]);
+        let holes = vertical_holes(&plate(5.0, 20.0, &rings, 32), &[([0.0, 0.0], 2.01)]).unwrap();
         assert_eq!(holes.len(), 1, "{holes:?}");
         assert!(covers(&holes, 1.95, 2.05), "{holes:?}");
         // As one cone, as OpenSCAD builds it.
         let cone = plate(5.0, 20.0, &[(1.9, 0.0), (2.1, 20.0)], 32);
-        let holes = vertical_holes(&cone, &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&cone, &[([0.0, 0.0], 2.0)]).unwrap();
         assert!(covers(&holes, 1.9, 2.1), "{holes:?}");
     }
 
@@ -1910,7 +1964,7 @@ mod tests {
             &[(2.012, 0.0), (2.012, 4.0), (2.0, 4.0), (2.0, 8.0)],
             32,
         );
-        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]).unwrap();
         assert_eq!(holes.len(), 2, "{holes:?}");
         // Its flats cut inside the circle, so the wider section's face
         // centres lie nearer 2 mm than the narrower's, but its corners do
@@ -1919,7 +1973,7 @@ mod tests {
         assert!(close(holes[0].radius_range_mm[1], 2.0, 1e-9), "{holes:?}");
         assert!(close(holes[1].radius_mm, 2.012, 1e-9), "{holes:?}");
         assert!(close(holes[1].radius_range_mm[1], 2.012, 1e-9), "{holes:?}");
-        let both = vertical_holes(&stepped, &[([0.0, 0.0], 2.0), ([0.0, 0.0], 2.012)]);
+        let both = vertical_holes(&stepped, &[([0.0, 0.0], 2.0), ([0.0, 0.0], 2.012)]).unwrap();
         assert_eq!(both, holes);
     }
 
@@ -1942,7 +1996,7 @@ mod tests {
                 vertex[1] *= scale;
             }
         }
-        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]).unwrap();
         assert_eq!(holes.len(), 1, "{holes:?}");
         assert!(close(holes[0].radius_mm, 2.02, 1e-9), "{holes:?}");
     }
@@ -1962,7 +2016,7 @@ mod tests {
             ],
             32,
         );
-        let holes = vertical_holes(&relieved, &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&relieved, &[([0.0, 0.0], 2.0)]).unwrap();
         assert_eq!(holes.len(), 2, "{holes:?}");
         assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
         assert!(close(holes[1].radius_mm, 2.5, 1e-9), "{holes:?}");
@@ -1978,8 +2032,54 @@ mod tests {
         let holes = vertical_holes(
             &mesh,
             &[([1_000_000.0, 0.0], 1.0), ([1_000_003.5, 0.0], 1.0)],
-        );
+        )
+        .unwrap();
         assert_eq!(holes.len(), 2, "{holes:?}");
+    }
+
+    fn solid(manifold: &manifold_csg::Manifold) -> TriangleMesh {
+        let (vertices, properties, triangles) = manifold.to_mesh_f64();
+        TriangleMesh {
+            vertices: vertices
+                .chunks_exact(properties)
+                .map(|vertex| [vertex[0], vertex[1], vertex[2]])
+                .collect(),
+            triangles: triangles
+                .chunks_exact(3)
+                .map(|triangle| [0, 1, 2].map(|corner| triangle[corner] as u32))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_slot_leading_off_a_bore_is_not_part_of_its_wall() {
+        use manifold_csg::Manifold;
+        // A 2 mm bore through a plate, opening at its upper half into a slot
+        // 3 mm wide that runs 8 mm off to one side.
+        let plate = Manifold::cube(20.0, 20.0, 8.0, true).translate(0.0, 0.0, 4.0);
+        let bore = Manifold::cylinder(10.0, 2.0, 2.0, 32, false).translate(0.0, 0.0, -1.0);
+        let slot = Manifold::cube(8.0, 3.0, 5.0, false).translate(0.0, -1.5, 4.0);
+        let part = solid(&(&(&plate - &bore) - &slot));
+        let holes = vertical_holes(&part, &[([0.0, 0.0], 2.0)]).unwrap();
+        assert_eq!(holes.len(), 1, "{holes:?}");
+        let [low, high] = holes[0].radius_range_mm;
+        assert!(close(holes[0].radius_mm, 2.0, 0.02), "{holes:?}");
+        assert!(low > 1.98 && high < 2.001, "{holes:?}");
+    }
+
+    #[test]
+    fn bores_joined_by_a_side_passage_are_separate_holes() {
+        use manifold_csg::Manifold;
+        let plate = Manifold::cube(30.0, 12.0, 8.0, true).translate(0.0, 0.0, 4.0);
+        let bore = |x: f64| Manifold::cylinder(10.0, 2.0, 2.0, 32, false).translate(x, 0.0, -1.0);
+        let passage = Manifold::cube(12.0, 2.0, 2.0, true).translate(0.0, 0.0, 4.0);
+        let part = solid(&(&(&(&plate - &bore(-6.0)) - &bore(6.0)) - &passage));
+        let holes = vertical_holes(&part, &[([-6.0, 0.0], 2.0), ([6.0, 0.0], 2.0)]).unwrap();
+        assert_eq!(holes.len(), 2, "{holes:?}");
+        for hole in &holes {
+            let [low, high] = hole.radius_range_mm;
+            assert!(low > 1.98 && high < 2.001, "{holes:?}");
+        }
     }
 
     #[test]
@@ -2008,7 +2108,11 @@ mod tests {
     fn bosses_tilted_and_partial_bores_are_not_holes() {
         // A solid post: its wall faces away from its axis.
         let post = post(2.0, 0.0, 4.0, 32);
-        assert!(vertical_holes(&post, &[([0.0, 0.0], 2.0)]).is_empty());
+        assert!(
+            vertical_holes(&post, &[([0.0, 0.0], 2.0)])
+                .unwrap()
+                .is_empty()
+        );
 
         // A bore leaning 10 degrees.
         let (sin, cos) = 10_f64.to_radians().sin_cos();
@@ -2017,7 +2121,11 @@ mod tests {
             let [x, y, z] = *vertex;
             *vertex = [x, y * cos - z * sin, y * sin + z * cos];
         }
-        assert!(vertical_holes(&tilted, &[([0.0, 0.0], 2.0)]).is_empty());
+        assert!(
+            vertical_holes(&tilted, &[([0.0, 0.0], 2.0)])
+                .unwrap()
+                .is_empty()
+        );
 
         // Half a bore.
         let mut half = plate_with_hole(5.0, 4.0, 2.0, 32);
@@ -2028,7 +2136,11 @@ mod tests {
                 .sum::<f64>()
                 > 0.0
         });
-        assert!(vertical_holes(&half, &[([0.0, 0.0], 2.0)]).is_empty());
+        assert!(
+            vertical_holes(&half, &[([0.0, 0.0], 2.0)])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

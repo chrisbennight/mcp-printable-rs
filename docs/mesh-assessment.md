@@ -174,18 +174,24 @@ in `vertical_holes`.
 
 Holes are measured on the valid solid, with any overlapping shells united, so
 a bore filled by another shell is not a hole. On a mesh that is not a valid
-solid, `hole_pattern` stays `unmeasured`. Around each declared hole, every
-wall within twice the declared radius of the declared centre is fitted as a
-cylinder. Each wall is fitted from its face whose farthest corner from that
-centre lies nearest the declared radius, because a tessellated bore's corners
-lie on its circle while its flat faces cut inside. A fit counts when its axis
-is within 1 degree of vertical and its wall covers the whole circle and faces
-the axis, so bosses and partial bores do not count. Each section of a stepped
-opening that counts is reported as its own hole, so a section of another
-size or shape, such as a nut trap, cannot hide the bore. Sections with the
-same centre and radius, such as a bore on either side of a wider relief, are
-one hole, as in a CAD build. Each hole reports its fitted centre, its radius through the vertices,
-and `radius_range_mm`, the smallest and largest radius over its wall. A hole
+solid, `hole_pattern` stays `unmeasured`. Around each declared hole, the
+walls within twice the declared radius of the declared centre are fitted as
+cylinders, starting from the faces whose corners all lie nearest the declared
+radius, because a tessellated bore's corners lie on its circle while its flat
+faces cut inside. A hole's wall is the nearly vertical faces joined to the fit
+that point at its axis to within 20 degrees, seen from above. It ends at rims,
+chamfers and steps, and where a slot or side passage leads off the hole,
+because their sides turn away from the axis. A fit counts when its axis is
+within 1 degree of vertical and its wall goes all the way round, so bosses
+and partial bores do not count. A bore that a slot or passage cuts partway up
+still counts when the rest of its wall closes the circle, and bores joined by
+a passage are measured separately. Each section of a stepped opening that
+counts is reported as its own hole, so a section of another size or shape,
+such as a nut trap, cannot hide the bore. Sections with the same centre and
+radius, such as a bore on either side of a wider relief, are one hole, as in
+a CAD build. Each hole reports its fitted centre, its radius through the
+vertices, and `radius_range_mm`, the smallest and largest radius over its
+wall. A hole
 matches a declaration only when its centre is within the tolerance and its
 whole radius range lies within the tolerance of the declared radius, as for a
 diameter requirement. A hole that moved or changed size therefore fails rather
