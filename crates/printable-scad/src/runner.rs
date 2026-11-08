@@ -147,8 +147,24 @@ impl std::fmt::Debug for ScadPermit {
     }
 }
 
+impl Drop for ScadPermit {
+    fn drop(&mut self) {
+        // Every invocation has ended or been killed before the permit is
+        // released.
+        // Unlock rather than only close: a child forked elsewhere in this
+        // process keeps a copy of each descriptor until it starts its program.
+        // If unlocking fails, closing still releases the lock once any such
+        // copy is gone.
+        for lease in &self.inherited_leases {
+            let _ = rustix::fs::flock(lease, rustix::fs::FlockOperation::Unlock);
+        }
+    }
+}
+
 impl ScadPermit {
-    /// Pass storage ownership to each native invocation, including after worker loss.
+    /// Pass storage ownership to each native invocation, including after worker
+    /// loss. Each lease must be its own open file description, which the
+    /// permit unlocks when dropped.
     pub fn inherit_lease(mut self, lease: OwnedFd) -> Self {
         self.inherited_leases.push(lease);
         self
@@ -409,6 +425,26 @@ mod tests {
 
     fn shell_runner() -> Arc<ScadRunner> {
         Arc::new(ScadRunner::discover(Some(PathBuf::from("/bin/sh")), 1))
+    }
+
+    #[tokio::test]
+    async fn a_released_permit_unlocks_its_leases_despite_other_copies() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("lease");
+        let lease = OwnedFd::from(std::fs::File::create(&path).expect("lease file"));
+        rustix::fs::flock(&lease, rustix::fs::FlockOperation::LockShared).expect("lock lease");
+        // A child forked elsewhere holds a copy until it starts its program.
+        let copy = rustix::io::dup(&lease).expect("copy lease");
+        let permit = shell_runner()
+            .acquire()
+            .await
+            .expect("permit")
+            .inherit_lease(lease);
+        drop(permit);
+        let probe = std::fs::File::open(&path).expect("open lease");
+        rustix::fs::flock(&probe, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .expect("no lock remains");
+        drop(copy);
     }
 
     #[test]

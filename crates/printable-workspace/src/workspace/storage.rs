@@ -39,11 +39,17 @@ struct Reservation {
 /// A shared lease protects this scratch directory until the last owner drops.
 /// Failed automatic cleanup leaves an inactive directory visible as pending;
 /// only explicit cleanup or a later owner can confirm its removal.
+///
+/// Each owner locks its own open file description and unlocks it explicitly.
+/// A child process forked anywhere in this process holds a copy of every
+/// descriptor until it starts its program, so a lock that is only closed, or
+/// one shared through a duplicate, can outlast its owner.
 #[derive(Debug)]
 pub struct ManagedScratch {
     workspace: Workspace,
     id: String,
     path: PathBuf,
+    directory: OwnedFd,
     lease: Option<OwnedFd>,
     cleanup_on_drop: bool,
 }
@@ -59,21 +65,41 @@ impl ManagedScratch {
         self.workspace.admit_storage_write(bytes)
     }
 
-    /// Duplicate ownership above the standard streams, still close-on-exec.
-    pub fn clone_lease(&self) -> std::io::Result<OwnedFd> {
-        rustix::io::fcntl_dupfd_cloexec(self.lease.as_ref().expect("live scratch lease"), 3)
-            .map_err(Into::into)
+    /// A separate ownership above the standard streams, still close-on-exec,
+    /// for a holder that releases it independently of this owner. The holder
+    /// unlocks it once nothing it started can still use the directory.
+    pub fn clone_lease(&self) -> Result<OwnedFd, WsError> {
+        let opened = lease_file(&self.directory)?;
+        let lease = rustix::io::fcntl_dupfd_cloexec(&opened, 3).map_err(errno_io)?;
+        // An owner's shared lock is held, so no exclusive lock can be.
+        rustix::fs::flock(&lease, FlockOperation::NonBlockingLockShared).map_err(errno_io)?;
+        Ok(lease)
     }
 
-    /// Keep staging protected if a native child outlives its Rust worker.
+    /// Keep staging protected while a native child, or anything it starts,
+    /// still runs, even if it outlives its Rust worker. The child locks its
+    /// own open file description after fork, so the protection ends with the
+    /// child's processes and no other process can extend it.
     pub fn retain_for_command(&self, command: &mut std::process::Command) -> std::io::Result<()> {
         use std::os::unix::process::CommandExt;
-        let lease = self.clone_lease()?;
-        // SAFETY: only the async-signal-safe fcntl syscall runs after fork.
-        // The descriptor stays close-on-exec in the parent and unrelated children.
+        let directory = rustix::io::fcntl_dupfd_cloexec(&self.directory, 3)?;
+        // SAFETY: only the async-signal-safe openat, fcntl, flock and close
+        // syscalls run after fork, without allocating.
         unsafe {
             command.pre_exec(move || {
-                rustix::io::fcntl_setfd(&lease, rustix::io::FdFlags::empty()).map_err(Into::into)
+                let opened = rustix::fs::openat(
+                    &directory,
+                    c"lease",
+                    OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                    Mode::empty(),
+                )?;
+                let lease = rustix::io::fcntl_dupfd_cloexec(&opened, 3)?;
+                drop(opened);
+                rustix::fs::flock(&lease, FlockOperation::NonBlockingLockShared)?;
+                rustix::io::fcntl_setfd(&lease, rustix::io::FdFlags::empty())?;
+                // The program started by exec keeps the lock.
+                std::mem::forget(lease);
+                Ok(())
             });
         }
         Ok(())
@@ -84,7 +110,12 @@ impl Drop for ManagedScratch {
     fn drop(&mut self) {
         // Lock order is controller then lease everywhere. Releasing our shared
         // lease before trying cleanup permits other owners to keep it protected.
-        drop(self.lease.take());
+        if let Some(lease) = self.lease.take() {
+            // Closing alone could leave the lock with a copy in a child that
+            // has not yet started its program. If unlocking fails, closing
+            // still releases the lock once any such copy is gone.
+            let _ = rustix::fs::flock(&lease, FlockOperation::Unlock);
+        }
         if self.cleanup_on_drop {
             let _ = self
                 .workspace
@@ -288,7 +319,7 @@ impl Workspace {
             },
         )?;
         rustix::fs::fsync(&parent).map_err(errno_io)?;
-        self.scratch_handle(id, lease)
+        self.scratch_handle(id, dir, lease)
     }
 
     /// Acquire another live reference under the same lock cleanup uses. A stale
@@ -305,10 +336,15 @@ impl Workspace {
         }
         let lease = lease_file(&dir)?;
         rustix::fs::flock(&lease, FlockOperation::LockShared).map_err(errno_io)?;
-        self.scratch_handle(id.to_owned(), lease)
+        self.scratch_handle(id.to_owned(), dir, lease)
     }
 
-    fn scratch_handle(&self, id: String, lease: OwnedFd) -> Result<ManagedScratch, WsError> {
+    fn scratch_handle(
+        &self,
+        id: String,
+        directory: OwnedFd,
+        lease: OwnedFd,
+    ) -> Result<ManagedScratch, WsError> {
         let confined = self.require_confined()?;
         let root_fd = rustix::io::dup(&confined.root_fd).map_err(errno_io)?;
         Ok(ManagedScratch {
@@ -321,6 +357,7 @@ impl Workspace {
             },
             path: confined.root.join(SCRATCH).join(&id),
             id,
+            directory,
             lease: Some(lease),
             cleanup_on_drop: true,
         })
@@ -699,6 +736,58 @@ mod tests {
         assert_eq!(ws.storage_usage().unwrap().reserved_remaining_bytes, 0);
         assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
         assert!(!input.exists());
+    }
+
+    #[test]
+    fn an_owner_releases_storage_while_a_forked_copy_of_its_lease_remains() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = ws.scratch(0, "forked_copy").unwrap();
+        let path = scratch.path().to_owned();
+        // A child forked elsewhere holds a copy until it starts its program.
+        let copy = rustix::io::dup(scratch.lease.as_ref().unwrap()).unwrap();
+        drop(scratch);
+        assert!(!path.exists());
+        drop(copy);
+    }
+
+    #[test]
+    fn protection_held_for_a_native_child_ends_with_the_child() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = ws.scratch(0, "native_child").unwrap();
+        let id = scratch.id.clone();
+        let mut command = std::process::Command::new("/bin/cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        scratch.retain_for_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(scratch);
+        let protected = ws.cleanup_scratch(std::slice::from_ref(&id));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(protected.unwrap()[0].state, "protected");
+        // The command still holds what the parent prepared for the child, as a
+        // copy forked elsewhere would.
+        assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
+        drop(command);
+    }
+
+    #[test]
+    fn a_cloned_lease_protects_storage_until_its_holder_releases_it() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = ws.scratch(0, "clone").unwrap();
+        let id = scratch.id.clone();
+        let clone = scratch.clone_lease().unwrap();
+        drop(scratch);
+        assert_eq!(
+            ws.cleanup_scratch(std::slice::from_ref(&id)).unwrap()[0].state,
+            "protected"
+        );
+        drop(clone);
+        assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Retain the snapshot's storage ownership for a native process.
-    pub fn clone_lease(&self) -> std::io::Result<OwnedFd> {
+    pub fn clone_lease(&self) -> Result<OwnedFd, WsError> {
         self._tempdir.clone_lease()
     }
 
