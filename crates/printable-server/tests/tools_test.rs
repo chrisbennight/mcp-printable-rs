@@ -135,6 +135,62 @@ fn boss_stl(radius: f32, height: f32, segments: usize) -> Vec<u8> {
     binary_stl(&vertices, &triangles)
 }
 
+/// A closed ring `height` tall with a vertical bore of `inner` radius
+/// centred at `center`, tessellated into `segments` sides whose corners lie on
+/// the circles.
+fn washer_stl(center: [f32; 2], inner: f32, outer: f32, height: f32, segments: usize) -> Vec<u8> {
+    let mut vertices = Vec::new();
+    for index in 0..segments {
+        let angle = std::f32::consts::TAU * index as f32 / segments as f32;
+        for radius in [inner, outer] {
+            for z in [0.0, height] {
+                vertices.push([
+                    center[0] + radius * angle.cos(),
+                    center[1] + radius * angle.sin(),
+                    z,
+                ]);
+            }
+        }
+    }
+    let mut triangles = Vec::new();
+    for i in 0..segments {
+        let j = (i + 1) % segments;
+        let at = |segment: usize, corner: usize| 4 * segment + corner;
+        let middle = std::f32::consts::TAU * (i as f32 + 0.5) / segments as f32;
+        let out = [middle.cos(), middle.sin(), 0.0];
+        let inward = [-out[0], -out[1], 0.0];
+        for (face, wanted) in [
+            ([at(i, 1), at(i, 3), at(j, 3)], [0.0, 0.0, 1.0]),
+            ([at(i, 1), at(j, 3), at(j, 1)], [0.0, 0.0, 1.0]),
+            ([at(i, 0), at(i, 2), at(j, 2)], [0.0, 0.0, -1.0]),
+            ([at(i, 0), at(j, 2), at(j, 0)], [0.0, 0.0, -1.0]),
+            ([at(i, 2), at(j, 2), at(j, 3)], out),
+            ([at(i, 2), at(j, 3), at(i, 3)], out),
+            ([at(i, 0), at(j, 0), at(j, 1)], inward),
+            ([at(i, 0), at(j, 1), at(i, 1)], inward),
+        ] {
+            let [a, b, c] = face.map(|index: usize| vertices[index]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let normal = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let agrees =
+                normal[0] * wanted[0] + normal[1] * wanted[1] + normal[2] * wanted[2] > 0.0;
+            triangles.push(if agrees {
+                face
+            } else {
+                [face[0], face[2], face[1]]
+            });
+        }
+    }
+    binary_stl(&vertices, &triangles)
+}
+
 fn cube_stl(size: f32) -> Vec<u8> {
     cube_stl_at(size, [0.0; 3])
 }
@@ -3142,6 +3198,136 @@ async fn artifact_workflow_results_match_the_discovered_output_contract() {
         );
     }
     assert!(fake.commands().is_empty());
+}
+
+#[tokio::test]
+async fn mesh_validation_checks_a_design_revisions_requirements() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    let server = PrintableServer::new(
+        Arc::clone(&ws),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(settings("127.0.0.1", 9)),
+    );
+    let project = |action: &str, params: Value| {
+        CallToolRequestParams::new("project").with_arguments(
+            json!({"action": action, "params": params})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    };
+    for id in ["washer", "empty"] {
+        let created = server
+            .invoke_tool(project("create", json!({"project_id": id, "name": id})))
+            .await
+            .unwrap();
+        assert_eq!(created.is_error, Some(false));
+    }
+    let source = b"difference() { cylinder(r = 6, h = 4); cylinder(r = 2, h = 4); }";
+    ws.write_artifact("projects/washer/washer.scad", source, false)
+        .unwrap();
+    let revised = server
+        .invoke_tool(project(
+            "revise",
+            json!({"project_id": "washer", "expected_parent": null, "source": "washer.scad",
+                "expected_source_sha256": sha256_hex(source), "manifest": {
+                "format_version": 1, "units": "mm",
+                "requirements": {
+                    "bore": {"kind": "hole_pattern", "centers_mm": [[10, 5]], "radius_mm": 2, "tolerance_mm": 0.05},
+                    "size": {"kind": "dimensions", "size_mm": [12, 12, 4], "tolerance_mm": 0.05}
+                }}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revised.is_error, Some(false));
+    let identity = revised.structured_content.unwrap()["identity"].clone();
+    ws.write_artifact(
+        "models/washer.stl",
+        &washer_stl([10.0, 5.0], 2.0, 6.0, 4.0, 48),
+        false,
+    )
+    .unwrap();
+    ws.write_artifact(
+        "models/moved.stl",
+        &washer_stl([10.5, 5.0], 2.0, 6.0, 4.0, 48),
+        false,
+    )
+    .unwrap();
+    let validator = jsonschema::validator_for(
+        &printable_server::resources::contracts::read(
+            "printable://contracts/validate_mesh",
+            Default::default(),
+        )
+        .unwrap()["outputSchema"],
+    )
+    .unwrap();
+    let (uploads, client, settings) = (uploads(), client("127.0.0.1", 9), settings("127.0.0.1", 9));
+    let validate = |path: &str, requirements: Value| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": path, "requirements": requirements}),
+        )
+    };
+
+    // The project's head revision, by default.
+    let result = validate("models/washer.stl", json!({"project_id": "washer"}))
+        .await
+        .expect("check the head revision");
+    validator.validate(&result).unwrap();
+    assert_eq!(result["revision"], identity);
+    let requirements = &result["requirements"];
+    assert_eq!(requirements["status"], "passed", "{result}");
+    assert_eq!(
+        requirements["criteria"]["bore"]["evidence"],
+        "/vertical_holes"
+    );
+    assert_eq!(requirements["criteria"]["size"]["status"], "passed");
+    let hole = &result["requirement_evidence"]["vertical_holes"]["holes"][0];
+    assert!(
+        (hole["center_mm"][0].as_f64().unwrap() - 10.0).abs() < 1e-4,
+        "{hole}"
+    );
+    assert!(
+        (hole["radius_mm"].as_f64().unwrap() - 2.0).abs() < 1e-4,
+        "{hole}"
+    );
+    let [low, high] = [0, 1].map(|end| hole["radius_range_mm"][end].as_f64().unwrap());
+    assert!(
+        low < high && 2.0 - low < 0.05 && (high - 2.0).abs() < 1e-4,
+        "{hole}"
+    );
+
+    // A named revision, against a mesh whose bore moved.
+    let result = validate(
+        "models/moved.stl",
+        json!({"project_id": "washer", "revision": identity}),
+    )
+    .await
+    .expect("check a named revision");
+    validator.validate(&result).unwrap();
+    assert_eq!(result["requirements"]["status"], "failed");
+    assert_eq!(
+        result["requirements"]["criteria"]["bore"]["status"],
+        "failed"
+    );
+
+    let error = validate("models/washer.stl", json!({"project_id": "empty"}))
+        .await
+        .expect_err("a project without a revision");
+    assert!(error.to_string().contains("project.revise"), "{error}");
+    for project_id in ["missing", "../washer"] {
+        assert!(
+            validate("models/washer.stl", json!({"project_id": project_id}))
+                .await
+                .is_err(),
+            "{project_id}"
+        );
+    }
 }
 
 #[tokio::test]

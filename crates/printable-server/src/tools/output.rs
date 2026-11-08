@@ -8,6 +8,30 @@ fn object(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required})
 }
 
+/// A design revision's identity.
+fn revision_identity() -> Value {
+    object(
+        json!({"id": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}),
+        &["id", "sha256"],
+    )
+}
+
+/// A revision's declared requirements, each with its status and the
+/// evidence it was decided from.
+fn declared_requirements() -> Value {
+    object(
+        json!({
+            "scope": {"const": "declared_requirements"},
+            "status": {"enum": ["passed", "failed", "incomplete"]},
+            "criteria": {"type": "object", "additionalProperties": object(json!({
+                "status": {"enum": ["passed", "failed", "unmeasured", "physical_test_required"]},
+                "evidence": {"type": "string"}
+            }), &["status"])}
+        }),
+        &["scope", "status", "criteria"],
+    )
+}
+
 fn artifact() -> Value {
     object(
         json!({
@@ -711,9 +735,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                     "completion": {"const":"completed"},
                     "qualification": qualification,
                     "build_directory": {"type": "string"},
-                "revision": object(json!({"id":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["id","sha256"]),
+                "revision": revision_identity(),
                 "measurement": object(json!({"path":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}), &["path","sha256"]),
-                "requirements": object(json!({"scope":{"const":"declared_requirements"},"status":{"enum":["passed","failed","incomplete"]},"criteria":{"type":"object","additionalProperties":object(json!({"status":{"enum":["passed","failed","unmeasured","physical_test_required"]},"evidence":{"type":"string"}}),&["status"])}}), &["scope","status","criteria"]),
+                "requirements": declared_requirements(),
                     "report": {"type": "object"},
                     "artifacts": {"type": "array", "items": object(json!({
                         "artifact": artifact(), "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
@@ -769,7 +793,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "validate_mesh" => object(
             json!({
                 "artifact": artifact(), "reference_artifact": artifact(),
-                "units": {"const": "millimetres"}, "report": mesh_report()
+                "units": {"const": "millimetres"}, "report": mesh_report(),
+                "revision": revision_identity(), "requirements": declared_requirements(),
+                "requirement_evidence": {"type": "object"}
             }),
             &["artifact", "units", "report"],
         ),

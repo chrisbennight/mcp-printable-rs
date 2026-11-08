@@ -92,9 +92,15 @@ qualification. Invalid geometry, unsupported hole orientations, partial
 cylindrical faces do not supply a positive
 hole match. An empty requirement set remains incomplete.
 
-Manifests can retain sources from other modeling engines; automatic requirement
-assessment currently runs on native CAD reports. An OpenSCAD or Blender source
-record does not gain measured evidence merely by being captured. Explicit native
+Manifests can retain sources from other modeling engines. Requirements are
+assessed automatically on native CAD builds. For a mesh from OpenSCAD, Blender
+or an import, pass the project, and optionally the revision, as `requirements`
+to `validate_mesh`; see
+[check a design revision's requirements](mesh-assessment.md#check-a-design-revisions-requirements).
+It assesses the same requirements on the mesh it is given, measuring
+`hole_pattern` from fitted cylinders, and retains no measurement in the
+revision, because it cannot tell how the mesh was made. A source record does
+not gain measured evidence merely by being captured. Explicit native
 Python remains an authorized capability with filesystem access in its container;
 these records provide ordinary service integrity, not a sandbox against that
 code or an attestation of a model author's honesty.
