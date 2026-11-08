@@ -31,9 +31,14 @@ const SIGMA_TOLERANCE: f64 = 3.0;
 /// A face whose normal turns more than this from the shape's leaves the
 /// region.
 const MAX_NORMAL_DEVIATION_DEGREES: f64 = 45.0;
-/// Faces meeting at a sharper angle than this do not join the patch used
-/// for a curved shape's first estimate.
-const MAX_START_DIHEDRAL_DEGREES: f64 = 45.0;
+/// Faces turned more than this from their neighbour, or from the seed, do
+/// not join the patch used for a curved shape's first estimate, so it stays
+/// off a face across an end even beyond a chamfer. A circle tessellated into
+/// five sides, the fewest OpenSCAD uses, has sides meeting at 72 degrees.
+const MAX_START_DIHEDRAL_DEGREES: f64 = 75.0;
+/// Faces on an edge shared by at most this many faces all link to each
+/// other.
+const MAX_PAIRED_EDGE_FACES: usize = 8;
 /// Edge steps from the seed face in the patch used for a first estimate.
 const START_RING: usize = 8;
 /// Faces bending less than this from the seed are treated as coplanar with
@@ -392,13 +397,24 @@ impl Surface {
         edges.sort_unstable();
         let mut neighbours = vec![Vec::new(); mesh.triangles.len()];
         for group in edges.chunk_by(|a, b| a.0 == b.0) {
-            // Faces on an edge shared by more than two link through the
-            // first of them, so the lists grow linearly with the mesh.
-            let (_, first) = group[0];
-            for &(_, face) in &group[1..] {
-                if face != first {
-                    neighbours[first].push(face);
-                    neighbours[face].push(first);
+            if group.len() <= MAX_PAIRED_EDGE_FACES {
+                for (index, &(_, face)) in group.iter().enumerate() {
+                    for &(_, other) in &group[index + 1..] {
+                        if face != other {
+                            neighbours[face].push(other);
+                            neighbours[other].push(face);
+                        }
+                    }
+                }
+            } else {
+                // A degenerate edge shared by many faces links them through
+                // the first, so the lists grow linearly with the mesh.
+                let (_, first) = group[0];
+                for &(_, face) in &group[1..] {
+                    if face != first {
+                        neighbours[first].push(face);
+                        neighbours[face].push(first);
+                    }
                 }
             }
         }
@@ -706,7 +722,10 @@ fn first_estimate(
     let seed_normal = surface.normals[seed]?;
     let smooth = |from: usize, to: usize| {
         let limit = MAX_START_DIHEDRAL_DEGREES.to_radians().cos();
-        matches!((surface.normals[from], surface.normals[to]), (Some(a), Some(b)) if a.dot(&b) >= limit)
+        matches!(
+            (surface.normals[from], surface.normals[to]),
+            (Some(a), Some(b)) if a.dot(&b) >= limit && b.dot(&seed_normal) >= limit
+        )
     };
     match shape {
         Shape::Plane => {
@@ -728,7 +747,7 @@ fn first_estimate(
             // The first circle uses only faces that run along the axis, which
             // leaves out a chamfer or the face across an end. Across a coarse
             // polygon these faces meet at sharp angles.
-            let along = HINT_DEGREES.to_radians().sin();
+            let along = ALONG_AXIS_DEGREES.to_radians().sin();
             let patch = start_patch(surface, seed, &|_, to| {
                 surface.normals[to].is_some_and(|normal| normal.dot(&axis).abs() <= along)
             });
@@ -1850,6 +1869,54 @@ mod tests {
         assert!(close(radius, 4.0, 1e-9));
         assert!(close(axis[2].abs(), 1.0, 1e-9));
         assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 2048);
+    }
+
+    #[test]
+    fn a_coarse_bore_stops_at_a_shallow_chamfer() {
+        // Six sides, as OpenSCAD's $fn = 6 gives, with a chamfer turned
+        // about 11 degrees above a 1 mm band.
+        let mesh = plate(20.0, 2.0, &[(4.0, 0.0), (4.0, 1.0), (4.2, 2.0)], 6);
+        let seed = [
+            3.5 * 75_f64.to_radians().cos(),
+            3.5 * 75_f64.to_radians().sin(),
+            0.5,
+        ];
+        for direction in [None, Some([0.0, 0.0, 1.0])] {
+            let mut request = feature("bore", Shape::Cylinder, seed);
+            request.direction = direction;
+            let report = measure(
+                &mesh,
+                &DimensionOptions {
+                    features: vec![request],
+                    requirements: Vec::new(),
+                },
+            );
+            let (radius, _, length, _) = cylinder(&report.features[0]);
+            assert!(close(radius, 4.0, 1e-9), "{direction:?} {radius}");
+            assert!(close(length, 1.0, 1e-9));
+            assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 12);
+        }
+    }
+
+    #[test]
+    fn faces_sharing_an_edge_all_link() {
+        let mesh = TriangleMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 1.0, 0.0],
+                [0.5, -1.0, 0.0],
+                [0.5, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]],
+        };
+        let surface = Surface::new(&mesh);
+        for face in 0..3 {
+            let mut linked = surface.neighbours[face].clone();
+            linked.sort_unstable();
+            let others: Vec<usize> = (0..3).filter(|other| *other != face).collect();
+            assert_eq!(linked, others);
+        }
     }
 
     #[test]
