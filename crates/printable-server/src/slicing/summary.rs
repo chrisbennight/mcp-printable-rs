@@ -66,6 +66,7 @@ pub fn summarize(
         "plate_count": facts.plates.len(),
         "thumbnails": facts.thumbnails,
         "filaments": filaments,
+        "filaments_truncated": facts.filaments_truncated,
     }))
 }
 

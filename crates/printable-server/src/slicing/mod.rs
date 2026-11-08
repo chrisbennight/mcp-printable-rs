@@ -306,7 +306,7 @@ impl SliceWorker {
         // Retained state needs no lock; summarising an older slice can take a
         // while and must not delay the active slice's progress or controls.
         drop(active);
-        let (meta, bytes) = self
+        let (_, bytes) = self
             .workspace
             .read_generated_bytes(&format!("{output}/state.json"))?;
         let mut state: Value = serde_json::from_slice(&bytes)?;
@@ -317,17 +317,15 @@ impl SliceWorker {
             );
         }
         if state["status"] == "completed" {
-            let workspace = Arc::clone(&self.workspace);
-            let terminal = state.clone();
-            let modified_ms = u64::try_from(meta.modified_ns / 1_000_000).unwrap_or(0);
-            let summary = tokio::task::spawn_blocking(move || {
-                summary::read_or_summarize(&workspace, &output, &terminal, modified_ms)
-            })
-            .await
-            .map_err(|_| slice_error("slice summary task failed"))?;
-            match summary {
-                Ok(summary) => state["summary"] = summary,
-                Err(error) => state["summary_error"] = json!(error.to_string()),
+            // Only a recorded summary is returned here: computing one for an
+            // older slice copies its whole package, which is background work.
+            match self
+                .workspace
+                .read_generated_bytes(&format!("{output}/{}", summary::FILE))
+            {
+                Ok((_, bytes)) => state["summary"] = serde_json::from_slice(&bytes)?,
+                Err(printable_workspace::WsError::NotFound(_)) => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(state)

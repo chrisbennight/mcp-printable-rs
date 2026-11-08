@@ -25,6 +25,8 @@ pub struct PackageFacts {
     pub printer_profile: Option<String>,
     pub process_profile: Option<String>,
     pub filaments: Vec<PackageFilament>,
+    /// True when the package listed more filament slots than are reported.
+    pub filaments_truncated: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
@@ -87,11 +89,15 @@ fn colour(value: &Value) -> Option<String> {
         .then(|| text.to_ascii_uppercase())
 }
 
-fn list(settings: &Value, key: &str) -> Vec<Value> {
+/// Up to `MAX_FILAMENTS` values, and whether the package listed more.
+fn list(settings: &Value, key: &str) -> (Vec<Value>, bool) {
     match &settings[key] {
-        Value::Array(values) => values.iter().take(MAX_FILAMENTS).cloned().collect(),
-        Value::String(_) => vec![settings[key].clone()],
-        _ => Vec::new(),
+        Value::Array(values) => (
+            values.iter().take(MAX_FILAMENTS).cloned().collect(),
+            values.len() > MAX_FILAMENTS,
+        ),
+        Value::String(_) => (vec![settings[key].clone()], false),
+        _ => (Vec::new(), false),
     }
 }
 
@@ -116,9 +122,10 @@ pub fn facts(path: &Path) -> Result<PackageFacts, ToolError> {
             .map_err(|_| invalid("has unreadable project settings"))?;
         facts.printer_profile = text(&settings["printer_settings_id"]);
         facts.process_profile = text(&settings["print_settings_id"]);
-        let profiles = list(&settings, "filament_settings_id");
-        let types = list(&settings, "filament_type");
-        let colours = list(&settings, "filament_colour");
+        let (profiles, cut_profiles) = list(&settings, "filament_settings_id");
+        let (types, cut_types) = list(&settings, "filament_type");
+        let (colours, cut_colours) = list(&settings, "filament_colour");
+        facts.filaments_truncated = cut_profiles || cut_types || cut_colours;
         let count = profiles.len().max(types.len()).max(colours.len());
         facts.filaments = (0..count)
             .map(|index| PackageFilament {
@@ -234,6 +241,14 @@ mod tests {
         assert!(super::facts(&path).is_err());
         let path = write(&dir, &fixture::package(&[(SETTINGS_ENTRY, b"{")]));
         assert!(super::facts(&path).is_err());
+        let many = json!({"filament_colour": vec!["#FFFFFF"; MAX_FILAMENTS + 1]}).to_string();
+        let path = write(
+            &dir,
+            &fixture::package(&[(SETTINGS_ENTRY, many.as_bytes())]),
+        );
+        let facts = super::facts(&path).unwrap();
+        assert_eq!(facts.filaments.len(), MAX_FILAMENTS);
+        assert!(facts.filaments_truncated);
     }
 
     #[test]
