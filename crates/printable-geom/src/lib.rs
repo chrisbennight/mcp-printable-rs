@@ -42,7 +42,7 @@ pub use bust::{
 };
 pub use compare::{
     Alignment, AlignmentReport, ComparisonOptions, ComparisonReport, DeviationDistribution,
-    DeviationRegion,
+    DeviationRegion, FitRegion, PointPair,
 };
 pub use draft::{DraftOptions, DraftPatch, DraftReport};
 pub use fit::{

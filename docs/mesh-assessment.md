@@ -257,6 +257,23 @@ distances over all its points, each capped and measured to surface facing the
 point's way, so a pose that turns a surface over loses. A part with a rotational or
 mirror symmetry can fit equally well in more than one pose.
 
+Two optional settings guide a best fit:
+
+- `start_pairs` names three to 32 places picked on both meshes, each as
+  `{"mesh_mm": [x, y, z], "reference_mm": [x, y, z]}`, spread over the part
+  rather than along one line. The fit also starts from the motion that best
+  carries each picked mesh point onto its reference point, and keeps that
+  pose unless an automatic start fits more than twice as closely, by summed
+  squared distance. On a
+  symmetric part, the picks choose which of the equally good poses is meant.
+  `alignment.start_pairs_rms_mm` reports how far apart the picks remain after
+  that motion; a value well above the measuring noise points to a mispicked
+  pair.
+- `fit_region`, given as `{"minimum_mm": [x, y, z], "maximum_mm": [x, y, z]}`
+  in the mesh's frame, fits only the mesh's surface inside those bounds, so a
+  fixture, support or scanned base beside the part does not pull the fit off.
+  The whole surface is still measured.
+
 Points spread over the mesh's surface are each measured against the nearest
 reference surface that faces the same way, so a point on one side of a thin
 wall is not measured against the other side. Deviation is measured along that
@@ -270,7 +287,7 @@ normals.
 
 | Field | Meaning |
 | --- | --- |
-| `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference. |
+| `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference, and with `start_pairs`, `start_pairs_rms_mm`. |
 | `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. The spacing widens on large meshes so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
 | `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, or whose search for it gave up, and the share of the surface measured. |
 | `deviation_mm` | Area-weighted minimum, 5th, 50th and 95th percentiles, maximum, mean and RMS of the measured deviation. |

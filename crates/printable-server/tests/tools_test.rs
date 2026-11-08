@@ -2774,6 +2774,40 @@ async fn mesh_validation_compares_with_a_reference_mesh() {
     validate("models/missing.stl")
         .await
         .expect_err("refuse a missing reference");
+
+    let guided = |alignment: &str| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": "models/boss.stl", "compare": {
+                "reference_path": "models/boss.stl", "alignment": alignment, "tolerance_mm": 0.1,
+                "start_pairs": [
+                    {"mesh_mm": [0, 0, 0], "reference_mm": [0, 0, 0]},
+                    {"mesh_mm": [10, 0, 0], "reference_mm": [10, 0, 0]},
+                    {"mesh_mm": [0, 10, 20], "reference_mm": [0, 10, 20]}
+                ],
+                "fit_region": {"minimum_mm": [-11, -11, -1], "maximum_mm": [11, 11, 21]}
+            }}),
+        )
+    };
+    let fitted = guided("best_fit").await.expect("fit from picked pairs");
+    validator.validate(&fitted).unwrap();
+    let alignment = &fitted["report"]["comparison"]["alignment"];
+    assert_eq!(alignment["method"], "best_fit");
+    assert!(
+        alignment["start_pairs_rms_mm"].as_f64().unwrap() < 1e-9,
+        "{alignment}"
+    );
+    let error = guided("none")
+        .await
+        .expect_err("refuse picks without a best fit");
+    assert!(
+        error.to_string().contains("apply to a best_fit alignment"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

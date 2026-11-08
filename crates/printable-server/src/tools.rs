@@ -41,8 +41,9 @@ use tokio::sync::Semaphore;
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
     Alignment, AssemblyOptions, ComparisonOptions, DimensionOptions, DimensionRequirement,
-    DraftOptions, FeatureRequest, GeometryError, LinearMotion, Measure, RotationalMotion, Shape,
-    ValidationOptions, ValidationReport, analyze_stl, decode_stl, limit::WorkLimit,
+    DraftOptions, FeatureRequest, FitRegion, GeometryError, LinearMotion, Measure, PointPair,
+    RotationalMotion, Shape, ValidationOptions, ValidationReport, analyze_stl, decode_stl,
+    limit::WorkLimit,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -1024,6 +1025,27 @@ struct CompareParams {
     /// their way are unmeasured (default a tenth of its diagonal).
     #[schemars(range(min = 0.0))]
     max_distance_mm: Option<f64>,
+    /// For `best_fit`: 3 to 32 places picked on both, not in a line. The fit
+    /// starts there; on a symmetric part they choose the fit.
+    #[serde(default)]
+    start_pairs: Vec<StartPairParams>,
+    /// For `best_fit`: fit only this mesh's surface inside these bounds, such
+    /// as a part beside its fixture. All of it is still measured.
+    fit_region: Option<FitRegionParams>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StartPairParams {
+    mesh_mm: [f64; 3],
+    reference_mm: [f64; 3],
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct FitRegionParams {
+    minimum_mm: [f64; 3],
+    maximum_mm: [f64; 3],
 }
 
 #[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -5055,6 +5077,18 @@ async fn validate_mesh_artifact(
                     },
                     tolerance_mm: compare.tolerance_mm,
                     max_distance_mm: compare.max_distance_mm,
+                    start_pairs: compare
+                        .start_pairs
+                        .into_iter()
+                        .map(|pair| PointPair {
+                            mesh_mm: pair.mesh_mm,
+                            reference_mm: pair.reference_mm,
+                        })
+                        .collect(),
+                    fit_region: compare.fit_region.map(|region| FitRegion {
+                        minimum_mm: region.minimum_mm,
+                        maximum_mm: region.maximum_mm,
+                    }),
                 };
                 (Some(options), Some(snapshot.meta().clone()))
             }
