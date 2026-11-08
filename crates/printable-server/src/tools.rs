@@ -1006,7 +1006,7 @@ struct ValidateMeshParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DraftParams {
-    /// Direction the part leaves the mould, or the upper mould half moves away from it. Magnitude is normalized.
+    /// Direction the material on the other side of the surface moves away: the mould, or its upper half, lifting off a master that rests on its base, or the cast part coming out of a cavity. Magnitude is normalized.
     pull_direction: [f64; 3],
     /// Faces leaning less than this many degrees off the pull are reported as shallow (default 1). Use 0 when straight walls release, as in flexible silicone.
     #[serde(default = "default_minimum_draft")]

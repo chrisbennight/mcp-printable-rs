@@ -82,7 +82,10 @@ strong enough.
 ## Check mould draft
 
 Pass `draft` to `validate_mesh` to check whether a master or cavity releases
-from a mould. Give the direction the part leaves the mould:
+from a mould. Give the pull direction: the direction the material on the other
+side of the surface moves away. For a master resting on its base, that is the
+direction the mould lifts off it. For a cavity or printed mould, it is the
+direction the cast part comes out.
 
 ```json
 {"path": "models/master.stl", "draft": {"pull_direction": [0, 0, 1], "minimum_draft_degrees": 1}}
@@ -107,7 +110,8 @@ undercut, so the caller decides. For a two-part mould, `parting_offset_mm`
 gives the parting plane's distance along the pull from the part's lowest
 point. Faces below it are judged against the opposite direction, and there is
 no `base` group. A face crossing the plane is split there, so each part is
-judged against its own half, and no patch spans both halves.
+judged against its own half, and no patch spans both halves. A face lying on
+the plane belongs to the half it faces.
 
 ## Compatibility
 

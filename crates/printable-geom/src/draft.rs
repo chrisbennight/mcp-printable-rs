@@ -1,9 +1,11 @@
 //! Draft of a part's surface along the direction a mould releases it.
 //!
-//! A face's draft is the angle it leans off the pull direction: positive
-//! when it faces partly along the pull and slides free, zero for a wall
-//! parallel to the pull, and negative when it faces back against the pull, an
-//! undercut that catches on the mould. With a parting plane the part sits in
+//! The pull is the direction the material on the other side of the surface
+//! moves away: the mould lifting off a master that rests on its base, or the
+//! cast part coming out of a cavity. A face's draft is the angle it leans off
+//! the pull: positive when it faces partly along the pull and slides free,
+//! zero for a wall parallel to the pull, and negative when it faces back
+//! against the pull, an undercut that catches. With a parting plane the part sits in
 //! two mould halves, each released away from the plane, so faces on either
 //! side are judged against their own half's direction. A face crossing the
 //! plane is split there, each part counting in its own half, and the halves'
@@ -31,8 +33,9 @@ const ZERO_DRAFT_DEGREES: f64 = 1e-6;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DraftOptions {
-    /// Direction the part leaves the mould, or the upper mould half moves
-    /// away from it. Magnitude is normalized.
+    /// Direction the material on the other side of the surface moves away:
+    /// the mould, or its upper half, lifting off a master, or the cast part
+    /// coming out of a cavity. Magnitude is normalized.
     pub pull_direction: [f64; 3],
     /// Faces leaning less than this, in degrees, are reported as shallow.
     pub minimum_draft_degrees: f64,
@@ -87,16 +90,23 @@ enum Category {
     Undercut,
 }
 
+/// A corner of a piece, by which pieces in the same mould half connect: an
+/// original vertex, or the point where the parting plane crosses an edge.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Corner {
+    Vertex(u32),
+    Crossing(u32, u32),
+}
+
 /// A face, or the part of one on one side of the parting plane.
 struct Piece {
-    triangle: usize,
     /// Whether the piece lies in the lower mould half.
     lower: bool,
     category: Category,
     draft: f64,
     area: f64,
     centre: Vector,
-    corners: Vec<Vector>,
+    corners: Vec<(Corner, Vector)>,
 }
 
 /// Classify every face of `mesh` by its draft. `pull` must be a unit vector.
@@ -124,7 +134,7 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
     };
 
     let mut pieces = Vec::with_capacity(mesh.triangles.len());
-    for (index, triangle) in mesh.triangles.iter().enumerate() {
+    for triangle in &mesh.triangles {
         let points = triangle.map(|vertex| Vector::from_array(mesh.vertices[vertex as usize]));
         let cross = (points[1] - points[0]).cross(points[2] - points[0]);
         let doubled_area = cross.length();
@@ -138,7 +148,6 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
                 normal.dot(pull) < 0.0 && heights.iter().all(|height| *height <= base_tolerance);
             let draft = normal.dot(pull).clamp(-1.0, 1.0).asin().to_degrees();
             pieces.push(Piece {
-                triangle: index,
                 lower: false,
                 category: if on_base {
                     Category::Base
@@ -148,20 +157,32 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
                 draft: if on_base { 0.0 } else { draft },
                 area: doubled_area * 0.5,
                 centre: (points[0] + points[1] + points[2]) / 3.0,
-                corners: points.to_vec(),
+                corners: triangle
+                    .map(Corner::Vertex)
+                    .into_iter()
+                    .zip(points)
+                    .collect(),
             });
             continue;
         };
         // Each half releases away from the parting plane; a face crossing
-        // it is split there and each part judged against its own half.
-        for (lower, corners) in split(points, heights, offset) {
+        // it is split there and each part judged against its own half. A
+        // face lying on the plane borders the half it faces.
+        let heights = heights.map(|height| {
+            if (height - offset).abs() <= base_tolerance {
+                offset
+            } else {
+                height
+            }
+        });
+        let faces_down = normal.dot(pull) < 0.0;
+        for (lower, corners) in split(*triangle, points, heights, offset, faces_down) {
             let Some((area, centre)) = polygon_area_and_centre(&corners) else {
                 continue;
             };
             let direction = if lower { -pull } else { pull };
             let draft = normal.dot(direction).clamp(-1.0, 1.0).asin().to_degrees();
             pieces.push(Piece {
-                triangle: index,
                 lower,
                 category: classify(draft),
                 draft,
@@ -199,35 +220,57 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
         total.faces += 1;
         total.area_mm2 += piece.area;
     }
-    (report.shallow_patch_count, report.shallow_patches) =
-        patches(mesh, &pieces, Category::Shallow);
-    (report.undercut_patch_count, report.undercut_patches) =
-        patches(mesh, &pieces, Category::Undercut);
+    (report.shallow_patch_count, report.shallow_patches) = patches(&pieces, Category::Shallow);
+    (report.undercut_patch_count, report.undercut_patches) = patches(&pieces, Category::Undercut);
     report
 }
 
 /// The parts of a triangle above and below the parting plane, each with
-/// whether it is the lower part. A triangle on one side gives one part.
-fn split(points: [Vector; 3], heights: [f64; 3], offset: f64) -> Vec<(bool, Vec<Vector>)> {
-    if heights.iter().all(|height| *height >= offset) {
-        return vec![(false, points.to_vec())];
+/// whether it is the lower part. A triangle on one side gives one part; a
+/// triangle lying on the plane belongs to the lower half when it faces down.
+fn split(
+    triangle: [u32; 3],
+    points: [Vector; 3],
+    heights: [f64; 3],
+    offset: f64,
+    faces_down: bool,
+) -> Vec<(bool, Vec<(Corner, Vector)>)> {
+    let whole = || {
+        triangle
+            .map(Corner::Vertex)
+            .into_iter()
+            .zip(points)
+            .collect()
+    };
+    let above = heights.iter().all(|height| *height >= offset);
+    let below = heights.iter().all(|height| *height <= offset);
+    if above && below {
+        return vec![(faces_down, whole())];
     }
-    if heights.iter().all(|height| *height <= offset) {
-        return vec![(true, points.to_vec())];
+    if above {
+        return vec![(false, whole())];
+    }
+    if below {
+        return vec![(true, whole())];
     }
     let (mut upper, mut lower) = (Vec::new(), Vec::new());
     for corner in 0..3 {
         let next = (corner + 1) % 3;
         let (point, height) = (points[corner], heights[corner]);
+        let vertex = (Corner::Vertex(triangle[corner]), point);
         if height >= offset {
-            upper.push(point);
+            upper.push(vertex);
         }
         if height <= offset {
-            lower.push(point);
+            lower.push(vertex);
         }
         let (a, b) = (height - offset, heights[next] - offset);
         if a * b < 0.0 {
-            let crossing = point + (points[next] - point) * (a / (a - b));
+            let edge = (triangle[corner], triangle[next]);
+            let crossing = (
+                Corner::Crossing(edge.0.min(edge.1), edge.0.max(edge.1)),
+                point + (points[next] - point) * (a / (a - b)),
+            );
             upper.push(crossing);
             lower.push(crossing);
         }
@@ -236,27 +279,29 @@ fn split(points: [Vector; 3], heights: [f64; 3], offset: f64) -> Vec<(bool, Vec<
 }
 
 /// The area and area-weighted centre of a flat convex polygon.
-fn polygon_area_and_centre(corners: &[Vector]) -> Option<(f64, Vector)> {
+fn polygon_area_and_centre(corners: &[(Corner, Vector)]) -> Option<(f64, Vector)> {
     let (mut area, mut weighted) = (0.0, Vector::ZERO);
+    let first = corners[0].1;
     for pair in corners[1..].windows(2) {
-        let part = 0.5 * (pair[0] - corners[0]).cross(pair[1] - corners[0]).length();
+        let (b, c) = (pair[0].1, pair[1].1);
+        let part = 0.5 * (b - first).cross(c - first).length();
         area += part;
-        weighted += (corners[0] + pair[0] + pair[1]) / 3.0 * part;
+        weighted += (first + b + c) / 3.0 * part;
     }
     (area > 0.0).then(|| (area, weighted / area))
 }
 
 /// Connected patches of pieces in `category`. Pieces in the same mould half
-/// whose faces share a vertex join; the two halves never join.
-fn patches(mesh: &TriangleMesh, pieces: &[Piece], category: Category) -> (usize, Vec<DraftPatch>) {
+/// that share a corner join; the two halves never join.
+fn patches(pieces: &[Piece], category: Category) -> (usize, Vec<DraftPatch>) {
     let mut parent: Vec<usize> = (0..pieces.len()).collect();
-    let mut owner: HashMap<(u32, bool), usize> = HashMap::new();
+    let mut owner: HashMap<(Corner, bool), usize> = HashMap::new();
     for (index, piece) in pieces.iter().enumerate() {
         if piece.category != category {
             continue;
         }
-        for &vertex in &mesh.triangles[piece.triangle] {
-            let first = *owner.entry((vertex, piece.lower)).or_insert(index);
+        for &(corner, _) in &piece.corners {
+            let first = *owner.entry((corner, piece.lower)).or_insert(index);
             let (a, b) = (root(&mut parent, index), root(&mut parent, first));
             parent[a] = b;
         }
@@ -269,7 +314,7 @@ fn patches(mesh: &TriangleMesh, pieces: &[Piece], category: Category) -> (usize,
         }
         let key = root(&mut parent, index);
         let slot = *index_of.entry(key).or_insert_with(|| {
-            let corner = piece.corners[0].to_array();
+            let corner = piece.corners[0].1.to_array();
             found.push((
                 DraftPatch {
                     area_mm2: 0.0,
@@ -294,7 +339,7 @@ fn patches(mesh: &TriangleMesh, pieces: &[Piece], category: Category) -> (usize,
         patch.minimum_draft_degrees = patch.minimum_draft_degrees.min(piece.draft);
         *weighted_centre += piece.centre * piece.area;
         *weighted_draft += piece.draft * piece.area;
-        for corner in &piece.corners {
+        for (_, corner) in &piece.corners {
             for (axis, value) in corner.to_array().into_iter().enumerate() {
                 patch.bounds.minimum_mm[axis] = patch.bounds.minimum_mm[axis].min(value);
                 patch.bounds.maximum_mm[axis] = patch.bounds.maximum_mm[axis].max(value);
@@ -498,6 +543,41 @@ mod tests {
         assert_eq!(two_piece.parting_offset_mm, Some(7.0));
         assert_eq!(two_piece.undercut.faces, 0);
         assert_eq!(two_piece.base.faces, 0);
+    }
+
+    #[test]
+    fn a_face_on_the_parting_plane_belongs_to_the_half_it_faces() {
+        // The ledge's underside lies on the plane and faces the lower half.
+        let report = draft(&ledge(), 1.0, Some(6.0));
+        assert_eq!(report.undercut.faces, 0, "{report:?}");
+    }
+
+    #[test]
+    fn split_pieces_connect_only_through_corners_they_keep() {
+        // Two downward-facing triangles share only a vertex below the plane,
+        // so their parts above it are separate undercuts.
+        let mesh = TriangleMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [-3.0, -1.0, 2.0],
+                [-3.0, 1.0, 2.0],
+                [3.0, 1.0, 2.0],
+                [3.0, -1.0, 2.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 3, 4]],
+        };
+        let pull = [0.0, 0.0, 1.0];
+        let report = analyze(
+            &mesh,
+            pull,
+            DraftOptions {
+                pull_direction: pull,
+                minimum_draft_degrees: 1.0,
+                parting_offset_mm: Some(1.0),
+            },
+        );
+        assert_eq!(report.undercut_patch_count, 2, "{report:?}");
+        assert_eq!(report.released.faces, 2);
     }
 
     #[test]

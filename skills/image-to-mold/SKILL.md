@@ -126,7 +126,9 @@ measure side gaps, wall thickness, fill level, cover, and freeboard. Report a
 relevant property as unmeasured when the available check cannot establish it.
 
 Check release with `validate_mesh` and its `draft` option along the declared
-release direction. Faces that lean back against the pull are reported as
+release direction. For the master, the pull is the direction the mould lifts
+off it; for the printed mould, it is the direction the cast part comes out.
+Faces that lean back against the pull are reported as
 undercut patches, with their area and location. Faces that lean less than
 `minimum_draft_degrees` are reported as shallow patches. Use 0 for flexible
 silicone, where straight walls release, and a degree or two for a rigid or
