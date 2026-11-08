@@ -8,7 +8,8 @@ use super::package;
 use crate::error::ToolError;
 
 pub const FILE: &str = "summary.json";
-const PACKAGE: &str = "model.gcode.3mf";
+/// The sliced package inside each slice directory.
+pub const PACKAGE: &str = "model.gcode.3mf";
 
 /// Summarise the completed slice in workspace directory `output`.
 ///

@@ -1677,13 +1677,13 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_project_search",
-        description: "Find projects in the derived search index by words in their records, by filters and by sort order, returning short library cards with index coverage and the search capabilities that are unavailable.",
+        description: "Find projects in the derived search index by words in their records, by filters and by sort order, returning short library cards with index coverage and the search capabilities that are unavailable. With an embeddings service, best_match also finds projects by what the text means and by a workspace picture, and a re-ranking service can reorder the best results.",
         schema: schema_of::<crate::projects::index::SearchParams>,
         annotations: read_only_idempotent,
     },
     ToolDef {
         name: "printable_project_index_status",
-        description: "Report how many projects the search index holds, which failed, where it is stored and its latest pass.",
+        description: "Report how many projects the search index holds, which failed, where it is stored and its latest pass, which of meaning search, picture search and re-ranking are available and why not, and the embeddings model with its vector counts.",
         schema: schema_of::<crate::projects::index::IndexParams>,
         annotations: read_only_idempotent,
     },
@@ -2023,9 +2023,10 @@ pub(crate) async fn dispatch_with_content(
         }
         "printable_project_search" => {
             let params: crate::projects::index::SearchParams = de(args)?;
-            let index = Arc::clone(&settings.project_index);
-            let ws = Arc::clone(workspace);
-            let response = blocking(move || index.search(&ws, params)).await?;
+            let response = settings
+                .project_index
+                .search(workspace, params, &WORKSPACE_OPS)
+                .await?;
             Ok(ToolOutput::without_inline(serde_json::to_value(response)?))
         }
         "printable_project_index_status" => {
@@ -4824,7 +4825,7 @@ where
     }
 }
 
-async fn visual_blocking<T, E>(
+pub(crate) async fn visual_blocking<T, E>(
     f: impl FnOnce() -> Result<T, E> + Send + 'static,
 ) -> Result<T, ToolError>
 where
