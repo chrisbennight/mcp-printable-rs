@@ -63,7 +63,8 @@ rest of `.printable`.
 
 A print the backend no longer has, or one that is still unfinished after the
 follow time, is recorded with outcome `unknown` and a reason; Printable never
-guesses success or failure. A failed backend read is retried on the next pass.
+guesses success or failure. A failed backend read is retried on the next pass
+until the follow time ends; after that the print is recorded as `unknown`.
 Only prints staged through Printable are followed. Prints started from other
 software, a staging request whose outcome was unknown, and additional copies
 from a request with a quantity above one have no submission link and are not

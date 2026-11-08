@@ -244,6 +244,14 @@ pub async fn pass(
                 &printers,
                 now_unix_ms,
             ),
+            Err(_) if expired => record(
+                &print,
+                None,
+                "unknown",
+                Some("the printer backend could not be read before the follow time ended"),
+                &printers,
+                now_unix_ms,
+            ),
             Err(error) => {
                 tracing::warn!(
                     print_id = print.print_id,
@@ -496,6 +504,26 @@ mod tests {
             (Some(10), Some("unknown"))
         );
         assert_eq!(prints[0]["backend_status"], Value::Null);
+        let expired = now + 49 * HOUR_MS;
+        let report = pass(&service, &workspace, settings(), expired)
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            PassReport {
+                followed: 1,
+                recorded: 1,
+                deferred: 0
+            }
+        );
+        let prints = project_prints(&workspace, "desk").unwrap();
+        assert_eq!(
+            (
+                prints[1]["print_id"].as_u64(),
+                prints[1]["outcome"].as_str()
+            ),
+            (Some(11), Some("unknown"))
+        );
     }
 
     #[test]
