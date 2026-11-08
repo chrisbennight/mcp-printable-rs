@@ -61,7 +61,10 @@ leaves through a surface turned more than 60 degrees from facing back against
 the point's inward direction is not counted, because it reached a neighbouring
 face across an edge rather than crossing a wall. Edges sharper than 60 degrees,
 such as knife edges and pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
-surfaces do not read as walls.
+surfaces do not read as walls. A reading below the minimum by no more than the
+coordinates' rounding counts as meeting it: ASCII STL, which OpenSCAD writes,
+keeps about six significant digits, so a wall drawn at exactly the minimum
+passes.
 
 `report.wall_thickness` contains:
 

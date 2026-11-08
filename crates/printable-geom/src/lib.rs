@@ -241,7 +241,15 @@ pub fn analyze_stl(
     bytes: &[u8],
     options: ValidationOptions,
 ) -> Result<ValidationReport, GeometryError> {
-    analyze_mesh(&decode_stl(bytes)?, options)
+    let mesh = decode_stl(bytes)?;
+    // Binary STL is exactly a header, a count and fixed-size facets; anything
+    // else that decoded is text.
+    let precision = if bytes.len() == 84 + 50 * mesh.triangles.len() {
+        thickness::Precision::Single
+    } else {
+        thickness::Precision::Text
+    };
+    Ok(prepare_mesh(&mesh, options, precision)?.report)
 }
 
 /// Decode a binary or ASCII STL into an indexed mesh, sharing vertices with
@@ -281,7 +289,7 @@ pub fn analyze_mesh(
     mesh: &TriangleMesh,
     options: ValidationOptions,
 ) -> Result<ValidationReport, GeometryError> {
-    Ok(prepare_mesh(mesh, options)?.report)
+    Ok(prepare_mesh(mesh, options, thickness::Precision::Single)?.report)
 }
 
 struct PreparedMesh {
@@ -293,6 +301,7 @@ struct PreparedMesh {
 fn prepare_mesh(
     mesh: &TriangleMesh,
     options: ValidationOptions,
+    precision: thickness::Precision,
 ) -> Result<PreparedMesh, GeometryError> {
     if mesh.vertices.is_empty() || mesh.triangles.is_empty() {
         return Err(GeometryError::EmptyMesh);
@@ -658,7 +667,12 @@ fn prepare_mesh(
         .map(|solid| fit::vertical_holes(solid, &options.holes));
     let wall_thickness = match (options.minimum_wall_mm, &united) {
         (Some(minimum_wall_mm), Some(solid)) => {
-            let report = thickness::measure(&solid.vertices, &solid.triangles, minimum_wall_mm)?;
+            let report = thickness::measure(
+                &solid.vertices,
+                &solid.triangles,
+                minimum_wall_mm,
+                precision,
+            )?;
             if report.unmeasured_samples == report.samples {
                 issues.push(warning_issue(
                     "wall_thickness_unmeasured",
