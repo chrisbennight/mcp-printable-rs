@@ -2321,7 +2321,12 @@ impl ProjectIndex {
     }
 
     fn out_of_time(&self, step: &Step<'_>, report: &mut EmbeddingReport) -> bool {
-        let out = self.stop.is_cancelled() || Instant::now() >= step.deadline;
+        // A busy answer, to this pass or to a search, holds back its requests.
+        let held = self
+            .state()
+            .retry_after_unix_ms
+            .is_some_and(|until| until > super::unix_ms());
+        let out = self.stop.is_cancelled() || Instant::now() >= step.deadline || held;
         report.stopped |= out;
         out
     }
