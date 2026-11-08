@@ -548,10 +548,15 @@ fn slices(
                             });
                     match written {
                         Ok(_) | Err(ToolError::Workspace(WsError::AlreadyExists(_))) => {}
-                        Err(error) => tracing::warn!(
-                            code = error.code(),
-                            "could not record an older slice's summary"
-                        ),
+                        // The card keeps the summary; the note has the index
+                        // try to record it again.
+                        Err(error) => {
+                            tracing::warn!(
+                                code = error.code(),
+                                "could not record an older slice's summary"
+                            );
+                            notes.add(&path, &error);
+                        }
                     }
                 })
             }
