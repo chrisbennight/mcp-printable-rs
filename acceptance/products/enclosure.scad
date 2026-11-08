@@ -17,8 +17,14 @@ union() {
                     bore_diameter = 3
                 );
 
-    for (x = [-24, 24])
-        translate([x, -1, pbl_minimum_wall_mm - 0.2])
-            rotate([0, 0, x < 0 ? 0 : 180])
+    // Ribs braced against the side walls: each tall edge is set into the
+    // wall, so that neither tip of a rib stands free.
+    for (side = [-1, 1])
+        translate([
+            side * (product_width_mm / 2 - pbl_minimum_wall_mm + 0.1),
+            -1,
+            pbl_minimum_wall_mm - 0.2
+        ])
+            rotate([0, 0, side < 0 ? 0 : 180])
                 pbl_rib(length = 12, height = 8.2);
 }

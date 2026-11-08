@@ -64,6 +64,8 @@ constructive invariants.
   as a bed-contact datum.
 - `pbl_rib(length, height, thickness=pbl_minimum_wall_mm)` — triangular
   reinforcement in the X/Z plane with a constructively guarded thickness.
+  Set both legs into the bodies it braces: a tip that stands free tapers to an
+  edge, and the wall check reads it as thin.
 - `pbl_boss(height, outer_diameter, bore_diameter=0)` — vertical boss; a bored
   boss preserves both requested diameters and rejects inputs whose final
   polygon-facet separation would fall below the profile minimum annular wall.
@@ -107,7 +109,8 @@ union() {
     pbl_linear_pattern(count=2, spacing=36, axis="x")
         translate([-18, -10, 0])
             pbl_boss(height=8, outer_diameter=9, bore_diameter=3);
-    translate([-20, 0, pbl_minimum_wall_mm - 0.2])
+    // Braced against the side wall, so neither tip stands free.
+    translate([-(60 / 2 - pbl_minimum_wall_mm + 0.1), 0, pbl_minimum_wall_mm - 0.2])
         pbl_rib(length=12, height=8.2);
 }
 ```

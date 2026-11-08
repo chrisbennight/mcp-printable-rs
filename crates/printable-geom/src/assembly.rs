@@ -314,8 +314,12 @@ fn prepare_solid(part: &'static str, mesh: &TriangleMesh) -> Result<SolidPart, G
         report,
         trimesh,
         manifold,
-    } = prepare_mesh(mesh, ValidationOptions::default())
-        .map_err(|error| invalid_part(part, error.to_string()))?;
+    } = prepare_mesh(
+        mesh,
+        ValidationOptions::default(),
+        crate::thickness::Precision::Single,
+    )
+    .map_err(|error| invalid_part(part, error.to_string()))?;
     let manifold = manifold.ok_or_else(|| {
         let reason = report
             .issues

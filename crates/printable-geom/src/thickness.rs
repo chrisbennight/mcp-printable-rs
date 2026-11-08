@@ -49,11 +49,29 @@ const RAY_START: f64 = 1e-9;
 /// The spacing is never finer than this fraction of the part's largest
 /// extent: single precision coordinates cannot resolve a wall below it.
 const FINEST_SPACING: f64 = 1e-6;
-/// Readings this far below the minimum wall, as a fraction of the point's
-/// coordinates along the reading's direction, are coordinate rounding rather
-/// than thin walls: two units of the single precision that STL coordinates
-/// carry.
-const THIN_TOLERANCE: f64 = 2.0 * f32::EPSILON as f64;
+/// How precisely a mesh's coordinates were written, which bounds how far a
+/// wall drawn at exactly the minimum can read below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Precision {
+    /// Single precision floats, as binary STL holds.
+    Single,
+    /// Decimal text, as ASCII STL holds: OpenSCAD writes about six
+    /// significant digits.
+    Text,
+}
+
+impl Precision {
+    /// Readings this far below the minimum wall, as a fraction of the point's
+    /// coordinates along the reading's direction, are coordinate rounding
+    /// rather than thin walls: two units of single precision, or the last of
+    /// six significant digits.
+    fn tolerance(self) -> f64 {
+        match self {
+            Precision::Single => 2.0 * f32::EPSILON as f64,
+            Precision::Text => 1e-5,
+        }
+    }
+}
 
 /// Wall thickness measured over a closed solid's surface.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -122,6 +140,7 @@ pub(crate) fn measure(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
     minimum_wall_mm: f64,
+    precision: Precision,
 ) -> Result<WallThicknessReport, GeometryError> {
     let size = extent(vertices);
     let surface = TriMesh::new(
@@ -184,7 +203,7 @@ pub(crate) fn measure(
     measured.sort_by(|a, b| a.0.total_cmp(&b.0));
     let measured_area: f64 = measured.iter().map(|(_, area)| area).sum();
     let (thin_area_mm2, thin_region_count, thin_regions) =
-        thin_regions(&samples, minimum_wall_mm, spacing);
+        thin_regions(&samples, minimum_wall_mm, spacing, precision);
 
     Ok(WallThicknessReport {
         minimum_wall_mm,
@@ -390,12 +409,13 @@ fn thin_regions(
     samples: &[Sample],
     minimum_wall_mm: f64,
     spacing: f64,
+    precision: Precision,
 ) -> (f64, usize, Vec<ThinRegion>) {
     let thin: Vec<&Sample> = samples
         .iter()
         .filter(|sample| {
             sample.thickness.is_some_and(|value| {
-                value < minimum_wall_mm - THIN_TOLERANCE * sample.rounding_scale
+                value < minimum_wall_mm - precision.tolerance() * sample.rounding_scale
             })
         })
         .collect();
@@ -634,6 +654,56 @@ mod tests {
             report.assessment.status,
             crate::AssessmentStatus::Incomplete
         );
+    }
+
+    fn ascii_stl(mesh: &TriangleMesh) -> Vec<u8> {
+        let mut text = String::from("solid part\n");
+        for triangle in &mesh.triangles {
+            text.push_str(" facet normal 0 0 0\n  outer loop\n");
+            for index in triangle {
+                let [x, y, z] = mesh.vertices[*index as usize];
+                text.push_str(&format!("   vertex {x} {y} {z}\n"));
+            }
+            text.push_str("  endloop\n endfacet\n");
+        }
+        text.push_str("endsolid part\n");
+        text.into_bytes()
+    }
+
+    fn binary_stl(mesh: &TriangleMesh) -> Vec<u8> {
+        let mut bytes = vec![0; 80];
+        bytes.extend((mesh.triangles.len() as u32).to_le_bytes());
+        for triangle in &mesh.triangles {
+            bytes.extend([0.0_f32; 3].iter().flat_map(|value| value.to_le_bytes()));
+            for index in triangle {
+                for value in mesh.vertices[*index as usize] {
+                    bytes.extend((value as f32).to_le_bytes());
+                }
+            }
+            bytes.extend([0, 0]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_wall_at_the_minimum_in_ascii_stl_passes() {
+        // A 2 mm wall 30 mm from the origin, written with six significant
+        // digits as OpenSCAD writes ASCII STL, reads a little under 2 mm.
+        let mesh = cuboid([30.0, 0.0, 0.0], [31.99993, 20.0, 20.0], false);
+        let options = || ValidationOptions {
+            minimum_wall_mm: Some(2.0),
+            ..ValidationOptions::default()
+        };
+        let text = crate::analyze_stl(&ascii_stl(&mesh), options()).unwrap();
+        let thickness = text.wall_thickness.as_ref().unwrap();
+        assert_eq!(thickness.thin_area_mm2, 0.0, "{thickness:?}");
+        // Binary STL keeps that shortfall far above its rounding.
+        let binary = crate::analyze_stl(&binary_stl(&mesh), options()).unwrap();
+        assert!(binary.wall_thickness.as_ref().unwrap().thin_area_mm2 > 0.0);
+        // And a wall a thousandth of a millimetre thinner is thin either way.
+        let thin = cuboid([30.0, 0.0, 0.0], [31.999, 20.0, 20.0], false);
+        let text = crate::analyze_stl(&ascii_stl(&thin), options()).unwrap();
+        assert!(text.wall_thickness.as_ref().unwrap().thin_area_mm2 > 0.0);
     }
 
     #[test]
