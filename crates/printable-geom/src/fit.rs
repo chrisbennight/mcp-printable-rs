@@ -388,30 +388,31 @@ pub struct VerticalHole {
 }
 
 /// The complete vertical cylindrical inner walls around declared holes, each
-/// given as its centre in X and Y and its radius. For each declared hole a
-/// cylinder is fitted from the inward-facing wall faces, with their corners
-/// within twice the declared radius of the centre, in order of how near
-/// their farthest corner lies to that radius: a tessellated bore's corners
-/// lie on its circle while its flats cut inside. The first fit counts whose
-/// axis is vertical and whose wall covers the whole circle and faces the
-/// axis. The fitted centre and radius
-/// are reported, so a hole that moved or changed size is measured as it is,
-/// not as declared, and a hole whose wall another declared hole already
-/// found is listed once.
+/// given as its centre in X and Y and its radius. Every inward-facing wall
+/// face with its corners within twice the declared radius of the centre may
+/// seed a cylinder fit. Each group of wall faces joined across edges is
+/// fitted once, from its face whose farthest corner lies nearest the
+/// declared radius: a tessellated bore's corners lie on its circle while its
+/// flats cut inside. A fit counts when its axis is vertical and its wall
+/// covers the whole circle and faces the axis, so every section of a stepped
+/// opening that is a complete hole is reported, and one that is not, such as
+/// a nut trap's flats, hides nothing. The fitted centre and radius are
+/// reported, so a hole that moved or changed size is measured as it is, not
+/// as declared, and a hole that more than one declaration reaches is listed
+/// once.
 pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<VerticalHole> {
     let surface = Surface::new(mesh);
     let level = HOLE_WALL_DEGREES.to_radians().sin();
+    let is_wall = |face: usize| surface.normals[face].is_some_and(|normal| normal.z.abs() <= level);
     // Wall faces in order of X, so each search scans only a strip.
-    let mut walls: Vec<(V3, usize)> = surface
-        .normals
-        .iter()
-        .enumerate()
-        .filter(|(_, normal)| normal.is_some_and(|normal| normal.z.abs() <= level))
-        .map(|(face, _)| (centroid(&surface.corners(face)), face))
+    let mut walls: Vec<(V3, usize)> = (0..surface.normals.len())
+        .filter(|&face| is_wall(face))
+        .map(|face| (centroid(&surface.corners(face)), face))
         .collect();
     walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
-    // Each hole found, with the faces of its wall in order.
-    let mut found: Vec<(VerticalHole, Vec<usize>)> = Vec::new();
+    let mut found = Vec::new();
+    // The faces of the walls found.
+    let mut claimed = HashSet::new();
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
         let first = walls.partition_point(|(point, _)| point.x < center[0] - reach);
@@ -431,32 +432,21 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
             })
             .collect();
         seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // A wall that is not a whole cylinder, such as a nut trap's flats,
-        // is passed over with every wall face joined to it, so that it cannot
-        // hide a bore beside it and each face is tried at most once.
-        let mut passed = HashSet::new();
+        let mut tried = HashSet::new();
         for (_, face) in seeds {
-            if passed.contains(&face) {
+            if claimed.contains(&face) || tried.contains(&face) {
                 continue;
             }
-            if found
-                .iter()
-                .any(|(_, wall)| wall.binary_search(&face).is_ok())
+            tried.extend(surface.grow(face, |_, next| is_wall(next)));
+            if let Some((hole, wall)) = fit_hole(&surface, face)
+                && !wall.iter().any(|face| claimed.contains(face))
             {
-                break;
-            }
-            match fit_hole(&surface, face) {
-                Some(hole) => {
-                    found.push(hole);
-                    break;
-                }
-                None => passed.extend(surface.grow(face, |_, next| {
-                    surface.normals[next].is_some_and(|normal| normal.z.abs() <= level)
-                })),
+                claimed.extend(wall);
+                found.push(hole);
             }
         }
     }
-    found.into_iter().map(|(hole, _)| hole).collect()
+    found
 }
 
 /// A complete vertical inner wall fitted from `face`, with its wall's faces
@@ -1886,9 +1876,9 @@ mod tests {
 
     #[test]
     fn each_section_of_a_stepped_bore_is_its_own_hole() {
-        // A bore 2.012 mm in radius below and 2 mm above. Its flats cut
-        // inside the circle, so the wider section's face centres lie nearer
-        // 2 mm than the narrower's, but its corners do not.
+        // A bore 2.012 mm in radius below and 2 mm above. Each section is
+        // measured on its own, and finding the one nearest the declared
+        // radius does not stop the search for the other.
         let stepped = plate(
             5.0,
             8.0,
@@ -1896,11 +1886,16 @@ mod tests {
             32,
         );
         let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
-        assert_eq!(holes.len(), 1, "{holes:?}");
+        assert_eq!(holes.len(), 2, "{holes:?}");
+        // Its flats cut inside the circle, so the wider section's face
+        // centres lie nearer 2 mm than the narrower's, but its corners do
+        // not, and the narrower section is fitted first.
         assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
         assert!(close(holes[0].radius_range_mm[1], 2.0, 1e-9), "{holes:?}");
+        assert!(close(holes[1].radius_mm, 2.012, 1e-9), "{holes:?}");
+        assert!(close(holes[1].radius_range_mm[1], 2.012, 1e-9), "{holes:?}");
         let both = vertical_holes(&stepped, &[([0.0, 0.0], 2.0), ([0.0, 0.0], 2.012)]);
-        assert_eq!(both.len(), 2, "{both:?}");
+        assert_eq!(both, holes);
     }
 
     #[test]
