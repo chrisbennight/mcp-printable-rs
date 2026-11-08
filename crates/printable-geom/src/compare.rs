@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use nalgebra::{Matrix3, Matrix6, Rotation3, Vector3, Vector6};
 use parry3d_f64::math::Vector;
-use parry3d_f64::query::{PointQuery, PointQueryWithLocation, Ray, RayCast};
+use parry3d_f64::query::{PointQueryWithLocation, Ray, RayCast};
 use parry3d_f64::shape::{FeatureId, TriMesh, TriMeshFlags, TrianglePointLocation};
 use serde::Serialize;
 
@@ -240,6 +240,14 @@ impl Reference {
         let (projection, (part, location)) = self
             .surface
             .project_local_point_and_get_location_with_max_dist(to_parry(point), false, reach)?;
+        let nearest = from_parry(projection.point);
+        let normal = self.feature_normal(part, location)?;
+        Some((nearest, normal, (point - nearest).dot(&normal) < 0.0))
+    }
+
+    /// The outward normal where a point lies on face `part`: the face's
+    /// normal, or the pseudonormal of the edge or vertex it lies on.
+    fn feature_normal(&self, part: u32, location: TrianglePointLocation) -> Option<V3> {
         let normal = match on_edge_or_vertex(location) {
             TrianglePointLocation::OnFace(..) | TrianglePointLocation::OnSolid => {
                 self.face_normals.get(part as usize).copied().flatten()?
@@ -254,9 +262,7 @@ impl Reference {
                 from_parry(*normals.vertices_pseudo_normal.get(vertex as usize)?)
             }
         };
-        let nearest = from_parry(projection.point);
-        let normal = unit(normal)?;
-        Some((nearest, normal, (point - nearest).dot(&normal) < 0.0))
+        unit(normal)
     }
 
     /// Signed distance from the nearest reference surface that faces the
@@ -280,8 +286,8 @@ impl Reference {
     /// Signed distance from `point` to the nearest point of the first
     /// reference face along `ray_direction` that faces the way `normal`
     /// does, stepping past faces that face the other way. The distance runs
-    /// to the face itself, edges included, and is negative on the face's
-    /// inner side. The ray may run up to twice `reach`, so a tilted normal
+    /// to the face itself, edges included, and is negative on the inner side
+    /// of the face, edge or vertex it reaches. The ray may run up to twice `reach`, so a tilted normal
     /// still finds a face within `reach` of the point.
     fn along(&self, point: &V3, ray_direction: &V3, normal: &V3, reach: f64) -> Option<f64> {
         let limit = 2.0 * reach;
@@ -299,16 +305,17 @@ impl Reference {
             let index = face as usize % self.face_normals.len();
             let face_normal = self.face_normals[index]?;
             if face_normal.dot(normal) > 0.0 {
-                let nearest = from_parry(
-                    self.surface
-                        .triangle(index as u32)
-                        .project_local_point(to_parry(point), false)
-                        .point,
-                );
-                let offset = point - nearest;
+                let (projection, location) = self
+                    .surface
+                    .triangle(index as u32)
+                    .project_local_point_and_get_location(to_parry(point), false);
+                let offset = point - from_parry(projection.point);
                 let distance = offset.norm();
+                // Signed like the main reading, by the normal of the face,
+                // edge or vertex the nearest point lies on.
+                let side = self.feature_normal(index as u32, location)?;
                 return (distance <= reach).then(|| {
-                    if offset.dot(&face_normal) < 0.0 {
+                    if offset.dot(&side) < 0.0 {
                         -distance
                     } else {
                         distance
@@ -1184,6 +1191,43 @@ mod tests {
         );
         let far = measure_within(0.31);
         assert_eq!(far.unmeasured_samples, far.samples, "{far:?}");
+    }
+
+    #[test]
+    fn a_fallback_reading_at_a_rim_edge_takes_the_edge_sign() {
+        // Outside a 1 mm block's right face, facing mostly inwards: the ray
+        // passes the right face, reaches the underside, and its nearest
+        // point there is the edge, which the point lies outside.
+        let normal = V3::new(-0.98, 0.0, -0.199).normalize();
+        let centre = V3::new(1.3, 0.5, 0.1);
+        let u = V3::y();
+        let v = normal.cross(&u);
+        let corners = [
+            centre - u * 0.002 - v * 0.002,
+            centre + u * 0.002 - v * 0.002,
+            centre + v * 0.002,
+        ];
+        let mut face = TriangleMesh {
+            vertices: corners.iter().map(|corner| (*corner).into()).collect(),
+            triangles: vec![[0, 1, 2]],
+        };
+        let [a, b, c] = corners;
+        if (b - a).cross(&(c - a)).dot(&normal) < 0.0 {
+            face.triangles[0].swap(1, 2);
+        }
+        let report = measure(
+            &face,
+            &ComparisonOptions {
+                reference: block(1.0, 0.4, 1.0),
+                alignment: Alignment::None,
+                tolerance_mm: 0.01,
+                max_distance_mm: Some(0.32),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.unmeasured_samples, 0, "{report:?}");
+        let reading = report.deviation_mm.unwrap().mean;
+        assert!((reading - 0.3_f64.hypot(0.1)).abs() < 0.005, "{reading}");
     }
 
     #[test]
