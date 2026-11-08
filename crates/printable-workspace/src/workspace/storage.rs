@@ -40,10 +40,11 @@ struct Reservation {
 /// Failed automatic cleanup leaves an inactive directory visible as pending;
 /// only explicit cleanup or a later owner can confirm its removal.
 ///
-/// Each owner locks its own open file description and unlocks it explicitly.
-/// A child process forked anywhere in this process holds a copy of every
-/// descriptor until it starts its program, so a lock that is only closed, or
-/// one shared through a duplicate, can outlast its owner.
+/// Each owner locks its own open file description and unlocks it explicitly,
+/// and a native child takes its own lock through a [`ChildLease`]. A child
+/// process forked anywhere in this process holds a copy of every descriptor
+/// until it starts its program, so a lock that is only closed, or one shared
+/// through a duplicate, can outlast its owner.
 #[derive(Debug)]
 pub struct ManagedScratch {
     workspace: Workspace,
@@ -65,21 +66,34 @@ impl ManagedScratch {
         self.workspace.admit_storage_write(bytes)
     }
 
-    /// A separate ownership above the standard streams, still close-on-exec,
-    /// for a holder that releases it independently of this owner. The holder
-    /// unlocks it once nothing it started can still use the directory.
-    pub fn clone_lease(&self) -> Result<OwnedFd, WsError> {
-        let opened = lease_file(&self.directory)?;
-        let lease = rustix::io::fcntl_dupfd_cloexec(&opened, 3).map_err(errno_io)?;
-        // An owner's shared lock is held, so no exclusive lock can be.
-        rustix::fs::flock(&lease, FlockOperation::NonBlockingLockShared).map_err(errno_io)?;
-        Ok(lease)
+    /// Lets native processes keep this directory protected for as long as
+    /// they run, independently of this owner.
+    pub fn child_lease(&self) -> std::io::Result<ChildLease> {
+        Ok(ChildLease {
+            directory: rustix::io::fcntl_dupfd_cloexec(&self.directory, 3)?,
+        })
     }
 
     /// Keep staging protected while a native child, or anything it starts,
-    /// still runs, even if it outlives its Rust worker. The child locks its
-    /// own open file description after fork, so the protection ends with the
-    /// child's processes and no other process can extend it.
+    /// still runs, even if it outlives its Rust worker.
+    pub fn retain_for_command(&self, command: &mut std::process::Command) -> std::io::Result<()> {
+        self.child_lease()?.retain_for_command(command)
+    }
+}
+
+/// A scratch directory that native processes can keep protected for as long
+/// as they run. It holds no lock itself.
+#[derive(Debug)]
+pub struct ChildLease {
+    directory: OwnedFd,
+}
+
+impl ChildLease {
+    /// Keep the directory protected while the command's process, or anything
+    /// it starts, still runs, even if it outlives this server. The child
+    /// locks its own open file description after fork, so the protection ends
+    /// with the child's processes and no other process can extend or end it.
+    /// The directory must still have an owner when the command starts.
     pub fn retain_for_command(&self, command: &mut std::process::Command) -> std::io::Result<()> {
         use std::os::unix::process::CommandExt;
         let directory = rustix::io::fcntl_dupfd_cloexec(&self.directory, 3)?;
@@ -95,6 +109,7 @@ impl ManagedScratch {
                 )?;
                 let lease = rustix::io::fcntl_dupfd_cloexec(&opened, 3)?;
                 drop(opened);
+                // An owner's shared lock is held, so no exclusive lock can be.
                 rustix::fs::flock(&lease, FlockOperation::NonBlockingLockShared)?;
                 rustix::io::fcntl_setfd(&lease, rustix::io::FdFlags::empty())?;
                 // The program started by exec keeps the lock.
@@ -775,18 +790,25 @@ mod tests {
     }
 
     #[test]
-    fn a_cloned_lease_protects_storage_until_its_holder_releases_it() {
+    fn a_child_lease_protects_storage_after_its_holder_and_owner_are_gone() {
         let root = tempfile::tempdir().unwrap();
         let ws = Workspace::open(Some(root.path()), None).unwrap();
-        let scratch = ws.scratch(0, "clone").unwrap();
+        let scratch = ws.scratch(0, "child_lease").unwrap();
         let id = scratch.id.clone();
-        let clone = scratch.clone_lease().unwrap();
+        let lease = scratch.child_lease().unwrap();
+        let mut command = std::process::Command::new("/bin/cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        lease.retain_for_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        drop(lease);
         drop(scratch);
-        assert_eq!(
-            ws.cleanup_scratch(std::slice::from_ref(&id)).unwrap()[0].state,
-            "protected"
-        );
-        drop(clone);
+        let protected = ws.cleanup_scratch(std::slice::from_ref(&id));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(protected.unwrap()[0].state, "protected");
         assert_eq!(ws.cleanup_scratch(&[id]).unwrap()[0].state, "deleted");
     }
 

@@ -12,7 +12,7 @@ use crate::error::WsError;
 use crate::media::{allowed_suffix, media_type_for};
 
 mod storage;
-pub use storage::{CleanupEntry, ManagedScratch, StorageUsage};
+pub use storage::{ChildLease, CleanupEntry, ManagedScratch, StorageUsage};
 
 pub const RESERVED_WORKSPACE_ROOT: &str = ".printable";
 
@@ -47,9 +47,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Retain the snapshot's storage ownership for a native process.
-    pub fn clone_lease(&self) -> Result<OwnedFd, WsError> {
-        self._tempdir.clone_lease()
+    /// Lets native processes keep the snapshot protected for as long as they
+    /// run.
+    pub fn child_lease(&self) -> std::io::Result<ChildLease> {
+        self._tempdir.child_lease()
     }
 
     pub fn path(&self) -> &Path {
