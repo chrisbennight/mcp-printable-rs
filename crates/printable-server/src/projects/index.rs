@@ -2042,7 +2042,11 @@ impl ProjectIndex {
 
     /// Bring the cards up to date with the workspace, one project at a time.
     /// Callers serialise passes through `passes`.
-    fn pass(&self, workspace: &Workspace, kind: PassKind) -> Result<PassReport, ToolError> {
+    pub(crate) fn pass(
+        &self,
+        workspace: &Workspace,
+        kind: PassKind,
+    ) -> Result<PassReport, ToolError> {
         let started_unix_ms = super::unix_ms();
         let ids = project_ids(workspace)?;
         let present: HashSet<&str> = ids.iter().map(String::as_str).collect();

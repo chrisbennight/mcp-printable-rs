@@ -398,7 +398,7 @@ async fn the_grid_shows_cards_filters_and_pages() {
     assert!(grid.contains("2 matching projects"), "{grid}");
     assert!(grid.contains("Printed ×1"));
     assert!(grid.contains("Not printed"));
-    assert!(grid.contains("searching by meaning is not available"));
+    assert!(grid.contains("Searching by meaning is not configured"));
     assert!(grid.contains("2 of 2 in the library indexed"));
     let printed = library.page("/?printed=yes").await;
     assert!(printed.contains("1 matching project"));

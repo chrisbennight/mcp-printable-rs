@@ -535,6 +535,8 @@ impl LibraryForm {
             sort: self.sort,
             limit: PAGE_SIZE,
             offset: (self.page - 1) * PAGE_SIZE,
+            picture: None,
+            combine: Default::default(),
         }
     }
 
@@ -597,9 +599,7 @@ async fn library(State(web): State<Web>, uri: Uri) -> Response {
         Err(message) => return page(&paths, StatusCode::BAD_REQUEST, "Cannot search", &message),
     };
     let params = form.search_params();
-    let index = Arc::clone(&web.index);
-    let workspace = Arc::clone(&web.workspace);
-    match web.blocking(move || index.search(&workspace, params)).await {
+    match web.index.search(&web.workspace, params).await {
         Ok(response) => html(StatusCode::OK, pages::library(&paths, &form, Ok(&response))),
         Err(ToolError::Validation(message)) => html(
             StatusCode::BAD_REQUEST,
