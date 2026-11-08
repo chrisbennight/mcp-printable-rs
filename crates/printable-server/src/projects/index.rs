@@ -89,6 +89,13 @@ const MAX_WORD_CANDIDATES: usize = 2000;
 const RERANK_DEPTH: usize = 40;
 /// Reciprocal rank fusion's constant.
 const RANK_CONSTANT: f64 = 60.0;
+/// Codes of the notes in a search response's `degraded` list.
+pub(crate) const MEANING_UNAVAILABLE: &str = "meaning_search_unavailable";
+pub(crate) const PICTURE_UNAVAILABLE: &str = "picture_search_unavailable";
+pub(crate) const RERANK_UNAVAILABLE: &str = "rerank_unavailable";
+pub(crate) const MEANING_INCOMPLETE: &str = "meaning_index_incomplete";
+pub(crate) const PICTURE_INCOMPLETE: &str = "picture_index_incomplete";
+pub(crate) const INDEX_INCOMPLETE: &str = "index_incomplete";
 const PICTURE_LENGTH_DIFFERS: &str =
     "the embeddings service returned picture vectors of another length than text vectors";
 
@@ -281,42 +288,84 @@ pub struct EmbeddingReport {
     pub problem: Option<String>,
 }
 
-/// Request body for `index_status`, `index_rebuild` and `index_retry`.
+// Request body for the catalog's `status` action.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IndexParams {}
 
+// What `project reindex` does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReindexMode {
+    // Update changed projects and try failed cards and vectors again.
+    #[default]
+    Retry,
+    // Clear the index, including its vectors, and rebuild every card.
+    Rebuild,
+}
+
+impl From<ReindexMode> for PassKind {
+    fn from(mode: ReindexMode) -> Self {
+        match mode {
+            ReindexMode::Retry => Self::Retry,
+            ReindexMode::Rebuild => Self::Rebuild,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReindexParams {
+    /// `retry` (default) updates changed projects and tries failed cards and
+    /// vectors again; `rebuild` clears the index, vectors included, and
+    /// rebuilds every card.
+    #[serde(default)]
+    pub mode: ReindexMode,
+}
+
+// How much of each search result to return.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Detail {
+    // Identity, a short description, print count, dates, formats and tags.
+    #[default]
+    Concise,
+    // Also printers, materials, colours, the last outcome, the cover path,
+    // full timestamps and each method's score.
+    Full,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchSort {
-    /// Best match first, combining every available search method; requires
-    /// `text` or `picture`.
+    // Best match first, combining every available search method; requires
+    // `text` or `picture`.
     BestMatch,
-    /// Most recently printed first; never-printed projects last.
+    // Most recently printed first; never-printed projects last.
     LastPrinted,
-    /// Most recently created first.
+    // Most recently created first.
     Newest,
-    /// By name.
+    // By name.
     Name,
 }
 
-/// How `best_match` combines the scores of words, meaning and picture.
+// How `best_match` combines the scores of words, meaning and picture.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Combine {
-    /// Standardise each method's scores across the results and add them.
+    // Standardise each method's scores across the results and add them.
     #[default]
     Standardised,
-    /// Add 1 / (60 + rank) for each method that found the result.
+    // Add 1 / (60 + rank) for each method that found the result.
     ReciprocalRank,
 }
 
-/// Every filter must match. Text filters compare whole values without regard
-/// to letter case; colours compare as `#RRGGBB`.
+/// Every filter must match. Text filters compare whole values ignoring
+/// letter case; colours compare as `#RRGGBB`.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchFilters {
-    /// True for projects with at least one completed print, false for the rest.
+    /// True for projects with a completed print, false for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub printed: Option<bool>,
     /// A printer name or model shown on the card.
@@ -347,24 +396,26 @@ pub struct SearchFilters {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
-    /// Words to find in names, tags, descriptions, download sources, file
-    /// names, materials and printers: at most 256 characters and 16 words.
-    /// Every word must match the start of a word in the project. With an
-    /// embeddings service, best_match also finds projects by what the text
-    /// means.
+    /// Words to find in names, tags, descriptions, sources, file names,
+    /// materials and printers, each matching a word start: at most 256
+    /// characters and 16 words. best_match also searches by meaning when
+    /// available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Workspace path of a PNG, JPEG or WebP picture: best_match finds
-    /// projects whose cover or slice thumbnail looks like it. Needs picture
-    /// search; index_status reports whether it is available.
+    /// Workspace PNG, JPEG or WebP picture: best_match finds projects whose
+    /// cover or slice thumbnail looks like it, when picture search is
+    /// available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
     #[serde(default)]
     pub filters: SearchFilters,
-    /// Defaults to best_match with text or a picture, and newest without.
+    /// `best_match` (the default with text or a picture, and needs one),
+    /// `last_printed` (never printed last), `newest` (the default otherwise)
+    /// or `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<SearchSort>,
-    /// How best_match combines several methods' scores.
+    /// How best_match joins several methods' scores: `standardised` (default)
+    /// adds standardised scores; `reciprocal_rank` adds 1 / (60 + rank).
     #[serde(default)]
     pub combine: Combine,
     #[serde(default = "default_limit")]
@@ -373,6 +424,29 @@ pub struct SearchParams {
     #[serde(default)]
     #[schemars(range(max = 1000))]
     pub offset: usize,
+    /// `concise` (default) or `full`, which adds printers, materials,
+    /// colours, the last outcome, the cover path, full timestamps and each
+    /// method's score.
+    #[serde(default)]
+    pub detail: Detail,
+}
+
+impl SearchParams {
+    /// The order a valid request is sorted in.
+    pub(crate) fn effective_sort(&self) -> SearchSort {
+        match self.sort {
+            Some(sort) => sort,
+            None if self.text.is_none() && self.picture.is_none() => SearchSort::Newest,
+            None => SearchSort::BestMatch,
+        }
+    }
+
+    /// Whether `best_match` would send the leading results to a re-ranker.
+    pub(crate) fn would_rerank(&self) -> bool {
+        self.text.is_some()
+            && self.effective_sort() == SearchSort::BestMatch
+            && self.offset < RERANK_DEPTH
+    }
 }
 
 fn default_limit() -> usize {
@@ -520,7 +594,7 @@ pub struct VectorFailure {
     /// `text` or `picture`.
     pub kind: String,
     pub error: String,
-    /// When a background pass tries again; `index_retry` tries now.
+    /// When a background pass tries again; `project reindex` tries now.
     pub retry_unix_ms: u64,
 }
 
@@ -618,7 +692,7 @@ struct Entry {
     /// The picture source as JSON, and a key that changes with the picture.
     picture: Option<(String, String)>,
     /// Why the newest slice's summary is missing from the card, so the
-    /// project is counted as failed and `index_retry` tries it again.
+    /// project is counted as failed and `project reindex` tries it again.
     summary_problem: Option<String>,
 }
 
@@ -797,12 +871,12 @@ fn incomplete(coverage: Coverage, background: bool) -> Option<Degradation> {
     (coverage.indexed < coverage.total).then(|| {
         let pending = coverage.total - coverage.indexed - coverage.failed;
         let next = match (coverage.failed > 0, background) {
-            (true, _) => "Read index_status for the failures, then run index_retry.",
+            (true, _) => "Read catalog status for the failures, then run project reindex.",
             (false, true) => "Background indexing continues.",
-            (false, false) => "Background indexing is off; run index_rebuild or index_retry.",
+            (false, false) => "Background indexing is off; run project reindex.",
         };
         Degradation {
-            code: "index_incomplete".into(),
+            code: INDEX_INCOMPLETE.into(),
             message: format!(
                 "{} of {} projects are indexed; {pending} are waiting and {} could not be indexed. Results cover indexed projects only. {next}",
                 coverage.indexed, coverage.total, coverage.failed
@@ -824,9 +898,9 @@ enum Capability {
 /// the sentence when the reason alone does not say enough.
 fn note(capability: Capability, reason: Reason, detail: Option<String>) -> Degradation {
     let (code, name) = match capability {
-        Capability::Meaning => ("meaning_search_unavailable", "Searching by meaning"),
-        Capability::Picture => ("picture_search_unavailable", "Searching by picture"),
-        Capability::Rerank => ("rerank_unavailable", "Re-ranking"),
+        Capability::Meaning => (MEANING_UNAVAILABLE, "Searching by meaning"),
+        Capability::Picture => (PICTURE_UNAVAILABLE, "Searching by picture"),
+        Capability::Rerank => (RERANK_UNAVAILABLE, "Re-ranking"),
     };
     let message = match (detail, reason, capability) {
         (Some(detail), ..) => format!("{name} is unavailable: {detail}."),
@@ -1493,13 +1567,13 @@ fn vector_coverage(connection: &Connection, kind: VectorKind) -> rusqlite::Resul
 fn vectors_incomplete(kind: VectorKind, embedded: usize, indexed: usize) -> Degradation {
     let (code, message) = match kind {
         VectorKind::Text => (
-            "meaning_index_incomplete",
+            MEANING_INCOMPLETE,
             format!(
                 "{embedded} of {indexed} indexed projects have a meaning vector; the others are found by words only until background indexing embeds them."
             ),
         ),
         VectorKind::Picture => (
-            "picture_index_incomplete",
+            PICTURE_INCOMPLETE,
             format!(
                 "{embedded} of {indexed} projects with a picture have a picture vector; the others are not found by picture until background indexing embeds them."
             ),
@@ -1512,7 +1586,7 @@ fn vectors_incomplete(kind: VectorKind, embedded: usize, indexed: usize) -> Degr
     }
 }
 
-/// One project's vector state for `index_status`.
+/// One project's vector state for the catalog's status.
 struct VectorRow {
     project_id: String,
     text: Slot,
@@ -2690,16 +2764,8 @@ impl ProjectIndex {
         // failure, or having no vectors yet.
         let failure = self.state().embeddings.clone();
         for (capability, code, used) in [
-            (
-                Capability::Meaning,
-                "meaning_search_unavailable",
-                meaning.is_some(),
-            ),
-            (
-                Capability::Picture,
-                "picture_search_unavailable",
-                picture.is_some(),
-            ),
+            (Capability::Meaning, MEANING_UNAVAILABLE, meaning.is_some()),
+            (Capability::Picture, PICTURE_UNAVAILABLE, picture.is_some()),
         ] {
             if let Some((reason, detail)) = &failure
                 && identity.is_some()
@@ -2715,11 +2781,11 @@ impl ProjectIndex {
         let unused = [
             (
                 VectorKind::Text,
-                unused("meaning_search_unavailable", meaning.is_some()),
+                unused(MEANING_UNAVAILABLE, meaning.is_some()),
             ),
             (
                 VectorKind::Picture,
-                unused("picture_search_unavailable", picture.is_some()),
+                unused(PICTURE_UNAVAILABLE, picture.is_some()),
             ),
         ]
         .into_iter()
@@ -3264,7 +3330,7 @@ mod tests {
     }
 
     fn validator() -> jsonschema::Validator {
-        let schema = Value::Object(crate::tools::output::schema("project").as_ref().clone());
+        let schema = Value::Object(crate::tools::output::schema("catalog").as_ref().clone());
         jsonschema::validator_for(&schema).unwrap()
     }
 
@@ -3518,7 +3584,7 @@ mod tests {
         let incomplete = before.degraded.last().unwrap();
         assert_eq!(incomplete.code, "index_incomplete");
         assert!(
-            incomplete.message.contains("run index_rebuild"),
+            incomplete.message.contains("run project reindex"),
             "{incomplete:?}"
         );
         let first = index.pass(&workspace, PassKind::Incremental).unwrap();
@@ -3539,7 +3605,7 @@ mod tests {
             }
         );
         let incomplete = noted(&response.degraded, "index_incomplete").unwrap();
-        assert!(incomplete.message.contains("index_retry"));
+        assert!(incomplete.message.contains("project reindex"));
         let retried = index.pass(&workspace, PassKind::Retry).unwrap();
         assert_eq!((retried.failed, retried.unchanged), (1, 4));
         record(&workspace, "bad", "Mended", "", 5_000);
@@ -3663,26 +3729,38 @@ mod tests {
         assert_eq!(error, SettingsError::ProjectIndex(INTERVAL_KEY));
     }
 
-    /// Call one `project` action through the MCP handler and check its
-    /// structured result against the published output schema.
-    async fn call(server: &crate::mcp::PrintableServer, action: &str, params: Value) -> Value {
+    /// Call one action through the MCP handler and check its structured
+    /// result against the action's published output contract.
+    async fn call(
+        server: &crate::mcp::PrintableServer,
+        tool: &str,
+        action: &str,
+        params: Value,
+    ) -> Value {
         let Value::Object(arguments) = json!({"action": action, "params": params}) else {
             unreachable!("the request is an object")
         };
         let result = server
             .invoke_tool(
-                rmcp::model::CallToolRequestParams::new("project").with_arguments(arguments),
+                rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments),
             )
             .await
             .unwrap();
         assert_ne!(result.is_error, Some(true), "{action}: {result:?}");
         let value = result.structured_content.unwrap();
-        assert!(validator().is_valid(&value), "{action}: {value}");
+        let contract = crate::resources::contracts::read(
+            &format!("printable://contracts/{tool}/{action}"),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(contract["output_schema_scope"], "action");
+        let selected = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+        assert!(selected.is_valid(&value), "{action}: {value}");
         value
     }
 
     #[tokio::test]
-    async fn the_project_tool_routes_card_search_and_index_actions() {
+    async fn catalog_reads_the_library_and_project_reindexes_it() {
         let (_root, workspace) = workspace();
         library(&workspace);
         let settings = crate::config::Settings::from_lookup(|key| {
@@ -3698,45 +3776,112 @@ mod tests {
             )),
             Arc::new(settings),
         );
-        let pending = call(&server, "index_status", json!({})).await;
+        let pending = call(&server, "catalog", "status", json!({})).await;
         assert_eq!(
             (pending["pending"].as_u64(), pending["storage"].as_str()),
             (Some(4), Some("memory"))
         );
-        let rebuilt = call(&server, "index_rebuild", json!({})).await;
-        assert_eq!(rebuilt["rebuilt"], 4);
-        let retried = call(&server, "index_retry", json!({})).await;
+        // Status keeps reporting every unavailable method.
+        assert_eq!(pending["unavailable"].as_array().unwrap().len(), 3);
+        let rebuilt = call(&server, "project", "reindex", json!({"mode": "rebuild"})).await;
+        assert_eq!(
+            (rebuilt["kind"].as_str(), rebuilt["rebuilt"].as_u64()),
+            (Some("rebuild"), Some(4))
+        );
+        let retried = call(&server, "project", "reindex", json!({})).await;
         assert_eq!(retried["kind"], "retry");
-        let found = call(&server, "search", json!({"text": "spiral", "limit": 5})).await;
-        assert_eq!(found["results"][0]["project_id"], "vase");
-        assert_eq!(found["results"][0]["match"], "words");
-        assert_eq!(found["degraded"][0]["code"], "meaning_search_unavailable");
+        let found = call(
+            &server,
+            "catalog",
+            "search",
+            json!({"text": "spiral", "limit": 5}),
+        )
+        .await;
+        let first = &found["results"][0];
+        assert_eq!(first["project_id"], "vase");
+        assert_eq!(first["match"], "words");
+        assert!(first["created"].as_str().unwrap().len() == 10, "{first}");
+        for omitted in [
+            "dates",
+            "printers",
+            "materials",
+            "colours",
+            "cover_path",
+            "scores",
+        ] {
+            assert!(first.get(omitted).is_none(), "{omitted}: {first}");
+        }
+        // Text without re-ranking or meaning search reports only the methods
+        // this request would use.
+        let codes: Vec<&str> = found["degraded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|note| note["code"].as_str().unwrap())
+            .collect();
+        assert_eq!(codes, ["meaning_search_unavailable", "rerank_unavailable"]);
         assert_eq!(found["degraded"][0]["reason"], "not_configured");
-        let card = call(&server, "card", json!({"project_id": "desk"})).await;
+        let listed = call(&server, "catalog", "search", json!({})).await;
+        assert_eq!(listed["degraded"], json!([]));
+        assert!(listed["results"][0].get("match").is_none());
+        let full = call(
+            &server,
+            "catalog",
+            "search",
+            json!({"text": "spiral", "limit": 5, "detail": "full"}),
+        )
+        .await;
+        assert!(full["results"][0]["dates"]["created_unix_ms"].is_u64());
+        assert_eq!(full["degraded"], found["degraded"]);
+        let card = call(&server, "catalog", "card", json!({"project_id": "desk"})).await;
         assert_eq!(
             card["slices"]["newest"]["process"],
             "0.20mm Standard @BBL P1S"
         );
         assert_eq!(card["prints"]["outcomes"]["completed"], 1);
-        for (action, operation) in [
-            ("search", "printable_project_search"),
-            ("index_status", "printable_project_index_status"),
-            ("index_rebuild", "printable_project_index_rebuild"),
-            ("index_retry", "printable_project_index_retry"),
-            ("card", "printable_project"),
+        for (tool, action, operation, params) in [
+            ("catalog", "search", "printable_project_search", json!({})),
+            (
+                "catalog",
+                "status",
+                "printable_project_index_status",
+                json!({}),
+            ),
+            (
+                "catalog",
+                "card",
+                "printable_project_card",
+                json!({"project_id": "desk"}),
+            ),
+            ("project", "reindex", "printable_project_reindex", json!({})),
         ] {
-            let params = if action == "card" {
-                json!({"project_id": "desk"})
-            } else {
-                json!({})
-            };
-            let resolved = crate::tools::workflows::resolve(
-                "project",
-                json!({"action": action, "params": params}),
-            )
-            .unwrap();
+            let resolved =
+                crate::tools::workflows::resolve(tool, json!({"action": action, "params": params}))
+                    .unwrap();
             assert_eq!(resolved.name, operation);
         }
+        for (tool, action) in [
+            ("project", "search"),
+            ("project", "card"),
+            ("project", "index_status"),
+            ("project", "index_rebuild"),
+            ("project", "index_retry"),
+            ("catalog", "reindex"),
+            ("catalog", "update"),
+        ] {
+            assert!(
+                crate::tools::workflows::resolve(tool, json!({"action": action, "params": {}}))
+                    .is_err(),
+                "{tool} {action}"
+            );
+        }
+        assert!(
+            crate::tools::workflows::resolve(
+                "project",
+                json!({"action": "reindex", "params": {"mode": "full"}})
+            )
+            .is_err()
+        );
     }
 
     mod services {

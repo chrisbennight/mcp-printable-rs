@@ -4,7 +4,9 @@
 //!
 //! Sequence: `/healthz` → sanitized `/readyz` → `initialize` →
 //! `notifications/initialized` →
-//! `tools/list` (exact release catalog) → `printable_status` (OpenSCAD and FFmpeg available)
+//! `tools/list` (exact release catalog; each result is later checked against
+//! its advertised or contract-resource output schema) →
+//! `printable_status` (OpenSCAD and FFmpeg available)
 //! → a real cube STL write/read round-trip → `printable_validate_mesh` →
 //! `printable_analyze_assembly` with linear and rotational clearance motion → real
 //! OpenSCAD compile, PNG render, and SVG cross-section workflows across the
@@ -20,9 +22,12 @@
 //! the `mcp_endpoint_test` integration test exercises in-process.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, PoisonError};
 
-static OUTPUT_SCHEMAS: OnceLock<BTreeMap<String, jsonschema::Validator>> = OnceLock::new();
+/// Output validators by contract URI. A single-operation tool's comes from
+/// `tools/list`; a combined tool's from its action contract resource.
+static OUTPUT_SCHEMAS: Mutex<BTreeMap<String, Arc<jsonschema::Validator>>> =
+    Mutex::new(BTreeMap::new());
 use std::path::{Component, Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
@@ -373,16 +378,20 @@ async fn run(
     let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
     let result = extract_result(post(&http, &mcp, Some(&session), &list).await?).await?;
     check_tool_catalog(&result, expected_tools)?;
-    let mut schemas = BTreeMap::new();
     for tool in result["tools"].as_array().ok_or("missing catalog")? {
         let name = tool["name"].as_str().ok_or("missing tool name")?;
+        // Combined tools publish each action's output schema as a contract
+        // resource instead; it is read when the action is first called.
+        if tool.get("outputSchema").is_none() {
+            continue;
+        }
         let validator = jsonschema::validator_for(&tool["outputSchema"])
             .map_err(|error| format!("invalid output schema for {name}: {error}"))?;
-        schemas.insert(name.to_owned(), validator);
+        OUTPUT_SCHEMAS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(format!("printable://contracts/{name}"), Arc::new(validator));
     }
-    OUTPUT_SCHEMAS
-        .set(schemas)
-        .map_err(|_| "catalog already initialized")?;
     tracing::info!(
         catalog_json_bytes = result.to_string().len(),
         tool_count = expected_tools.len(),
@@ -2180,10 +2189,7 @@ async fn call_tool(
     if result["structuredContent"] != parsed {
         return Err(format!("tool {name} text and structured content disagree"));
     }
-    let schema = OUTPUT_SCHEMAS
-        .get()
-        .and_then(|schemas| schemas.get(name))
-        .ok_or_else(|| format!("missing discovered output schema for {name}"))?;
+    let schema = output_validator(http, mcp, session, id, name, &arguments).await?;
     if let Err(error) = schema.validate(&parsed) {
         return Err(format!(
             "tool {name} violates its discovered output schema: {error}"
@@ -2196,6 +2202,51 @@ async fn call_tool(
         "workflow context measurement; bytes are not model tokens"
     );
     Ok(parsed)
+}
+
+/// The output validator for one call: the advertised schema of a
+/// single-operation tool, or the selected action's contract resource.
+async fn output_validator(
+    http: &reqwest::Client,
+    mcp: &str,
+    session: &str,
+    id: u64,
+    name: &str,
+    arguments: &Value,
+) -> Result<Arc<jsonschema::Validator>, String> {
+    let uri = match arguments.get("action").and_then(Value::as_str) {
+        Some(action) => format!("printable://contracts/{name}/{action}"),
+        None => format!("printable://contracts/{name}"),
+    };
+    if let Some(validator) = OUTPUT_SCHEMAS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&uri)
+    {
+        return Ok(Arc::clone(validator));
+    }
+    // Contract reads use their own request IDs, apart from tool calls.
+    let read = json!({
+        "jsonrpc": "2.0",
+        "id": 1_000_000 + id,
+        "method": "resources/read",
+        "params": { "uri": uri }
+    });
+    let result = extract_result(post(http, mcp, Some(session), &read).await?).await?;
+    let text = result["contents"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("contract {uri} has no text content"))?;
+    let contract: Value =
+        serde_json::from_str(text).map_err(|e| format!("contract {uri} is not JSON: {e}"))?;
+    let validator = Arc::new(
+        jsonschema::validator_for(&contract["outputSchema"])
+            .map_err(|error| format!("invalid output schema in {uri}: {error}"))?,
+    );
+    OUTPUT_SCHEMAS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(uri, Arc::clone(&validator));
+    Ok(validator)
 }
 
 /// POST one JSON-RPC message with the MCP content-negotiation headers, forwarding

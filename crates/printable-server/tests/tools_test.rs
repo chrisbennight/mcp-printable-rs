@@ -3101,27 +3101,31 @@ async fn artifact_workflow_results_match_the_discovered_output_contract() {
         Arc::new(settings(&fake.host(), fake.port())),
     );
     let catalog = server.workflow_tools_payload();
-    assert!(
-        catalog
-            .tools
-            .iter()
-            .all(|tool| tool.output_schema.is_some())
-    );
-    let schema = catalog
-        .tools
-        .iter()
-        .find(|tool| tool.name == "artifact")
-        .unwrap()
-        .output_schema
-        .as_ref()
-        .unwrap();
-    let validator = jsonschema::validator_for(&Value::Object(schema.as_ref().clone())).unwrap();
+    // Only a tool with a single operation advertises its output schema.
+    for tool in &catalog.tools {
+        let actions = printable_server::resources::contracts::actions(&tool.input_schema);
+        assert_eq!(
+            tool.output_schema.is_some(),
+            actions.is_empty(),
+            "{}",
+            tool.name
+        );
+    }
     for arguments in [
         json!({"action": "write", "params": {"path": "sample.stl", "data_base64": "c29saWQgZW1wdHlcbiBlbmRzb2xpZCBlbXB0eQ=="}}),
         json!({"action": "read", "params": {"path": "sample.stl"}}),
         json!({"action": "stat", "params": {"path": "sample.stl"}}),
         json!({"action": "list", "params": {}}),
     ] {
+        let contract = printable_server::resources::contracts::read(
+            &format!(
+                "printable://contracts/artifact/{}",
+                arguments["action"].as_str().unwrap()
+            ),
+            Default::default(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
         let result = server
             .invoke_tool(
                 CallToolRequestParams::new("artifact")
@@ -5909,15 +5913,7 @@ async fn head_create_sends_a_millimetre_mesh_matching_the_output_contract() {
         .unwrap();
     assert_eq!(result.is_error, Some(false), "{result:?}");
     let value = result.structured_content.unwrap();
-    let schema = server
-        .workflow_tools_payload()
-        .tools
-        .into_iter()
-        .find(|tool| tool.name == "head")
-        .unwrap()
-        .output_schema
-        .unwrap();
-    let validator = jsonschema::validator_for(&Value::Object(schema.as_ref().clone())).unwrap();
+    let validator = head_output_validator(&server);
     assert!(validator.is_valid(&value), "{value}");
     assert_eq!(value["head"]["units"], "millimetres");
     assert_eq!(value["head"]["variant"], "test");
@@ -6042,15 +6038,20 @@ fn head_print_server(
     )
 }
 
+/// The `head` tool's published output contract. A combined tool's output
+/// schema is read from its contract resource rather than `tools/list`.
 fn head_output_validator(server: &PrintableServer) -> jsonschema::Validator {
-    let schema = server
-        .workflow_tools_payload()
-        .tools
-        .into_iter()
-        .find(|tool| tool.name == "head")
-        .unwrap()
-        .output_schema
-        .unwrap();
+    assert!(
+        server
+            .workflow_tools_payload()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == "head")
+            .unwrap()
+            .output_schema
+            .is_none()
+    );
+    let schema = printable_server::tools::output::schema("head");
     jsonschema::validator_for(&Value::Object(schema.as_ref().clone())).unwrap()
 }
 
@@ -7835,9 +7836,13 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
     let server = recon_server(root.path(), &endpoint).await;
     assert!(!head_offers_reconstruct(&server));
     let tool = advertised(&server).expect("photo is advertised");
-    let output =
-        jsonschema::validator_for(&Value::Object(tool.output_schema.unwrap().as_ref().clone()))
-            .unwrap();
+    assert!(tool.output_schema.is_none());
+    let output = jsonschema::validator_for(&Value::Object(
+        printable_server::tools::output::schema("photo")
+            .as_ref()
+            .clone(),
+    ))
+    .unwrap();
     let result = server
         .invoke_tool(photo_call(json!({
             "action": "depth",
@@ -7962,9 +7967,13 @@ async fn photo_object_is_offered_and_forwarded_only_when_the_worker_can_generate
     let tool = advertised(&server).expect("photo is advertised");
     let schema = serde_json::to_string(&tool.input_schema).unwrap();
     assert!(schema.contains("mesh_path") && !schema.contains("depth_path"));
-    let output =
-        jsonschema::validator_for(&Value::Object(tool.output_schema.unwrap().as_ref().clone()))
-            .unwrap();
+    assert!(tool.output_schema.is_none());
+    let output = jsonschema::validator_for(&Value::Object(
+        printable_server::tools::output::schema("photo")
+            .as_ref()
+            .clone(),
+    ))
+    .unwrap();
     let result = server
         .invoke_tool(photo_call(json!({
             "action": "object",

@@ -15,6 +15,7 @@ validate_mesh
 analyze_assembly
 job
 project
+catalog
 artifact
 printer
 print

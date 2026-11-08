@@ -47,15 +47,12 @@ const _: () = assert!(MODEL_CHECK_TIMEOUT.as_secs() * 2 < READINESS_TIMEOUT.as_s
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReconRequest {
-    /// Workspace photographs of one person, JPEG, PNG or WebP. All of them
-    /// set the identity; the primary one, the first unless `primary_image`
-    /// says otherwise, sets the expression and surface detail. One front
-    /// view and two three-quarter views, evenly lit, with the hair off the
-    /// ears and a relaxed expression, work best.
+    /// Workspace JPEG, PNG or WebP photographs of one person. All set the
+    /// identity; the primary one sets the expression and surface detail. A
+    /// front and two three-quarter views, evenly lit, with the ears clear and a
+    /// relaxed expression, work best.
     pub images: Vec<String>,
-    /// The photograph that sets the expression and surface detail: an index
-    /// into `images`, or `most_frontal` for the one whose head is turned
-    /// least from the camera. The first by default.
+    /// An index into `images`, or `most_frontal`; the first by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_image: Option<PrimaryImage>,
     /// Workspace path for the 16-bit PNG displacement map.
@@ -64,69 +61,52 @@ pub struct ReconRequest {
     #[serde(default)]
     pub overwrite: bool,
     /// Workspace path for an RGB PNG colour map in FLAME's texture layout,
-    /// projected from the photographs. Needs the FLAME 2020 generic model
-    /// converted with its texture layout. Not made when omitted.
+    /// projected from the photographs; `scalp`, `lighting`, `texture_size` and
+    /// `eyes` shape it. Needs the FLAME 2020 generic model with its texture
+    /// layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture_path: Option<String>,
-    /// How the colour map colours the scalp (default `hair`): `hair` paints
-    /// it the hair colour wherever the photographs do not show bare scalp,
-    /// `skin` colours it as skin, and `photo` takes whatever the
-    /// photographs show, hair included. `hair` and `skin` need a model
-    /// converted with FLAME's masks to know where the scalp is. Needs
-    /// `texture_path`.
+    /// Colour-map scalp: `hair` (default) paints the hair colour where no bare
+    /// scalp shows, `skin` paints skin, `photo` keeps what the photographs
+    /// show. `hair` and `skin` need a model converted with masks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scalp: Option<ScalpChoice>,
-    /// sRGB colour, each component 0 to 255, to paint the scalp with instead
-    /// of the hair colour found in the photographs. Needs `scalp` `hair`.
+    /// sRGB scalp colour in place of the measured hair colour, with `scalp`
+    /// `hair`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hair_colour: Option<[u8; 3]>,
-    /// What becomes of the photographs' light and shade in the colour map
-    /// (default `remove`): `remove` estimates each photograph's smooth
-    /// shading over the skin and divides it out, keeping the typical skin
-    /// colour and limiting highlights; `keep` leaves it as photographed.
-    /// Needs `texture_path`.
+    /// `remove` (default) divides out each photograph's smooth shading over the
+    /// skin; `keep` leaves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lighting: Option<LightingChoice>,
-    /// Side of the colour map in texels: 512, 1024 (the default) or 2048.
-    /// Needs `texture_path`.
+    /// Colour map side in texels: 512, 1024 (default) or 2048.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture_size: Option<u32>,
-    /// How the colour map colours the eyeballs (default `photo`): `photo`
-    /// takes the photographs' colour where they see the eyeball itself, and
-    /// `painted` paints a clean iris and pupil around each eye's gaze and
-    /// white elsewhere, at life size. Needs `texture_path`.
+    /// `photo` (default) takes the photographs' eyeball colour; `painted`
+    /// paints a clean iris, pupil and white along each gaze.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eyes: Option<EyeChoice>,
-    /// sRGB iris colour, each component 0 to 255, for painted eyes. When
-    /// omitted it is measured from what the photographs show of the iris.
-    /// Needs `eyes` `painted`.
+    /// sRGB iris colour for `painted` eyes; measured from the photographs when
+    /// omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iris_colour: Option<[u8; 3]>,
-    /// sRGB colour of the white of painted eyes (default 240, 236, 230).
-    /// Needs `eyes` `painted`.
+    /// sRGB white of `painted` eyes (default 240, 236, 230).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sclera_colour: Option<[u8; 3]>,
-    /// Workspace path for an RGB PNG picture of the fit: for each
-    /// photograph, the fitted head's outline and the edges of its parts drawn
-    /// over the photograph, beside the head alone, shaded grey, as the
-    /// photograph's camera sees it. Not made when omitted.
+    /// Workspace path for an RGB PNG showing the fitted head's outline over
+    /// each photograph, beside the head alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit_path: Option<String>,
-    /// Share, 0 to 1 (default 0), of the head's tilt in the primary
-    /// photograph, its pitch and roll, to keep in a suggested `pose.neck`,
-    /// so a bust can keep the subject's natural tilt. The server applies
-    /// it; the worker never sees it.
+    /// Share, 0 to 1 (default 0), of the primary photograph's head pitch and
+    /// roll to keep in a suggested `pose.neck`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub neck_tilt: Option<f64>,
-    /// Share, 0 to 1 (default 0), of the head's turn in the primary
-    /// photograph, its yaw, to keep in a suggested `pose.neck`. A turn
-    /// reflects where the camera stood as much as the subject. The server
-    /// applies it; the worker never sees it.
+    /// Share, 0 to 1 (default 0), of the primary photograph's head yaw to keep
+    /// in a suggested `pose.neck`; a turn often reflects the camera position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub neck_turn: Option<f64>,
 }
 
-/// Which photograph sets the expression and surface detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PrimaryImage {
@@ -134,14 +114,12 @@ pub enum PrimaryImage {
     Rule(PrimaryRule),
 }
 
-/// A rule for choosing the primary photograph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrimaryRule {
     MostFrontal,
 }
 
-/// What a colour map does with the photographs' lighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LightingChoice {
@@ -150,7 +128,6 @@ pub enum LightingChoice {
     Keep,
 }
 
-/// How a colour map colours the eyeballs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EyeChoice {
@@ -162,7 +139,6 @@ pub enum EyeChoice {
 /// Colour map sides a caller may ask for, in texels.
 pub const TEXTURE_SIZES: [u32; 3] = [512, 1024, 2048];
 
-/// How a colour map colours the scalp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalpChoice {
@@ -289,24 +265,20 @@ const MAX_NORMAL_MAP_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DepthRequest {
-    /// Workspace photograph, JPEG, PNG or WebP. Any transparency is flattened
-    /// onto black.
+    /// Workspace JPEG, PNG or WebP photograph; transparency is flattened onto
+    /// black.
     pub image: String,
-    /// Workspace path for the 16-bit greyscale PNG depth map, nearest
-    /// brightest: a pixel value p means a relative log depth of
-    /// far - (far - near) * p / 65535, with near and far reported. The scale
-    /// and offset of the true distances are unknown.
+    /// Workspace path for the 16-bit greyscale depth PNG, nearest brightest:
+    /// pixel p is relative log depth far - (far - near) * p / 65535, with near
+    /// and far reported; true scale and offset are unknown.
     pub depth_path: String,
-    /// Workspace path for a 16-bit RGB PNG of unit surface normals in the
-    /// camera's frame, x right, y up and z towards the camera, each component
-    /// c stored as (c + 1) / 2 * 65535. Not made when omitted; making it runs
-    /// the model a second time.
+    /// Workspace path for a 16-bit RGB PNG of camera-frame unit normals (x
+    /// right, y up, z towards the camera), each component c stored as (c + 1) /
+    /// 2 * 65535; runs the model a second time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normals_path: Option<String>,
-    /// Longest side, in pixels, to estimate at: 256 to 2048 (default 1024).
-    /// Larger photographs are scaled down, never up, and both sides are
-    /// rounded to multiples of 16. More pixels resolve finer detail and take
-    /// longer and more GPU memory.
+    /// Longest side to estimate at, 256 to 2048 pixels (default 1024);
+    /// photographs are scaled down, never up, to multiples of 16.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_side: Option<u32>,
     /// Replace existing files at `depth_path` and `normals_path`.
@@ -370,7 +342,6 @@ pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_00
 /// million triangles.
 const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The shape generator selected for an object photograph.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub enum ObjectModel {
     #[default]
@@ -383,55 +354,44 @@ pub enum ObjectModel {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectRequest {
-    /// Shape generator: `pixal3d` (the default) or the optional `trellis2`.
-    /// TRELLIS.2 streams weights from persistent disk storage and downloads
-    /// its pinned model files on first use.
+    /// `pixal3d` (default) or the optional `trellis2`, which downloads its
+    /// model files on first use.
     #[serde(default)]
     pub model: ObjectModel,
-    /// Run as a retained job. Pixal3D defaults to false; TRELLIS.2 always
-    /// returns a retained job, so an explicit false is rejected for it.
+    /// Run as a retained job; Pixal3D defaults to false, and TRELLIS.2 always
+    /// runs as one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
-    /// Workspace photograph of one object, figure or character, JPEG, PNG or
-    /// WebP. The background is removed unless the photograph already has
-    /// transparency, which then marks the subject.
+    /// Workspace JPEG, PNG or WebP photograph of one object, figure or
+    /// character; the background is removed unless the photograph has
+    /// transparency.
     pub image: String,
-    /// Workspace path for the binary STL, in millimetres with Z up, the
-    /// subject facing -Y as the camera saw it, centred on the origin and
-    /// standing on Z = 0.
+    /// Workspace path for the binary STL: millimetres, Z up, facing -Y as
+    /// photographed, centred on the origin and standing on Z = 0.
     pub mesh_path: String,
-    /// Detail of the surface: 512, 1024 (default) or 1536 voxels across.
-    /// Higher resolutions take longer, use more GPU memory and give larger
-    /// meshes; 1536 is coarsened towards 1024 when the shape has too many
-    /// voxels.
+    /// Voxels across: 512, 1024 (default) or 1536; higher is slower and uses
+    /// more GPU memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<u32>,
-    /// Sampling steps for each generation stage: 1 to 50, by default the
-    /// published pipeline's. Fewer steps are faster and rougher.
+    /// Sampling steps per stage, 1 to 50 (default the published pipeline's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
-    /// Seed for the generator's noise (default 42); another seed gives
-    /// another plausible shape.
+    /// Noise seed (default 42); another seed gives another plausible shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u32>,
-    /// Horizontal field of view, in degrees, of the square that frames the
-    /// subject: 5 to 90. When omitted it is derived from the photograph's
-    /// 35 mm equivalent focal length, or else assumed to be 20 degrees.
+    /// Pixal3D only: horizontal field of view framing the subject, 5 to 90
+    /// degrees; from the photograph's focal length, or 20, when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov_degrees: Option<f64>,
-    /// Length of the mesh's longest side in millimetres: 5 to 2000 (default
-    /// 100).
+    /// Longest side, 5 to 2000 mm (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_mm: Option<f64>,
-    /// Triangles the generated surface is simplified towards: 10,000 to
-    /// 4,000,000 (default 1,000,000). Simplification stops early on parts it
-    /// cannot simplify without folding the surface, so the mesh may keep
-    /// more; the result reports both counts.
+    /// Simplify towards this many triangles, 10,000 to 4,000,000 (default
+    /// 1,000,000); the result reports both counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_triangles: Option<u32>,
-    /// TRELLIS.2 only: simplify the generated surface (default true). False
-    /// exports every generated triangle and can produce files over 1 GB.
-    /// Cannot be combined with `target_triangles` when false.
+    /// TRELLIS.2 only (default true); false keeps every triangle, can exceed 1
+    /// GB and excludes `target_triangles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simplify: Option<bool>,
     /// Replace an existing file at `mesh_path`.

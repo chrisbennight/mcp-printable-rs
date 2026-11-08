@@ -62,12 +62,10 @@ impl Cover {
 #[serde(deny_unknown_fields)]
 pub struct CoverParams {
     pub project_id: String,
-    /// The `record_version` from the record being edited. The change is
-    /// refused when the stored record has changed since it was read.
+    /// The `record_version` read; the change is refused if it has changed.
     pub expected_record_version: u64,
     pub source: CoverSource,
-    /// Caller-selected positive work budget in seconds for rendering a model
-    /// view. Defaults to one hour.
+    /// Budget in seconds for rendering a model view (default one hour).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: f64,
 }

@@ -78,9 +78,9 @@ const MINIMUM_WALL_MM: std::ops::RangeInclusive<f64> = 0.05..=2.0;
 const DEFAULT_RELIEF_LAYERS: f64 = 2.0;
 const DEFAULT_RELIEF_FRACTION: f64 = 0.01;
 
-/// Joint rotations as axis-angle vectors in radians. The direction is the
-/// rotation axis and the length, at most pi, is the angle. FLAME's frame has
-/// y up and the face looking along +z.
+/// Joint rotations as axis-angle vectors in radians: the direction is the axis
+/// and the length, at most pi, the angle. FLAME's frame has y up and the face
+/// along +z.
 #[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadPose {
@@ -106,89 +106,75 @@ pub(super) struct HeadModelsParams {}
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadCreateParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
-    /// Model variant from the `models` action. Optional when one model is mounted.
+    /// Model variant from `models`; optional when one is mounted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
-    /// Identity coefficients in standard deviations, in basis order, each
-    /// within ±5. Omitted trailing coefficients are zero.
+    /// Identity coefficients in basis order, each within ±5; omitted trailing
+    /// ones are zero.
     #[serde(default)]
     identity: Vec<f32>,
-    /// Expression coefficients in standard deviations, in basis order, each
-    /// within ±5. Omitted trailing coefficients are zero.
+    /// Expression coefficients in basis order, each within ±5; omitted trailing
+    /// ones are zero.
     #[serde(default)]
     expression: Vec<f32>,
     #[serde(default)]
     pose: HeadPose,
-    /// Multiply the expression coefficients, the jaw rotation and the
-    /// eyelids by this, 0 to 1 (default 1), to soften the expression; 0
-    /// gives a neutral face.
+    /// Scales expression, jaw and eyelids, 0 (neutral) to 1 (default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expression_scale: Option<f64>,
-    /// How far each eyelid is closed, left then right, each 0 (as the model
-    /// shapes it, the default) to 1 (closed). Needs a model converted with
-    /// an eyelid basis.
+    /// Closure of the left and right eyelid, 0 (default) to 1. Needs a model
+    /// with an eyelid basis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eyelids: Option<[f32; 2]>,
-    /// Unique name for the new object (default `Head`).
+    /// Unique object name (default `Head`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    /// Workspace path of a PNG colour map in FLAME's texture layout, such as
-    /// one made from photographs. The head shows it through a material.
-    /// Needs a model converted with its texture layout.
+    /// Workspace PNG colour map in FLAME's texture layout. Needs a model with
+    /// its texture layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     texture: Option<String>,
-    /// How the head looks in Blender. Every field is optional.
+    /// How the head looks in Blender.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     appearance: Option<HeadAppearance>,
 }
 
-/// How a head looks in Blender. Heads are shaded smooth; the materials
-/// apply when the head has a colour map.
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadAppearance {
-    /// Subdivision levels, applied as a modifier so the mesh keeps FLAME's
-    /// vertices, 0 to 2 (default 1).
+    /// Subdivision modifier levels, 0 to 2 (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subdivision: Option<u8>,
-    /// Close the neck opening with one face that adds no vertices (default
-    /// true).
+    /// Close the neck opening with one face (default true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     close_neck: Option<bool>,
-    /// Skin roughness, 0 to 1 (default 0.5).
+    /// 0 to 1 (default 0.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skin_roughness: Option<f64>,
-    /// Weight of light scattering beneath the skin, 0 to 1 (default 0.1).
+    /// Subsurface scattering weight, 0 to 1 (default 0.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skin_subsurface: Option<f64>,
-    /// How far light scatters beneath the skin, in millimetres, 0 to 100
-    /// (default 1).
+    /// 0 to 100 mm (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subsurface_scale_mm: Option<f64>,
-    /// Eyeball roughness, 0 to 1 (default 0.05). The eyeballs are the parts
-    /// of the mesh separate from the head.
+    /// 0 to 1 (default 0.05).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eye_roughness: Option<f64>,
-    /// Show a displacement map as bump detail, so the Blender head matches
-    /// a printed bust. Needs `texture`.
+    /// Show a displacement map as bump, to match a printed bust. Needs
+    /// `texture`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bump: Option<HeadBump>,
 }
 
-/// A greyscale PNG displacement map in FLAME's texture layout, such as one
-/// estimated from photographs, shown as bump.
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadBump {
-    /// Workspace path of the PNG.
+    /// Workspace path of a greyscale PNG in FLAME's texture layout.
     path: String,
-    /// Millimetres between the map's lowest and highest values, 0 to 100:
-    /// the map's `scale_mm`.
+    /// The map's `scale_mm`, 0 to 100.
     scale_mm: f64,
-    /// Exaggerate or soften the detail, 0 to 10 (default 1).
+    /// 0 to 10 (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strength: Option<f64>,
 }
@@ -237,18 +223,17 @@ impl HeadAppearance {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadUpdateParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
-    /// Head object previously made by `create`.
+    /// Head object made by `create`.
     object: String,
-    /// Model variant the object was created from. Optional when one model is mounted.
+    /// Model variant the object was created from; optional when one is mounted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
-    /// Replacement identity coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     identity: Vec<f32>,
-    /// Replacement expression coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     expression: Vec<f32>,
     #[serde(default)]
@@ -259,9 +244,7 @@ pub(super) struct HeadUpdateParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eyelids: Option<[f32; 2]>,
-    /// Workspace path of a PNG colour map that replaces the head's own, as for
-    /// `create`. The head must have been created from a model converted with
-    /// its texture layout.
+    /// Replacement colour map, as for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     texture: Option<String>,
 }
@@ -269,17 +252,16 @@ pub(super) struct HeadUpdateParams {
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadPreparePrintParams {
-    /// Model variant from the `models` action. Optional when one model is mounted.
+    /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
-    /// Identity coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     identity: Vec<f32>,
-    /// Expression coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     expression: Vec<f32>,
-    /// Joint rotations, as for `create`. `global` must be zero: the bust
-    /// stands on its neck, so turn or tilt the head with `neck`.
+    /// As for `create`, with `global` zero: turn or tilt the head with `neck`.
     #[serde(default)]
     pose: HeadPose,
     /// As for `create`.
@@ -288,92 +270,69 @@ pub(super) struct HeadPreparePrintParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eyelids: Option<[f32; 2]>,
-    /// How the mouth is printed. `as_posed` (the default) keeps the pose and
-    /// closes the mouth opening flat behind the lips. `closed` sets the jaw
-    /// rotation to zero, replacing `pose.jaw`, which brings the lips together
-    /// unless the expression itself parts them. `recessed` keeps the pose
-    /// and sets the centre of the surface closing the mouth back by
-    /// `mouth_recess_mm`, so an open mouth reads as a shadow. With `closed`
-    /// or `recessed`, surface detail fades out over the lips.
+    /// `as_posed` (default) closes the opening flat behind the lips, `closed`
+    /// zeroes the jaw, and `recessed` sets the closing surface back by
+    /// `mouth_recess_mm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mouth: Option<MouthShape>,
-    /// How far `recessed` sets the mouth back on the finished bust, 0.5 to
-    /// 10 mm (default 2).
+    /// 0.5 to 10 mm (default 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mouth_recess_mm: Option<f64>,
-    /// How the eyes are carved, centred on each eye's gaze: `plain` (the
-    /// default) leaves them smooth, `pupil` drills the pupil, and
-    /// `iris_and_pupil` also engraves a ring at the edge of the iris.
+    /// `plain` (default), `pupil` drills each pupil along its gaze, and
+    /// `iris_and_pupil` also engraves the iris edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eyes: Option<EyeStyle>,
-    /// Pupil diameter on the finished bust, 0.2 to 10 mm. Defaults to 4 mm at
-    /// life size scaled with the bust, and to no less than two nozzle widths
-    /// with an FDM `printer`.
+    /// 0.2 to 10 mm; defaults to 4 mm at life size, scaled, and two nozzle
+    /// widths or more for FDM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pupil_diameter_mm: Option<f64>,
-    /// Iris diameter on the finished bust, 0.5 to 20 mm, for
-    /// `iris_and_pupil`. Defaults to 11.5 mm at life size scaled with the
-    /// bust, and wide enough to leave the printer's narrowest feature between
-    /// the ring and the pupil.
+    /// For `iris_and_pupil`, 0.5 to 20 mm; defaults to 11.5 mm at life size,
+    /// scaled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     iris_diameter_mm: Option<f64>,
-    /// How deep the pupil is drilled on the finished bust, 0.05 to 5 mm; the
-    /// ring is half as deep, and with a `printer` no shallower than two
-    /// layers. Defaults to 2 mm at life size scaled with the bust, and to no
-    /// less than two layers with a `printer`.
+    /// Pupil depth, 0.05 to 5 mm, with the iris ring half as deep; defaults to
+    /// 2 mm at life size, scaled, and two layers or more with a `printer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eye_detail_depth_mm: Option<f64>,
-    /// What stands below the head, within `height_mm` above any plinth:
-    /// `neck` (the default) ends at the neck's cut, `extended_neck` continues
-    /// the neck down along its own lean, and `shoulders` adds a block of
-    /// chest and shoulders. The head keeps at least half the height.
+    /// `neck` (default) ends at the neck's cut, `extended_neck` continues it
+    /// down, and `shoulders` adds a chest and shoulder block; the head keeps at
+    /// least half the height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<BodyShape>,
-    /// Hair on the bust: `none` (the default) or `cap`, a layer raised over
-    /// the scalp with a sloping edge. Needs a model converted with `--masks`,
-    /// unless `hair_vertices` says where the cap goes.
+    /// `none` (default) or `cap`, a raised layer over the scalp. Needs a model
+    /// converted with `--masks` unless `hair_vertices` is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair: Option<HairStyle>,
-    /// The model vertices a `cap` covers, in place of the model's scalp
-    /// region, such as a hairline found in photographs. An empty list raises
-    /// nothing.
+    /// Model vertices a `cap` covers instead of the scalp region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair_vertices: Option<Vec<u32>>,
-    /// Eyebrows on the bust: `none` (the default) or `raised`, raised where
-    /// `brow_map` shows them. Needs a model converted with `--texture` and
-    /// `--masks`.
+    /// `none` (default) or `raised` where `brow_map` shows them. Needs a model
+    /// converted with `--texture` and `--masks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     brows: Option<BrowStyle>,
-    /// How far `raised` brows stand out, 0.05 to 5 mm on the finished bust.
-    /// Defaults to 1% of the height above the plinth, and to no less than
-    /// two layers with a `printer`.
+    /// 0.05 to 5 mm; defaults to 1% of the height above the plinth, and two
+    /// layers or more with a `printer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     brow_height_mm: Option<f64>,
-    /// Workspace path of a PNG colour map in the model's texture layout,
-    /// such as one made from photographs: the brows are the parts above the
-    /// eyes much darker than the skin around them. A map painted with dark
-    /// brows on light skin works the same way.
+    /// Workspace PNG colour map in the model's texture layout; brows are the
+    /// parts above the eyes much darker than the skin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     brow_map: Option<String>,
-    /// How far a `cap` stands out from the scalp, 0.2 to 40 mm on the finished
-    /// bust (default 3% of the height above the plinth).
+    /// 0.2 to 40 mm (default 3% of the height above the plinth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hair_thickness_mm: Option<f64>,
-    /// How much `extended_neck` adds, 2 to 200 mm. Defaults to 15% of the
-    /// head's height.
+    /// 2 to 200 mm (default 15% of the head's height).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     neck_extension_mm: Option<f64>,
-    /// The `shoulders` block's width, 10 to 500 mm. Defaults to 1.6 times the
-    /// head's width, and at least 1.3 times the neck's. Shoulders too small to
-    /// hold the neck are refused.
+    /// 10 to 500 mm (default 1.6 times the head's width, and 1.3 times the
+    /// neck's or more); too narrow to hold the neck is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shoulder_width_mm: Option<f64>,
-    /// The `shoulders` block's depth, 5 to 300 mm. Defaults to 0.9 times the
-    /// head's depth, and at least 1.3 times the neck's.
+    /// 5 to 300 mm (default 0.9 times the head's depth, and 1.3 times the
+    /// neck's or more).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shoulder_depth_mm: Option<f64>,
-    /// The `shoulders` block's height, 2 to 200 mm. Defaults to 35% of the
-    /// head's height.
+    /// 2 to 200 mm (default 35% of the head's height).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shoulder_height_mm: Option<f64>,
     /// Workspace path for the binary STL.
@@ -381,146 +340,116 @@ pub(super) struct HeadPreparePrintParams {
     /// Replace an existing file at `path`.
     #[serde(default)]
     overwrite: bool,
-    /// Height of the bust from its flat base to the crown, 20 to 500 mm
-    /// (default 100).
+    /// Base to crown, 20 to 500 mm (default 100).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     height_mm: Option<f64>,
-    /// Target facet edge length, 0.1 to 5 mm. Defaults to 0.4, or to 0.4% of
-    /// `height_mm` on busts under 100 mm and no less than 0.1. Shorter edges
-    /// follow the smooth surface more closely.
+    /// Facet edge, 0.1 to 5 mm (default 0.4, or 0.4% of `height_mm` below 100
+    /// mm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
-    /// Upper bound on the triangle count, 10,000 to 3,000,000 (default
-    /// 750,000). The edge length grows when needed to respect it. Limits above
-    /// the default need a larger geometry worker memory limit.
+    /// 10,000 to 3,000,000 (default 750,000); more needs more geometry worker
+    /// memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_triangles: Option<usize>,
-    /// Height of a cylindrical plinth under the bust, 2 to 100 mm, counted
-    /// within `height_mm`, or 0 for none. Defaults to 8% of `height_mm` for an
-    /// FDM `printer` and to no plinth otherwise.
+    /// Plinth within `height_mm`, 2 to 100 mm, or 0 for none; defaults to 8% of
+    /// `height_mm` for an FDM `printer`, otherwise none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
-    /// Plinth diameter, 10 to 500 mm. Defaults to 70% of the bust's widest
-    /// extent and reaches at least 1 mm beyond the bust's base. Requires a
+    /// 10 to 500 mm (default 70% of the bust's widest extent). Requires a
     /// plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_diameter_mm: Option<f64>,
-    /// Cut the plinth's bottom edge back this far at 45 degrees, 0 to 5 mm,
-    /// so that the first layers stay within its outline. Defaults to 0.5 for
-    /// an FDM `printer` and to 0 otherwise. Requires a plinth.
+    /// 45-degree bottom chamfer, 0 to 5 mm (default 0.5 for an FDM `printer`,
+    /// otherwise 0). Requires a plinth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_chamfer_mm: Option<f64>,
-    /// Hollow the bust for resin printing, leaving walls this thick, 1 to
-    /// 20 mm. Drain holes open through the base. Solid when omitted, which
-    /// suits FDM printing with infill.
+    /// Hollow for resin with walls 1 to 20 mm thick and drain holes in the
+    /// base; solid when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hollow_wall_mm: Option<f64>,
-    /// Drain hole diameter, 1 to 10 mm (default 3.5). Requires
-    /// `hollow_wall_mm`.
+    /// 1 to 10 mm (default 3.5). Requires `hollow_wall_mm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     drain_hole_diameter_mm: Option<f64>,
-    /// Fine surface detail from a displacement map in FLAME's texture layout,
-    /// such as one estimated from photographs. Needs a model converted with
+    /// Surface detail from a map in FLAME's texture layout. Needs a model with
     /// its texture layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     displacement: Option<DisplacementParams>,
-    /// The printer the bust is for. Sets the defaults for the plinth and
-    /// detail relief, and reports overhangs, thin parts and detail too
-    /// shallow to print. Without it, nothing is assumed about the printer.
+    /// Sets plinth and detail defaults and reports overhangs, thin parts and
+    /// detail too shallow to print.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     printer: Option<PrinterParams>,
 }
 
-/// How the mouth of a bust is printed.
 #[derive(
     Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub(super) enum MouthShape {
-    /// As the pose leaves it.
     #[default]
     AsPosed,
-    /// With the jaw closed.
     Closed,
-    /// With the surface closing the mouth set back into the head.
     Recessed,
 }
 
-/// What stands below the head of a bust.
 #[derive(
     Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub(super) enum BodyShape {
-    /// The neck as cut.
     #[default]
     Neck,
-    /// The neck continued down along its own lean.
     ExtendedNeck,
-    /// A block of chest and shoulders.
     Shoulders,
 }
 
-/// Hair on a bust.
 #[derive(
     Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HairStyle {
-    /// The bare scalp.
     #[default]
     None,
-    /// A layer raised over the scalp.
     Cap,
 }
 
-/// Eyebrows on a bust.
 #[derive(
     Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub(super) enum BrowStyle {
-    /// No brows beyond the head's own shape.
     #[default]
     None,
-    /// Brows raised where a colour map shows them.
     Raised,
 }
 
-/// How the eyes of a bust are carved.
 #[derive(
     Clone, Copy, PartialEq, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub(super) enum EyeStyle {
-    /// Smooth, as modelled.
     #[default]
     Plain,
-    /// A drilled pupil.
     Pupil,
-    /// A drilled pupil within an engraved iris ring.
     IrisAndPupil,
 }
 
-/// How the bust will be printed.
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PrinterParams {
     process: PrintProcess,
-    /// FDM nozzle diameter, 0.1 to 2 mm (default 0.4). FDM only.
+    /// FDM only, 0.1 to 2 mm (default 0.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nozzle_diameter_mm: Option<f64>,
-    /// Layer height, 0.01 to 1 mm and no more than the nozzle diameter.
-    /// Defaults to 0.2 for FDM and 0.05 for resin.
+    /// 0.01 to 1 mm, at most the nozzle diameter (default 0.2 for FDM, 0.05 for
+    /// resin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layer_height_mm: Option<f64>,
-    /// Report surface facing down more steeply than this many degrees from
-    /// vertical, 0 to 90 (default 45).
+    /// Report surfaces facing down steeper than this from vertical, 0 to 90
+    /// (default 45).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     maximum_overhang_degrees: Option<f64>,
-    /// Report parts of the bust thinner than this, 0.05 to 2 mm. Defaults to
-    /// the nozzle diameter for FDM; resin busts are not checked unless it is
-    /// given.
+    /// Report parts thinner than this, 0.05 to 2 mm; defaults to the nozzle
+    /// diameter for FDM, unchecked for resin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     minimum_wall_mm: Option<f64>,
 }
@@ -528,9 +457,7 @@ pub(super) struct PrinterParams {
 #[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum PrintProcess {
-    /// Filament deposited through a nozzle.
     Fdm,
-    /// Resin cured layer by layer.
     Resin,
 }
 
@@ -597,33 +524,28 @@ impl PrinterParams {
     }
 }
 
-/// A greyscale PNG displacement map. A pixel at fraction f of the full
-/// range, p / 65535 for 16-bit or p / 255 for 8-bit images, raises the
-/// surface by `offset_mm + scale_mm × f` millimetres at life size, scaled
-/// with the bust. Row 0 is v = 1 and column 0 is u = 0. The optional filters
-/// apply in this order: `high_pass_mm`, `clip_percentile`, then `gain` or
-/// `relief_mm`.
+/// A greyscale PNG displacement map: a pixel at fraction f of full range raises
+/// the surface by `offset_mm + scale_mm × f` mm at life size, scaled with the
+/// bust. Row 0 is v = 1. Filters apply as `high_pass_mm`, `clip_percentile`,
+/// then `gain` or `relief_mm`.
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DisplacementParams {
-    /// Workspace path of the PNG, at most 1024 pixels on each side.
+    /// Workspace PNG, at most 1024 pixels a side.
     path: String,
     offset_mm: f64,
     scale_mm: f64,
-    /// Remove features wider than about this many millimetres on the
-    /// life-size head, 1 to 100, keeping finer detail such as wrinkles.
+    /// Remove features wider than this at life size, 1 to 100 mm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     high_pass_mm: Option<f64>,
-    /// Limit the detail to this percentile of its magnitude, 50 to 100, so a
-    /// few extreme values do not dominate.
+    /// Clip detail at this percentile of its magnitude, 50 to 100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     clip_percentile: Option<f64>,
-    /// Multiply the detail by this factor, 0 to 10 (default 1).
+    /// 0 to 10 (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gain: Option<f64>,
-    /// Scale the detail so that the 95th percentile of the map's detail is
-    /// about this many millimetres deep on the finished bust, 0.01 to 10,
-    /// whatever the bust's height. Not with `gain`.
+    /// Scale so the 95th percentile of detail is this deep on the bust, 0.01 to
+    /// 10 mm. Not with `gain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relief_mm: Option<f64>,
 }
@@ -631,16 +553,16 @@ pub(super) struct DisplacementParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadExportParams {
-    /// Model variant from the `models` action. Optional when one model is mounted.
+    /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
-    /// Identity coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     identity: Vec<f32>,
-    /// Expression coefficients, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     expression: Vec<f32>,
-    /// Joint rotations, as for `create`.
+    /// As for `create`.
     #[serde(default)]
     pose: HeadPose,
     /// As for `create`.
@@ -649,7 +571,7 @@ pub(super) struct HeadExportParams {
     /// As for `create`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     eyelids: Option<[f32; 2]>,
-    /// Workspace path for the Wavefront OBJ file.
+    /// Workspace path for the Wavefront OBJ.
     path: String,
     /// Replace an existing file at `path`.
     #[serde(default)]
@@ -866,46 +788,36 @@ pub(super) async fn prepare_print(
     print_bust(workspace, settings, params, PrintStage::Make).await
 }
 
-/// Reconstruct a head from photographs and prepare its bust in one step.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HeadPhotoToBustParams {
-    /// The `reconstruct` request.
     reconstruct: crate::recon::ReconRequest,
-    /// The `prepare_print` request. Its `variant`, `identity`, `expression`,
-    /// `pose.jaw` and `displacement` come from the reconstruction and must be
-    /// left out, as must `pose.neck` when the reconstruction suggests one.
+    /// The `prepare_print` request, without `variant`, `identity`,
+    /// `expression`, `pose.jaw`, `displacement` and, when suggested,
+    /// `pose.neck`: the reconstruction supplies them.
     print: Box<HeadPreparePrintParams>,
-    /// How the reconstructed surface detail is raised on the bust: the
-    /// options of `prepare_print`'s `displacement`, without its map.
+    /// `prepare_print` displacement options for the reconstructed detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     detail: Option<PhotoDetailParams>,
-    /// Also create the head in Blender with these `create` options, coloured
-    /// by the colour map when the reconstruction makes one. Its `variant`,
-    /// `identity`, `expression`, `pose.jaw` and `texture` come from the
-    /// reconstruction and must be left out, as must `pose.neck` when the
-    /// reconstruction suggests one.
+    /// Also create the head in Blender with these `create` options, without
+    /// what the reconstruction supplies: `variant`, `identity`, `expression`,
+    /// `pose.jaw`, `texture` and, when suggested, `pose.neck`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     blender: Option<Box<HeadCreateParams>>,
 }
 
-/// How `photo_to_bust` raises the reconstructed surface detail.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PhotoDetailParams {
-    /// Raise the detail on the bust (default true).
+    /// Raise the detail (default true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     apply: Option<bool>,
-    /// As for `prepare_print`'s `displacement`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     high_pass_mm: Option<f64>,
-    /// As for `prepare_print`'s `displacement`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     clip_percentile: Option<f64>,
-    /// As for `prepare_print`'s `displacement`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gain: Option<f64>,
-    /// As for `prepare_print`'s `displacement`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relief_mm: Option<f64>,
 }

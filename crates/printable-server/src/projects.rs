@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::error::ToolError;
 
 pub mod card;
+pub mod catalog;
 pub mod cover;
 mod embeddings;
 mod export;
@@ -74,15 +75,13 @@ pub struct FilesParams {
 #[serde(deny_unknown_fields)]
 pub struct UpdateParams {
     pub project_id: String,
-    /// The `record_version` from the record being edited. The edit is refused
-    /// when the stored record has changed since it was read.
+    /// The `record_version` read; the edit is refused if it has changed.
     pub expected_record_version: u64,
     /// Replacement description.
     #[serde(default)]
     pub description: Option<String>,
-    /// Replacement tag list. Tags are trimmed, 1 to 64 characters, without
-    /// control characters; at most 32 remain after merging case-insensitive
-    /// duplicates.
+    /// Replacement tags, each 1 to 64 characters without control
+    /// characters; at most 32 after merging case-insensitive duplicates.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
 }
@@ -104,18 +103,27 @@ pub enum ProjectRequest {
     Files(FilesParams),
     Update(UpdateParams),
     Cover(cover::CoverParams),
-    /// The project's library card, built from its current records.
-    Card(ProjectParams),
-    /// Find projects by words, filters and sort order in the search index.
-    Search(index::SearchParams),
-    /// Report the search index's coverage, failures and latest pass.
-    IndexStatus(index::IndexParams),
-    /// Clear the search index and rebuild every card now.
-    IndexRebuild(index::IndexParams),
-    /// Update the search index now, trying failed projects again.
-    IndexRetry(index::IndexParams),
+    /// Update the library search index now.
+    Reindex(index::ReindexParams),
     ExportFiles(export::ExportFilesParams),
     ExportBlender(NativeExportParams),
+}
+
+// Read-only requests to the user's own project library.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "action",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CatalogRequest {
+    // Boxed: its filters make it far larger than the others.
+    Search(Box<index::SearchParams>),
+    /// One project's full card, built from its current records.
+    Card(ProjectParams),
+    /// The index's coverage, failures, latest pass and search methods.
+    Status(index::IndexParams),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -404,16 +412,9 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
         ProjectRequest::Cover(_) => Err(ToolError::Validation(
             "cover selection requires the OpenSCAD renderer".into(),
         )),
-        ProjectRequest::Search(_)
-        | ProjectRequest::IndexStatus(_)
-        | ProjectRequest::IndexRebuild(_)
-        | ProjectRequest::IndexRetry(_) => Err(ToolError::Validation(
-            "project search requires the server's project index".into(),
+        ProjectRequest::Reindex(_) => Err(ToolError::Validation(
+            "reindexing requires the server's project index".into(),
         )),
-        ProjectRequest::Card(params) => Ok(serde_json::to_value(card::card(
-            workspace,
-            &params.project_id,
-        )?)?),
         ProjectRequest::Update(params) => Ok(serde_json::to_value(update(workspace, params)?)?),
         ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(
             workspace, params,

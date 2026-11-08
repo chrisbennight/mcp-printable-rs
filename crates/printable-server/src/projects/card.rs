@@ -770,6 +770,37 @@ pub(crate) fn build(workspace: &Workspace, inputs: &Inputs, summaries: Summaries
     }
 }
 
+/// Year, month (1 to 12) and day of a Unix time in milliseconds, in UTC.
+pub(crate) fn civil_date(unix_ms: u64) -> (i64, usize, u64) {
+    let days = i64::try_from(unix_ms / 86_400_000).unwrap_or(i64::MAX / 2);
+    // Days since 1 March of year 0, then 400-year eras of 146097 days.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = if month_from_march < 10 {
+        month_from_march + 3
+    } else {
+        month_from_march - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (
+        year,
+        usize::try_from(month).unwrap_or(1),
+        u64::try_from(day).unwrap_or(1),
+    )
+}
+
+/// A Unix time in milliseconds as a UTC date, `YYYY-MM-DD`.
+pub(crate) fn utc_date(unix_ms: u64) -> String {
+    let (year, month, day) = civil_date(unix_ms);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 impl Card {
     pub fn compact(&self) -> CompactCard {
         CompactCard {

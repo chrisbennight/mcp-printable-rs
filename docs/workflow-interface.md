@@ -19,9 +19,15 @@ or `printable://contracts/{tool}` for a direct-parameter tool. For example,
 `printable://contracts/view/section` describes cutaway requests without loading
 native viewport, dimensions, or overhang parameters. Input schemas are derived
 from the advertised tool schemas and include only their reachable definitions.
-The response explicitly identifies its output schema scope. Printer and print
-action contracts and CAD inspection include only their selected action's output
-variants; other workflows currently retain tool-wide output schemas. Contract resources
+
+`tools/list` carries an output schema only for tools that take their
+parameters directly: `status`, `blender_execute`, `compare_renders`,
+`validate_mesh` and `analyze_assembly`. A combined tool's output schema is in
+its action contract. The response identifies its output schema scope:
+`action` when the contract describes that action's results alone, which is
+the case for every `printer`, `print` and `catalog` action, CAD `inspect` and
+`export`, and `project` `update`, `cover` and `reindex`; `tool` when it
+describes every result the tool can return. Contract resources
 for printer workflows also describe the rejected-call envelope, including typed
 filament deficits and validation fields. Rejections retain the MCP `isError`
 flag; other failures may use the general error envelope.
@@ -65,7 +71,8 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
-| `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `card`, `search`, `index_status`, `index_rebuild`, `index_retry`, `revise`, `revision`, `export_files`, `export_blender` |
+| `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `reindex`, `revise`, `revision`, `export_files`, `export_blender` |
+| `catalog` | `search`, `card`, `status` (read-only search of the user's own [project library](project-library.md); designs on model sites are found with `library`) |
 | `head` | `models`, `create`, `update`, `prepare_print`, and `reconstruct` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
 | `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), and retained object-job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, or retained job history; offers the available generation actions and job management |
 | `library` | `search`, `get`, `download` (find designs on public model sites and save their files into a project), `sign_in` (finish a MakerWorld sign-in with a code from the user); advertised only when [model sites](model-library.md) are enabled |
@@ -117,8 +124,11 @@ and [material-usage reads](https://github.com/maziggy/bambuddy/blob/v0.2.4.9/bac
 The `job` tool manages render execution; the `photo` tool manages its own retained
 object-generation jobs. The `upload` tool manages staged file transfer. Each
 identifier belongs to the tool that created it. Mixed-action
-tools use conservative mutating annotations for the whole tool; selecting a
-read action does not create a separate MCP authorization boundary.
+tools with any mutating action use conservative mutating annotations for the
+whole tool; selecting a read action does not create a separate MCP
+authorization boundary. Every `catalog` action only reads, so it is annotated
+read-only and idempotent; it is open-world because a search may ask a
+configured embeddings or re-ranking service.
 
 [Render-worker isolation](render-worker.md) describes checkpoint execution and
 the migration from temporary live-session rendering to a separate worker.
@@ -139,7 +149,8 @@ tools; loading a skill does not execute the workflow.
 numerical reports without replacing the live Blender scene.
 [Project library records](project-library.md) keep each project's dates,
 editable description, tags and cover picture under an expected record version;
-library cards summarise them, and search finds projects by words and filters.
+library cards summarise them, and `catalog search` finds projects by words,
+meaning, pictures and filters.
 [Design revisions](project-revisions.md) retain typed requirements, parameter
 ranges, source snapshots, and parent identities; native CAD checks the declared
 requirements against its measurements.

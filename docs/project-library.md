@@ -3,11 +3,18 @@
 Each project keeps a record that a library card can show: its name and
 description, tags, when it was created and last changed, and a cover picture.
 Slices add a summary of what they were sliced for, and print records keep how
-each print ended. `card` gathers these into one library card, and `search` finds
-projects by their cards. An optional read-only [web page](#web-page) shows the
-cards to people. Read `printable://contracts/project/update`,
-`printable://contracts/project/cover`, `printable://contracts/project/card` and
-`printable://contracts/project/search` for the typed requests.
+each print ended. The read-only `catalog` tool reads the library: `card`
+gathers these records into one library card, `search` finds projects by their
+cards, and `status` reports the search index. The `project` tool changes the
+records with `update` and `cover`, and updates the index with `reindex`. An
+optional read-only [web page](#web-page) shows the cards to people. Read
+`printable://contracts/project/update`, `printable://contracts/project/cover`,
+`printable://contracts/catalog/card` and `printable://contracts/catalog/search`
+for the typed requests and results.
+
+`catalog` finds only the user's own Printable projects. Use the
+[model library](model-library.md) to find designs on MakerWorld, Printables or
+Thingiverse.
 
 ## Project records
 
@@ -86,6 +93,8 @@ slices are summarised.
 
 ## Library cards
 
+Call `catalog` with:
+
 ```json
 {"action": "card", "params": {"project_id": "desk"}}
 ```
@@ -123,6 +132,8 @@ text.
 
 ## Search
 
+Call `catalog` with:
+
 ```json
 {"action": "search", "params": {"text": "drawer organiser",
   "filters": {"printed": true, "material": "PLA"}, "sort": "best_match", "limit": 20}}
@@ -133,6 +144,26 @@ library cards; use `card` for one project's current details. With an
 embeddings service configured, `best_match` also finds projects by what the
 text means and by a picture; see
 [meaning and picture search](#meaning-and-picture-search).
+
+### Concise and full results
+
+Results are concise unless `detail` is `full`. A concise result holds
+`project_id`, `name`, the first 200 characters of `description`, `printed`
+(the number of completed prints), `created` and `last_printed` as UTC dates
+such as `2026-06-03`, `formats` and `tags`, and `match` and `score` when the
+search has `text` or a `picture`. Empty lists and absent values are left out:
+
+```json
+{"project_id": "vase", "name": "Spiral vase", "printed": 2,
+  "last_printed": "2026-06-03", "created": "2026-05-28",
+  "formats": ["stl", "gcode.3mf"], "match": "words", "score": 7.25}
+```
+
+With `"detail": "full"`, each result is the stored short card: it adds
+`printers`, `materials`, `colours`, `last_outcome`, `cover_path`, the `dates`
+object with every timestamp in Unix milliseconds, and `scores` with each
+search method's own score when several took part. Both forms share `total`,
+`next_offset`, `degraded` and `coverage`.
 
 ### Words
 
@@ -193,8 +224,12 @@ only.
 
 ### Coverage and limits
 
-Every response lists unavailable search capabilities in `degraded`, each with
-a `code`, a `message` and a `reason`:
+`degraded` lists the search methods this request would use that are
+unavailable or limited, each with a `code`, a `message` and a `reason`.
+Meaning search applies to `best_match` with `text`, picture search to a
+request with a `picture`, and re-ranking to `best_match` with `text` on a page
+that starts before offset 40; a note about a method the request would not use
+is left out. `catalog status` reports every method.
 
 | Code | Meaning |
 | --- | --- |
@@ -213,10 +248,11 @@ a `code`, a `message` and a `reason`:
 | `refused` | The service refused the request; a setting is probably wrong |
 | `incompatible` | The service's answer could not be used |
 
-Without an embeddings service, search matches words only and every response
-lists all three codes with reason `not_configured`; results are the same as
-with no services at all. `coverage` reports how many of the workspace's
-projects are indexed and how many failed. When some are missing, `degraded`
+Without an embeddings service, search matches words only: a `best_match`
+search with text lists `meaning_search_unavailable` and, without a re-ranking
+service, `rerank_unavailable`, with reason `not_configured`, and results are
+the same as with no services at all. `coverage` reports how many of the
+workspace's projects are indexed and how many failed. When some are missing, `degraded`
 also contains `index_incomplete`, and results cover the indexed projects only.
 When a search uses meaning or picture search while some projects still lack
 vectors, `degraded` contains `meaning_index_incomplete` or
@@ -354,18 +390,18 @@ project is embedded again. Until then, meaning and picture search report
 model behind an unchanged name.
 
 Embedding runs in each background pass after the cards are updated, and in
-`index_rebuild` and `index_retry`. A pass embeds at most 256 project texts in
+`project reindex`. A pass embeds at most 256 project texts in
 requests of up to 32, then at most 32 pictures in requests of up to 4, and
 starts no request after two minutes; later passes continue. A project whose
 text or picture changes is embedded again. Requests time out after 60
 seconds. When the service answers `429` or `503`, passes, including
-`index_rebuild` and `index_retry`, make no embedding requests until the time in
+`project reindex`, make no embedding requests until the time in
 its `Retry-After` header, at most an hour (a minute without one). Searches
 still try, and a busy answer to a search holds back passes in the same way. A refusal with `401`, `403`, `404` or `405`, an unreachable
-service and other server errors stop the pass and are reported in
-`index_status`. Other refusals and unusable answers count against the projects
+service and other server errors stop the pass and are reported by
+`catalog status`. Other refusals and unusable answers count against the projects
 in that request: each is tried again alone after 5 minutes, then 10, doubling
-up to a day, or at once on `index_retry`.
+up to a day, or at once on `project reindex`.
 
 ## Search index
 
@@ -393,15 +429,19 @@ digest from the previous pass. Only changed projects have their cards rebuilt.
 Projects are processed one at a time, and entries for deleted projects are
 removed. Changes therefore appear in search within one interval. A project
 whose record cannot be read keeps any earlier entry, is counted as failed, and
-is tried again when its files change or on `index_retry`. A project whose
+is tried again when its files change or on `project reindex`. A project whose
 newest slice summary cannot be read or recorded is searchable, but it is also
-counted as failed so that `index_retry` tries the summary again.
+counted as failed so that `project reindex` tries the summary again.
 
-| Action | Effect |
+| Request | Effect |
 | --- | --- |
-| `index_status` | Storage kind (`file` or `memory`), indexed, pending and failed counts, up to 16 failures, the interval, the latest pass since the server started, which of meaning search, picture search and re-ranking are available (`methods`) and why not (`unavailable`), and under `embeddings` the model identity with embedded, pending and failed vector counts and up to 16 vector failures |
-| `index_rebuild` | Clears the index, including its vectors, and rebuilds every card now, then embeds what a pass allows and reports the pass |
-| `index_retry` | Updates changed projects and tries failed cards and vectors again now, then reports the pass |
+| `catalog` `status` | Storage kind (`file` or `memory`), indexed, pending and failed counts, up to 16 failures, the interval, the latest pass since the server started, which of meaning search, picture search and re-ranking are available (`methods`) and why not (`unavailable`), and under `embeddings` the model identity with embedded, pending and failed vector counts and up to 16 vector failures |
+| `project` `reindex` with `"mode": "retry"` (the default) | Updates changed projects and tries failed cards and vectors again now, then reports the pass |
+| `project` `reindex` with `"mode": "rebuild"` | Clears the index, including its vectors, and rebuilds every card now, then embeds what a pass allows and reports the pass |
+
+```json
+{"action": "reindex", "params": {"mode": "rebuild"}}
+```
 
 Only one pass runs at a time; a rebuild or retry requested during a background
 pass starts when that pass ends. To rebuild the index file offline, stop the
@@ -418,15 +458,15 @@ The library page shows a grid of library cards with a search box, a sort order
 and the [search filters](#filters). Each card shows the cover picture, whether
 and how often the project was printed, its file formats, its name, the start of
 its description, filament colours and materials, printers, tags, and when it
-was created and last printed. A page holds 24 cards, and like `search` the
+was created and last printed. A page holds 24 cards, and like `catalog search` the
 pages reach only the first 1008 results; add words or filters to narrow a
-larger search. The coverage and unavailable search capabilities that `search`
-reports are shown above the grid.
+larger search. The coverage and every unavailable search capability are shown
+above the grid.
 
 A project page shows the full card: the cover, description, tags and dates,
 the newest slice, print outcomes per printer, model-site downloads, and up to
 500 of the project's files with download links. The page builds the card from
-recorded slice summaries only, as `card` does. Download pages from model sites
+recorded slice summaries only, as `catalog card` does. Download pages from model sites
 are shown as plain links, and no page loads anything from another site. Dates
 are shown in UTC.
 

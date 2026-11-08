@@ -541,6 +541,7 @@ impl LibraryForm {
             offset: (self.page - 1) * PAGE_SIZE,
             picture: None,
             combine: Default::default(),
+            detail: Default::default(),
         }
     }
 
