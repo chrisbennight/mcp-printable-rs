@@ -73,6 +73,13 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
         settings.blender_port,
         ClientOptions::default(),
     ));
+    if let Some(printers) = &settings.printers {
+        crate::printers::ledger::spawn(
+            Arc::clone(printers),
+            Arc::clone(&workspace),
+            cancel.child_token(),
+        );
+    }
     let server = PrintableServer::new(workspace, blender, Arc::new(settings.clone()));
     let readiness_server = server.clone();
     let incoming_files = server.incoming_files();

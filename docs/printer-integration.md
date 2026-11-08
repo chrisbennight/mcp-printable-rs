@@ -44,6 +44,38 @@ The workflow resource explains plate readiness, calibration, AMS mapping and
 replacement-print handling. Slicing itself is a separate capability; use a
 compatible slicer to prepare and visually review the printer-ready file.
 
+## Print outcome records
+
+While a backend is configured, the server follows each print that Printable
+staged or started until the backend reports `completed`, `failed`, `cancelled`
+or `skipped`, then writes one record to
+`.printable/prints/<project_id>/<print_id>.json`. The record keeps the outcome,
+the backend's status, printer identity and model, plate, AMS mapping, filament
+type and colour as the backend reports them, start and completion times, any
+error message, and references to the submission records. It is written once and
+does not depend on the backend keeping its own history; back it up with the
+rest of `.printable`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `PRINTABLE_PRINT_FOLLOW_INTERVAL_SECONDS` | 60 | Seconds between passes, up to 3600; `0` turns following off |
+| `PRINTABLE_PRINT_FOLLOW_MAX_HOURS` | 168 | Hours after submission, 1 to 8760, after which an unfinished print is recorded as `unknown` |
+
+A print the backend no longer has, or one that is still unfinished after the
+follow time, is recorded with outcome `unknown` and a reason; Printable never
+guesses success or failure. A failed backend read is retried on the next pass
+until the follow time ends; after that the print is recorded as `unknown`.
+Only prints staged through Printable from a file that Printable uploaded with
+`print import` are followed. Prints started from other software, prints staged
+from a print archive or from a library file Printable did not upload, a staging
+request whose outcome was unknown, and additional copies from a request with a
+quantity above one have no submission link and are not recorded. The link is
+written just after the submission record, so a server that stops between the
+two leaves that print unfollowed. A print whose link or submission record
+cannot be read is skipped with a warning in the server log, and other prints
+are still followed. When a print was staged and later started, the most recent
+acceptance supplies its printer and setup details.
+
 ## Failure semantics
 
 Reads retry one transient failure. Mutations are sent once. Transport failure or
