@@ -237,6 +237,15 @@ pub(crate) fn validate(options: &ComparisonOptions) -> Result<(), GeometryError>
                 "comparison start_pairs lie nearly on one line, which leaves the rotation about it unknown; pick points spread over the part",
             );
         }
+        let (pose, rms) = pose_from_pairs(&options.start_pairs);
+        if !(rms.is_finite()
+            && pose.rotation.iter().all(|value| value.is_finite())
+            && pose.translation.iter().all(|value| value.is_finite()))
+        {
+            return invalid(
+                "comparison start_pairs are too far apart to fit; check that their coordinates are in millimetres",
+            );
+        }
     }
     if let Some(region) = &options.fit_region
         && !(0..3).all(|axis| {
@@ -1923,6 +1932,20 @@ mod tests {
         let mut not_finite = spread.clone();
         not_finite[1].reference_mm[2] = f64::NAN;
         assert!(fitted(not_finite, None).is_err());
+        // Finite, but too far apart for the fit's arithmetic.
+        let remote = vec![
+            pair(0.0, 0.0, 0.0),
+            PointPair {
+                mesh_mm: [1.0, 0.0, 0.0],
+                reference_mm: [1e155, 0.0, 0.0],
+            },
+            PointPair {
+                mesh_mm: [0.0, 1.0, 0.0],
+                reference_mm: [0.0, 1e155, 0.0],
+            },
+        ];
+        let error = fitted(remote, None).unwrap_err().to_string();
+        assert!(error.contains("too far apart"), "{error}");
         let region = |minimum_mm: [f64; 3], maximum_mm: [f64; 3]| {
             Some(FitRegion {
                 minimum_mm,
