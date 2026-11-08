@@ -48,8 +48,13 @@ const DEFAULT_INTERVAL_SECONDS: u64 = 30;
 const MAX_INTERVAL_SECONDS: u64 = 86_400;
 const FILE_NAME: &str = "index.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Stored as SQLite's `user_version`; a different value recreates the tables.
-const SCHEMA_VERSION: i64 = 2;
+/// Stored as SQLite's `user_version`; a different value recreates the tables,
+/// except for the upgrade from [`PICTURE_SHAPE_VERSION`].
+const SCHEMA_VERSION: i64 = 3;
+/// Indexes at this version have the current tables but may hold a picture
+/// refusal answered to an earlier picture request shape, or to a request that
+/// was only too large. Upgrading clears it so pictures are tried again.
+const PICTURE_SHAPE_VERSION: i64 = 2;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 pub(crate) const MAX_OFFSET: usize = 1000;
@@ -735,7 +740,10 @@ impl Entry {
 fn prepare_schema(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != SCHEMA_VERSION {
+    if version == PICTURE_SHAPE_VERSION {
+        transaction.execute("UPDATE identity SET pictures_refused = NULL", [])?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    } else if version != SCHEMA_VERSION {
         transaction.execute_batch(
             "DROP TABLE IF EXISTS facets;
              DROP TABLE IF EXISTS projects;
@@ -4505,6 +4513,61 @@ mod tests {
             let found = find(&index, &workspace, json!({"picture": "queries/red.png"})).await;
             assert_eq!(found.results[0].card.project_id, "vase");
             assert!(noted(&found.degraded, "picture_search_unavailable").is_none());
+        }
+
+        #[tokio::test]
+        async fn upgrading_an_index_tries_refused_pictures_again() {
+            let server = MockServer::start().await;
+            served(
+                &server,
+                FakeModel {
+                    refuse_pictures: true,
+                    ..FakeModel::new()
+                },
+            )
+            .await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            set_cover(&workspace, "vase", [220, 30, 30]);
+            let directory = tempfile::tempdir().unwrap();
+            let dir = directory.path().to_str().unwrap().to_owned();
+            let open = || {
+                configured(
+                    &server,
+                    &[
+                        (DIR_KEY, dir.as_str()),
+                        ("PRINTABLE_EMBEDDING_IMAGES", "on"),
+                    ],
+                )
+            };
+            let refused = open();
+            refused
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap();
+            assert!(!refused.status(&workspace).unwrap().methods.picture);
+            drop(refused);
+            let connection = Connection::open(directory.path().join(FILE_NAME)).unwrap();
+            connection
+                .pragma_update(None, "user_version", PICTURE_SHAPE_VERSION)
+                .unwrap();
+            drop(connection);
+
+            server.reset().await;
+            served(&server, FakeModel::new()).await;
+            let upgraded = open();
+            let report = upgraded
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .embedding
+                .unwrap();
+            assert_eq!(
+                (report.texts, report.pictures),
+                (0, 1),
+                "text vectors are kept"
+            );
+            assert!(upgraded.status(&workspace).unwrap().methods.picture);
         }
 
         #[tokio::test]
