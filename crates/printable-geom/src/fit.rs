@@ -389,12 +389,14 @@ pub struct VerticalHole {
 
 /// The complete vertical cylindrical inner walls around declared holes, each
 /// given as its centre in X and Y and its radius. For each declared hole a
-/// cylinder is fitted from the inward-facing wall face, within twice the
-/// declared radius of the centre, whose distance from it is nearest that
-/// radius. The fit counts when its axis is vertical, its wall covers the whole
-/// circle and faces the axis. The fitted centre and radius are reported, so a
-/// hole that moved or changed size is measured as it is, not as declared, and
-/// a hole found from several declared positions is listed once.
+/// cylinder is fitted from the inward-facing wall face, with its corners
+/// within twice the declared radius of the centre, whose farthest corner lies
+/// nearest that radius: a tessellated bore's corners lie on its circle while
+/// its flats cut inside. The fit counts when its axis is vertical, its wall
+/// covers the whole circle and faces the axis. The fitted centre and radius
+/// are reported, so a hole that moved or changed size is measured as it is,
+/// not as declared, and a hole whose wall another declared hole already
+/// found is listed once.
 pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<VerticalHole> {
     let surface = Surface::new(mesh);
     let level = HOLE_WALL_DEGREES.to_radians().sin();
@@ -407,7 +409,8 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
         .map(|(face, _)| (centroid(&surface.corners(face)), face))
         .collect();
     walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
-    let mut found: Vec<(VerticalHole, f64)> = Vec::new();
+    // Each hole found, with the faces of its wall in order.
+    let mut found: Vec<(VerticalHole, Vec<usize>)> = Vec::new();
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
         let first = walls.partition_point(|(point, _)| point.x < center[0] - reach);
@@ -416,35 +419,33 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
             .take_while(|(point, _)| point.x <= center[0] + reach)
             .filter_map(|&(point, face)| {
                 let normal = surface.normals[face]?;
-                let (dx, dy) = (point.x - center[0], point.y - center[1]);
-                let distance = dx.hypot(dy);
-                (distance <= reach && normal.x * dx + normal.y * dy < 0.0)
-                    .then_some(((distance - radius).abs(), face))
+                let inward =
+                    normal.x * (point.x - center[0]) + normal.y * (point.y - center[1]) < 0.0;
+                let farthest = surface
+                    .corners(face)
+                    .map(|corner| (corner.x - center[0]).hypot(corner.y - center[1]))
+                    .into_iter()
+                    .fold(0.0, f64::max);
+                (inward && farthest <= reach).then_some(((farthest - radius).abs(), face))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         let Some((_, face)) = seed else { continue };
-        let Some((hole, sigma)) = fit_hole(&surface, face) else {
+        if found
+            .iter()
+            .any(|(_, wall)| wall.binary_search(&face).is_ok())
+        {
             continue;
-        };
-        let scale = hole.center_mm[0]
-            .abs()
-            .max(hole.center_mm[1].abs())
-            .max(1.0);
-        let same = |(other, other_sigma): &(VerticalHole, f64)| {
-            let limit = SIGMA_TOLERANCE * sigma.max(*other_sigma) + COORDINATE_RESOLUTION * scale;
-            (hole.center_mm[0] - other.center_mm[0]).hypot(hole.center_mm[1] - other.center_mm[1])
-                <= limit
-                && (hole.radius_mm - other.radius_mm).abs() <= limit
-        };
-        if !found.iter().any(same) {
-            found.push((hole, sigma));
+        }
+        if let Some(hole) = fit_hole(&surface, face) {
+            found.push(hole);
         }
     }
     found.into_iter().map(|(hole, _)| hole).collect()
 }
 
-/// A complete vertical inner wall fitted from `face`, with the fit's spread.
-fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, f64)> {
+/// A complete vertical inner wall fitted from `face`, with its wall's faces
+/// in order.
+fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)> {
     let fit = fit_from(surface, face, Shape::Cylinder, Some(V3::z()), None).ok()?;
     let Geometry::Cylinder {
         axis_point_mm,
@@ -493,7 +494,7 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, f64)> {
             radius_mm,
             radius_range_mm: [radius_mm + lowest, radius_mm + highest],
         },
-        fit.sigma_mm,
+        wall,
     ))
 }
 
@@ -1853,17 +1854,51 @@ mod tests {
                 hole.radius_range_mm[0] <= low && hole.radius_range_mm[1] >= high - 1e-9
             })
         };
-        // Built in rings, it fits as a cylinder over part of its height.
+        // Built in rings, it fits as a cylinder over part of its height from
+        // the ring nearest 2.01 mm.
         let rings: Vec<(f64, f64)> = (0..=10)
             .map(|step| (1.95 + 0.01 * f64::from(step), 2.0 * f64::from(step)))
             .collect();
-        let holes = vertical_holes(&plate(5.0, 20.0, &rings, 32), &[([0.0, 0.0], 2.0)]);
+        let holes = vertical_holes(&plate(5.0, 20.0, &rings, 32), &[([0.0, 0.0], 2.01)]);
         assert_eq!(holes.len(), 1, "{holes:?}");
         assert!(covers(&holes, 1.95, 2.05), "{holes:?}");
         // As one cone, as OpenSCAD builds it.
         let cone = plate(5.0, 20.0, &[(1.9, 0.0), (2.1, 20.0)], 32);
         let holes = vertical_holes(&cone, &[([0.0, 0.0], 2.0)]);
         assert!(covers(&holes, 1.9, 2.1), "{holes:?}");
+    }
+
+    #[test]
+    fn each_section_of_a_stepped_bore_is_its_own_hole() {
+        // A bore 2.012 mm in radius below and 2 mm above. Its flats cut
+        // inside the circle, so the wider section's face centres lie nearer
+        // 2 mm than the narrower's, but its corners do not.
+        let stepped = plate(
+            5.0,
+            8.0,
+            &[(2.012, 0.0), (2.012, 4.0), (2.0, 4.0), (2.0, 8.0)],
+            32,
+        );
+        let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 1, "{holes:?}");
+        assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
+        assert!(close(holes[0].radius_range_mm[1], 2.0, 1e-9), "{holes:?}");
+        let both = vertical_holes(&stepped, &[([0.0, 0.0], 2.0), ([0.0, 0.0], 2.012)]);
+        assert_eq!(both.len(), 2, "{both:?}");
+    }
+
+    #[test]
+    fn nearby_holes_far_from_the_origin_stay_apart() {
+        let plate = plate_with_hole(1.5, 2.0, 1.0, 32);
+        let mesh = joined(&[
+            (plate.clone(), [1_000_000.0, 0.0, 0.0]),
+            (plate, [1_000_003.5, 0.0, 0.0]),
+        ]);
+        let holes = vertical_holes(
+            &mesh,
+            &[([1_000_000.0, 0.0], 1.0), ([1_000_003.5, 0.0], 1.0)],
+        );
+        assert_eq!(holes.len(), 2, "{holes:?}");
     }
 
     #[test]
