@@ -1770,6 +1770,8 @@ struct QueryVectors {
     rerank: bool,
     /// The stored model the query vectors were checked against.
     made_by: Option<Identity>,
+    /// Available methods this query does not use.
+    unused: Vec<VectorKind>,
 }
 
 /// Rank word, meaning and picture candidates for `best_match`, and load what
@@ -2399,7 +2401,7 @@ impl ProjectIndex {
                         .await?;
                 }
                 Ok(embedded) if embedded.model == step.identity.service_model => {
-                    self.refuse_pictures(PICTURE_LENGTH_DIFFERS.to_owned())
+                    self.refuse_pictures(step.identity, PICTURE_LENGTH_DIFFERS.to_owned())
                         .await?;
                     return Ok(());
                 }
@@ -2410,7 +2412,8 @@ impl ProjectIndex {
                 Err(ServiceError::Refused(status))
                     if !ServiceError::Refused(status).is_service_wide() =>
                 {
-                    self.refuse_pictures(pictures_refused_with(status)).await?;
+                    self.refuse_pictures(step.identity, pictures_refused_with(status))
+                        .await?;
                     return Ok(());
                 }
                 Err(error) if error.is_service_wide() => {
@@ -2461,19 +2464,36 @@ impl ProjectIndex {
     }
 
     /// Stop sending pictures until the settings or the model identity change.
-    async fn refuse_pictures(self: &Arc<Self>, detail: String) -> Result<(), ToolError> {
+    /// The refusal applies only while `refused_by` is the stored model, so a
+    /// late answer from a replaced model never turns pictures off for its
+    /// successor.
+    async fn refuse_pictures(
+        self: &Arc<Self>,
+        refused_by: &Identity,
+        detail: String,
+    ) -> Result<(), ToolError> {
         let detail = format!(
             "{detail}, so pictures are not sent again until the embedding settings or the model change"
         );
         tracing::warn!(problem = %detail, "project picture search is unavailable");
+        let model = (
+            refused_by.settings.clone(),
+            refused_by.service_model.clone(),
+            refused_by.dimensions as i64,
+            embeddings::to_blob(&refused_by.probe),
+        );
         self.db(move |connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            transaction.execute(
-                "UPDATE identity SET pictures_refused = ?1 WHERE id = 1",
-                [&detail],
+            let refused = transaction.execute(
+                "UPDATE identity SET pictures_refused = ?1
+                 WHERE id = 1 AND settings = ?2 AND service_model IS ?3
+                     AND dimensions = ?4 AND probe = ?5",
+                params![detail, model.0, model.1, model.2, model.3],
             )?;
-            transaction.execute("DELETE FROM vectors WHERE kind = 'picture'", [])?;
+            if refused == 1 {
+                transaction.execute("DELETE FROM vectors WHERE kind = 'picture'", [])?;
+            }
             transaction.commit()
         })
         .await
@@ -2576,12 +2596,30 @@ impl ProjectIndex {
             degraded.push(note(Capability::Rerank, Reason::NotConfigured, None));
             false
         };
+        // Methods this query does not use still report having no vectors yet.
+        let unused = |code: &str, used: bool| {
+            identity.is_some() && !used && !degraded.iter().any(|note| note.code == code)
+        };
+        let unused = [
+            (
+                VectorKind::Text,
+                unused("meaning_search_unavailable", meaning.is_some()),
+            ),
+            (
+                VectorKind::Picture,
+                unused("picture_search_unavailable", picture.is_some()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(kind, unused)| unused.then_some(kind))
+        .collect();
         let made_by = identity.filter(|_| meaning.is_some() || picture.is_some());
         let vectors = QueryVectors {
             meaning,
             picture,
             rerank,
             made_by,
+            unused,
         };
         let index = Arc::clone(self);
         let indexed = Arc::clone(workspace);
@@ -2719,7 +2757,7 @@ impl ProjectIndex {
             Ok(embedded) if identity.matches(&embedded) => embedded.vectors.into_iter().next(),
             Ok(embedded) if embedded.model == identity.service_model => {
                 let detail = PICTURE_LENGTH_DIFFERS.to_owned();
-                self.refuse_pictures(detail.clone()).await?;
+                self.refuse_pictures(identity, detail.clone()).await?;
                 degraded.push(note(
                     Capability::Picture,
                     Reason::PicturesRejected,
@@ -2739,7 +2777,7 @@ impl ProjectIndex {
                 if !ServiceError::Refused(status).is_service_wide() =>
             {
                 let detail = pictures_refused_with(status);
-                self.refuse_pictures(detail.clone()).await?;
+                self.refuse_pictures(identity, detail.clone()).await?;
                 degraded.push(note(
                     Capability::Picture,
                     Reason::PicturesRejected,
@@ -2789,6 +2827,11 @@ impl ProjectIndex {
                             Some(MODEL_CHANGED.to_owned()),
                         ));
                     }
+                }
+            }
+            for kind in std::mem::take(&mut vectors.unused) {
+                if vector_coverage(connection, kind)?.1 == 0 {
+                    notes.push(note(kind.capability(), Reason::NotReady, None));
                 }
             }
             let vectors = &vectors;
@@ -4201,6 +4244,7 @@ mod tests {
                 picture: None,
                 rerank: false,
                 made_by: Some(earlier),
+                unused: Vec::new(),
             };
             let Draft::Page { notes, .. } = index.draft(&workspace, &query, vectors).unwrap()
             else {
