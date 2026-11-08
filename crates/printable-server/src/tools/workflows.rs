@@ -360,6 +360,9 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             crate::projects::ProjectRequest::ExportBlender(params) => {
                 ResolvedCall::new("printable_project_export_blender", params)
             }
+            crate::projects::ProjectRequest::Cover(params) => {
+                ResolvedCall::new("printable_project_cover", params)
+            }
             request => ResolvedCall::new("printable_project", request),
         },
         LIBRARY => ResolvedCall::new(
@@ -626,7 +629,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create/discover projects, resolve shared paths, retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
+        description: "Create/discover projects, resolve shared paths, edit library descriptions and tags with update or the cover picture with cover (both need the expected record_version), retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

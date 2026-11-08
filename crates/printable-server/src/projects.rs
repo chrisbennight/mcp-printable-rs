@@ -7,10 +7,17 @@ use serde_json::{Value, json};
 
 use crate::error::ToolError;
 
+pub mod cover;
 mod export;
 pub mod requirements;
 pub mod revisions;
 pub use export::NativeExportParams;
+
+/// Format written for new and updated project records. Version 1 records stay
+/// readable unchanged until an explicit update rewrites them.
+const FORMAT_VERSION: u32 = 2;
+const MAX_TAGS: usize = 32;
+const MAX_TAG_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +68,23 @@ pub struct FilesParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateParams {
+    pub project_id: String,
+    /// The `record_version` from the record being edited. The edit is refused
+    /// when the stored record has changed since it was read.
+    pub expected_record_version: u64,
+    /// Replacement description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Replacement tag list. Tags are trimmed, 1 to 64 characters, without
+    /// control characters; at most 32 remain after merging case-insensitive
+    /// duplicates.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(
     tag = "action",
     content = "params",
@@ -75,6 +99,8 @@ pub enum ProjectRequest {
     List(ListParams),
     Resolve(PathParams),
     Files(FilesParams),
+    Update(UpdateParams),
+    Cover(cover::CoverParams),
     ExportFiles(export::ExportFilesParams),
     ExportBlender(NativeExportParams),
 }
@@ -88,6 +114,83 @@ pub struct Project {
     pub description: String,
     /// Workspace-relative directory shared by Blender, OpenSCAD, and CAD sources.
     pub root: String,
+    /// Increases with every accepted update. Version 1 records report 0.
+    #[serde(default)]
+    pub record_version: u64,
+    /// Creation time in Unix milliseconds; absent from version 1 records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    /// True when the creation time was estimated from the version 1 record's
+    /// file time during its first update.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created_estimated: bool,
+    /// Time of the latest accepted change in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<cover::Cover>,
+}
+
+impl Project {
+    fn valid_for(&self, id: &str) -> bool {
+        let identity = self.project_id == id && self.root == project_root(id);
+        let fields = match self.format_version {
+            1 => {
+                self.record_version == 0
+                    && self.created_unix_ms.is_none()
+                    && !self.created_estimated
+                    && self.updated_unix_ms.is_none()
+                    && self.tags.is_empty()
+                    && self.cover.is_none()
+            }
+            FORMAT_VERSION => {
+                self.record_version > 0
+                    && self.created_unix_ms.is_some()
+                    && self.updated_unix_ms.is_some()
+                    && normalize_tags(self.tags.clone()).is_ok_and(|tags| tags == self.tags)
+                    && self.cover.as_ref().is_none_or(|cover| cover.belongs_to(id))
+            }
+            _ => false,
+        };
+        identity && fields
+    }
+}
+
+pub(crate) fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, ToolError> {
+    let mut normalized: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty()
+            || tag.chars().count() > MAX_TAG_CHARS
+            || tag.chars().any(char::is_control)
+        {
+            return Err(ToolError::Validation(format!(
+                "tags must be 1 to {MAX_TAG_CHARS} characters without control characters"
+            )));
+        }
+        if !normalized
+            .iter()
+            .any(|existing| existing.to_lowercase() == tag.to_lowercase())
+        {
+            normalized.push(tag.to_owned());
+        }
+    }
+    if normalized.len() > MAX_TAGS {
+        return Err(ToolError::Validation(format!(
+            "a project can have at most {MAX_TAGS} tags"
+        )));
+    }
+    Ok(normalized)
 }
 
 fn validate_id(id: &str) -> Result<(), ToolError> {
@@ -111,15 +214,86 @@ fn project_root(id: &str) -> String {
 }
 
 pub fn get(workspace: &Workspace, id: &str) -> Result<Project, ToolError> {
+    read_record(workspace, id).map(|(project, _)| project)
+}
+
+/// Read a project record with the file's modification time in Unix milliseconds.
+fn read_record(workspace: &Workspace, id: &str) -> Result<(Project, u64), ToolError> {
     validate_id(id)?;
-    let (_, bytes) = workspace.read_generated_bytes(&manifest_path(id))?;
+    let (meta, bytes) = workspace.read_generated_bytes(&manifest_path(id))?;
     let project: Project = serde_json::from_slice(&bytes)?;
-    if project.format_version != 1 || project.project_id != id || project.root != project_root(id) {
+    if !project.valid_for(id) {
         return Err(ToolError::Validation(
             "project metadata has an unsupported version or inconsistent identity".into(),
         ));
     }
+    let modified_ms = u64::try_from(meta.modified_ns / 1_000_000).unwrap_or(0);
+    Ok((project, modified_ms))
+}
+
+/// Apply one edit to the stored record under the project's update lock.
+///
+/// The lock serialises cooperating server processes; the version check
+/// refuses edits prepared from a record that has since changed. A version 1
+/// record becomes version 2 here, with its creation time estimated from the
+/// record file's modification time.
+pub(crate) fn modify(
+    workspace: &Workspace,
+    id: &str,
+    expected_record_version: u64,
+    edit: impl FnOnce(&mut Project) -> Result<(), ToolError>,
+) -> Result<Project, ToolError> {
+    validate_id(id)?;
+    let _lock = workspace
+        .try_lock_reserved(&format!(".printable/projects/{id}.lock"))
+        .map_err(|error| match error {
+            WsError::Io(ref io) if io.kind() == std::io::ErrorKind::WouldBlock => {
+                ToolError::Validation(
+                    "project record update is busy; read the project again before retrying".into(),
+                )
+            }
+            other => other.into(),
+        })?;
+    let (mut project, modified_ms) = read_record(workspace, id)?;
+    if project.record_version != expected_record_version {
+        return Err(ToolError::Validation(format!(
+            "project record changed: expected record_version {expected_record_version}, found {}; read the project again before editing",
+            project.record_version
+        )));
+    }
+    if project.format_version == 1 {
+        project.format_version = FORMAT_VERSION;
+        project.created_unix_ms = Some(modified_ms);
+        project.created_estimated = true;
+    }
+    edit(&mut project)?;
+    project.record_version += 1;
+    project.updated_unix_ms = Some(unix_ms().max(project.created_unix_ms.unwrap_or(0)));
+    workspace.write_reserved_artifact(&manifest_path(id), &serde_json::to_vec(&project)?, true)?;
     Ok(project)
+}
+
+fn update(workspace: &Workspace, params: UpdateParams) -> Result<Project, ToolError> {
+    if params.description.is_none() && params.tags.is_none() {
+        return Err(ToolError::Validation(
+            "project update requires description or tags".into(),
+        ));
+    }
+    let tags = params.tags.map(normalize_tags).transpose()?;
+    modify(
+        workspace,
+        &params.project_id,
+        params.expected_record_version,
+        |project| {
+            if let Some(description) = params.description {
+                project.description = description;
+            }
+            if let Some(tags) = tags {
+                project.tags = tags;
+            }
+            Ok(())
+        },
+    )
 }
 
 pub fn resolve(workspace: &Workspace, id: &str, path: &str) -> Result<String, ToolError> {
@@ -147,12 +321,19 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolEr
             "project requires a nonempty name without control characters".into(),
         ));
     }
+    let now = unix_ms();
     let project = Project {
-        format_version: 1,
+        format_version: FORMAT_VERSION,
         root: project_root(&params.project_id),
         project_id: params.project_id,
         name: params.name,
         description: params.description,
+        record_version: 1,
+        created_unix_ms: Some(now),
+        created_estimated: false,
+        updated_unix_ms: Some(now),
+        tags: Vec::new(),
+        cover: None,
     };
     if let Some(existing) = existing_project(workspace, &project)? {
         return Ok(existing);
@@ -179,7 +360,12 @@ fn existing_project(
     requested: &Project,
 ) -> Result<Option<Project>, ToolError> {
     match get(workspace, &requested.project_id) {
-        Ok(existing) if &existing == requested => Ok(Some(existing)),
+        Ok(existing)
+            if existing.name == requested.name
+                && existing.description == requested.description =>
+        {
+            Ok(Some(existing))
+        }
         Ok(_) => Err(ToolError::Validation("project_id already exists with different metadata; use project.get or choose another identifier".into())),
         Err(ToolError::Workspace(WsError::NotFound(_))) => Ok(None),
         Err(error) => Err(error),
@@ -193,6 +379,10 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
         ProjectRequest::ExportBlender(_) => Err(ToolError::Validation(
             "native export requires the Blender command dispatcher".into(),
         )),
+        ProjectRequest::Cover(_) => Err(ToolError::Validation(
+            "cover selection requires the OpenSCAD renderer".into(),
+        )),
+        ProjectRequest::Update(params) => Ok(serde_json::to_value(update(workspace, params)?)?),
         ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(
             workspace, params,
         )?)?),

@@ -1553,6 +1553,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_project_cover",
+        description: "Set, replace or remove a project's library cover picture under the expected record version. Sources: a project image, a sliced 3MF plate thumbnail, an isometric OpenSCAD view of an STL, or automatic (newest sliced thumbnail, else newest STL view). The picture is copied into retained storage.",
+        schema: schema_of::<crate::projects::cover::CoverParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_project_export_blender",
         description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using an isolated child under the caller's work budget without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
         schema: schema_of::<crate::projects::NativeExportParams>,
@@ -1867,6 +1873,12 @@ pub(crate) async fn dispatch_with_content(
         "printable_scad_render" => {
             let params: ScadRenderParams = de(args)?;
             scad_render(Arc::clone(workspace), Arc::clone(scad), params).await
+        }
+        "printable_project_cover" => {
+            let params: crate::projects::cover::CoverParams = de(args)?;
+            project_cover(Arc::clone(workspace), Arc::clone(scad), params)
+                .await
+                .map(ToolOutput::without_inline)
         }
         "printable_render_job_submit" => {
             let params: RenderJobSubmitParams = de(args)?;
@@ -5384,6 +5396,58 @@ async fn scad_render(
         })
     })
     .await
+}
+
+async fn project_cover(
+    workspace: Arc<Workspace>,
+    runner: Arc<ScadRunner>,
+    params: crate::projects::cover::CoverParams,
+) -> Result<Value, ToolError> {
+    use crate::projects::cover::{self, MODEL_VIEW_SIZE, Picture, Plan};
+    let budget = validate_work_budget(params.timeout_seconds)?;
+    let params = Arc::new(params);
+    let request = Arc::clone(&params);
+    let planning = Arc::clone(&workspace);
+    let picture = match blocking(move || cover::plan(&planning, &request)).await? {
+        Plan::Remove => None,
+        Plan::Store(picture) => Some(picture),
+        Plan::RenderModel { model } => {
+            let (permit, job) = prepare_scad_job(
+                Arc::clone(&workspace),
+                runner,
+                cover::model_view_source(&model),
+                ".png",
+                None,
+                false,
+                false,
+            )
+            .await?;
+            let args = printable_scad::render_args(
+                &job.output_path.to_string_lossy(),
+                &job.source_path.to_string_lossy(),
+                "iso",
+                MODEL_VIEW_SIZE,
+                true,
+                &[],
+            )
+            .ok_or_else(|| ToolError::Validation("unknown OpenSCAD view".to_string()))?;
+            let (permit, _output) = permit.run(args, budget, u64::MAX).await?;
+            let bytes = visual_blocking(move || {
+                let _permit = permit;
+                let bytes = read_generated_file(&job.output_path)?;
+                validate_png(
+                    &bytes,
+                    u64::from(MODEL_VIEW_SIZE),
+                    u64::from(MODEL_VIEW_SIZE),
+                )?;
+                Ok::<_, ToolError>(bytes)
+            })
+            .await?;
+            Some(Picture::rendered(bytes, model))
+        }
+    };
+    let project = blocking(move || cover::commit(&workspace, &params, picture)).await?;
+    Ok(serde_json::to_value(project)?)
 }
 
 async fn scad_cross_section(
