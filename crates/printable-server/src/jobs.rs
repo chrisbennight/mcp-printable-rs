@@ -106,10 +106,10 @@ pub(crate) enum RenderJobKind {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MechanicalRotationSpec {
-    /// Every fixed mesh object in the scene. The set must be non-empty.
+    /// Every fixed mesh object in the scene.
     #[schemars(length(min = 1))]
     fixed_objects: Vec<String>,
-    /// Every moving mesh object in the scene. The set must be non-empty and disjoint from fixed_objects.
+    /// Every moving mesh object in the scene, disjoint from fixed_objects.
     #[schemars(length(min = 1))]
     moving_objects: Vec<String>,
     /// Rotation pivot in Blender world coordinates and exported STL millimetres.
@@ -120,7 +120,7 @@ struct MechanicalRotationSpec {
     angle_degrees: f64,
     /// Non-negative clearance that must be certified over the complete rotation.
     target_clearance_mm: f64,
-    /// Positive caller-selected byte budget applied separately to each analysis STL.
+    /// Byte budget for each analysis STL.
     #[serde(default = "default_max_source_bytes")]
     #[schemars(range(min = 1))]
     max_analysis_mesh_bytes: u64,
@@ -143,19 +143,19 @@ impl RenderJobEngine {
     }
 }
 
-/// `printable_render_job_submit` parameters.
+// `printable_render_job_submit` parameters.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RenderJobSubmitParams {
     /// Immutable confined `.blend` checkpoint used throughout the job.
     source_blend: String,
-    /// Positive source-checkpoint snapshot budget (default 1 GiB; no configured maximum).
+    /// Source snapshot byte budget (default 1 GiB).
     #[serde(default = "default_max_source_bytes")]
     #[schemars(range(min = 1))]
     max_source_bytes: u64,
-    /// Still image, orbiting turntable video, scene-timeline animation, or certified rigid rotation.
+    /// Still image, turntable video, timeline animation, or certified rigid rotation.
     kind: RenderJobKind,
-    /// Exact scene partition and motion contract required only for mechanical_rotation jobs.
+    /// Required for, and only for, mechanical_rotation jobs.
     mechanical_rotation: Option<MechanicalRotationSpec>,
     /// Frame width in pixels (default 512).
     #[serde(default = "default_render_dimension")]
@@ -165,72 +165,71 @@ pub(crate) struct RenderJobSubmitParams {
     #[serde(default = "default_render_dimension")]
     #[schemars(range(min = 1))]
     height: u32,
-    /// EEVEE for responsive review output or CYCLES for final quality.
+    /// EEVEE for review or CYCLES for final quality.
     #[serde(default)]
     engine: RenderJobEngine,
     /// CYCLES samples per frame (default 128); invalid for EEVEE.
     #[schemars(range(min = 1))]
     samples: Option<u32>,
-    /// Positive caller-selected budget for each rendered frame. Defaults to one hour; no configured maximum.
+    /// Budget for each frame in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     frame_timeout_seconds: f64,
-    /// Positive turntable frame count (default 120); valid only for turntable jobs.
+    /// Turntable jobs only (default 120).
     #[serde(default = "default_turntable_frames")]
     #[schemars(range(min = 1))]
     turntable_frames: u32,
-    /// Turntable camera elevation in degrees from -89 through 89 (default 20).
+    /// -89 to 89 degrees (default 20).
     #[serde(default = "default_turntable_elevation")]
     turntable_elevation_degrees: f64,
-    /// Reverse the turntable orbit; valid only for turntable jobs.
+    /// Turntable jobs only.
     #[serde(default)]
     turntable_clockwise: bool,
-    /// First Blender timeline frame, inclusive (default 1); valid for animation and mechanical_rotation jobs.
+    /// Inclusive (default 1); animation and mechanical_rotation jobs.
     #[serde(default = "default_frame_start")]
     #[schemars(range(min = -1048574, max = 1048574))]
     frame_start: i32,
-    /// Last Blender timeline frame, inclusive (default 250); valid for animation and mechanical_rotation jobs.
+    /// Inclusive (default 250); animation and mechanical_rotation jobs.
     #[serde(default = "default_frame_end")]
     #[schemars(range(min = -1048574, max = 1048574))]
     frame_end: i32,
-    /// Positive timeline step (default 1); valid for animation and mechanical_rotation jobs.
+    /// Default 1; animation and mechanical_rotation jobs.
     #[serde(default = "default_frame_step")]
     #[schemars(range(min = 1))]
     frame_step: u32,
-    /// Encoded video frame rate (default 30); ignored for still jobs.
+    /// Video frame rate (default 30).
     #[serde(default = "default_frames_per_second")]
     #[schemars(range(min = 1))]
     frames_per_second: u32,
-    /// Positive aggregate byte budget for committed PNG frames. Defaults to 10 GiB; no configured maximum.
+    /// Byte budget for all PNG frames (default 10 GiB).
     #[serde(default = "default_max_frame_sequence_bytes")]
     #[schemars(range(min = 1))]
     max_frame_sequence_bytes: u64,
-    /// Positive encoded MP4 byte budget. Defaults to 1 GiB; no configured maximum. Ignored for still jobs.
+    /// MP4 byte budget (default 1 GiB).
     #[serde(default = "default_max_video_bytes")]
     #[schemars(range(min = 1, max = 9223372036854775807i64))]
     max_video_bytes: u64,
-    /// Positive caller-selected FFmpeg budget. Defaults to one hour; no configured maximum. Ignored for still jobs.
+    /// FFmpeg budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     encode_timeout_seconds: f64,
-    /// Optional deterministic product presentation persisted with the job.
+    /// Product presentation, kept with the job.
     presentation: Option<ProductPresentation>,
-    /// For general timeline animation, frame the union of evaluated bounds
-    /// across the complete requested sequence instead of preserving the
-    /// authored camera.
+    /// For animation, frame the bounds of the whole sequence instead of
+    /// keeping the authored camera.
     #[serde(default)]
     auto_frame_sequence: bool,
-    /// Separate positive budget for evaluating sequence-wide bounds.
+    /// Budget in seconds for measuring those bounds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     auto_frame_sequence_timeout_seconds: f64,
 }
 
-/// `printable_render_job_status` parameters.
+// `printable_render_job_status` parameters.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RenderJobStatusParams {
     job_id: String,
 }
 
-/// `printable_render_job_list` parameters.
+// `printable_render_job_list` parameters.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RenderJobListParams {
@@ -238,7 +237,7 @@ pub(crate) struct RenderJobListParams {
     #[serde(default)]
     #[schemars(range(min = 0))]
     offset: usize,
-    /// Positive count of retained jobs to return; defaults to 100.
+    /// Default 100.
     #[serde(default = "default_job_list_limit")]
     #[schemars(range(min = 1))]
     limit: usize,
@@ -246,7 +245,7 @@ pub(crate) struct RenderJobListParams {
     state: Option<JobState>,
 }
 
-/// `printable_render_job_artifacts` parameters.
+// `printable_render_job_artifacts` parameters.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RenderJobArtifactsParams {
@@ -255,13 +254,13 @@ pub(crate) struct RenderJobArtifactsParams {
     #[serde(default)]
     #[schemars(range(min = 0))]
     offset: u32,
-    /// Positive count of completed frame artifacts to return; defaults to 100.
+    /// Default 100.
     #[serde(default = "default_job_list_limit")]
     #[schemars(range(min = 1))]
     limit: usize,
 }
 
-/// `printable_render_job_cancel` parameters.
+// `printable_render_job_cancel` parameters.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RenderJobCancelParams {

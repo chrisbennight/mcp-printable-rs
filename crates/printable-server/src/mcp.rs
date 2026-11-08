@@ -152,14 +152,20 @@ impl PrintableServer {
         Arc::clone(&self.published_files)
     }
 
+    /// A tool for `tools/list`. Only a tool with a single operation carries
+    /// an output schema there: a union over every action of a combined tool
+    /// is large and says little about any one call. Each action's output
+    /// contract is in `printable://contracts/{tool}/{action}`.
     fn to_rmcp_tool(meta: &tools::ToolDef) -> Tool {
+        let schema = (meta.schema)();
+        let single_operation = resources::contracts::actions(&schema).is_empty();
         let tool = Tool::new(
             Cow::Borrowed(meta.name),
             Cow::Borrowed(meta.description),
-            (meta.schema)(),
+            schema,
         )
         .annotate((meta.annotations)());
-        if tools::workflows::lookup(meta.name).is_some() {
+        if single_operation && tools::workflows::lookup(meta.name).is_some() {
             tool.with_raw_output_schema(tools::output::schema(meta.name))
         } else {
             tool
@@ -894,6 +900,92 @@ mod tests {
             invalid["error"]["details"]["deficit"][0]["required_grams"] = json!("not a number");
             assert!(!validator.is_valid(&invalid));
         }
+    }
+
+    /// Bytes of compact JSON that `tools/list` advertises for each tool, with
+    /// every optional capability available: (tool, input schema, output
+    /// schema). A zero output budget means the tool advertises none. Budgets
+    /// sit a little above the measured sizes, so growth is a deliberate
+    /// choice.
+    const CONTRACT_BUDGETS: &[(&str, usize, usize)] = &[
+        ("skill", 700, 0),
+        ("slice", 6_100, 0),
+        ("printer", 4_300, 0),
+        ("print", 13_700, 0),
+        ("status", 300, 2_700),
+        ("inspect", 5_100, 0),
+        ("edit", 5_300, 0),
+        ("blender_execute", 2_200, 1_200),
+        ("scene", 4_700, 0),
+        ("scad_build", 5_800, 0),
+        ("cad_build", 9_700, 0),
+        ("view", 9_400, 0),
+        ("render", 10_400, 0),
+        ("compare_renders", 900, 1_300),
+        ("validate_mesh", 5_500, 13_400),
+        ("analyze_assembly", 2_400, 1_600),
+        ("job", 9_600, 0),
+        ("project", 11_300, 0),
+        ("catalog", 4_000, 0),
+        ("head", 21_800, 0),
+        ("photo", 4_900, 0),
+        ("library", 3_000, 0),
+        ("artifact", 6_300, 0),
+    ];
+    /// Characters in one tool's description.
+    const DESCRIPTION_BUDGET: usize = 600;
+    /// Bytes of every advertised tool entry together: names, descriptions,
+    /// annotations and schemas.
+    const CATALOG_BUDGET: usize = 176_000;
+
+    #[test]
+    fn advertised_contracts_stay_within_their_size_budgets() {
+        let available = crate::tools::workflows::Availability {
+            head: true,
+            reconstruct: true,
+            depth: true,
+            object: true,
+            photo_jobs: true,
+            library: true,
+        };
+        let compact = |value: &serde_json::Value| serde_json::to_string(value).unwrap().len();
+        let mut catalog = 0;
+        let mut names = Vec::new();
+        for meta in crate::tools::workflows::advertised(available) {
+            let tool = super::PrintableServer::to_rmcp_tool(meta);
+            let &(_, input_budget, output_budget) = CONTRACT_BUDGETS
+                .iter()
+                .find(|(name, ..)| *name == meta.name)
+                .unwrap_or_else(|| panic!("{} has no size budget", meta.name));
+            let input = compact(&serde_json::Value::Object((*tool.input_schema).clone()));
+            let output = tool.output_schema.as_ref().map_or(0, |schema| {
+                compact(&serde_json::Value::Object((**schema).clone()))
+            });
+            assert!(
+                input <= input_budget,
+                "{}: input schema is {input} bytes",
+                meta.name
+            );
+            assert!(
+                output <= output_budget,
+                "{}: output schema is {output} bytes",
+                meta.name
+            );
+            assert_eq!(output == 0, output_budget == 0, "{}", meta.name);
+            assert!(
+                meta.description.chars().count() <= DESCRIPTION_BUDGET,
+                "{}: description is {} characters",
+                meta.name,
+                meta.description.chars().count()
+            );
+            catalog += compact(&serde_json::to_value(&tool).unwrap());
+            names.push(meta.name);
+        }
+        assert_eq!(names.len(), CONTRACT_BUDGETS.len(), "{names:?}");
+        assert!(
+            catalog <= CATALOG_BUDGET,
+            "tools/list entries are {catalog} bytes"
+        );
     }
 
     #[test]

@@ -45,8 +45,10 @@ the client accepts a single JSON text result. A duplicate text representation
 is not printed alongside the structured result. MCP `isError` remains an
 error, and mutations are never automatically replayed.
 
-Advertised output schemas cover successful results and structured execution
-failures. A failure includes the tool name and an `error` object with a stable
+`tools/list` advertises an output schema only for tools that take their
+parameters directly; a combined tool's action contract carries the output
+schema for that action. Output schemas cover successful results and structured
+execution failures. A failure includes the tool name and an `error` object with a stable
 `code` and human-readable `message`; stale-scene failures also include the
 observed scene state. Printer rejections retain their typed rejection details.
 Check MCP `isError` before interpreting a result as success. A valid schema does

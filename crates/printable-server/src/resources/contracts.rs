@@ -16,6 +16,19 @@ fn action_name(variant: &Value) -> Option<&str> {
     })
 }
 
+/// The actions a tool's input schema offers; none for a tool that takes its
+/// parameters directly.
+pub fn actions(schema: &Map<String, Value>) -> Vec<&str> {
+    schema
+        .get("oneOf")
+        .or_else(|| schema.get("anyOf"))
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(action_name)
+        .collect()
+}
+
 fn variants(schema: &Value) -> &[Value] {
     schema
         .get("oneOf")
@@ -79,9 +92,7 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
     if uri == ROOT {
         let tools: Vec<_> = workflows::advertised(available)
             .map(|tool| {
-                let schema = Value::Object((tool.schema)().as_ref().clone());
-                let actions: Vec<_> = variants(&schema).iter().filter_map(action_name).collect();
-                json!({"tool": tool.name, "actions": actions,
+                json!({"tool": tool.name, "actions": actions(&(tool.schema)()),
                     "uri": format!("{ROOT}/{}", tool.name)})
             })
             .collect();
@@ -101,13 +112,7 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
         Some(action) => selected_schema(&full_schema, action)?,
         None => full_schema,
     };
-    let selected_output = action.and_then(|action| {
-        crate::printers::action_output_schema(name, action).or_else(|| {
-            (name == "cad_build")
-                .then(|| output::cad_action_schema(action))
-                .flatten()
-        })
-    });
+    let selected_output = action.and_then(|action| output::action_schema(name, action));
     let output_scope = if selected_output.is_some() {
         "action"
     } else {
@@ -198,8 +203,14 @@ mod tests {
                     let contract = read(&action_uri, available).unwrap();
                     jsonschema::validator_for(&contract["inputSchema"]).unwrap();
                     jsonschema::validator_for(&contract["outputSchema"]).unwrap();
-                    if matches!(entry["tool"].as_str(), Some("printer" | "print")) {
-                        assert_eq!(contract["output_schema_scope"], "action");
+                    let action = action.as_str().unwrap();
+                    if matches!(
+                        entry["tool"].as_str(),
+                        Some("printer" | "print" | "catalog")
+                    ) || (entry["tool"] == "project"
+                        && matches!(action, "update" | "cover" | "reindex"))
+                    {
+                        assert_eq!(contract["output_schema_scope"], "action", "{action_uri}");
                     }
                 }
             }

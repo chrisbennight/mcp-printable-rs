@@ -145,7 +145,7 @@ struct StorageCleanupParams {
     ids: Vec<String>,
 }
 
-/// `printable_workspace_list` parameters.
+// `printable_workspace_list` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListParams {
@@ -158,7 +158,7 @@ struct ListParams {
     limit: usize,
 }
 
-/// `printable_workspace_read` parameters.
+// `printable_workspace_read` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadParams {
@@ -176,7 +176,7 @@ struct StatParams {
     project_id: Option<String>,
 }
 
-/// `printable_workspace_write` parameters (single-shot, small artifacts).
+// `printable_workspace_write` parameters (single-shot, small artifacts).
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteParams {
@@ -190,7 +190,7 @@ struct WriteParams {
     overwrite: bool,
 }
 
-/// `printable_workspace_write_begin` parameters.
+// `printable_workspace_write_begin` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteBeginParams {
@@ -201,7 +201,7 @@ struct WriteBeginParams {
     overwrite: bool,
 }
 
-/// `printable_workspace_write_chunk` parameters.
+// `printable_workspace_write_chunk` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteChunkParams {
@@ -212,7 +212,7 @@ struct WriteChunkParams {
     data_base64: String,
 }
 
-/// `printable_workspace_write_commit` parameters.
+// `printable_workspace_write_commit` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteCommitParams {
@@ -220,18 +220,19 @@ struct WriteCommitParams {
     upload_id: String,
 }
 
-/// `printable_status` parameters (none).
+// `printable_status` parameters (none).
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct StatusParams {}
 
+/// Refuse the request when the scene has changed since this observation.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneExpectation {
-    /// Project identity included in observations of a bound scene.
+    /// Project bound to the observed scene.
     #[serde(skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,
-    /// Scene generation returned by the latest relevant Blender observation.
+    /// Scene generation from the latest observation.
     #[schemars(length(min = 36, max = 36))]
     generation: String,
     /// Mutation revision within that generation.
@@ -242,7 +243,6 @@ struct SceneExpectation {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneInfoParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Cursor into scene order, before filtering. Reuse next_offset with the same filters.
@@ -293,7 +293,6 @@ enum ObjectSection {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ObjectInfoParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Exact Blender object name.
@@ -333,7 +332,6 @@ fn default_inspection_limit() -> usize {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct NodeTreeInfoParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Exact material name or Geometry Nodes group name, according to kind.
@@ -355,7 +353,6 @@ struct NodeTreeInfoParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneClearParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
 }
@@ -404,7 +401,6 @@ fn default_project_scene_timeout() -> u64 {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneCheckpointParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Destination `.blend` path under the confined workspace.
@@ -414,7 +410,6 @@ struct SceneCheckpointParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SceneRestoreParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Existing `.blend` checkpoint under the confined workspace.
@@ -424,7 +419,6 @@ struct SceneRestoreParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ObjectRenameParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Exact current Blender object name.
@@ -436,7 +430,6 @@ struct ObjectRenameParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RigidRotationAnimateParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Nonempty unique Blender objects with no hierarchy, animation, constraints, or rigid-body state.
@@ -471,7 +464,6 @@ enum PrimitiveKind {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PrimitiveCreateParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Primitive family to create.
@@ -513,7 +505,6 @@ enum BooleanOperation {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BooleanApplyParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Mesh object that receives the boolean result.
@@ -533,7 +524,6 @@ struct BooleanApplyParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct StlImportParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Existing `.stl` path under the confined shared workspace.
@@ -543,7 +533,6 @@ struct StlImportParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct StlExportParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Destination `.stl` path under the confined shared workspace.
@@ -556,7 +545,6 @@ struct StlExportParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BlendSaveParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Destination `.blend` path under the confined shared workspace.
@@ -577,7 +565,6 @@ fn default_render_engine() -> RenderEngine {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RenderPreviewParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Destination `.png` path under the confined shared workspace.
@@ -597,12 +584,10 @@ struct RenderPreviewParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     samples: Option<u32>,
-    /// Caller-selected positive, runtime-representable render budget in seconds.
-    /// Defaults to one hour; there is no configured maximum.
+    /// Render budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
-    /// Include the PNG as MCP image content when it is at most 1 MiB. The
-    /// workspace artifact is always produced regardless of this setting.
+    /// Also return the PNG as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -686,9 +671,8 @@ pub(crate) struct ProductPresentationView {
     #[serde(default = "default_product_azimuth")]
     #[schemars(range(min = -360.0, max = 360.0))]
     pub(crate) azimuth_degrees: f64,
-    /// Vertical camera angle in degrees above the XY plane (default 25).
-    /// Engineering accepts -89 through 89; grounded studio profiles accept
-    /// 0 through 89 so their opaque ground cannot hide the product.
+    /// Degrees above the XY plane (default 25): -89 to 89 for engineering, 0 to
+    /// 89 for grounded studio profiles.
     #[serde(default = "default_product_elevation")]
     #[schemars(range(min = -89.0, max = 89.0))]
     pub(crate) elevation_degrees: f64,
@@ -762,8 +746,8 @@ pub(crate) struct ProductPresentation {
     /// Presentation-only finite exposure in stops; Blender owns its native range.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) exposure_stops: Option<f64>,
-    /// Scale all profile area lights and world illumination by a nonnegative value.
-    /// Defaults to 1. Zero disables this illumination, not emissive materials.
+    /// Scale profile lights and world illumination (default 1); emissive
+    /// materials are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0))]
     pub(crate) light_intensity_scale: Option<f64>,
@@ -777,8 +761,7 @@ struct RenderProductParams {
     expected_scene: Option<SceneExpectation>,
     /// Destination `.png` path under the confined shared workspace.
     path: String,
-    /// Unique renderable source object names. Every evaluated collection
-    /// instance of a selected source object is included.
+    /// Unique renderable source objects, with every evaluated instance of each.
     #[schemars(length(min = 1))]
     objects: Vec<String>,
     /// Deterministic disposable product-presentation setup.
@@ -798,10 +781,10 @@ struct RenderProductParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     samples: Option<u32>,
-    /// Caller-selected positive render budget in seconds (default one hour).
+    /// Render budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
-    /// Include the PNG as MCP image content when it is at most 1 MiB.
+    /// Also return the PNG as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -849,8 +832,7 @@ struct MultiViewRenderSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     samples: Option<u32>,
-    /// Caller-selected budget for the complete multi-view render in seconds.
-    /// Defaults to one hour; there is no configured maximum.
+    /// Budget for the whole render in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
 }
@@ -868,12 +850,12 @@ struct RenderGalleryParams {
     #[serde(default = "default_gallery_columns")]
     #[schemars(range(min = 1))]
     columns: u32,
-    /// Optional deterministic product presentation. When omitted, the existing
-    /// engineering-review renderer and output remain unchanged.
+    /// Product presentation; when omitted, the engineering-review renderer is
+    /// used.
     presentation: Option<ProductPresentation>,
     #[serde(flatten)]
     render: MultiViewRenderSettings,
-    /// Include the composite as MCP image content when it is at most 1 MiB.
+    /// Also return the composite as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -885,7 +867,7 @@ struct RenderDimensionsParams {
     path: String,
     #[serde(flatten)]
     render: MultiViewRenderSettings,
-    /// Include the composite as MCP image content when it is at most 1 MiB.
+    /// Also return the composite as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -951,7 +933,7 @@ struct RenderCrossSectionParams {
     view_direction: Option<[f64; 3]>,
     #[serde(flatten)]
     render: MultiViewRenderSettings,
-    /// Include the labeled result as MCP image content when it is at most 1 MiB.
+    /// Also return the labelled image as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -977,12 +959,12 @@ struct RenderHeatmapParams {
     view_direction: [f64; 3],
     #[serde(flatten)]
     render: MultiViewRenderSettings,
-    /// Include the labeled result as MCP image content when it is at most 1 MiB.
+    /// Also return the labelled image as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
 
-/// `printable_validate_mesh` parameters.
+// `printable_validate_mesh` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ValidateMeshParams {
@@ -997,14 +979,18 @@ struct ValidateMeshParams {
     overhang_angle_degrees: f64,
     /// Optional material density in grams per cubic centimetre for mass estimation.
     density_g_cm3: Option<f64>,
-    /// Optional minimum wall thickness in millimetres. When given, a valid solid's wall thickness is measured from points spread over its surface and reported in `wall_thickness`, with any regions below the minimum.
+    /// Minimum wall in millimetres; measures a valid solid's wall thickness
+    /// into `wall_thickness`, with the regions below it.
     #[schemars(range(min = 0.0))]
     minimum_wall_mm: Option<f64>,
-    /// Optional dimensional check. Fits planes, cylinders and spheres to the surface around seed points, reports each fit in `dimensions`, and checks diameters, distances and angles between them against a nominal and tolerance.
+    /// Fit planes, cylinders and spheres around seed points into `dimensions`
+    /// and check diameters, distances and angles against tolerances.
     dimensions: Option<DimensionParams>,
-    /// Optional mould release check. Reports how far each face leans off the pull direction, and the faces that catch on the mould.
+    /// Mould release check: each face's lean off the pull and the faces that
+    /// catch.
     draft: Option<DraftParams>,
-    /// Optional comparison with a reference mesh. Reports the signed distance of this mesh's surface from the reference in `comparison`: positive where this mesh has extra material, negative where material is missing, with the regions beyond the tolerance.
+    /// Signed distance from a reference mesh into `comparison`: positive for
+    /// extra material, negative for missing, with regions beyond tolerance.
     compare: Option<CompareParams>,
 }
 
@@ -1013,13 +999,15 @@ struct ValidateMeshParams {
 struct CompareParams {
     /// Confined STL artifact to compare against, in millimetres.
     reference_path: String,
-    /// `none` when both meshes share a frame (default), or `best_fit` for a rigid fit of this mesh onto the reference, rotation and translation without scale.
+    /// `none` (default) when both share a frame, or `best_fit` for a rigid fit
+    /// onto the reference without scale.
     #[serde(default)]
     alignment: CompareAlignment,
     /// Deviation either side that counts as matching, in millimetres.
     #[schemars(range(min = 0.0))]
     tolerance_mm: f64,
-    /// Optional search distance in millimetres. Surface points farther than this from any reference surface facing their way are unmeasured (default a tenth of the reference's diagonal).
+    /// Points farther than this, in millimetres, from a reference surface facing
+    /// their way are unmeasured (default a tenth of its diagonal).
     #[schemars(range(min = 0.0))]
     max_distance_mm: Option<f64>,
 }
@@ -1050,7 +1038,8 @@ struct FeatureParams {
     shape: FeatureShape,
     /// A point on or near the feature's surface, in millimetres. The fitted region grows from the nearest face.
     seed_mm: [f64; 3],
-    /// Optional approximate outward normal of a plane or axis of a cylinder. The region then grows from the nearest face that agrees with it, so a seed beside an edge finds the intended surface.
+    /// Approximate plane normal or cylinder axis, so a seed beside an edge
+    /// grows from the intended face.
     direction: Option<[f64; 3]>,
     /// Optional: refit without vertices farther than this many standard deviations from the first fit.
     #[schemars(range(min = 1, max = 3))]
@@ -1126,13 +1115,16 @@ impl From<DimensionParams> for DimensionOptions {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DraftParams {
-    /// Direction the material on the other side of the surface moves away: the mould, or its upper half, lifting off a master that rests on its base, or the cast part coming out of a cavity. Magnitude is normalized.
+    /// Direction the mould, or the cast part, moves away from this surface.
+    /// Magnitude is normalized.
     pull_direction: [f64; 3],
-    /// Faces leaning less than this many degrees off the pull are reported as shallow (default 1). Use 0 when straight walls release, as in flexible silicone.
+    /// Faces leaning less than this off the pull are shallow (default 1); use 0
+    /// when straight walls release, as in silicone.
     #[serde(default = "default_minimum_draft")]
     #[schemars(range(min = 0.0, max = 89.0))]
     minimum_draft_degrees: f64,
-    /// Optional distance along the pull from the part's lowest point to the parting plane of a two-part mould. Faces below it release in the opposite direction.
+    /// Two-part mould parting plane, along the pull from the lowest point;
+    /// faces below it release the opposite way.
     parting_offset_mm: Option<f64>,
 }
 
@@ -1164,7 +1156,7 @@ struct AssemblyRotationParams {
     target_clearance_mm: Option<f64>,
 }
 
-/// `printable_analyze_assembly` parameters.
+// `printable_analyze_assembly` parameters.
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct AnalyzeAssemblyParams {
@@ -1259,22 +1251,22 @@ impl ProductDesignProfile {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ScadCompileParams {
-    /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
+    /// Confined OpenSCAD source; literal import()/surface() paths are snapshotted.
     #[schemars(length(min = 1))]
     source: String,
     /// Destination `.stl` path under the confined workspace.
     path: String,
-    /// Typed OpenSCAD -D definitions. Names are unique ASCII identifiers; pbl_ is reserved.
+    /// Typed -D definitions with unique ASCII names; pbl_ is reserved.
     #[serde(default)]
     defines: ScadDefinitions,
-    /// Optional product variant exposed to source as the reserved pbl_variant definition.
+    /// Product variant, exposed to source as pbl_variant.
     variant: Option<String>,
-    /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
+    /// Millimetre manufacturing and form profile for the bundled product kit.
     design_profile: Option<ProductDesignProfile>,
-    /// Replace an existing destination atomically (default false).
+    /// Replace an existing destination atomically.
     #[serde(default)]
     overwrite: bool,
-    /// Caller-selected positive subprocess budget in seconds. Defaults to one hour; no configured maximum.
+    /// Subprocess budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
 }
@@ -1282,17 +1274,17 @@ struct ScadCompileParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ScadRenderParams {
-    /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
+    /// Confined OpenSCAD source; literal import()/surface() paths are snapshotted.
     #[schemars(length(min = 1))]
     source: String,
     /// Destination `.png` path under the confined workspace.
     path: String,
-    /// Typed OpenSCAD -D definitions. Names are unique ASCII identifiers; pbl_ is reserved.
+    /// Typed -D definitions with unique ASCII names; pbl_ is reserved.
     #[serde(default)]
     defines: ScadDefinitions,
-    /// Optional product variant exposed to source as the reserved pbl_variant definition.
+    /// Product variant, exposed to source as pbl_variant.
     variant: Option<String>,
-    /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
+    /// Millimetre manufacturing and form profile for the bundled product kit.
     design_profile: Option<ProductDesignProfile>,
     /// Named camera: iso, front, back, right, left, top, or bottom.
     #[serde(default = "default_scad_view")]
@@ -1304,13 +1296,13 @@ struct ScadRenderParams {
     /// Use fast OpenCSG preview mode (default true); false requests a full render.
     #[serde(default = "default_true")]
     preview: bool,
-    /// Replace an existing destination atomically (default false).
+    /// Replace an existing destination atomically.
     #[serde(default)]
     overwrite: bool,
-    /// Caller-selected positive subprocess budget in seconds. Defaults to one hour; no configured maximum.
+    /// Subprocess budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
-    /// Include the PNG as MCP image content when it is at most 1 MiB.
+    /// Also return the PNG as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -1318,25 +1310,25 @@ struct ScadRenderParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ScadCrossSectionParams {
-    /// Confined OpenSCAD source. Literal import()/surface() workspace paths are snapshotted.
+    /// Confined OpenSCAD source; literal import()/surface() paths are snapshotted.
     #[schemars(length(min = 1))]
     source: String,
     /// Destination `.svg` path under the confined workspace.
     path: String,
-    /// Typed OpenSCAD -D definitions. Names are unique ASCII identifiers; pbl_ is reserved.
+    /// Typed -D definitions with unique ASCII names; pbl_ is reserved.
     #[serde(default)]
     defines: ScadDefinitions,
-    /// Optional product variant exposed to source as the reserved pbl_variant definition.
+    /// Product variant, exposed to source as pbl_variant.
     variant: Option<String>,
-    /// Explicit millimetre manufacturing/form profile and bundled generic product kit.
+    /// Millimetre manufacturing and form profile for the bundled product kit.
     design_profile: Option<ProductDesignProfile>,
     /// Z plane in source millimetres to project as a 2D cut (default 0).
     #[serde(default)]
     z_mm: f64,
-    /// Replace an existing destination atomically (default false).
+    /// Replace an existing destination atomically.
     #[serde(default)]
     overwrite: bool,
-    /// Caller-selected positive subprocess budget in seconds. Defaults to one hour; no configured maximum.
+    /// Subprocess budget in seconds (default one hour).
     #[serde(default = "default_render_timeout_seconds")]
     timeout_seconds: f64,
 }
@@ -1360,12 +1352,11 @@ struct RenderTurntableParams {
     #[serde(default = "default_turntable_columns")]
     #[schemars(range(min = 1))]
     columns: u32,
-    /// Optional deterministic product presentation. Orbit controls remain
-    /// authoritative for each turntable view.
+    /// Product presentation; the orbit controls still set each view.
     presentation: Option<ProductPresentation>,
     #[serde(flatten)]
     render: MultiViewRenderSettings,
-    /// Include the composite as MCP image content when it is at most 1 MiB.
+    /// Also return the composite as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -1387,7 +1378,7 @@ struct CompareRendersParams {
     #[serde(default = "default_render_dimension")]
     #[schemars(range(min = 1))]
     panel_height: u32,
-    /// Include the comparison as MCP image content when it is at most 1 MiB.
+    /// Also return the comparison as image content when at most 1 MiB.
     #[serde(default = "default_true")]
     include_inline: bool,
 }
@@ -1395,7 +1386,6 @@ struct CompareRendersParams {
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BlenderExecuteParams {
-    /// Reject stale scene state at Blender's serialized command boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_scene: Option<SceneExpectation>,
     /// Optional current UI target; use inspect editing_state to discover editors.
@@ -1472,12 +1462,109 @@ fn schema_of<T: schemars::JsonSchema + std::any::Any>() -> Arc<JsonObject> {
         .expect("a tool parameter struct always has an object-rooted schema");
     let mut schema = Value::Object((*schema).clone());
     normalize_type_unions(&mut schema);
+    compact_schema(&mut schema);
     Arc::new(
         schema
             .as_object()
             .expect("a normalized tool schema remains object-rooted")
             .clone(),
     )
+}
+
+/// Integer and floating-point `format` names that schemars derives from Rust
+/// types. Validators treat them as annotations, and `type`, `minimum` and
+/// `maximum` already carry the bounds that JSON Schema can check.
+const NUMERIC_FORMATS: [&str; 14] = [
+    "int", "int8", "int16", "int32", "int64", "int128", "uint", "uint8", "uint16", "uint32",
+    "uint64", "uint128", "float", "double",
+];
+
+/// Remove generated annotations that no validator acts on: titles, the
+/// dialect key (MCP schemas without one are JSON Schema 2020-12), numeric
+/// `format` names and defaults that are an empty value. The set of values a
+/// schema accepts does not change.
+pub(crate) fn compact_schema(schema: &mut Value) {
+    if let Some(object) = schema.as_object_mut() {
+        object.remove("$schema");
+    }
+    compact_subschema(schema);
+}
+
+fn compact_subschema(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.remove("title");
+    if object
+        .get("format")
+        .and_then(Value::as_str)
+        .is_some_and(|format| NUMERIC_FORMATS.contains(&format))
+    {
+        object.remove("format");
+    }
+    if object.get("default").is_some_and(|value| match value {
+        Value::Null => true,
+        Value::String(text) => text.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+        Value::Bool(_) | Value::Number(_) => false,
+    }) {
+        object.remove("default");
+    }
+    for_each_subschema_mut(object, compact_subschema);
+}
+
+/// Visit every direct subschema of a schema object: definitions, property
+/// schemas, combinators and applicators. Values of `const`, `enum` and
+/// `default` are data, not schemas, and are never visited.
+fn for_each_subschema_mut(object: &mut JsonObject, mut visit: impl FnMut(&mut Value)) {
+    for keyword in [
+        "$defs",
+        "definitions",
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(children) = object.get_mut(keyword).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                visit(child);
+            }
+        }
+    }
+    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(children) = object.get_mut(keyword).and_then(Value::as_array_mut) {
+            for child in children {
+                visit(child);
+            }
+        }
+    }
+    if let Some(items) = object.get_mut("items") {
+        if let Some(children) = items.as_array_mut() {
+            for child in children {
+                visit(child);
+            }
+        } else {
+            visit(items);
+        }
+    }
+    for keyword in [
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+        "contentSchema",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "additionalItems",
+        "unevaluatedItems",
+    ] {
+        if let Some(child @ Value::Object(_)) = object.get_mut(keyword) {
+            visit(child);
+        }
+    }
 }
 
 /// Express legal array-valued JSON Schema type unions in the object form that
@@ -1518,54 +1605,7 @@ fn normalize_type_unions(schema: &mut Value) {
             object.insert("anyOf".to_owned(), branches);
         }
     }
-
-    for keyword in [
-        "$defs",
-        "definitions",
-        "properties",
-        "patternProperties",
-        "dependentSchemas",
-        "dependencies",
-    ] {
-        if let Some(children) = object.get_mut(keyword).and_then(Value::as_object_mut) {
-            for child in children.values_mut() {
-                normalize_type_unions(child);
-            }
-        }
-    }
-    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-        if let Some(children) = object.get_mut(keyword).and_then(Value::as_array_mut) {
-            for child in children {
-                normalize_type_unions(child);
-            }
-        }
-    }
-    if let Some(items) = object.get_mut("items") {
-        if let Some(children) = items.as_array_mut() {
-            for child in children {
-                normalize_type_unions(child);
-            }
-        } else {
-            normalize_type_unions(items);
-        }
-    }
-    for keyword in [
-        "contains",
-        "propertyNames",
-        "not",
-        "if",
-        "then",
-        "else",
-        "contentSchema",
-        "additionalProperties",
-        "unevaluatedProperties",
-        "additionalItems",
-        "unevaluatedItems",
-    ] {
-        if let Some(child @ Value::Object(_)) = object.get_mut(keyword) {
-            normalize_type_unions(child);
-        }
-    }
+    for_each_subschema_mut(object, normalize_type_unions);
 }
 
 const JSON_SCHEMA_TYPES: [&str; 7] = [
@@ -1603,6 +1643,16 @@ fn code_annotations() -> ToolAnnotations {
         .read_only(false)
         .destructive(true)
         .idempotent(false)
+        .open_world(true)
+}
+
+/// The user's project library: reads only, but a search may ask a configured
+/// embeddings or re-ranking service.
+fn catalog_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(true)
+        .destructive(false)
+        .idempotent(true)
         .open_world(true)
 }
 
@@ -1703,26 +1753,26 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_project_search",
-        description: "Find projects in the derived search index by words in their records, by filters and by sort order, returning short library cards with index coverage and the search capabilities that are unavailable. With an embeddings service, best_match also finds projects by what the text means and by a workspace picture, and a re-ranking service can reorder the best results.",
+        description: "Find projects in the derived search index by words, meaning or a picture, filters and sort order, returning concise or full library cards.",
         schema: schema_of::<crate::projects::index::SearchParams>,
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_project_card",
+        description: "Build one project's full library card from its current records.",
+        schema: schema_of::<crate::projects::ProjectParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
         name: "printable_project_index_status",
-        description: "Report how many projects the search index holds, which failed, where it is stored and its latest pass, which of meaning search, picture search and re-ranking are available and why not, and the embeddings model with its vector counts.",
+        description: "Report the search index's coverage, failures, latest pass and available search methods.",
         schema: schema_of::<crate::projects::index::IndexParams>,
         annotations: read_only_idempotent,
     },
     ToolDef {
-        name: "printable_project_index_rebuild",
-        description: "Clear the derived project search index and rebuild every card from project records now.",
-        schema: schema_of::<crate::projects::index::IndexParams>,
-        annotations: write_annotations,
-    },
-    ToolDef {
-        name: "printable_project_index_retry",
-        description: "Update the project search index now and try projects whose cards failed again.",
-        schema: schema_of::<crate::projects::index::IndexParams>,
+        name: "printable_project_reindex",
+        description: "Update the project search index now, retrying failures or rebuilding it.",
+        schema: schema_of::<crate::projects::index::ReindexParams>,
         annotations: write_annotations,
     },
     ToolDef {
@@ -2049,11 +2099,21 @@ pub(crate) async fn dispatch_with_content(
         }
         "printable_project_search" => {
             let params: crate::projects::index::SearchParams = de(args)?;
+            let view = crate::projects::catalog::View::of(&params);
             let response = settings
                 .project_index
                 .search(workspace, params, &WORKSPACE_OPS)
                 .await?;
-            Ok(ToolOutput::without_inline(serde_json::to_value(response)?))
+            Ok(ToolOutput::without_inline(serde_json::to_value(
+                view.render(response),
+            )?))
+        }
+        "printable_project_card" => {
+            let params: crate::projects::ProjectParams = de(args)?;
+            let ws = Arc::clone(workspace);
+            let card =
+                blocking(move || crate::projects::card::card(&ws, &params.project_id)).await?;
+            Ok(ToolOutput::without_inline(serde_json::to_value(card)?))
         }
         "printable_project_index_status" => {
             let _: crate::projects::index::IndexParams = de(args)?;
@@ -2062,14 +2122,12 @@ pub(crate) async fn dispatch_with_content(
             let status = blocking(move || index.status(&ws)).await?;
             Ok(ToolOutput::without_inline(serde_json::to_value(status)?))
         }
-        "printable_project_index_rebuild" | "printable_project_index_retry" => {
-            let _: crate::projects::index::IndexParams = de(args)?;
-            let kind = if name == "printable_project_index_rebuild" {
-                crate::projects::index::PassKind::Rebuild
-            } else {
-                crate::projects::index::PassKind::Retry
-            };
-            let report = settings.project_index.run(workspace, kind).await?;
+        "printable_project_reindex" => {
+            let params: crate::projects::index::ReindexParams = de(args)?;
+            let report = settings
+                .project_index
+                .run(workspace, params.mode.into())
+                .await?;
             Ok(ToolOutput::without_inline(serde_json::to_value(report)?))
         }
         "printable_render_job_submit" => {

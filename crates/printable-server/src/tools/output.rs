@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
+use super::compact_schema;
+
 fn object(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required})
 }
@@ -105,7 +107,7 @@ fn cad_inspection_completed() -> (Value, Map<String, Value>) {
 }
 
 /// Selected inspection results exclude unrelated delivery qualification contracts.
-pub fn cad_action_schema(action: &str) -> Option<Value> {
+pub(crate) fn cad_action_schema(action: &str) -> Option<Value> {
     if !matches!(action, "inspect" | "export") {
         return None;
     }
@@ -502,6 +504,32 @@ fn native_bundle() -> Value {
     )
 }
 
+/// A typed result's schema with the shared execution-failure contract.
+fn typed<T: schemars::JsonSchema>(name: &str) -> Value {
+    let mut schema =
+        serde_json::to_value(schemars::schema_for!(T)).expect("a result schema serializes");
+    schema["type"] = json!("object");
+    with_errors(name, schema)
+}
+
+/// One action's own output contract, when it has one. Other actions are
+/// described by their tool's [`schema`].
+pub fn action_schema(name: &str, action: &str) -> Option<Value> {
+    use crate::projects::{Project, card::Card, catalog::SearchView, index};
+    let mut schema = match (name, action) {
+        ("printer" | "print", _) => crate::printers::action_output_schema(name, action)?,
+        ("cad_build", _) => cad_action_schema(action)?,
+        ("catalog", "search") => typed::<SearchView>(name),
+        ("catalog", "card") => typed::<Card>(name),
+        ("catalog", "status") => typed::<index::IndexStatus>(name),
+        ("project", "update" | "cover") => typed::<Project>(name),
+        ("project", "reindex") => typed::<index::PassReport>(name),
+        _ => return None,
+    };
+    compact_schema(&mut schema);
+    Some(schema)
+}
+
 /// Add the shared execution-failure contract without changing success shapes.
 /// Definitions stay at the document root so existing local references resolve.
 pub(crate) fn with_errors(name: &str, mut success: Value) -> Value {
@@ -765,20 +793,22 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
             }), &["jobs", "next_offset"])
         ]}),
+        "catalog" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let search = generator.subschema_for::<crate::projects::catalog::SearchView>();
+            let card = generator.subschema_for::<crate::projects::card::Card>();
+            let status = generator.subschema_for::<crate::projects::index::IndexStatus>();
+            json!({"type":"object","anyOf":[search, card, status],
+                "$defs":generator.take_definitions(true)})
+        }
         "project" => {
             let mut generator = schemars::SchemaGenerator::default();
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
             let project = generator.subschema_for::<crate::projects::Project>();
-            let card = generator.subschema_for::<crate::projects::card::Card>();
-            let search = generator.subschema_for::<crate::projects::index::SearchResponse>();
-            let status = generator.subschema_for::<crate::projects::index::IndexStatus>();
             let pass = generator.subschema_for::<crate::projects::index::PassReport>();
             json!({"type":"object","anyOf":[
             revision,
             project,
-            card,
-            search,
-            status,
             pass,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
@@ -890,11 +920,12 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         ]}),
         _ => unreachable!("output schema requested for an unknown workflow"),
     };
-    let value = if matches!(name, "printer" | "print") {
+    let mut value = if matches!(name, "printer" | "print") {
         value
     } else {
         with_errors(name, value)
     };
+    compact_schema(&mut value);
     Arc::new(
         value
             .as_object()

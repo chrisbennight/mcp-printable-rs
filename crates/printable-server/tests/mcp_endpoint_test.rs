@@ -767,6 +767,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "analyze_assembly",
             "job",
             "project",
+            "catalog",
             "artifact",
             "printer",
             "print",
@@ -906,7 +907,13 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         .unwrap();
     assert_eq!(skill_tool["annotations"]["readOnlyHint"], true);
     assert_eq!(skill_tool["annotations"]["idempotentHint"], true);
-    let output = jsonschema::validator_for(&skill_tool["outputSchema"]).unwrap();
+    assert!(skill_tool.get("outputSchema").is_none());
+    let contract = printable_server::resources::contracts::read(
+        "printable://contracts/skill/list",
+        Default::default(),
+    )
+    .unwrap();
+    let output = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
     assert!(output.is_valid(&listed["structuredContent"]));
     let skills = listed["structuredContent"]["skills"].as_array().unwrap();
     assert_eq!(skills.len(), 2);
@@ -1095,13 +1102,32 @@ async fn strict_http_client_can_consume_actionable_tool_failures() {
             "validation",
         ),
     ] {
-        let schema = catalog["tools"]
+        // A combined tool advertises no tool-wide output union; its selected
+        // action contract carries the output schema.
+        let listed = catalog["tools"]
             .as_array()
             .unwrap()
             .iter()
             .find(|tool| tool["name"] == name)
-            .unwrap()["outputSchema"]
-            .clone();
+            .unwrap();
+        assert!(listed.get("outputSchema").is_none(), "{name}: {listed}");
+        let action = arguments["action"].as_str().unwrap();
+        let contract = rpc_result(
+            post(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                    "params": {"uri": format!("printable://contracts/{name}/{action}")}
+                }),
+            )
+            .await,
+        )
+        .await;
+        let contract: Value =
+            serde_json::from_str(contract["contents"][0]["text"].as_str().unwrap()).unwrap();
+        let schema = contract["outputSchema"].clone();
         let result = rpc_result(
             post(
                 &http,
