@@ -7,12 +7,14 @@
 //! ring finds the narrow way across walls whose two faces are not parallel,
 //! such as a chamfer or a tapered rib.
 //!
-//! A wall's far side faces back against the point's inward direction. A ray
-//! that leaves through a surface turned more than
-//! [`MAX_EXIT_DEVIATION_DEGREES`] from that has not crossed a wall: it has
-//! reached a neighbouring face across a nearby edge. Such rays are not
-//! counted, whichever way within the ring they travel, and a point with no
-//! accepted ray is left unmeasured.
+//! A wall's far side faces back against the point's inward direction, and a
+//! ray across a wall leaves it close to square on. A ray that leaves through
+//! a surface turned more than [`MAX_EXIT_DEVIATION_DEGREES`] from the point's
+//! inward direction has reached a neighbouring face across a nearby edge. A
+//! ray that leaves more than [`MAX_EXIT_OBLIQUITY_DEGREES`] from square on
+//! has cut across a corner, such as where one body ends beside another's
+//! chamfered edge. Neither crossed a wall, so neither is counted, and a point
+//! with no accepted ray is left unmeasured.
 //!
 //! Points are sampled, so a feature narrower than the sample spacing can fall
 //! between them. The report states the spacing and how much of the surface
@@ -36,6 +38,12 @@ const RING_RAYS: usize = 6;
 /// A ray leaving through a surface turned further than this from facing the
 /// point's inward direction is not counted.
 const MAX_EXIT_DEVIATION_DEGREES: f64 = 60.0;
+/// A ray leaving a surface further than this from square on is not counted.
+/// For any surface within [`MAX_EXIT_DEVIATION_DEGREES`] of facing back
+/// against the inward direction, the normal or a ray of the ring leaves it
+/// within about 40 degrees of square on, so no wall that bound admits goes
+/// unmeasured.
+const MAX_EXIT_OBLIQUITY_DEGREES: f64 = 45.0;
 /// The sample spacing grows beyond the minimum wall, where that helps, to
 /// keep the number of surface points at or below this.
 const MAX_SAMPLES: usize = 200_000;
@@ -85,6 +93,9 @@ pub struct WallThicknessReport {
     /// Rays leaving through a surface turned further than this from facing
     /// the point's inward direction are not counted.
     pub max_exit_deviation_degrees: f64,
+    /// Rays leaving a surface further than this from square on are not
+    /// counted.
+    pub max_exit_obliquity_degrees: f64,
     /// Every point of the surface lies within this distance of a sample.
     pub sample_spacing_mm: f64,
     pub samples: usize,
@@ -160,6 +171,7 @@ pub(crate) fn measure(
     // its bounds.
     let ray_length = 2.0 * size * 3f64.sqrt();
     let exit_cosine = MAX_EXIT_DEVIATION_DEGREES.to_radians().cos();
+    let square_cosine = MAX_EXIT_OBLIQUITY_DEGREES.to_radians().cos();
 
     let mut samples = Vec::new();
     for (index, triangle) in triangles.iter().enumerate() {
@@ -167,6 +179,7 @@ pub(crate) fn measure(
             continue;
         };
         for (point, area) in triangle_samples(corners(vertices, triangle), spacing) {
+            crate::limit::check()?;
             let inward = normal.map(|value| -value);
             let start = RAY_START * scale_along(point, inward);
             let reading = cone(inward)
@@ -179,7 +192,7 @@ pub(crate) fn measure(
                     };
                     // Faces seen from behind are numbered after the others.
                     let exit = normals[face as usize % triangles.len()]?;
-                    (dot(exit, inward) >= exit_cosine)
+                    (dot(exit, inward) >= exit_cosine && dot(exit, direction) >= square_cosine)
                         .then_some((hit.time_of_impact + start, direction))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0));
@@ -210,6 +223,7 @@ pub(crate) fn measure(
         cone_half_angle_degrees: CONE_HALF_ANGLE_DEGREES,
         rays_per_sample: RING_RAYS + 1,
         max_exit_deviation_degrees: MAX_EXIT_DEVIATION_DEGREES,
+        max_exit_obliquity_degrees: MAX_EXIT_OBLIQUITY_DEGREES,
         sample_spacing_mm: spacing,
         samples: samples.len(),
         unmeasured_samples: samples.len() - measured.len(),
@@ -753,6 +767,64 @@ mod tests {
         assert!(report.solid_geometry);
         let thickness = report.wall_thickness.as_ref().unwrap();
         assert_eq!(thickness.thin_area_mm2, 0.0, "{thickness:?}");
+    }
+
+    /// A closed prism: a convex section in Y and Z extruded along X.
+    fn prism_along_x(section: &[[f64; 2]], low: f64, high: f64) -> TriangleMesh {
+        let n = section.len() as u32;
+        let mut vertices = Vec::new();
+        for x in [low, high] {
+            for [y, z] in section {
+                vertices.push([x, *y, *z]);
+            }
+        }
+        let mut triangles = Vec::new();
+        for i in 1..n - 1 {
+            triangles.push([0, i + 1, i]);
+            triangles.push([n, n + i, n + i + 1]);
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            triangles.push([i, j, j + n]);
+            triangles.push([i, j + n, i + n]);
+        }
+        let volume: f64 = triangles
+            .iter()
+            .map(|triangle| {
+                let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+                dot(a, cross(b, c))
+            })
+            .sum();
+        if volume < 0.0 {
+            for triangle in &mut triangles {
+                triangle.swap(1, 2);
+            }
+        }
+        TriangleMesh {
+            vertices,
+            triangles,
+        }
+    }
+
+    #[test]
+    fn a_ray_cutting_the_corner_past_a_junction_does_not_read_thin() {
+        // A crossbar standing on a panel's front strip ends partway along it.
+        // From the crossbar's back face near its end, ring rays tilted past
+        // the end and down cross the panel's corner and leave through the
+        // chamfer along its front edge, glancing. The material there is thick.
+        let panel = prism_along_x(
+            &[[9.0, 0.0], [15.0, 0.0], [15.0, 3.0], [9.5, 3.0], [9.0, 2.5]],
+            -5.0,
+            5.0,
+        );
+        let crossbar = cuboid([-3.0, 4.5, 0.0], [3.0, 10.5, 4.0], false);
+        let report = walls(&join(panel, crossbar), 0.1);
+        assert!(report.solid_geometry);
+        let thickness = report.wall_thickness.as_ref().unwrap();
+        // Counted, those rays read about 1.2 mm. The panel is 3 mm thick and
+        // its thinnest place, beside the chamfer, reads over 2.5 mm.
+        let minimum = thickness.thickness_mm.as_ref().unwrap().minimum;
+        assert!(minimum > 2.5, "{thickness:?}");
     }
 
     #[test]

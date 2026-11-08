@@ -385,15 +385,16 @@ pub(crate) fn measure(
     let readings: Vec<(V3, f64, Option<f64>)> = points
         .iter()
         .map(|point| {
+            crate::limit::check()?;
             let position = pose.apply(&point.position);
             let normal = pose.rotation * point.normal;
-            (
+            Ok((
                 position,
                 point.area,
                 reference.reading(&position, &normal, reach),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, GeometryError>>()?;
     let total_area: f64 = readings.iter().map(|(_, area, _)| area).sum();
     let mut measured: Vec<(f64, f64)> = readings
         .iter()
@@ -833,6 +834,7 @@ fn from_parry(vector: Vector) -> V3 {
 mod tests {
     use super::*;
     use crate::{ValidationOptions, analyze_mesh};
+    use std::time::Duration;
 
     /// A closed prism: a section in X/Z, with its cap triangles, extruded
     /// along Y from 0 to `depth` and wound outward.
@@ -1642,5 +1644,50 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "deviation_beyond_tolerance")
         );
+    }
+
+    /// Triangles far from a 10 mm block whose bounds all contain it, so
+    /// that every nearest-point query visits every one of them.
+    fn overlapping_far_triangles(count: usize) -> TriangleMesh {
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+        for index in 0..count {
+            let size = 1_000.0 * (1.0 + index as f64 * 1e-4);
+            let first = vertices.len() as u32;
+            for corner in [[-1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [1.0, -1.0, -1.0]] {
+                vertices.push(corner.map(|value: f64| 5.0 + size * value));
+            }
+            triangles.push([first, first + 1, first + 2]);
+        }
+        TriangleMesh {
+            vertices,
+            triangles,
+        }
+    }
+
+    #[test]
+    fn a_crafted_reference_stops_at_the_time_limit() {
+        let options = || ValidationOptions {
+            comparison: Some(ComparisonOptions {
+                reference: overlapping_far_triangles(20_000),
+                alignment: Alignment::None,
+                tolerance_mm: 0.1,
+                max_distance_mm: None,
+            }),
+            ..ValidationOptions::default()
+        };
+        let limit = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let stopped = crate::limit::WorkLimit::new(limit, || false)
+            .apply(|| analyze_mesh(&block(10.0, 10.0, 10.0), options()));
+        assert!(
+            matches!(stopped, Err(GeometryError::TimeLimit { .. })),
+            "{stopped:?}"
+        );
+        assert!(started.elapsed() < limit + Duration::from_secs(2));
+
+        let cancelled = crate::limit::WorkLimit::new(Duration::from_secs(3600), || true)
+            .apply(|| analyze_mesh(&block(10.0, 10.0, 10.0), options()));
+        assert!(matches!(cancelled, Err(GeometryError::Cancelled)));
     }
 }

@@ -59,8 +59,11 @@ and a ring of rays surrounds it. A point's reading is the
 shortest distance at which an accepted ray leaves the solid. A ray that
 leaves through a surface turned more than 60 degrees from facing back against
 the point's inward direction is not counted, because it reached a neighbouring
-face across an edge rather than crossing a wall. Edges sharper than 60 degrees,
-such as knife edges and pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
+face across an edge rather than crossing a wall. Nor is a ray that leaves more
+than 45 degrees from square on, because it cut across a corner, such as where
+one body ends beside another's chamfered edge; the narrowest way across a wall
+leaves it square on. Edges sharper than 60 degrees, such as knife edges and
+pointed rib tips, do read thin near the edge. The solid is measured after overlapping shells are united, so buried
 surfaces do not read as walls. A reading below the minimum by no more than the
 coordinates' rounding counts as meeting it: ASCII STL, which OpenSCAD writes,
 keeps about six significant digits, so a wall drawn at exactly the minimum
@@ -280,6 +283,28 @@ normals.
 Regions add a `deviation_beyond_tolerance` warning. The response also names
 the reference in `reference_artifact`. A comparison measures surfaces; it does
 not say which mesh is right.
+
+## Time limit and cancellation
+
+The server runs geometry work one operation at a time. That covers mesh
+validation, the analysis of an OpenSCAD build, assembly analysis, bust
+preparation and mechanical clearance jobs. An operation may hold the
+geometry lane for 10 minutes; time spent waiting for the lane does not count.
+
+A mesh of many overlapping triangles or nested shells can make the analysis
+visit every triangle many times. The shell check, wall thickness, comparison
+and feature fitting therefore check the limit as they go. The isolated
+geometry worker is stopped when the limit passes, and a tool that writes an
+artifact checks the limit once more first. Building and uniting the solid
+runs without a check. It starts only after the self-intersection search has
+finished within its fixed caps, so its work grows with the mesh size and the
+crossings found.
+
+An operation that reaches the limit fails with code `geometry_time_limit`,
+writes no artifact, and frees the server for the next one. Simplify or remesh
+the part, or ask for fewer checks in one call, then try again. Cancelling a
+tool call stops its geometry work in the same way, so an abandoned request
+does not hold up other callers.
 
 ## Compatibility
 

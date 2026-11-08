@@ -29,6 +29,7 @@ mod draft;
 mod fit;
 mod intersect;
 mod isosurface;
+pub mod limit;
 mod print_check;
 mod remesh;
 mod thickness;
@@ -118,6 +119,12 @@ pub enum GeometryError {
     Kernel(String),
     #[error("assembly {part} part is not a valid closed solid: {reason}")]
     InvalidAssemblyPart { part: &'static str, reason: String },
+    #[error(
+        "geometry work stopped at its {seconds} s time limit; simplify or remesh the part, or request fewer checks at once"
+    )]
+    TimeLimit { seconds: f64 },
+    #[error("geometry work was cancelled")]
+    Cancelled,
 }
 
 impl GeometryError {
@@ -131,6 +138,8 @@ impl GeometryError {
             Self::InvalidOptions(_) => "validation",
             Self::Kernel(_) => "geometry",
             Self::InvalidAssemblyPart { .. } => "invalid_assembly_part",
+            Self::TimeLimit { .. } => "geometry_time_limit",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -705,7 +714,8 @@ fn prepare_mesh(
     let dimensions = options
         .dimensions
         .as_ref()
-        .map(|dimensions| fit::measure(mesh, dimensions));
+        .map(|dimensions| fit::measure(mesh, dimensions))
+        .transpose()?;
     if let Some(report) = &dimensions {
         let unfitted: Vec<&str> = report
             .features
@@ -1035,6 +1045,7 @@ fn analyze_shells(
     let mut orientation_errors = 0;
     let mut solid_regions = 0;
     for (index, (sample, _)) in shells.iter().enumerate() {
+        limit::check()?;
         let point_bounds = Aabb::new(*sample, *sample);
         let containment_depth = shell_bvh
             .intersect_aabb(&point_bounds)
@@ -2028,5 +2039,28 @@ mod tests {
         let (volume, valid) = cube_sphere_intersection(2.0, 1.5, 128);
         assert!(valid);
         assert!(volume > 4.0 && volume < 8.0);
+    }
+
+    #[test]
+    fn checking_nested_shells_stops_at_the_time_limit() {
+        let mut nested = TriangleMesh {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        };
+        for step in 0..3 {
+            let shell = cube(10.0 - 2.0 * step as f64, [step as f64; 3]);
+            let base = nested.vertices.len() as u32;
+            nested.vertices.extend(shell.vertices);
+            nested
+                .triangles
+                .extend(shell.triangles.iter().map(|t| t.map(|i| i + base)));
+        }
+        let expired = limit::WorkLimit::new(std::time::Duration::ZERO, || false);
+        let stopped = expired.apply(|| analyze_mesh(&nested, ValidationOptions::default()));
+        assert!(
+            matches!(stopped, Err(GeometryError::TimeLimit { .. })),
+            "{stopped:?}"
+        );
+        assert!(analyze_mesh(&nested, ValidationOptions::default()).is_ok());
     }
 }

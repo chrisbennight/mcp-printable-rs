@@ -644,12 +644,15 @@ impl ServerHandler for PrintableServer {
             .and_then(|parts| parts.extensions.get::<crate::admission::WorkPermit>())
             .map(crate::admission::WorkPermit::retained);
         let server = self.clone();
+        let cancellation = ctx.ct.clone();
         // Disconnecting does not undo a delivered effect. This owned task keeps
         // admission and arguments until dispatch reaches its completion boundary.
-        tokio::spawn(async move {
+        // Work that checks for cancellation, such as geometry analysis, stops
+        // before its effect once the client cancels the call.
+        tokio::spawn(tools::REQUEST_CANCELLATION.scope(cancellation, async move {
             let _permit = permit;
             server.invoke_tool(params).await.map(CallToolResponse::from)
-        })
+        }))
         .await
         .map_err(|_| McpError::internal_error("tool task did not complete", None))?
     }
