@@ -38,6 +38,9 @@ const MIN_FIT_REGION_POINTS: usize = 6;
 
 /// Picked pairs accepted, at most.
 pub const MAX_START_PAIRS: usize = 32;
+/// Picked coordinates lie within this many millimetres of the origin, so no
+/// product formed while fitting them can overflow.
+const MAX_PICK_MM: f64 = 1e9;
 
 /// Draws used to refine each starting pose before it is scored.
 const START_POINTS: usize = 1_000;
@@ -220,25 +223,18 @@ pub(crate) fn validate(options: &ComparisonOptions) -> Result<(), GeometryError>
                 .map(|pair| V3::from(pair.reference_mm))
                 .collect(),
         ];
-        if sides
-            .iter()
-            .flatten()
-            .any(|point| !point.iter().all(|value| value.is_finite()))
-        {
-            return invalid("comparison start_pairs contains a non-finite coordinate");
+        if sides.iter().flatten().any(|point| {
+            !point
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_PICK_MM)
+        }) {
+            return Err(GeometryError::InvalidOptions(format!(
+                "comparison start_pairs coordinates must be finite and within {MAX_PICK_MM:e} mm of the origin"
+            )));
         }
         if !sides.iter().all(|side| spans_a_plane(side)) {
             return invalid(
                 "comparison start_pairs lie nearly on one line, which leaves the rotation about it unknown; pick points spread over the part",
-            );
-        }
-        let (pose, rms) = pose_from_pairs(&options.start_pairs);
-        if !(rms.is_finite()
-            && pose.rotation.iter().all(|value| value.is_finite())
-            && pose.translation.iter().all(|value| value.is_finite()))
-        {
-            return invalid(
-                "comparison start_pairs are too far apart to fit; check that their coordinates are in millimetres",
             );
         }
     }
@@ -1899,7 +1895,7 @@ mod tests {
         let mut not_finite = spread.clone();
         not_finite[1].reference_mm[2] = f64::NAN;
         assert!(fitted(not_finite, None).is_err());
-        // Finite, but too far apart for the fit's arithmetic.
+        // Finite, but far enough out for the fit's arithmetic to overflow.
         let remote = vec![
             pair(0.0, 0.0, 0.0),
             PointPair {
@@ -1912,7 +1908,13 @@ mod tests {
             },
         ];
         let error = fitted(remote, None).unwrap_err().to_string();
-        assert!(error.contains("too far apart"), "{error}");
+        assert!(error.contains("within 1e9 mm"), "{error}");
+        let remote = vec![
+            pair(0.0, 0.0, 0.0),
+            pair(1e200, 0.0, 0.0),
+            pair(0.0, 1e200, 0.0),
+        ];
+        assert!(fitted(remote, None).is_err());
         let region = |minimum_mm: [f64; 3], maximum_mm: [f64; 3]| {
             Some(FitRegion {
                 minimum_mm,
