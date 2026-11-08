@@ -81,6 +81,9 @@ pub struct Settings {
     /// Photo reconstruction worker from `PRINTABLE_RECON_ENDPOINT`; absent
     /// leaves reconstruction unadvertised.
     pub recon: Option<std::sync::Arc<crate::recon::ReconClient>>,
+    /// The derived project search index: a file in
+    /// `PRINTABLE_PROJECT_INDEX_DIR`, or memory when that is unset.
+    pub project_index: std::sync::Arc<crate::projects::index::ProjectIndex>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
     /// FFmpeg binary used to encode durable animation frame sequences.
@@ -117,6 +120,8 @@ pub enum SettingsError {
     Printers(&'static str),
     #[error("model library setting {0} is missing or invalid")]
     Library(&'static str),
+    #[error("project search index setting {0} is invalid")]
+    ProjectIndex(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
@@ -210,6 +215,7 @@ impl Settings {
             flame: crate::flame::configure(&get),
             recon: crate::recon::ReconClient::configure(&get)
                 .map_err(SettingsError::ReconInvalid)?,
+            project_index: crate::projects::index::configure(&get)?,
             scad_concurrency: scad_concurrency(&get)?,
             ffmpeg_bin: nonempty(&get, "FFMPEG_BIN")
                 .map(PathBuf::from)

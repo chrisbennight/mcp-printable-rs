@@ -710,9 +710,17 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             let mut generator = schemars::SchemaGenerator::default();
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
             let project = generator.subschema_for::<crate::projects::Project>();
+            let card = generator.subschema_for::<crate::projects::card::Card>();
+            let search = generator.subschema_for::<crate::projects::index::SearchResponse>();
+            let status = generator.subschema_for::<crate::projects::index::IndexStatus>();
+            let pass = generator.subschema_for::<crate::projects::index::PassReport>();
             json!({"type":"object","anyOf":[
             revision,
             project,
+            card,
+            search,
+            status,
+            pass,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),

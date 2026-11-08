@@ -363,6 +363,18 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             crate::projects::ProjectRequest::Cover(params) => {
                 ResolvedCall::new("printable_project_cover", params)
             }
+            crate::projects::ProjectRequest::Search(params) => {
+                ResolvedCall::new("printable_project_search", params)
+            }
+            crate::projects::ProjectRequest::IndexStatus(params) => {
+                ResolvedCall::new("printable_project_index_status", params)
+            }
+            crate::projects::ProjectRequest::IndexRebuild(params) => {
+                ResolvedCall::new("printable_project_index_rebuild", params)
+            }
+            crate::projects::ProjectRequest::IndexRetry(params) => {
+                ResolvedCall::new("printable_project_index_retry", params)
+            }
             request => ResolvedCall::new("printable_project", request),
         },
         LIBRARY => ResolvedCall::new(
@@ -629,7 +641,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Create/discover projects, resolve shared paths, edit library descriptions and tags with update or the cover picture with cover (both need the expected record_version), retain typed design requirements and immutable source revisions with revise/revision, or export selected files. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
+        description: "Create/discover projects, resolve shared paths, edit library descriptions and tags with update or the cover picture with cover (both need the expected record_version), retain typed design requirements and immutable source revisions with revise/revision, or export selected files. card summarises one project's dates, cover, formats, downloads, newest slice and print outcomes from its records. search finds projects by words, filters (printed, printer, has_3mf, material, colour, tag, source, license, format) and sort, returning short cards with index coverage; it matches words only, not meaning or pictures. index_status reports the derived search index; index_rebuild and index_retry update it now. Revise requires the expected parent and source digest; CAD can build that exact revision and assess its requirements. Native export retains selected inputs and a saved entrypoint; unsupported dependencies fail explicitly. Neither export switches the live scene or prints.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },
