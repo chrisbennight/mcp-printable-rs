@@ -208,9 +208,9 @@ mirror symmetry can fit equally well in more than one pose.
 
 Points spread over the mesh's surface are each measured against the nearest
 reference surface that faces the same way, so a point on one side of a thin
-wall is not measured against the other side. Deviation is positive outside
-the reference, where the mesh has extra material, and negative inside it,
-where material is missing. A point with no reference surface facing its way
+wall is not measured against the other side. Deviation is measured along that
+surface's outward normal: positive outside it, where the mesh has extra
+material, and negative inside it, where material is missing. A point with no reference surface facing its way
 within `max_distance_mm`, a tenth of the reference's diagonal by default, is
 unmeasured.
 
