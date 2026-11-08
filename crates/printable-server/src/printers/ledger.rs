@@ -8,7 +8,11 @@
 //! state cannot be established is recorded with outcome `unknown`, never as a
 //! success or failure.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use bambuddy_api::{ApiError, BambuddyApi, jobs::QueueItem};
 use printable_workspace::{Workspace, WsError};
@@ -30,6 +34,8 @@ const INTERVAL_KEY: &str = "PRINTABLE_PRINT_FOLLOW_INTERVAL_SECONDS";
 const MAX_FOLLOW_KEY: &str = "PRINTABLE_PRINT_FOLLOW_MAX_HOURS";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const DEFAULT_MAX_FOLLOW_HOURS: u64 = 168;
+/// Submission records are small JSON documents; anything larger is refused.
+const MAX_SUBMISSION_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FollowSettings {
@@ -74,17 +80,40 @@ struct Pending {
     project_id: String,
     submissions: Vec<RecordRef>,
     submitted_unix_ms: u64,
+    /// The queue item the backend returned when it accepted the submission.
+    acknowledged: Option<QueueItem>,
 }
 
 fn unix_ms(modified_ns: i64) -> u64 {
     u64::try_from(modified_ns / 1_000_000).unwrap_or(0)
 }
 
-/// Collect submitted prints that have no final record yet.
-fn pending(workspace: &Workspace) -> Result<Vec<Pending>, ToolError> {
+/// Read a retained submission directly. Submissions are small, immutable and
+/// checked against their digest, so no snapshot is needed.
+fn read_submission(workspace: &Workspace, reference: &RecordRef) -> Result<Value, ToolError> {
+    let invalid = |message: &str| ToolError::Validation(format!("print submission {message}"));
+    if !reference.path.starts_with(".printable/evidence/") {
+        return Err(invalid("must be retained evidence"));
+    }
+    if workspace.stat_artifact(&reference.path)?.size_bytes > MAX_SUBMISSION_BYTES {
+        return Err(invalid("is larger than a submission record can be"));
+    }
+    let (meta, bytes) = workspace.read_generated_bytes(&reference.path)?;
+    if meta.path != reference.path || provenance::digest(&bytes) != reference.sha256 {
+        return Err(invalid("does not match its digest"));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Collect submitted prints that have no final record yet, skipping prints
+/// already known to be recorded. Also returns prints found to be recorded.
+fn pending(
+    workspace: &Workspace,
+    finished: &HashSet<u64>,
+) -> Result<(Vec<Pending>, Vec<u64>), ToolError> {
     let links = match workspace.list_artifacts(LINKS, usize::MAX) {
         Ok(links) => links,
-        Err(WsError::NotFound(_)) => return Ok(Vec::new()),
+        Err(WsError::NotFound(_)) => return Ok((Vec::new(), Vec::new())),
         Err(error) => return Err(error.into()),
     };
     let mut grouped: BTreeMap<u64, Vec<(RecordRef, u64)>> = BTreeMap::new();
@@ -97,6 +126,9 @@ fn pending(workspace: &Workspace) -> Result<Vec<Pending>, ToolError> {
         else {
             continue;
         };
+        if finished.contains(&print_id) {
+            continue;
+        }
         let (_, bytes) = workspace.read_generated_bytes(&link.path)?;
         let reference: RecordRef = serde_json::from_slice(&bytes)?;
         grouped
@@ -105,26 +137,33 @@ fn pending(workspace: &Workspace) -> Result<Vec<Pending>, ToolError> {
             .push((reference, unix_ms(link.modified_ns)));
     }
     let mut pending = Vec::new();
+    let mut recorded = Vec::new();
     for (print_id, links) in grouped {
         let submitted_unix_ms = links.iter().map(|(_, ms)| *ms).min().unwrap_or(0);
         let submissions: Vec<RecordRef> = links.into_iter().map(|(link, _)| link).collect();
-        let record = provenance::read_value(workspace, &submissions[0])?;
+        let record = read_submission(workspace, &submissions[0])?;
         let Some(project_id) = record["project_id"].as_str().map(str::to_owned) else {
             continue;
         };
         match workspace.stat_artifact(&record_path(&project_id, print_id)) {
-            Ok(_) => continue,
+            Ok(_) => {
+                recorded.push(print_id);
+                continue;
+            }
             Err(WsError::NotFound(_)) => {}
             Err(error) => return Err(error.into()),
         }
+        let acknowledged =
+            serde_json::from_value(record["data"]["queue_acknowledgement"].clone()).ok();
         pending.push(Pending {
             print_id,
             project_id,
             submissions,
             submitted_unix_ms,
+            acknowledged,
         });
     }
-    Ok(pending)
+    Ok((pending, recorded))
 }
 
 fn record(
@@ -135,7 +174,13 @@ fn record(
     printers: &BTreeMap<u64, (String, Option<String>)>,
     now_unix_ms: u64,
 ) -> Value {
-    let printer_id = item.and_then(|item| item.printer_id);
+    // Each setup detail comes from the latest observation, else from the queue
+    // item the backend returned on acceptance; status and times are only ever
+    // observed values.
+    let ack = pending.acknowledged.as_ref();
+    let printer_id = item
+        .and_then(|item| item.printer_id)
+        .or_else(|| ack.and_then(|item| item.printer_id));
     let known = printer_id.and_then(|id| printers.get(&id));
     json!({
         "format_version": 1,
@@ -146,17 +191,17 @@ fn record(
         "backend_status": item.map(|item| item.status.as_str()),
         "printer": {
             "id": printer_id,
-            "name": item.and_then(|item| item.printer_name.clone()).or_else(|| known.map(|(name, _)| name.clone())),
+            "name": item.and_then(|item| item.printer_name.clone()).or_else(|| ack.and_then(|item| item.printer_name.clone())).or_else(|| known.map(|(name, _)| name.clone())),
             "model": known.and_then(|(_, model)| model.clone()),
         },
-        "plate_id": item.and_then(|item| item.plate_id),
-        "ams_mapping": item.and_then(|item| item.ams_mapping.clone()),
-        "filament_type": item.and_then(|item| item.filament_type.clone()),
-        "filament_color": item.and_then(|item| item.filament_color.clone()),
+        "plate_id": item.and_then(|item| item.plate_id).or_else(|| ack.and_then(|item| item.plate_id)),
+        "ams_mapping": item.and_then(|item| item.ams_mapping.clone()).or_else(|| ack.and_then(|item| item.ams_mapping.clone())),
+        "filament_type": item.and_then(|item| item.filament_type.clone()).or_else(|| ack.and_then(|item| item.filament_type.clone())),
+        "filament_color": item.and_then(|item| item.filament_color.clone()).or_else(|| ack.and_then(|item| item.filament_color.clone())),
         "started_at": item.and_then(|item| item.started_at.clone()),
         "completed_at": item.and_then(|item| item.completed_at.clone()),
         "error_message": item.and_then(|item| item.error_message.clone()),
-        "library_file_id": item.and_then(|item| item.library_file_id),
+        "library_file_id": item.and_then(|item| item.library_file_id).or_else(|| ack.and_then(|item| item.library_file_id)),
         "submitted_unix_ms": pending.submitted_unix_ms,
         "recorded_unix_ms": now_unix_ms,
         "submissions": pending.submissions,
@@ -197,9 +242,12 @@ pub async fn pass(
     workspace: &Arc<Workspace>,
     settings: FollowSettings,
     now_unix_ms: u64,
+    finished: &mut HashSet<u64>,
 ) -> Result<PassReport, ToolError> {
     let scan = Arc::clone(workspace);
-    let pending = blocking(move || pending(&scan)).await?;
+    let known = finished.clone();
+    let (pending, recorded) = blocking(move || pending(&scan, &known)).await?;
+    finished.extend(recorded);
     let mut report = PassReport {
         followed: pending.len(),
         ..PassReport::default()
@@ -263,7 +311,9 @@ pub async fn pass(
             }
         };
         let target = Arc::clone(workspace);
+        let print_id = print.print_id;
         blocking(move || write(&target, &print, &value)).await?;
+        finished.insert(print_id);
         report.recorded += 1;
     }
     Ok(report)
@@ -275,6 +325,7 @@ pub fn spawn(service: Arc<PrinterService>, workspace: Arc<Workspace>, cancel: Ca
         return;
     };
     tokio::spawn(async move {
+        let mut finished = HashSet::new();
         let mut interval = tokio::time::interval(settings.interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -287,6 +338,7 @@ pub fn spawn(service: Arc<PrinterService>, workspace: Arc<Workspace>, cancel: Ca
                 &workspace,
                 settings,
                 crate::printers::observations::now_ms(),
+                &mut finished,
             )
             .await
             {
@@ -373,7 +425,9 @@ mod tests {
             workspace,
             Kind::Submission,
             "desk",
-            json!({"action":"stage","outcome":"accepted","print_id":print_id}),
+            json!({"action":"stage","outcome":"accepted","print_id":print_id,
+                "queue_acknowledgement":{"id":print_id,"printer_id":1,"manual_start":true,
+                    "status":"pending","plate_id":3,"ams_mapping":[1]}}),
         )
         .unwrap();
         workspace
@@ -423,7 +477,9 @@ mod tests {
         submit(&workspace, 8);
         let service = service(&backend);
         let now = crate::printers::observations::now_ms();
-        let report = pass(&service, &workspace, settings(), now).await.unwrap();
+        let report = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(
             report,
             PassReport {
@@ -444,7 +500,9 @@ mod tests {
         assert_eq!(prints[0]["submissions"], json!([submission]));
         assert_eq!(prints[1]["outcome"], "failed");
         assert_eq!(prints[1]["error_message"], "Spaghetti detected");
-        let again = pass(&service, &workspace, settings(), now).await.unwrap();
+        let again = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(again, PassReport::default());
     }
 
@@ -463,11 +521,15 @@ mod tests {
         submit(&workspace, 9);
         let service = service(&backend);
         let now = crate::printers::observations::now_ms();
-        let waiting = pass(&service, &workspace, settings(), now).await.unwrap();
+        let waiting = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
         assert_eq!((waiting.followed, waiting.recorded), (1, 0));
         assert!(project_prints(&workspace, "desk").unwrap().is_empty());
         let later = now + 49 * HOUR_MS;
-        let expired = pass(&service, &workspace, settings(), later).await.unwrap();
+        let expired = pass(&service, &workspace, settings(), later, &mut HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(expired.recorded, 1);
         let print = &project_prints(&workspace, "desk").unwrap()[0];
         assert_eq!(print["outcome"], "unknown");
@@ -485,7 +547,9 @@ mod tests {
         submit(&workspace, 11);
         let service = service(&backend);
         let now = crate::printers::observations::now_ms();
-        let report = pass(&service, &workspace, settings(), now).await.unwrap();
+        let report = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(
             report,
             PassReport {
@@ -504,10 +568,19 @@ mod tests {
             (Some(10), Some("unknown"))
         );
         assert_eq!(prints[0]["backend_status"], Value::Null);
+        assert_eq!(prints[0]["plate_id"], 3);
+        assert_eq!(prints[0]["ams_mapping"], json!([1]));
+        assert_eq!(prints[0]["printer"]["name"], "Workshop X1C");
         let expired = now + 49 * HOUR_MS;
-        let report = pass(&service, &workspace, settings(), expired)
-            .await
-            .unwrap();
+        let report = pass(
+            &service,
+            &workspace,
+            settings(),
+            expired,
+            &mut HashSet::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             report,
             PassReport {
