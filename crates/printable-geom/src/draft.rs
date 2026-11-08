@@ -5,7 +5,9 @@
 //! parallel to the pull, and negative when it faces back against the pull, an
 //! undercut that catches on the mould. With a parting plane the part sits in
 //! two mould halves, each released away from the plane, so faces on either
-//! side are judged against their own half's direction.
+//! side are judged against their own half's direction. A face crossing the
+//! plane is split there, each part counting in its own half, and the halves'
+//! patches are kept apart.
 //!
 //! Without a parting plane, the faces lying on the part's lowest plane and
 //! facing against the pull are its base: they rest on the tray floor or the
@@ -85,6 +87,18 @@ enum Category {
     Undercut,
 }
 
+/// A face, or the part of one on one side of the parting plane.
+struct Piece {
+    triangle: usize,
+    /// Whether the piece lies in the lower mould half.
+    lower: bool,
+    category: Category,
+    draft: f64,
+    area: f64,
+    centre: Vector,
+    corners: Vec<Vector>,
+}
+
 /// Classify every face of `mesh` by its draft. `pull` must be a unit vector.
 pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions) -> DraftReport {
     let pull = Vector::from_array(pull);
@@ -99,6 +113,64 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
         .copied()
         .fold(f64::NEG_INFINITY, f64::max);
     let base_tolerance = (highest - lowest).max(1.0) * f64::from(f32::EPSILON) * 8.0;
+    let classify = |draft: f64| {
+        if draft < -ZERO_DRAFT_DEGREES {
+            Category::Undercut
+        } else if draft + ZERO_DRAFT_DEGREES < options.minimum_draft_degrees {
+            Category::Shallow
+        } else {
+            Category::Released
+        }
+    };
+
+    let mut pieces = Vec::with_capacity(mesh.triangles.len());
+    for (index, triangle) in mesh.triangles.iter().enumerate() {
+        let points = triangle.map(|vertex| Vector::from_array(mesh.vertices[vertex as usize]));
+        let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+        let doubled_area = cross.length();
+        if doubled_area == 0.0 {
+            continue;
+        }
+        let normal = cross / doubled_area;
+        let heights = triangle.map(|vertex| projections[vertex as usize] - lowest);
+        let Some(offset) = options.parting_offset_mm else {
+            let on_base =
+                normal.dot(pull) < 0.0 && heights.iter().all(|height| *height <= base_tolerance);
+            let draft = normal.dot(pull).clamp(-1.0, 1.0).asin().to_degrees();
+            pieces.push(Piece {
+                triangle: index,
+                lower: false,
+                category: if on_base {
+                    Category::Base
+                } else {
+                    classify(draft)
+                },
+                draft: if on_base { 0.0 } else { draft },
+                area: doubled_area * 0.5,
+                centre: (points[0] + points[1] + points[2]) / 3.0,
+                corners: points.to_vec(),
+            });
+            continue;
+        };
+        // Each half releases away from the parting plane; a face crossing
+        // it is split there and each part judged against its own half.
+        for (lower, corners) in split(points, heights, offset) {
+            let Some((area, centre)) = polygon_area_and_centre(&corners) else {
+                continue;
+            };
+            let direction = if lower { -pull } else { pull };
+            let draft = normal.dot(direction).clamp(-1.0, 1.0).asin().to_degrees();
+            pieces.push(Piece {
+                triangle: index,
+                lower,
+                category: classify(draft),
+                draft,
+                area,
+                centre,
+                corners,
+            });
+        }
+    }
 
     let empty = || FaceCategory {
         faces: 0,
@@ -117,98 +189,92 @@ pub(crate) fn analyze(mesh: &TriangleMesh, pull: [f64; 3], options: DraftOptions
         undercut_patch_count: 0,
         undercut_patches: Vec::new(),
     };
-    // Per face: category, draft in degrees, area and centroid.
-    let mut faces: Vec<Option<(Category, f64, f64, Vector)>> =
-        Vec::with_capacity(mesh.triangles.len());
-    for triangle in &mesh.triangles {
-        let points = triangle.map(|index| Vector::from_array(mesh.vertices[index as usize]));
-        let cross = (points[1] - points[0]).cross(points[2] - points[0]);
-        let doubled_area = cross.length();
-        if doubled_area == 0.0 {
-            faces.push(None);
-            continue;
-        }
-        let area = doubled_area * 0.5;
-        let normal = cross / doubled_area;
-        let centre = (points[0] + points[1] + points[2]) / 3.0;
-        let heights = triangle.map(|index| projections[index as usize] - lowest);
-        let (category, draft) = match options.parting_offset_mm {
-            None if normal.dot(pull) < 0.0
-                && heights.iter().all(|height| *height <= base_tolerance) =>
-            {
-                (Category::Base, 0.0)
-            }
-            parting => {
-                // The lower half releases the other way.
-                let below = parting.is_some_and(|offset| centre.dot(pull) - lowest < offset);
-                let direction = if below { -pull } else { pull };
-                let draft = normal.dot(direction).clamp(-1.0, 1.0).asin().to_degrees();
-                let category = if draft < -ZERO_DRAFT_DEGREES {
-                    Category::Undercut
-                } else if draft + ZERO_DRAFT_DEGREES < options.minimum_draft_degrees {
-                    Category::Shallow
-                } else {
-                    Category::Released
-                };
-                (category, draft)
-            }
-        };
-        let total = match category {
+    for piece in &pieces {
+        let total = match piece.category {
             Category::Base => &mut report.base,
             Category::Released => &mut report.released,
             Category::Shallow => &mut report.shallow,
             Category::Undercut => &mut report.undercut,
         };
         total.faces += 1;
-        total.area_mm2 += area;
-        faces.push(Some((category, draft, area, centre)));
+        total.area_mm2 += piece.area;
     }
-    (report.shallow_patch_count, report.shallow_patches) = patches(mesh, &faces, Category::Shallow);
+    (report.shallow_patch_count, report.shallow_patches) =
+        patches(mesh, &pieces, Category::Shallow);
     (report.undercut_patch_count, report.undercut_patches) =
-        patches(mesh, &faces, Category::Undercut);
+        patches(mesh, &pieces, Category::Undercut);
     report
 }
 
-/// Connected patches of faces in `category`; faces sharing a vertex join.
-fn patches(
-    mesh: &TriangleMesh,
-    faces: &[Option<(Category, f64, f64, Vector)>],
-    category: Category,
-) -> (usize, Vec<DraftPatch>) {
-    let member = |face: usize| faces[face].is_some_and(|(kind, ..)| kind == category);
-    let mut parent: Vec<usize> = (0..faces.len()).collect();
-    let mut owner = vec![usize::MAX; mesh.vertices.len()];
-    for (face, triangle) in mesh.triangles.iter().enumerate() {
-        if !member(face) {
+/// The parts of a triangle above and below the parting plane, each with
+/// whether it is the lower part. A triangle on one side gives one part.
+fn split(points: [Vector; 3], heights: [f64; 3], offset: f64) -> Vec<(bool, Vec<Vector>)> {
+    if heights.iter().all(|height| *height >= offset) {
+        return vec![(false, points.to_vec())];
+    }
+    if heights.iter().all(|height| *height <= offset) {
+        return vec![(true, points.to_vec())];
+    }
+    let (mut upper, mut lower) = (Vec::new(), Vec::new());
+    for corner in 0..3 {
+        let next = (corner + 1) % 3;
+        let (point, height) = (points[corner], heights[corner]);
+        if height >= offset {
+            upper.push(point);
+        }
+        if height <= offset {
+            lower.push(point);
+        }
+        let (a, b) = (height - offset, heights[next] - offset);
+        if a * b < 0.0 {
+            let crossing = point + (points[next] - point) * (a / (a - b));
+            upper.push(crossing);
+            lower.push(crossing);
+        }
+    }
+    vec![(false, upper), (true, lower)]
+}
+
+/// The area and area-weighted centre of a flat convex polygon.
+fn polygon_area_and_centre(corners: &[Vector]) -> Option<(f64, Vector)> {
+    let (mut area, mut weighted) = (0.0, Vector::ZERO);
+    for pair in corners[1..].windows(2) {
+        let part = 0.5 * (pair[0] - corners[0]).cross(pair[1] - corners[0]).length();
+        area += part;
+        weighted += (corners[0] + pair[0] + pair[1]) / 3.0 * part;
+    }
+    (area > 0.0).then(|| (area, weighted / area))
+}
+
+/// Connected patches of pieces in `category`. Pieces in the same mould half
+/// whose faces share a vertex join; the two halves never join.
+fn patches(mesh: &TriangleMesh, pieces: &[Piece], category: Category) -> (usize, Vec<DraftPatch>) {
+    let mut parent: Vec<usize> = (0..pieces.len()).collect();
+    let mut owner: HashMap<(u32, bool), usize> = HashMap::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        if piece.category != category {
             continue;
         }
-        for &vertex in triangle {
-            let first = &mut owner[vertex as usize];
-            if *first == usize::MAX {
-                *first = face;
-            } else {
-                let (a, b) = (root(&mut parent, face), root(&mut parent, *first));
-                parent[a] = b;
-            }
+        for &vertex in &mesh.triangles[piece.triangle] {
+            let first = *owner.entry((vertex, piece.lower)).or_insert(index);
+            let (a, b) = (root(&mut parent, index), root(&mut parent, first));
+            parent[a] = b;
         }
     }
     let mut index_of: HashMap<usize, usize> = HashMap::new();
     let mut found: Vec<(DraftPatch, Vector, f64)> = Vec::new();
-    for (face, triangle) in mesh.triangles.iter().enumerate() {
-        let Some((kind, draft, area, centre)) = faces[face] else {
-            continue;
-        };
-        if kind != category {
+    for (index, piece) in pieces.iter().enumerate() {
+        if piece.category != category {
             continue;
         }
-        let key = root(&mut parent, face);
-        let index = *index_of.entry(key).or_insert_with(|| {
-            let corner = mesh.vertices[triangle[0] as usize];
+        let key = root(&mut parent, index);
+        let slot = *index_of.entry(key).or_insert_with(|| {
+            let corner = piece.corners[0].to_array();
             found.push((
                 DraftPatch {
                     area_mm2: 0.0,
                     faces: 0,
-                    minimum_draft_degrees: draft,
+                    minimum_draft_degrees: piece.draft,
                     mean_draft_degrees: 0.0,
                     centre_mm: [0.0; 3],
                     bounds: MeshBounds {
@@ -222,14 +288,14 @@ fn patches(
             ));
             found.len() - 1
         });
-        let (patch, weighted_centre, weighted_draft) = &mut found[index];
-        patch.area_mm2 += area;
+        let (patch, weighted_centre, weighted_draft) = &mut found[slot];
+        patch.area_mm2 += piece.area;
         patch.faces += 1;
-        patch.minimum_draft_degrees = patch.minimum_draft_degrees.min(draft);
-        *weighted_centre += centre * area;
-        *weighted_draft += draft * area;
-        for &vertex in triangle {
-            for (axis, value) in mesh.vertices[vertex as usize].into_iter().enumerate() {
+        patch.minimum_draft_degrees = patch.minimum_draft_degrees.min(piece.draft);
+        *weighted_centre += piece.centre * piece.area;
+        *weighted_draft += piece.draft * piece.area;
+        for corner in &piece.corners {
+            for (axis, value) in corner.to_array().into_iter().enumerate() {
                 patch.bounds.minimum_mm[axis] = patch.bounds.minimum_mm[axis].min(value);
                 patch.bounds.maximum_mm[axis] = patch.bounds.maximum_mm[axis].max(value);
             }
@@ -432,6 +498,34 @@ mod tests {
         assert_eq!(two_piece.parting_offset_mm, Some(7.0));
         assert_eq!(two_piece.undercut.faces, 0);
         assert_eq!(two_piece.base.faces, 0);
+    }
+
+    #[test]
+    fn a_taper_below_the_parting_plane_is_undercut_for_the_lower_half() {
+        // The walls lean in going up, which releases upwards but catches the
+        // lower half as it pulls down. Every wall triangle crosses the plane.
+        let report = draft(&block(20.0, 10.0, 2.0), 1.0, Some(2.0));
+        let expected = 4.0 * 39.2 * 1.04_f64.sqrt();
+        assert!(close(report.undercut.area_mm2, expected), "{report:?}");
+        assert_eq!(report.undercut_patch_count, 1);
+        let patch = &report.undercut_patches[0];
+        assert!(close(patch.bounds.maximum_mm[2], 2.0));
+        assert!(close(
+            patch.minimum_draft_degrees,
+            -(0.2_f64).atan().to_degrees()
+        ));
+    }
+
+    #[test]
+    fn each_mould_half_keeps_its_own_patches() {
+        let report = draft(&block(20.0, 10.0, 0.0), 1.0, Some(5.0));
+        assert!(close(report.shallow.area_mm2, 800.0));
+        assert_eq!(report.shallow_patch_count, 2, "{report:?}");
+        for patch in &report.shallow_patches {
+            assert!(close(patch.area_mm2, 400.0));
+            let bounds = &patch.bounds;
+            assert!(close(bounds.maximum_mm[2], 5.0) || close(bounds.minimum_mm[2], 5.0));
+        }
     }
 
     #[test]

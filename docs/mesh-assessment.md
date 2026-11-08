@@ -106,7 +106,8 @@ but do not change the assessment: a flexible material can release a small
 undercut, so the caller decides. For a two-part mould, `parting_offset_mm`
 gives the parting plane's distance along the pull from the part's lowest
 point. Faces below it are judged against the opposite direction, and there is
-no `base` group.
+no `base` group. A face crossing the plane is split there, so each part is
+judged against its own half, and no patch spans both halves.
 
 ## Compatibility
 
