@@ -2642,7 +2642,29 @@ impl ProjectIndex {
             degraded.push(note(Capability::Rerank, Reason::NotConfigured, None));
             false
         };
-        // Methods this query does not use still report having no vectors yet.
+        // Methods this query does not use still report the service's latest
+        // failure, or having no vectors yet.
+        let failure = self.state().embeddings.clone();
+        for (capability, code, used) in [
+            (
+                Capability::Meaning,
+                "meaning_search_unavailable",
+                meaning.is_some(),
+            ),
+            (
+                Capability::Picture,
+                "picture_search_unavailable",
+                picture.is_some(),
+            ),
+        ] {
+            if let Some((reason, detail)) = &failure
+                && identity.is_some()
+                && !used
+                && !degraded.iter().any(|note| note.code == code)
+            {
+                degraded.push(note(capability, *reason, Some(detail.clone())));
+            }
+        }
         let unused = |code: &str, used: bool| {
             identity.is_some() && !used && !degraded.iter().any(|note| note.code == code)
         };
