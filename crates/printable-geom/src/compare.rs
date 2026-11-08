@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use nalgebra::{Matrix3, Matrix6, Rotation3, Vector3, Vector6};
 use parry3d_f64::math::Vector;
-use parry3d_f64::query::{PointQueryWithLocation, Ray, RayCast};
+use parry3d_f64::query::{PointQuery, PointQueryWithLocation, Ray, RayCast};
 use parry3d_f64::shape::{FeatureId, TriMesh, TriMeshFlags, TrianglePointLocation};
 use serde::Serialize;
 
@@ -29,8 +29,6 @@ use crate::{GeometryError, MeshBounds, TriangleMesh};
 
 /// At most this many regions are listed, largest first.
 const MAX_REGIONS: usize = 10;
-/// At most this many surface points are measured.
-const MAX_POINTS: usize = 200_000;
 /// A reading along a point's normal steps past at most this many reference
 /// surfaces that face the other way.
 const MAX_RAY_SURFACES: usize = 8;
@@ -279,11 +277,12 @@ impl Reference {
             .min_by(|a, b| a.abs().total_cmp(&b.abs()))
     }
 
-    /// Signed distance, square to the face, from `point` to the first
+    /// Signed distance from `point` to the nearest point of the first
     /// reference face along `ray_direction` that faces the way `normal`
-    /// does, stepping past faces that face the other way. The ray may run
-    /// up to twice `reach`, so a tilted normal still finds a face within
-    /// `reach` square to it.
+    /// does, stepping past faces that face the other way. The distance runs
+    /// to the face itself, edges included, and is negative on the face's
+    /// inner side. The ray may run up to twice `reach`, so a tilted normal
+    /// still finds a face within `reach` of the point.
     fn along(&self, point: &V3, ray_direction: &V3, normal: &V3, reach: f64) -> Option<f64> {
         let limit = 2.0 * reach;
         let (mut origin, mut travelled) = (*point, 0.0);
@@ -297,10 +296,24 @@ impl Reference {
             };
             let at = origin + ray_direction * hit.time_of_impact;
             // Faces seen from behind are numbered after the others.
-            let face_normal = self.face_normals[face as usize % self.face_normals.len()]?;
+            let index = face as usize % self.face_normals.len();
+            let face_normal = self.face_normals[index]?;
             if face_normal.dot(normal) > 0.0 {
-                let distance = (point - at).dot(&face_normal);
-                return (distance.abs() <= reach).then_some(distance);
+                let nearest = from_parry(
+                    self.surface
+                        .triangle(index as u32)
+                        .project_local_point(to_parry(point), false)
+                        .point,
+                );
+                let offset = point - nearest;
+                let distance = offset.norm();
+                return (distance <= reach).then(|| {
+                    if offset.dot(&face_normal) < 0.0 {
+                        -distance
+                    } else {
+                        distance
+                    }
+                });
             }
             // Step just past the face, by about its coordinates' rounding.
             let step = 10.0 * rounding(&at);
@@ -364,29 +377,6 @@ pub(crate) fn measure(
                 area,
             });
         }
-    }
-    // Every triangle keeps a point, so a dense mesh can exceed the budget.
-    // The points kept are those with the lowest hash of their index, which
-    // spreads them over the surface whatever order its facets come in, and
-    // their areas are scaled to stand for the whole surface.
-    if points.len() > MAX_POINTS {
-        let total: f64 = points.iter().map(|point| point.area).sum();
-        let mut ranked: Vec<(u64, SurfacePoint)> = points
-            .into_iter()
-            .enumerate()
-            .map(|(index, point)| (scatter(index as u64), point))
-            .collect();
-        ranked.select_nth_unstable_by_key(MAX_POINTS - 1, |(rank, _)| *rank);
-        ranked.truncate(MAX_POINTS);
-        let kept: f64 = ranked.iter().map(|(_, point)| point.area).sum();
-        let scale = if kept > 0.0 { total / kept } else { 1.0 };
-        points = ranked
-            .into_iter()
-            .map(|(_, point)| SurfacePoint {
-                area: point.area * scale,
-                ..point
-            })
-            .collect();
     }
 
     let (pose, alignment) = match options.alignment {
@@ -779,16 +769,6 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
     })
 }
 
-/// A fixed mixing of an index (SplitMix64), used only to spread a subset
-/// of points evenly; it is not used for anything that needs to be
-/// unpredictable.
-fn scatter(index: u64) -> u64 {
-    let mut value = index.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
 /// At most `count` points taken evenly through `points`.
 fn spread(points: &[SurfacePoint], count: usize) -> Vec<&SurfacePoint> {
     let step = points.len().div_ceil(count).max(1);
@@ -1162,9 +1142,54 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_facets_cannot_hide_a_surface_from_the_point_budget() {
+    fn a_reading_past_a_rim_runs_to_the_face_edge() {
+        // Beside a 1 mm block's right face, below its top, facing down and
+        // inwards: the nearest surface faces the other way, and the matching
+        // underside is nearest at its edge, about 0.316 mm away.
+        let normal = V3::new(-0.6, 0.0, -0.8);
+        let centre = V3::new(1.1, 0.5, 0.3);
+        let u = V3::y();
+        let v = normal.cross(&u);
+        let corners = [
+            centre - u * 0.002 - v * 0.002,
+            centre + u * 0.002 - v * 0.002,
+            centre + v * 0.002,
+        ];
+        let mut face = TriangleMesh {
+            vertices: corners.iter().map(|corner| (*corner).into()).collect(),
+            triangles: vec![[0, 1, 2]],
+        };
+        let [a, b, c] = corners;
+        if (b - a).cross(&(c - a)).dot(&normal) < 0.0 {
+            face.triangles[0].swap(1, 2);
+        }
+        let measure_within = |reach: f64| {
+            measure(
+                &face,
+                &ComparisonOptions {
+                    reference: block(1.0, 0.4, 1.0),
+                    alignment: Alignment::None,
+                    tolerance_mm: 0.01,
+                    max_distance_mm: Some(reach),
+                },
+            )
+            .unwrap()
+        };
+        let near = measure_within(0.32);
+        assert_eq!(near.unmeasured_samples, 0, "{near:?}");
+        let reading = near.deviation_mm.unwrap().mean;
+        assert!(
+            (reading.abs() - 0.1_f64.hypot(0.3)).abs() < 0.005,
+            "{reading}"
+        );
+        let far = measure_within(0.31);
+        assert_eq!(far.unmeasured_samples, far.samples, "{far:?}");
+    }
+
+    #[test]
+    fn interleaved_facets_are_all_measured() {
         // A sheet on the block's top and a sheet raised 0.5 mm over it,
-        // their triangles alternating, together past the point budget.
+        // their triangles alternating.
         let cells = 255_u32;
         let size = 40.0 / f64::from(cells);
         let grid = |height: f64| {
@@ -1196,9 +1221,8 @@ mod tests {
             vertices,
             triangles,
         };
-        assert!(sheets.triangles.len() > MAX_POINTS);
         let report = compare(&sheets, &block(40.0, 5.0, 40.0), Alignment::None, 0.05);
-        assert_eq!(report.samples, MAX_POINTS);
+        assert!(report.samples >= sheets.triangles.len());
         assert!(
             (report.within_tolerance_share - 0.5).abs() < 0.05,
             "{}",
@@ -1213,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dense_mesh_is_measured_within_the_point_budget() {
+    fn a_dense_mesh_keeps_a_point_on_every_triangle() {
         let cells = 360;
         let mut vertices = Vec::new();
         for j in 0..=cells {
@@ -1233,9 +1257,12 @@ mod tests {
             vertices,
             triangles,
         };
-        assert!(sheet.triangles.len() > MAX_POINTS);
         let report = compare(&sheet, &block(40.0, 5.0, 40.0), Alignment::None, 0.05);
-        assert!(report.samples <= MAX_POINTS, "{}", report.samples);
+        assert!(
+            report.samples >= sheet.triangles.len(),
+            "{}",
+            report.samples
+        );
         assert_eq!(report.unmeasured_samples, 0);
         assert!((report.within_tolerance_share - 1.0).abs() < 1e-12);
     }

@@ -217,7 +217,7 @@ unmeasured.
 | Field | Meaning |
 | --- | --- |
 | `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference. |
-| `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. Large meshes are sampled more coarsely, and at most 200,000 points are measured, so that the work stays bounded. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. The spacing widens on large meshes so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
 | `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, and the share of the surface measured. |
 | `deviation_mm` | Area-weighted minimum, 5th, 50th and 95th percentiles, maximum, mean and RMS of the measured deviation. |
 | `within_tolerance_share` | Share of the measured surface within `tolerance_mm` either side. |
