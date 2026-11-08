@@ -245,7 +245,7 @@ impl Library {
 fn assert_secure(headers: &HeaderMap) {
     assert_eq!(
         headers[header::CONTENT_SECURITY_POLICY],
-        "default-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
+        "default-src 'self'; script-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
     );
     assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
     assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
@@ -486,6 +486,40 @@ async fn covers_are_served_as_stored_with_their_media_type() {
         library.get("/projects/evil/cover").await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn downloads_in_progress_are_limited() {
+    let library = Library::new();
+    let uri = "/projects/desk/files/parts/drawer.stl";
+    let request = || {
+        let mut request = HttpRequest::builder()
+            .uri(uri)
+            .header(USER_HEADER, "alice")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PROXY.parse::<SocketAddr>().unwrap()));
+        request
+    };
+    // Responses whose bodies have not been read are downloads in progress.
+    let mut open = Vec::new();
+    for _ in 0..MAX_CONCURRENT_DOWNLOADS {
+        let response = library.router.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        open.push(response);
+    }
+    let (status, headers, _) = library.get(uri).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_secure(&headers);
+    let (status, ..) = library
+        .send(Method::HEAD, uri, Some(PROXY), &["alice"], &[])
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    open.pop();
+    let (status, ..) = library.get(uri).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

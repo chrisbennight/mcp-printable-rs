@@ -57,6 +57,8 @@ const MAX_QUERY_BYTES: usize = 16 * 1024;
 const MAX_LISTED_FILES: usize = 500;
 /// Workspace reads that web requests run at once, apart from MCP tool calls.
 const MAX_CONCURRENT_READS: usize = 4;
+/// Downloads in progress at once. Each keeps a copy of its file until it ends.
+const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 /// Text filters in the order the search form shows them.
 const TEXT_FILTERS: [(&str, &str); 7] = [
     ("printer", "Printer"),
@@ -67,7 +69,7 @@ const TEXT_FILTERS: [(&str, &str); 7] = [
     ("license", "License"),
     ("format", "Format"),
 ];
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 const STYLESHEET: &str = include_str!("web/app.css");
 
 /// Who may read the web page and where it listens.
@@ -218,6 +220,7 @@ struct Web {
     index: Arc<ProjectIndex>,
     settings: Arc<WebSettings>,
     reads: Arc<Semaphore>,
+    downloads: Arc<Semaphore>,
 }
 
 impl Web {
@@ -242,6 +245,7 @@ pub fn router(
         index,
         settings: Arc::new(settings),
         reads: Arc::new(Semaphore::new(MAX_CONCURRENT_READS)),
+        downloads: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
     };
     Router::new()
         .route("/", get(library))
@@ -810,6 +814,22 @@ async fn file(
         );
     };
     let head = method == Method::HEAD;
+    // A download keeps its slot until its copy has been sent or abandoned.
+    let slot = if head {
+        None
+    } else {
+        match Arc::clone(&web.downloads).try_acquire_owned() {
+            Ok(slot) => Some(slot),
+            Err(_) => {
+                return page(
+                    &paths,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Too many downloads",
+                    "Other downloads are in progress. Try again when one has finished.",
+                );
+            }
+        }
+    };
     let workspace = Arc::clone(&web.workspace);
     let outcome = web
         .blocking(move || -> Result<_, ToolError> {
@@ -819,7 +839,7 @@ async fn file(
             }
             let snapshot = workspace.snapshot_artifact(&resolved)?;
             let meta = snapshot.meta().clone();
-            Ok((meta, Some(file_transfer::snapshot_stream(snapshot, ())?)))
+            Ok((meta, Some(file_transfer::snapshot_stream(snapshot, slot)?)))
         })
         .await;
     let (meta, stream) = match outcome {

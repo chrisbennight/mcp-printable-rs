@@ -263,8 +263,9 @@ A file link downloads one file from the project's directory. Paths with `.` or
 file types and Printable's reserved records are refused. The server first
 copies the file into the workspace's temporary storage, so the bytes cannot
 change during the download, and then streams the copy. The copy counts against
-`PRINTABLE_WORKSPACE_BUDGET_MIB` until the download ends. Files are sent as
-attachments with the media type `application/octet-stream`.
+`PRINTABLE_WORKSPACE_BUDGET_MIB` until the download ends. At most four
+downloads run at once; another is refused with status 503 until one ends.
+Files are sent as attachments with the media type `application/octet-stream`.
 
 ### Web page settings
 
