@@ -5391,9 +5391,13 @@ async fn prepare_scad_job(
             output_path,
             cross_section,
         });
-        let mut permit = permit.inherit_lease(job._staging.clone_lease()?);
+        // Each OpenSCAD process keeps its staging and inputs protected for as
+        // long as it runs; the permit keeps their owners until then.
+        let staging = job._staging.child_lease()?;
+        let mut permit = permit.prepare_each(move |command| staging.retain_for_command(command));
         for snapshot in &job._snapshots {
-            permit = permit.inherit_lease(snapshot.clone_lease()?);
+            let lease = snapshot.child_lease()?;
+            permit = permit.prepare_each(move |command| lease.retain_for_command(command));
         }
         Ok::<_, ToolError>((permit.retain(Arc::clone(&job)), job))
     })

@@ -57,7 +57,8 @@ mod workspace;
 pub use error::WsError;
 pub use media::{ALLOWED_ARTIFACT_SUFFIXES, media_type_for};
 pub use workspace::{
-    ArtifactMeta, CleanupEntry, ManagedScratch, Snapshot, StorageUsage, Workspace, WorkspaceStatus,
+    ArtifactMeta, ChildLease, CleanupEntry, ManagedScratch, Snapshot, StorageUsage, Workspace,
+    WorkspaceStatus,
 };
 
 /// Hard cap on a single artifact transfer.
