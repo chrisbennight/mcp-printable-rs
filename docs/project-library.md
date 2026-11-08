@@ -111,9 +111,10 @@ Building one never contacts a printer backend or a model site. It reports:
 Lists of printers, materials, colours, per-printer counts and slice filaments
 hold at most 16 entries, and a `truncated` flag reports when more exist. A card
 reads at most 16 `source.json` records (the first by path) and the 256 most
-recently modified slice states; `downloads.truncated` and `slices.truncated`
-report when more exist. Each `state.json`, `summary.json` and `source.json` must
-be at most 1 MiB. The newest slice's recorded `summary.json` is used. When the
+recently modified `state.json` files, which slices and CAD builds both keep;
+only slice states count as slices. `downloads.truncated` and `slices.truncated`
+report when more exist. Each `state.json`, `summary.json`, `source.json` and
+print record must be at most 1 MiB. The newest slice's recorded `summary.json` is used. When the
 newest slice predates summaries, the background index summarises its package
 once and records `summary.json` beside it; until then a `card` request lists
 that summary under `unreadable` rather than copying the package. Titles,
@@ -139,7 +140,8 @@ description, download sites, titles and designers, model and print file names,
 materials or printers, ignoring letter case and accents. `organ` therefore finds
 `organizer`. A match in the name ranks above a match in the tags, then the
 description, then the download source, then the file names, materials and
-printers.
+printers. Only the first 256 model and print file names of a project, in path
+order, are searched.
 
 If no project matches every word, search looks for near matches in project
 names instead. Each word of three or more characters is split into overlapping
@@ -180,8 +182,9 @@ colours can be filtered only by the first 16 in alphabetical order.
 | `name` | By name |
 
 Ties are broken by name and then project ID, so pages are stable. `limit` is
-1 to 50 (default 20) and `offset` is 0 to 1000. `total` counts every match, and
-`next_offset` is null on the last page.
+1 to 50 (default 20) and `offset` is 0 to 1000. `total` counts every match.
+`next_offset` is null on the last page and when the next page would start after
+offset 1000; add words or filters to narrow a larger search.
 
 ### Coverage and limits
 

@@ -974,7 +974,8 @@ impl ProjectIndex {
         })?;
         let next = query.offset + page.results.len();
         Ok(SearchResponse {
-            next_offset: (!page.results.is_empty() && next < page.total).then_some(next),
+            next_offset: (!page.results.is_empty() && next < page.total && next <= MAX_OFFSET)
+                .then_some(next),
             results: page.results,
             total: page.total,
             degraded: degraded(coverage, self.interval.is_some()),
