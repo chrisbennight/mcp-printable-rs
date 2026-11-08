@@ -548,16 +548,16 @@ pub(crate) fn measure(
                         .filter(|point| region.contains(&point.position))
                         .copied()
                         .collect();
+                    if in_region.len() < MIN_FIT_REGION_POINTS {
+                        return Err(GeometryError::InvalidOptions(
+                            "comparison fit_region holds too little of the mesh's surface to fit; widen it"
+                                .to_string(),
+                        ));
+                    }
                     &in_region
                 }
                 None => &points,
             };
-            if fitted.len() < MIN_FIT_REGION_POINTS {
-                return Err(GeometryError::InvalidOptions(
-                    "comparison fit_region holds too little of the mesh's surface to fit; widen it"
-                        .to_string(),
-                ));
-            }
             best_fit(
                 mesh,
                 &options.reference,
@@ -649,17 +649,21 @@ fn best_fit(
     let picked = (!start_pairs.is_empty()).then(|| pose_from_pairs(start_pairs));
     let mut starts = vec![Pose::identity()];
     // The automatic starts match the principal axes of the fitted part of
-    // the mesh to the reference's.
-    let fitted_triangles = mesh.triangles.iter().filter(|triangle| {
-        fit_region.is_none_or(|region| {
-            let corners = triangle.map(|index| V3::from(mesh.vertices[index as usize]));
-            region.contains(&((corners[0] + corners[1] + corners[2]) / 3.0))
-        })
-    });
-    if let (Some((compared_centre, compared_axes)), Some((reference_centre, reference_axes))) = (
-        principal_axes(&mesh.vertices, fitted_triangles),
-        principal_axes(&reference_mesh.vertices, &reference_mesh.triangles),
-    ) {
+    // the mesh to the reference's. Within a region, that part is the surface
+    // its samples stand for, wherever the triangles they lie on end.
+    let compared = match fit_region {
+        Some(_) => points.first().and_then(|first| {
+            let mut moments = SurfaceMoments::about(first.position);
+            for point in points {
+                moments.add_point(point.position, point.area);
+            }
+            moments.axes()
+        }),
+        None => principal_axes(mesh),
+    };
+    if let (Some((compared_centre, compared_axes)), Some((reference_centre, reference_axes))) =
+        (compared, principal_axes(reference_mesh))
+    {
         for turn in axis_rotations() {
             let rotation = reference_axes * turn * compared_axes.transpose();
             starts.push(Pose {
@@ -787,45 +791,75 @@ fn refine(
     (pose, matched, rms)
 }
 
-/// The area-weighted centre of a mesh's surface and its principal axes, as
-/// the columns of a proper rotation, largest spread first.
-fn principal_axes<'a>(
-    vertices: &[[f64; 3]],
-    triangles: impl IntoIterator<Item = &'a [u32; 3]>,
-) -> Option<(V3, Matrix3<f64>)> {
+/// The centre of a mesh's surface and its principal axes, largest spread
+/// first, as the columns of a rotation.
+fn principal_axes(mesh: &TriangleMesh) -> Option<(V3, Matrix3<f64>)> {
     // Moments about a vertex of the mesh, so a part far from the origin
     // does not lose precision.
-    let origin = V3::from(*vertices.first()?);
-    let (mut area, mut first, mut second) = (0.0, V3::zeros(), Matrix3::zeros());
-    for triangle in triangles {
-        let [a, b, c] = triangle.map(|index| V3::from(vertices[index as usize]) - origin);
-        let piece = 0.5 * (b - a).cross(&(c - a)).norm();
-        if piece == 0.0 {
-            continue;
+    let mut moments = SurfaceMoments::about(V3::from(*mesh.vertices.first()?));
+    for triangle in &mesh.triangles {
+        moments.add_triangle(triangle.map(|index| V3::from(mesh.vertices[index as usize])));
+    }
+    moments.axes()
+}
+
+/// The area of a surface and its first and second moments about a point
+/// near it.
+struct SurfaceMoments {
+    origin: V3,
+    area: f64,
+    first: V3,
+    second: Matrix3<f64>,
+}
+
+impl SurfaceMoments {
+    fn about(origin: V3) -> Self {
+        Self {
+            origin,
+            area: 0.0,
+            first: V3::zeros(),
+            second: Matrix3::zeros(),
         }
+    }
+
+    fn add_triangle(&mut self, corners: [V3; 3]) {
+        let [a, b, c] = corners.map(|corner| corner - self.origin);
+        let piece = 0.5 * (b - a).cross(&(c - a)).norm();
         let middle = (a + b + c) / 3.0;
-        area += piece;
-        first += middle * piece;
-        second += (a * a.transpose()
+        self.area += piece;
+        self.first += middle * piece;
+        self.second += (a * a.transpose()
             + b * b.transpose()
             + c * c.transpose()
             + middle * middle.transpose() * 9.0)
             * (piece / 12.0);
     }
-    if area <= 0.0 {
-        return None;
+
+    /// A sample standing for `area` of the surface around `position`.
+    fn add_point(&mut self, position: V3, area: f64) {
+        let offset = position - self.origin;
+        self.area += area;
+        self.first += offset * area;
+        self.second += offset * offset.transpose() * area;
     }
-    let centre = first / area;
-    let eigen = (second / area - centre * centre.transpose()).symmetric_eigen();
-    let mut order = [0, 1, 2];
-    order.sort_by(|a, b| eigen.eigenvalues[*b].total_cmp(&eigen.eigenvalues[*a]));
-    let mut axes =
-        Matrix3::from_columns(&order.map(|index| eigen.eigenvectors.column(index).into_owned()));
-    if axes.determinant() < 0.0 {
-        let flipped = -axes.column(2);
-        axes.set_column(2, &flipped);
+
+    fn axes(&self) -> Option<(V3, Matrix3<f64>)> {
+        if self.area <= 0.0 {
+            return None;
+        }
+        let centre = self.first / self.area;
+        let eigen = (self.second / self.area - centre * centre.transpose()).symmetric_eigen();
+        let mut order = [0, 1, 2];
+        order.sort_by(|a, b| eigen.eigenvalues[*b].total_cmp(&eigen.eigenvalues[*a]));
+        let mut axes = Matrix3::from_columns(
+            &order.map(|index| eigen.eigenvectors.column(index).into_owned()),
+        );
+        if axes.determinant() < 0.0 {
+            let flipped = -axes.column(2);
+            axes.set_column(2, &flipped);
+        }
+        Some((centre + self.origin, axes))
     }
-    Some((centre + origin, axes))
 }
 
 /// The 24 rotations that map the coordinate axes onto themselves, as signed
@@ -2071,6 +2105,59 @@ mod tests {
             let deviation = report.deviation_mm.unwrap();
             assert!(deviation.minimum.abs() < 1e-6 && deviation.maximum.abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn surface_samples_give_the_triangles_principal_axes() {
+        let mesh = bracket();
+        let spacing = sample_spacing(&mesh.vertices, &mesh.triangles, 0.2);
+        let mut moments = SurfaceMoments::about(V3::from(mesh.vertices[0]));
+        for triangle in &mesh.triangles {
+            for (position, area) in
+                triangle_samples(triangle.map(|index| mesh.vertices[index as usize]), spacing)
+            {
+                moments.add_point(V3::from(position), area);
+            }
+        }
+        let (sampled_centre, sampled_axes) = moments.axes().unwrap();
+        let (centre, axes) = principal_axes(&mesh).unwrap();
+        assert!(
+            (sampled_centre - centre).norm() < 0.05,
+            "{sampled_centre} {centre}"
+        );
+        for axis in 0..3 {
+            let agreement = sampled_axes.column(axis).dot(&axes.column(axis)).abs();
+            assert!(agreement > 0.999, "{sampled_axes} {axes}");
+        }
+    }
+
+    #[test]
+    fn a_mesh_with_few_samples_fits_without_a_region() {
+        let tetrahedron = TriangleMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+        };
+        let options = |fit_region| ComparisonOptions {
+            reference: tetrahedron.clone(),
+            alignment: Alignment::BestFit,
+            tolerance_mm: 10.0,
+            max_distance_mm: None,
+            start_pairs: Vec::new(),
+            fit_region,
+        };
+        let report = measure(&tetrahedron, &options(None)).unwrap();
+        assert_eq!(report.samples, 4);
+        let around = FitRegion {
+            minimum_mm: [-1.0; 3],
+            maximum_mm: [2.0; 3],
+        };
+        let error = measure(&tetrahedron, &options(Some(around))).unwrap_err();
+        assert!(error.to_string().contains("widen it"), "{error}");
     }
 
     #[test]
