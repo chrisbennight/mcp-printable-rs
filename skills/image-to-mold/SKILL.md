@@ -125,6 +125,16 @@ the design; intentional holes need not produce a value of two. For a tray, also
 measure side gaps, wall thickness, fill level, cover, and freeboard. Report a
 relevant property as unmeasured when the available check cannot establish it.
 
+Check release with `validate_mesh` and its `draft` option along the declared
+release direction. Faces that lean back against the pull are reported as
+undercut patches, with their area and location. Faces that lean less than
+`minimum_draft_degrees` are reported as shallow patches. Use 0 for flexible
+silicone, where straight walls release, and a degree or two for a rigid or
+printed mould. For a two-part mould, give `parting_offset_mm` so each half is
+judged against its own direction. Report the undercuts you keep as accepted
+for the material, and change or split the design for the ones it cannot
+release.
+
 Re-read the exported STL or 3MF and verify that its geometry matches the validated
 source. Render the imported export or the same verified vertices, using
 `printable://render/product-v1` for presentation guidance. Preserve this
