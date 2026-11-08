@@ -5406,47 +5406,52 @@ async fn project_cover(
     use crate::projects::cover::{self, MODEL_VIEW_SIZE, Picture, Plan};
     let budget = validate_work_budget(params.timeout_seconds)?;
     let params = Arc::new(params);
+    // Reading, decoding and storing a picture happen under the single visual
+    // slot, so concurrent cover requests never hold or decode several large
+    // pictures at once. Only a model render leaves the slot to run OpenSCAD.
     let request = Arc::clone(&params);
     let planning = Arc::clone(&workspace);
-    let picture = match blocking(move || cover::plan(&planning, &request)).await? {
-        Plan::Remove => None,
-        Plan::Store(picture) => Some(picture),
-        Plan::RenderModel { model } => {
-            let (permit, job) = prepare_scad_job(
-                Arc::clone(&workspace),
-                runner,
-                cover::model_view_source(&model),
-                ".png",
-                None,
-                false,
-                false,
-            )
-            .await?;
-            let args = printable_scad::render_args(
-                &job.output_path.to_string_lossy(),
-                &job.source_path.to_string_lossy(),
-                "iso",
-                MODEL_VIEW_SIZE,
-                true,
-                &[],
-            )
-            .ok_or_else(|| ToolError::Validation("unknown OpenSCAD view".to_string()))?;
-            let (permit, _output) = permit.run(args, budget, u64::MAX).await?;
-            let bytes = visual_blocking(move || {
-                let _permit = permit;
-                let bytes = read_generated_file(&job.output_path)?;
-                validate_png(
-                    &bytes,
-                    u64::from(MODEL_VIEW_SIZE),
-                    u64::from(MODEL_VIEW_SIZE),
-                )?;
-                Ok::<_, ToolError>(bytes)
-            })
-            .await?;
-            Some(Picture::rendered(bytes, model))
-        }
+    let model = visual_blocking(move || match cover::plan(&planning, &request)? {
+        Plan::Remove => cover::commit(&planning, &request, None).map(Err),
+        Plan::Store(picture) => cover::commit(&planning, &request, Some(picture)).map(Err),
+        Plan::RenderModel { model } => Ok(Ok(model)),
+    })
+    .await?;
+    let model = match model {
+        Ok(model) => model,
+        Err(project) => return Ok(serde_json::to_value(project)?),
     };
-    let project = blocking(move || cover::commit(&workspace, &params, picture)).await?;
+    let (permit, job) = prepare_scad_job(
+        Arc::clone(&workspace),
+        runner,
+        cover::model_view_source(&model),
+        ".png",
+        None,
+        false,
+        false,
+    )
+    .await?;
+    let args = printable_scad::render_args(
+        &job.output_path.to_string_lossy(),
+        &job.source_path.to_string_lossy(),
+        "iso",
+        MODEL_VIEW_SIZE,
+        true,
+        &[],
+    )
+    .ok_or_else(|| ToolError::Validation("unknown OpenSCAD view".to_string()))?;
+    let (permit, _output) = permit.run(args, budget, u64::MAX).await?;
+    let project = visual_blocking(move || {
+        let _permit = permit;
+        let bytes = read_generated_file(&job.output_path)?;
+        validate_png(
+            &bytes,
+            u64::from(MODEL_VIEW_SIZE),
+            u64::from(MODEL_VIEW_SIZE),
+        )?;
+        cover::commit(&workspace, &params, Some(Picture::rendered(bytes, model)))
+    })
+    .await?;
     Ok(serde_json::to_value(project)?)
 }
 
