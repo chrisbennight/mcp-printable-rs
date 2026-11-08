@@ -221,7 +221,9 @@ digest from the previous pass. Only changed projects have their cards rebuilt.
 Projects are processed one at a time, and entries for deleted projects are
 removed. Changes therefore appear in search within one interval. A project
 whose record cannot be read keeps any earlier entry, is counted as failed, and
-is tried again when its files change or on `index_retry`.
+is tried again when its files change or on `index_retry`. A project whose
+newest slice summary cannot be read or recorded is searchable, but it is also
+counted as failed so that `index_retry` tries the summary again.
 
 | Action | Effect |
 | --- | --- |
