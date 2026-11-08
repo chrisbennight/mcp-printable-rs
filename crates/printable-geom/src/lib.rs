@@ -673,7 +673,8 @@ fn prepare_mesh(
     let vertical_holes = united
         .as_ref()
         .filter(|_| !options.holes.is_empty())
-        .map(|solid| fit::vertical_holes(solid, &options.holes));
+        .map(|solid| fit::vertical_holes(solid, &options.holes))
+        .transpose()?;
     let wall_thickness = match (options.minimum_wall_mm, &united) {
         (Some(minimum_wall_mm), Some(solid)) => {
             let report = thickness::measure(
