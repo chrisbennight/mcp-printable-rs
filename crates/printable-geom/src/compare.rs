@@ -12,8 +12,8 @@
 //! error shows as deviation rather than being absorbed. Point-to-plane
 //! iterative closest point refines each starting pose: the meshes as given,
 //! and every proper rotation that maps one mesh's principal axes onto the
-//! other's. The pose whose capped distances are smallest over every fitting
-//! point is refined further and kept.
+//! other's. The pose whose capped distances to surface facing each point's
+//! way are smallest over every fitting point is refined further and kept.
 
 use std::collections::HashMap;
 
@@ -271,7 +271,9 @@ impl Reference {
     fn reading(&self, point: &V3, normal: &V3, reach: f64) -> Option<f64> {
         if let Some((nearest, surface_normal, inside)) = self.nearest(point, reach) {
             let distance = (point - nearest).norm();
-            if distance <= rounding(point) || surface_normal.dot(normal) > 0.0 {
+            let on_surface = distance == 0.0
+                || distance <= rounding_along(point, &((point - nearest) / distance));
+            if on_surface || surface_normal.dot(normal) > 0.0 {
                 return Some(if inside { -distance } else { distance });
             }
         }
@@ -310,10 +312,12 @@ impl Reference {
     }
 }
 
-/// The rounding a point's coordinates can carry: points this close to the
-/// surface lie on it.
-fn rounding(point: &V3) -> f64 {
-    ON_SURFACE * point.amax().max(1.0)
+/// The rounding a point's coordinates can carry along `direction`: points
+/// this close to a surface in that direction lie on it. Rounding in a
+/// coordinate moves a distance only through that direction, so a part far
+/// from the origin across it keeps full precision.
+fn rounding_along(point: &V3, direction: &V3) -> f64 {
+    ON_SURFACE * point.component_mul(direction).abs().sum().max(1.0)
 }
 
 /// A nearest point on a triangle's edge or corner can be reported as on its
@@ -437,20 +441,16 @@ fn best_fit(
             });
         }
     }
+    // Each point's distance to the nearest reference face facing its way,
+    // capped, so a pose that turns a surface over scores badly.
     let score = |pose: &Pose| -> f64 {
         fit.iter()
             .map(|point| {
                 let position = pose.apply(&point.position);
+                let normal = pose.rotation * point.normal;
                 let distance = reference
-                    .surface
-                    .project_local_point_and_get_location_with_max_dist(
-                        to_parry(&position),
-                        false,
-                        cap,
-                    )
-                    .map_or(cap, |(projection, _)| {
-                        (position - from_parry(projection.point)).norm()
-                    });
+                    .nearest_facing(&position, &normal, cap)
+                    .map_or(cap, |(nearest, _)| (position - nearest).norm());
                 point.area * distance.min(cap).powi(2)
             })
             .sum()
@@ -752,10 +752,29 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
     })
 }
 
-/// At most `count` points taken evenly through `points`.
+/// At most `count` of `points`: those with the lowest hash of their index,
+/// which spreads them over every surface whatever order the facets come in.
 fn spread(points: &[SurfacePoint], count: usize) -> Vec<&SurfacePoint> {
-    let step = points.len().div_ceil(count).max(1);
-    points.iter().step_by(step).collect()
+    if points.len() <= count {
+        return points.iter().collect();
+    }
+    let mut ranked: Vec<(u64, &SurfacePoint)> = points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| (scatter(index as u64), point))
+        .collect();
+    ranked.select_nth_unstable_by_key(count - 1, |(rank, _)| *rank);
+    ranked.truncate(count);
+    ranked.into_iter().map(|(_, point)| point).collect()
+}
+
+/// A fixed mixing of an index (SplitMix64), used only to spread a subset of
+/// points over the surface; nothing depends on it being unpredictable.
+fn scatter(index: u64) -> u64 {
+    let mut value = index.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn diagonal(vertices: &[[f64; 3]]) -> f64 {
@@ -1058,7 +1077,7 @@ mod tests {
     fn a_plate_lifted_clear_of_the_reference_is_measured_on_both_faces() {
         // The lifted underside's nearest reference surface is the top, which
         // faces the other way; the matching underside lies beyond it.
-        for shift in [0.0, 1_000_000.0] {
+        for shift in [0.0, 1_000_000.0, 1_000_000_000.0] {
             let along = |mesh: &TriangleMesh, lift: f64| {
                 moved(
                     mesh,
@@ -1272,6 +1291,58 @@ mod tests {
         assert_eq!(report.unmeasured_samples, 0, "{report:?}");
         let reading = report.deviation_mm.unwrap().mean;
         assert!((reading + 0.3).abs() < 0.005, "{reading}");
+    }
+
+    #[test]
+    fn a_best_fit_uses_every_surface_whatever_the_facet_order() {
+        // Two sheets 0.6 mm apart with their triangles alternating, fitted
+        // to one of them: the fit settles between them, within 0.5 mm.
+        let (columns, rows) = (50_u32, 40_u32);
+        let grid = |height: f64| {
+            let mut vertices = Vec::new();
+            for j in 0..=rows {
+                for i in 0..=columns {
+                    vertices.push([f64::from(i) * 0.2, f64::from(j) * 0.2, height]);
+                }
+            }
+            vertices
+        };
+        let mut vertices = grid(0.0);
+        vertices.extend(grid(0.6));
+        let offset = (columns + 1) * (rows + 1);
+        let at = |i: u32, j: u32| j * (columns + 1) + i;
+        let mut triangles = Vec::new();
+        for j in 0..rows {
+            for i in 0..columns {
+                for [a, b, c] in [
+                    [at(i, j), at(i + 1, j), at(i + 1, j + 1)],
+                    [at(i, j), at(i + 1, j + 1), at(i, j + 1)],
+                ] {
+                    triangles.push([a, b, c]);
+                    triangles.push([a + offset, b + offset, c + offset]);
+                }
+            }
+        }
+        let sheets = TriangleMesh {
+            vertices: vertices.clone(),
+            triangles,
+        };
+        let lower = TriangleMesh {
+            vertices: vertices[..offset as usize].to_vec(),
+            triangles: sheets.triangles.iter().step_by(2).copied().collect(),
+        };
+        let report = compare(&sheets, &lower, Alignment::BestFit, 0.5);
+        assert!(
+            (report.within_tolerance_share - 1.0).abs() < 1e-9,
+            "{:?} {}",
+            report.alignment,
+            report.within_tolerance_share
+        );
+        assert!(
+            (report.alignment.translation_mm[2] + 0.3).abs() < 0.05,
+            "{:?}",
+            report.alignment
+        );
     }
 
     #[test]

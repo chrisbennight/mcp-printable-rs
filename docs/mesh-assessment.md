@@ -203,7 +203,8 @@ never scaled, so a size error such as shrinkage shows as deviation. The fit
 starts from the meshes as given and from every rotation that maps one mesh's
 principal axes onto the other's, refines each by point-to-plane iterative
 closest point with outliers left out, and keeps the pose with the smallest
-distances over all its points, each capped. A part with a rotational or
+distances over all its points, each capped and measured to surface facing the
+point's way, so a pose that turns a surface over loses. A part with a rotational or
 mirror symmetry can fit equally well in more than one pose.
 
 Points spread over the mesh's surface are each measured against the nearest
