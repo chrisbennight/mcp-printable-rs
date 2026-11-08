@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 mod assembly;
 mod assessment;
 mod bust;
+mod compare;
 mod fit;
 mod intersect;
 mod isosurface;
@@ -36,6 +37,10 @@ pub use bust::{
     Body, BodyKind, BodyReport, BustReport, BustRequest, DetailPercentiles, Displacement,
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, MAX_RAISED_SHARE,
     Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust,
+};
+pub use compare::{
+    Alignment, AlignmentReport, ComparisonOptions, ComparisonReport, DeviationDistribution,
+    DeviationRegion,
 };
 pub use fit::{
     DimensionOptions, DimensionReport, DimensionRequirement, FeatureFit, FeatureRequest, Fit,
@@ -68,6 +73,8 @@ pub struct ValidationOptions {
     pub minimum_wall_mm: Option<f64>,
     /// Fit shapes around seed points and check dimensions between them.
     pub dimensions: Option<DimensionOptions>,
+    /// Measure the surface's deviation from a reference mesh.
+    pub comparison: Option<ComparisonOptions>,
 }
 
 impl Default for ValidationOptions {
@@ -78,6 +85,7 @@ impl Default for ValidationOptions {
             density_g_cm3: None,
             minimum_wall_mm: None,
             dimensions: None,
+            comparison: None,
         }
     }
 }
@@ -203,6 +211,8 @@ pub struct ValidationReport {
     pub wall_thickness: Option<WallThicknessReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dimensions: Option<DimensionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparisonReport>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -218,7 +228,9 @@ pub fn analyze_stl(
     analyze_mesh(&decode_stl(bytes)?, options)
 }
 
-fn decode_stl(bytes: &[u8]) -> Result<TriangleMesh, GeometryError> {
+/// Decode a binary or ASCII STL into an indexed mesh, sharing vertices with
+/// identical coordinates.
+pub fn decode_stl(bytes: &[u8]) -> Result<TriangleMesh, GeometryError> {
     let indexed = stl_io::read_stl(&mut Cursor::new(bytes))
         .map_err(|error| GeometryError::InvalidStl(error.to_string()))?;
     u32::try_from(indexed.vertices.len()).map_err(|_| GeometryError::TooManyVertices)?;
@@ -295,6 +307,9 @@ fn prepare_mesh(
     }
     if let Some(dimensions) = &options.dimensions {
         fit::validate(dimensions)?;
+    }
+    if let Some(comparison) = &options.comparison {
+        compare::validate(comparison)?;
     }
     for (index, vertex) in mesh.vertices.iter().enumerate() {
         if vertex.iter().any(|coordinate| !coordinate.is_finite()) {
@@ -643,6 +658,26 @@ fn prepare_mesh(
         }
     }
     let dimensional = dimensions.as_ref().and_then(fit::criterion);
+    let comparison = options
+        .comparison
+        .as_ref()
+        .map(|comparison| compare::measure(mesh, comparison))
+        .transpose()?;
+    if let Some(report) = &comparison
+        && report.region_count > 0
+    {
+        let area: f64 = report.regions.iter().map(|region| region.area_mm2).sum();
+        issues.push(warning_issue(
+            "deviation_beyond_tolerance",
+            format!(
+                "{} regions deviate from the reference by more than {} mm; the largest {} cover {area:.1} mm2",
+                report.region_count,
+                report.tolerance_mm,
+                report.regions.len()
+            ),
+            "Inspect report.comparison.regions and decide whether each deviation is acceptable, then correct the mesh or the reference.",
+        ));
+    }
 
     let assessment = MeshAssessment::new(
         solid_geometry,
@@ -686,6 +721,7 @@ fn prepare_mesh(
             overhang,
             wall_thickness,
             dimensions,
+            comparison,
             solid_geometry,
             printable: solid_geometry,
             issues,
