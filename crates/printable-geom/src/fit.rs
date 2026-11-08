@@ -58,7 +58,9 @@ const MAX_AXIS_FACES: usize = 2_000;
 /// from the seed's.
 const START_TURN_DEGREES: f64 = 20.0;
 /// A plane starts from nearby faces whose normals agree with the seed's
-/// within this angle.
+/// within the first angle when they lie exactly on one plane, and within
+/// the second otherwise.
+const PLANE_EXACT_DEGREES: f64 = 0.5;
 const PLANE_START_DEGREES: f64 = 5.0;
 /// Axis directions within this angle of the best agree with it.
 const AXIS_AGREEMENT_DEGREES: f64 = 2.0;
@@ -66,8 +68,10 @@ const AXIS_AGREEMENT_DEGREES: f64 = 2.0;
 const HINT_DEGREES: f64 = 30.0;
 const MAX_GROWTH_ROUNDS: usize = 12;
 const MAX_SOLVER_ITERATIONS: usize = 100;
-/// STL coordinates carry single-precision rounding; distances below this
-/// fraction of the mesh's coordinate scale count as on the shape.
+/// STL coordinates carry rounding: ASCII STL keeps about six significant
+/// digits. A distance from the shape below this fraction of a point's
+/// coordinates along the shape's normal, or of one millimetre, counts as on
+/// the shape.
 const COORDINATE_RESOLUTION: f64 = 1e-5;
 
 type V3 = Vector3<f64>;
@@ -375,7 +379,6 @@ struct Surface {
     normals: Vec<Option<V3>>,
     areas: Vec<f64>,
     neighbours: Vec<Vec<usize>>,
-    resolution: f64,
 }
 
 impl Surface {
@@ -423,17 +426,12 @@ impl Surface {
                 }
             }
         }
-        let scale = vertices
-            .iter()
-            .flat_map(|vertex| vertex.iter().map(|value| value.abs()))
-            .fold(1.0_f64, f64::max);
         Self {
             vertices,
             triangles: mesh.triangles.clone(),
             normals,
             areas,
             neighbours,
-            resolution: COORDINATE_RESOLUTION * scale,
         }
     }
 
@@ -544,6 +542,18 @@ impl Model {
         }
     }
 
+    /// Whether a point lies within `tolerance` of the shape, or within the
+    /// rounding its coordinates can carry. Rounding in a coordinate moves the
+    /// distance only through the shape's normal, so a part far from the
+    /// origin along its own surface keeps full precision.
+    fn near(&self, point: &V3, tolerance: f64) -> bool {
+        let reach = self.normal_at(point).map_or_else(
+            || point.abs().sum(),
+            |normal| point.component_mul(&normal).abs().sum(),
+        );
+        self.distance(point).abs() <= tolerance.max(COORDINATE_RESOLUTION * reach.max(1.0))
+    }
+
     /// The smallest and largest signed distance over a face.
     fn face_range(&self, corners: &[V3; 3]) -> (f64, f64) {
         let values = corners.map(|corner| self.distance(&corner));
@@ -603,7 +613,7 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
     // Grow the region on the shape, refit, and repeat until it settles.
     let mut region = Vec::new();
     for _ in 0..MAX_GROWTH_ROUNDS {
-        let tolerance = (SIGMA_TOLERANCE * sigma).max(surface.resolution);
+        let tolerance = SIGMA_TOLERANCE * sigma;
         let facing = facing(surface, seed_face, &model);
         let grown = surface.grow(seed_face, |_, face| {
             on_shape(surface, face, &model, facing, tolerance)
@@ -630,11 +640,11 @@ fn fit_feature(surface: &Surface, request: &FeatureRequest) -> FeatureFit {
     let (mut points, mut weights) = surface.points(&region);
     let mut excluded_points = 0;
     if let Some(limit) = request.exclude_beyond_sigma {
-        let limit = (f64::from(limit) * sigma).max(surface.resolution);
+        let limit = f64::from(limit) * sigma;
         let kept: Vec<(V3, f64)> = points
             .iter()
             .zip(&weights)
-            .filter(|(point, _)| model.distance(point).abs() <= limit)
+            .filter(|(point, _)| model.near(point, limit))
             .map(|(point, weight)| (*point, *weight))
             .collect();
         excluded_points = points.len() - kept.len();
@@ -734,14 +744,24 @@ fn first_estimate(
     };
     match shape {
         Shape::Plane => {
-            // Nearby faces that agree with the seed, so the plane starts with
-            // the surface's own noise rather than one exact triangle.
-            let agree = PLANE_START_DEGREES.to_radians().cos();
-            let patch = surface.ring(seed, START_RING, |_, to| {
-                surface.normals[to].is_some_and(|normal| normal.dot(&seed_normal) >= agree)
-            });
-            let (points, weights) = surface.points(&patch);
-            let model = fit_plane(&points, &weights, seed_normal)?;
+            // Nearby faces that agree with the seed. A clean plane's faces
+            // agree exactly, so the start keeps to them and stops at any
+            // crease. A noisy plane's faces disagree slightly, so its start
+            // takes in faces a few degrees off to measure that noise.
+            let start = |limit: f64| {
+                let agree = limit.to_radians().cos();
+                let patch = surface.ring(seed, START_RING, |_, to| {
+                    surface.normals[to].is_some_and(|normal| normal.dot(&seed_normal) >= agree)
+                });
+                let (points, weights) = surface.points(&patch);
+                let model = fit_plane(&points, &weights, seed_normal)?;
+                Some((model, points, weights))
+            };
+            let (model, points, weights) = start(PLANE_EXACT_DEGREES)
+                .filter(|(model, points, _)| {
+                    points.len() > 3 && points.iter().all(|point| model.near(point, 0.0))
+                })
+                .or_else(|| start(PLANE_START_DEGREES))?;
             Some((model, spread(&model, &points, &weights)))
         }
         Shape::Cylinder => {
@@ -823,10 +843,7 @@ fn facing(surface: &Surface, seed: usize, model: &Model) -> f64 {
 /// its normal near the shape's.
 fn on_shape(surface: &Surface, face: usize, model: &Model, facing: f64, tolerance: f64) -> bool {
     let corners = surface.corners(face);
-    if corners
-        .iter()
-        .any(|corner| model.distance(corner).abs() > tolerance)
-    {
+    if !corners.iter().all(|corner| model.near(corner, tolerance)) {
         return false;
     }
     let Some(normal) = surface.normals[face] else {
@@ -1947,6 +1964,59 @@ mod tests {
         assert!(close(radius, 4.0, 1e-9));
         assert!(close(axis[2].abs(), 1.0, 1e-9));
         assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 96);
+    }
+
+    /// A sheet folded along the line y = 5 by `angle` degrees: flat before
+    /// the fold and turned up beyond it, moved `shift` along the fold.
+    fn folded(angle: f64, shift: f64) -> TriangleMesh {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let mut vertices = Vec::new();
+        for j in 0..=10 {
+            for i in 0..=10 {
+                let (x, y) = (f64::from(i) + shift, f64::from(j));
+                let beyond = (y - 5.0).max(0.0);
+                vertices.push([x, y.min(5.0) + beyond * cos, beyond * sin]);
+            }
+        }
+        let at = |i: u32, j: u32| j * 11 + i;
+        let mut triangles = Vec::new();
+        for j in 0..10 {
+            for i in 0..10 {
+                triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        TriangleMesh {
+            vertices,
+            triangles,
+        }
+    }
+
+    #[test]
+    fn a_fold_keeps_its_two_planes_apart() {
+        for (angle, shift) in [(4.0, 0.0), (30.0, 1_000_000.0)] {
+            let (sin, cos) = f64::to_radians(angle).sin_cos();
+            let report = measure(
+                &folded(angle, shift),
+                &DimensionOptions {
+                    features: vec![
+                        feature("flat", Shape::Plane, [shift + 4.3, 2.6, 0.0]),
+                        feature(
+                            "turned",
+                            Shape::Plane,
+                            [shift + 4.3, 5.0 + 2.6 * cos, 2.6 * sin],
+                        ),
+                    ],
+                    requirements: vec![requirement(Measure::Angle, &["flat", "turned"], 0.0, 0.5)],
+                },
+            );
+            for fit in &report.features {
+                assert_eq!(fit.fit.as_ref().unwrap().faces, 100, "{angle} {fit:?}");
+            }
+            let check = &report.requirements[0];
+            assert_eq!(check.status, CriterionStatus::Failed);
+            assert!(close(check.measured.unwrap(), angle, 1e-6), "{check:?}");
+        }
     }
 
     #[test]
