@@ -126,6 +126,51 @@ difference() {
 }
 ```
 
+## Pocket or insert for an existing part
+
+To hold an existing part in a tool holder, drawer insert, or bin, cut a pocket
+from the part's outline. Import the part's STL into the build, project its
+widest outline onto the build plate, grow that outline by the clearance, and
+cut it from a block:
+
+```openscad
+clearance = 0.5;  // gap on every side, in millimetres
+depth = 12;       // pocket depth
+base = 3;         // material under the part
+wall = 3;         // material around the pocket
+
+module outline()
+    offset(delta = clearance)
+        projection(cut = false) import("parts/tool.stl");
+
+difference() {
+    linear_extrude(height = base + depth) offset(r = wall) outline();
+    translate([0, 0, base]) linear_extrude(height = depth + 1) outline();
+}
+```
+
+`projection(cut = false)` gives the part's whole silhouette from above, not a
+section at one height. Orient the part first so that it drops straight into the
+pocket. A through hole in the part leaves a matching post, smaller by the
+clearance, that locates the part. To leave the floor flat instead, close the
+holes by writing `offset(delta = -r) offset(delta = r)` before the projection.
+This grows the outline by `r` and then shrinks it back, so holes and notches
+narrower than `2 * r` close; choose `r` larger than the largest hole radius.
+
+Check the fit before printing. Build the part as it will sit, raised by the
+base and the clearance, and run `analyze_assembly` with the pocket as the
+fixed part:
+
+```openscad
+translate([0, 0, base + clearance]) import("parts/tool.stl");
+```
+
+Expect `relation: "separated"` and `clearance_mm` close to the chosen
+clearance. Then validate the pocket with `validate_mesh` and a `minimum_wall_mm`
+for the printer, and render it. Interference or a clearance well below the
+chosen value means the outline did not capture the part, for example because
+it was not oriented to drop straight in.
+
 ## Manufacturing evidence
 
 Compile measures final-STL topology, bounds, build-plate contact, overhang
@@ -153,7 +198,11 @@ rigid body separately and pass `analyze_assembly`.
 ## Complete product workflow
 
 Use the same public sequence for enclosures, brackets, grips, mechanisms, and
-other hard-surface products:
+other hard-surface products. First agree the requirements with the user: the
+dimensions that must hold, the minimum wall and overhang the printer can make,
+and any clearances. Choose dimensional tolerances from how the part is printed
+and what the printer can hold, never finer than about three times the
+measurement noise, such as the chord error of tessellated curves.
 
 1. Compile the final printable variant with an explicit profile and require
    `validation.assessment.criteria.solid_topology.status` and
@@ -169,6 +218,13 @@ other hard-surface products:
 4. For articulated video, save the classified fixed/moving scene and submit a
    `mechanical_rotation` job. Treat any completed frame without a stored passing
    full-arc certificate as invalid.
+
+After each group of changes, compile and measure again, and work on the worst
+remaining problem first. Report each conclusion as measured, partly supported,
+or inferred, and name the result behind a measured one. Report an assumed
+design value, such as the drawn 6 mm bore, beside the measured value rather
+than in its place. An unmeasured criterion is not a pass. When a requirement is
+not met, end with "not done" and the remaining gaps.
 
 The repository's reference corpus applies this workflow to a rounded enclosure,
 a support-free mounting bracket, a capsule/taper grip, and one articulated
