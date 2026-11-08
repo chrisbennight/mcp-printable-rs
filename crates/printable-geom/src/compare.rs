@@ -2149,6 +2149,7 @@ mod tests {
             max_distance_mm: None,
             start_pairs: Vec::new(),
             fit_region,
+            volume: false,
         };
         let report = measure(&tetrahedron, &options(None)).unwrap();
         assert_eq!(report.samples, 4);
