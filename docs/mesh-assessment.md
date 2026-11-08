@@ -182,7 +182,9 @@ lie on its circle while its flat faces cut inside. A fit counts when its axis
 is within 1 degree of vertical and its wall covers the whole circle and faces
 the axis, so bosses and partial bores do not count. Each section of a stepped
 opening that counts is reported as its own hole, so a section of another
-size or shape, such as a nut trap, cannot hide the bore. Each hole reports its fitted centre, its radius through the vertices,
+size or shape, such as a nut trap, cannot hide the bore. Sections with the
+same centre and radius, such as a bore on either side of a wider relief, are
+one hole, as in a CAD build. Each hole reports its fitted centre, its radius through the vertices,
 and `radius_range_mm`, the smallest and largest radius over its wall. A hole
 matches a declaration only when its centre is within the tolerance and its
 whole radius range lies within the tolerance of the declared radius, as for a

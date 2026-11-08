@@ -387,6 +387,9 @@ pub struct VerticalHole {
     pub radius_range_mm: [f64; 2],
 }
 
+/// Holes whose centres and radii agree this closely are one hole.
+const SAME_HOLE_MM: f64 = 1e-7;
+
 /// The complete vertical cylindrical inner walls around declared holes, each
 /// given as its centre in X and Y and its radius. Every inward-facing wall
 /// face with its corners within twice the declared radius of the centre may
@@ -398,8 +401,9 @@ pub struct VerticalHole {
 /// opening that is a complete hole is reported, and one that is not, such as
 /// a nut trap's flats, hides nothing. The fitted centre and radius are
 /// reported, so a hole that moved or changed size is measured as it is, not
-/// as declared, and a hole that more than one declaration reaches is listed
-/// once.
+/// as declared. A wall that more than one declaration reaches is fitted and
+/// listed once, and sections of one bore with the same centre and radius
+/// are one hole.
 pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<VerticalHole> {
     let surface = Surface::new(mesh);
     let level = HOLE_WALL_DEGREES.to_radians().sin();
@@ -410,9 +414,10 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
         .map(|face| (centroid(&surface.corners(face)), face))
         .collect();
     walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
-    let mut found = Vec::new();
-    // The faces of the walls found.
-    let mut claimed = HashSet::new();
+    let mut found: Vec<VerticalHole> = Vec::new();
+    // Each group of joined wall faces is fitted once, whichever declarations
+    // reach it.
+    let mut tried = HashSet::new();
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
         let first = walls.partition_point(|(point, _)| point.x < center[0] - reach);
@@ -432,17 +437,31 @@ pub fn vertical_holes(mesh: &TriangleMesh, declared: &[([f64; 2], f64)]) -> Vec<
             })
             .collect();
         seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut tried = HashSet::new();
         for (_, face) in seeds {
-            if claimed.contains(&face) || tried.contains(&face) {
+            if tried.contains(&face) {
                 continue;
             }
             tried.extend(surface.grow(face, |_, next| is_wall(next)));
-            if let Some((hole, wall)) = fit_hole(&surface, face)
-                && !wall.iter().any(|face| claimed.contains(face))
-            {
-                claimed.extend(wall);
-                found.push(hole);
+            let Some((hole, _)) = fit_hole(&surface, face) else {
+                continue;
+            };
+            // Sections of one bore on either side of a wider relief are one
+            // hole, as in a CAD build, spanning both sections' radii.
+            match found.iter_mut().find(|known| {
+                known
+                    .center_mm
+                    .iter()
+                    .zip(hole.center_mm)
+                    .all(|(a, b)| (a - b).abs() < SAME_HOLE_MM)
+                    && (known.radius_mm - hole.radius_mm).abs() < SAME_HOLE_MM
+            }) {
+                Some(known) => {
+                    known.radius_range_mm = [
+                        known.radius_range_mm[0].min(hole.radius_range_mm[0]),
+                        known.radius_range_mm[1].max(hole.radius_range_mm[1]),
+                    ];
+                }
+                None => found.push(hole),
             }
         }
     }
@@ -1920,6 +1939,27 @@ mod tests {
         let holes = vertical_holes(&stepped, &[([0.0, 0.0], 2.0)]);
         assert_eq!(holes.len(), 1, "{holes:?}");
         assert!(close(holes[0].radius_mm, 2.02, 1e-9), "{holes:?}");
+    }
+
+    #[test]
+    fn sections_of_one_bore_around_a_relief_are_one_hole() {
+        let relieved = plate(
+            5.0,
+            8.0,
+            &[
+                (2.0, 0.0),
+                (2.0, 3.0),
+                (2.5, 3.0),
+                (2.5, 5.0),
+                (2.0, 5.0),
+                (2.0, 8.0),
+            ],
+            32,
+        );
+        let holes = vertical_holes(&relieved, &[([0.0, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 2, "{holes:?}");
+        assert!(close(holes[0].radius_mm, 2.0, 1e-9), "{holes:?}");
+        assert!(close(holes[1].radius_mm, 2.5, 1e-9), "{holes:?}");
     }
 
     #[test]
