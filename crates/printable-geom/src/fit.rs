@@ -377,12 +377,14 @@ pub(crate) fn criterion(report: &DimensionReport) -> Option<CriterionStatus> {
     })
 }
 
-/// A complete vertical cylindrical inner wall: a hole's centre in X and Y
-/// and its radius.
+/// A complete vertical cylindrical inner wall: a hole's centre in X and Y,
+/// its fitted radius, and the smallest and largest radius over its wall, from
+/// facets that cut inside the circle to a taper's wide end.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct VerticalHole {
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
+    pub radius_range_mm: [f64; 2],
 }
 
 /// The complete vertical cylindrical inner walls around declared holes, each
@@ -459,12 +461,37 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, f64)> {
         return None;
     }
     // An inner wall faces its axis; a boss's wall faces away from it.
-    let offset = centroid(&surface.corners(face)) - point;
-    let radial = offset - axis * offset.dot(&axis);
-    (surface.normals[face]?.dot(&radial) < 0.0).then_some((
+    let facing_axis = |face: usize| {
+        let offset = centroid(&surface.corners(face)) - point;
+        let radial = offset - axis * offset.dot(&axis);
+        surface.normals[face].is_some_and(|normal| normal.dot(&radial) < 0.0)
+    };
+    if !facing_axis(face) {
+        return None;
+    }
+    // The whole wall runs from the seed over faces that stay nearly vertical
+    // and face the axis, ending at rims, chamfers and steps. The fit can stop
+    // short of it on a taper, so the radius range is taken over all of it.
+    let level = HOLE_WALL_DEGREES.to_radians().sin();
+    let wall = surface.grow(face, |_, next| {
+        surface.normals[next].is_some_and(|normal| normal.z.abs() <= level) && facing_axis(next)
+    });
+    let model = Model::Cylinder {
+        point,
+        axis,
+        radius: radius_mm,
+    };
+    let (lowest, highest) = wall
+        .iter()
+        .map(|&face| model.face_range(&surface.corners(face)))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (a, b)| {
+            (low.min(a), high.max(b))
+        });
+    Some((
         VerticalHole {
             center_mm: [point.x, point.y],
             radius_mm,
+            radius_range_mm: [radius_mm + lowest, radius_mm + highest],
         },
         fit.sigma_mm,
     ))
@@ -1752,6 +1779,36 @@ mod tests {
         joined
     }
 
+    /// A closed vertical post of `radius` from `low` to `high` on Z,
+    /// tessellated into `segments` sides whose corners lie on the circle.
+    fn post(radius: f64, low: f64, high: f64, segments: usize) -> TriangleMesh {
+        let mut vertices = vec![[0.0, 0.0, low], [0.0, 0.0, high]];
+        for index in 0..segments {
+            let angle = std::f64::consts::TAU * index as f64 / segments as f64;
+            vertices.push([radius * angle.cos(), radius * angle.sin(), low]);
+            vertices.push([radius * angle.cos(), radius * angle.sin(), high]);
+        }
+        let mut triangles = Vec::new();
+        for i in 0..segments as u32 {
+            let j = (i + 1) % segments as u32;
+            let (bottom, top, next_bottom, next_top) = (2 + 2 * i, 3 + 2 * i, 2 + 2 * j, 3 + 2 * j);
+            let outward =
+                V3::from(vertices[bottom as usize]) + V3::from(vertices[next_bottom as usize]);
+            for (face, wanted) in [
+                ([0, next_bottom, bottom], -V3::z()),
+                ([1, top, next_top], V3::z()),
+                ([bottom, next_bottom, next_top], outward),
+                ([bottom, next_top, top], outward),
+            ] {
+                triangles.push(oriented(&vertices, face, wanted));
+            }
+        }
+        TriangleMesh {
+            vertices,
+            triangles,
+        }
+    }
+
     #[test]
     fn declared_holes_are_measured_where_they_are() {
         let plate = plate_with_hole(5.0, 4.0, 2.0, 32);
@@ -1764,6 +1821,10 @@ mod tests {
             assert!(close(hole.center_mm[0], center[0], 1e-9), "{hole:?}");
             assert!(close(hole.center_mm[1], center[1], 1e-9), "{hole:?}");
             assert!(close(hole.radius_mm, 2.0, 1e-9), "{hole:?}");
+            // From the flats, which cut inside the circle, to the corners.
+            let flats = 2.0 * (std::f64::consts::PI / 32.0).cos();
+            assert!(close(hole.radius_range_mm[0], flats, 1e-6), "{hole:?}");
+            assert!(close(hole.radius_range_mm[1], 2.0, 1e-6), "{hole:?}");
         }
 
         // A hole moved half a millimetre, or declared at half its size, is
@@ -1784,33 +1845,53 @@ mod tests {
     }
 
     #[test]
+    fn a_tapered_bore_reports_the_radius_it_spans() {
+        // Under a degree of taper. Whether or not a taper fits as a complete
+        // cylinder, a hole found on it spans both of its ends.
+        let covers = |holes: &[VerticalHole], low: f64, high: f64| {
+            holes.iter().all(|hole| {
+                hole.radius_range_mm[0] <= low && hole.radius_range_mm[1] >= high - 1e-9
+            })
+        };
+        // Built in rings, it fits as a cylinder over part of its height.
+        let rings: Vec<(f64, f64)> = (0..=10)
+            .map(|step| (1.95 + 0.01 * f64::from(step), 2.0 * f64::from(step)))
+            .collect();
+        let holes = vertical_holes(&plate(5.0, 20.0, &rings, 32), &[([0.0, 0.0], 2.0)]);
+        assert_eq!(holes.len(), 1, "{holes:?}");
+        assert!(covers(&holes, 1.95, 2.05), "{holes:?}");
+        // As one cone, as OpenSCAD builds it.
+        let cone = plate(5.0, 20.0, &[(1.9, 0.0), (2.1, 20.0)], 32);
+        let holes = vertical_holes(&cone, &[([0.0, 0.0], 2.0)]);
+        assert!(covers(&holes, 1.9, 2.1), "{holes:?}");
+    }
+
+    #[test]
+    fn a_bore_filled_by_another_shell_is_not_a_hole() {
+        let options = || ValidationOptions {
+            holes: vec![([0.0, 0.0], 2.0)],
+            ..ValidationOptions::default()
+        };
+        let plate = plate_with_hole(5.0, 4.0, 2.0, 32);
+        let open = crate::analyze_mesh(&plate, options()).unwrap();
+        assert_eq!(open.vertical_holes.as_ref().map(Vec::len), Some(1));
+        // A post through the bore, taller than the plate, fills it: the
+        // united solid has no hole although the plate's own wall is intact.
+        let filled = joined(&[(plate, [0.0; 3]), (post(2.5, -1.0, 5.0, 32), [0.0; 3])]);
+        let report = crate::analyze_mesh(&filled, options()).unwrap();
+        assert!(report.solid_geometry, "{:?}", report.topology);
+        assert_eq!(report.vertical_holes, Some(Vec::new()));
+        // Nothing is measured on a mesh that is not a valid solid.
+        let mut open_mesh = plate_with_hole(5.0, 4.0, 2.0, 32);
+        open_mesh.triangles.pop();
+        let report = crate::analyze_mesh(&open_mesh, options()).unwrap();
+        assert_eq!(report.vertical_holes, None);
+    }
+
+    #[test]
     fn bosses_tilted_and_partial_bores_are_not_holes() {
         // A solid post: its wall faces away from its axis.
-        let segments = 32;
-        let mut vertices = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 4.0]];
-        for index in 0..segments {
-            let angle = std::f64::consts::TAU * index as f64 / segments as f64;
-            vertices.push([2.0 * angle.cos(), 2.0 * angle.sin(), 0.0]);
-            vertices.push([2.0 * angle.cos(), 2.0 * angle.sin(), 4.0]);
-        }
-        let mut triangles = Vec::new();
-        for i in 0..segments as u32 {
-            let j = (i + 1) % segments as u32;
-            let (low, high, next_low, next_high) = (2 + 2 * i, 3 + 2 * i, 2 + 2 * j, 3 + 2 * j);
-            let outward = V3::from(vertices[low as usize]) + V3::from(vertices[next_low as usize]);
-            for (face, wanted) in [
-                ([0, next_low, low], -V3::z()),
-                ([1, high, next_high], V3::z()),
-                ([low, next_low, next_high], outward),
-                ([low, next_high, high], outward),
-            ] {
-                triangles.push(oriented(&vertices, face, wanted));
-            }
-        }
-        let post = TriangleMesh {
-            vertices,
-            triangles,
-        };
+        let post = post(2.0, 0.0, 4.0, 32);
         assert!(vertical_holes(&post, &[([0.0, 0.0], 2.0)]).is_empty());
 
         // A bore leaning 10 degrees.

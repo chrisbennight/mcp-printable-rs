@@ -169,17 +169,22 @@ whether it is a valid solid in `valid`, and, when the revision declares
 `hole_pattern` requirements, the holes measured around the declared positions
 in `vertical_holes`.
 
-Each declared hole is fitted as a cylinder from the inward-facing wall face,
-within twice the declared radius of the declared centre, whose distance from
-that centre is nearest the declared radius. It counts when its axis is within 1
-degree of vertical and its wall covers the whole circle and faces the axis, so
-bosses and partial bores do not count. The fitted centre and radius are matched
-against the declaration, so a hole that moved or changed size fails rather than
-being found where it was declared. A tessellated hole's radius is that of the
-circle through its vertices, the designed size for OpenSCAD's tessellation. A
-polygonal hole such as a hexagon counts at the radius through its corners,
-because the mesh does not say whether it was meant to be round. Holes are
-measured only on a valid solid; otherwise `hole_pattern` stays `unmeasured`.
+Holes are measured on the valid solid, with any overlapping shells united, so
+a bore filled by another shell is not a hole. On a mesh that is not a valid
+solid, `hole_pattern` stays `unmeasured`. Each declared hole is fitted as a
+cylinder from the inward-facing wall face, within twice the declared radius of
+the declared centre, whose distance from that centre is nearest the declared
+radius. It counts when its axis is within 1 degree of vertical and its wall
+covers the whole circle and faces the axis, so bosses and partial bores do not
+count. Each hole reports its fitted centre, its radius through the vertices,
+and `radius_range_mm`, the smallest and largest radius over its wall. A hole
+matches a declaration only when its centre is within the tolerance and its
+whole radius range lies within the tolerance of the declared radius, as for a
+diameter requirement. A hole that moved or changed size therefore fails rather
+than being found where it was declared, and so does a tapered bore, or one
+tessellated so coarsely that its flat faces cut well inside the circle. A
+polygonal hole such as a hexagon is judged the same way, because the mesh does
+not say whether it was meant to be round.
 
 `dimensions` and `build_envelope` compare the mesh's bounds. `clearance` stays
 `unmeasured` and `physical_test` stays `physical_test_required`, as for CAD

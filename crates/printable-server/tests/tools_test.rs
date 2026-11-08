@@ -3296,6 +3296,11 @@ async fn mesh_validation_checks_a_design_revisions_requirements() {
         (hole["radius_mm"].as_f64().unwrap() - 2.0).abs() < 1e-4,
         "{hole}"
     );
+    let [low, high] = [0, 1].map(|end| hole["radius_range_mm"][end].as_f64().unwrap());
+    assert!(
+        low < high && 2.0 - low < 0.05 && (high - 2.0).abs() < 1e-4,
+        "{hole}"
+    );
 
     // A named revision, against a mesh whose bore moved.
     let result = validate(

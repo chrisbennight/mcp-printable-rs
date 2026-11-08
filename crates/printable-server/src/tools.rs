@@ -5012,6 +5012,10 @@ async fn validate_mesh_artifact(
                     minimum_draft_degrees: draft.minimum_draft_degrees,
                     parting_offset_mm: draft.parting_offset_mm,
                 }),
+                holes: revision
+                    .as_ref()
+                    .map(|(_, manifest)| manifest.declared_holes())
+                    .unwrap_or_default(),
             },
         )?;
         let mut result = json!({
@@ -5023,7 +5027,7 @@ async fn validate_mesh_artifact(
             result["reference_artifact"] = json!(reference);
         }
         if let Some((identity, manifest)) = revision {
-            let evidence = requirement_evidence(&report, &bytes, &manifest)?;
+            let evidence = requirement_evidence(&report, &manifest);
             result["revision"] = json!(identity);
             result["requirements"] = manifest.assess(&evidence);
             result["requirement_evidence"] = evidence;
@@ -5035,28 +5039,24 @@ async fn validate_mesh_artifact(
 
 /// What a mesh shows of a revision's declared requirements, in the shape of
 /// a native CAD report: its size, whether it is a valid solid, and the
-/// complete vertical inner walls found around each declared hole.
+/// complete vertical inner walls of that solid found around each declared
+/// hole.
 fn requirement_evidence(
     report: &printable_geom::ValidationReport,
-    bytes: &[u8],
     manifest: &crate::projects::requirements::Manifest,
-) -> Result<Value, ToolError> {
+) -> Value {
     let mut evidence = json!({
         "units": "mm",
         "valid": report.solid_geometry,
         "bounds_mm": {"size": report.bounds.dimensions_mm},
     });
-    let declared = manifest.declared_holes();
-    if !declared.is_empty() {
-        evidence["vertical_holes"] = if report.solid_geometry {
-            let mesh =
-                decode_stl(bytes).map_err(|error| ToolError::Validation(error.to_string()))?;
-            json!({"status": "measured", "holes": printable_geom::vertical_holes(&mesh, &declared)})
-        } else {
-            json!({"status": "unmeasured", "holes": []})
+    if !manifest.declared_holes().is_empty() {
+        evidence["vertical_holes"] = match &report.vertical_holes {
+            Some(holes) => json!({"status": "measured", "holes": holes}),
+            None => json!({"status": "unmeasured", "holes": []}),
         };
     }
-    Ok(evidence)
+    evidence
 }
 
 async fn analyze_assembly_artifacts(
@@ -5652,6 +5652,7 @@ async fn scad_compile(
         dimensions: None,
         comparison: None,
         draft: None,
+        holes: Vec::new(),
     };
     let definition_metadata = scad_definition_metadata(&definitions);
     let source = bind_scad_variant(params.source, &definitions);
