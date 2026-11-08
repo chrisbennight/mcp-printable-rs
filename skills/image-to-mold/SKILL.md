@@ -30,6 +30,27 @@ opening, remaining floor thickness, and removal direction. Simply negating the
 heights does not design a usable cavity. If the form needs undercuts, use suitable
 split geometry or a different modeling method.
 
+## Set the target and report against it
+
+Before the first change, state the target the result must meet. That means
+the finished size and relief depth, and the narrowest stroke and thinnest wall
+the printer can make. It also means the release direction, any undercuts the
+mould material can tolerate, and the casting clearances. Choose tolerances
+from the casting process and the printer, never finer than about three times
+the noise of the measurement, such as the error of an estimated depth map or
+the chord error of the mesh. Ask the user once for the defaults and approach
+that matter, then work without repeated questions.
+
+After each group of changes, measure again and work on the worst remaining
+problem first.
+
+In the final report, label each conclusion as measured, partly supported, or
+inferred, and name the result a measured conclusion comes from. Report an
+assumed design value beside the measured value, never in its place. Report a
+criterion that was not measured as unmeasured, and never count it as passed.
+If the target is not met, say "not done" and list what remains instead of
+declaring success.
+
 ## Author calibrated heights
 
 For flat artwork, identify feature regions and assign deliberate heights. Image
