@@ -2314,7 +2314,12 @@ impl ProjectIndex {
             deadline,
         };
         let more = self.embed_texts(&step, &mut report).await?;
-        if more && pictures && identity.pictures_refused.is_none() {
+        // A search may have recorded a picture refusal while texts were sent.
+        let refused = self
+            .db(|connection| read_identity(connection))
+            .await?
+            .is_none_or(|stored| stored.pictures_refused.is_some());
+        if more && pictures && !refused {
             self.embed_pictures(workspace, &step, &mut report).await?;
         }
         Ok(report)
@@ -2607,7 +2612,13 @@ impl ProjectIndex {
 
     fn embeddings_answered(&self) {
         let mut state = self.state();
-        state.retry_after_unix_ms = None;
+        // A wait a concurrent search recorded meanwhile still holds.
+        if state
+            .retry_after_unix_ms
+            .is_some_and(|until| until <= super::unix_ms())
+        {
+            state.retry_after_unix_ms = None;
+        }
         if state.embeddings.take().is_some() {
             tracing::info!("the embeddings service answers again");
         }
