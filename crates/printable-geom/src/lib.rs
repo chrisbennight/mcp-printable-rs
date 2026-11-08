@@ -29,6 +29,7 @@ mod draft;
 mod fit;
 mod intersect;
 mod isosurface;
+pub mod limit;
 mod print_check;
 mod remesh;
 mod thickness;
@@ -114,6 +115,12 @@ pub enum GeometryError {
     Kernel(String),
     #[error("assembly {part} part is not a valid closed solid: {reason}")]
     InvalidAssemblyPart { part: &'static str, reason: String },
+    #[error(
+        "geometry work stopped at its {seconds} s time limit; simplify or remesh the part, or request fewer checks at once"
+    )]
+    TimeLimit { seconds: f64 },
+    #[error("geometry work was cancelled")]
+    Cancelled,
 }
 
 impl GeometryError {
@@ -127,6 +134,8 @@ impl GeometryError {
             Self::InvalidOptions(_) => "validation",
             Self::Kernel(_) => "geometry",
             Self::InvalidAssemblyPart { .. } => "invalid_assembly_part",
+            Self::TimeLimit { .. } => "geometry_time_limit",
+            Self::Cancelled => "cancelled",
         }
     }
 }

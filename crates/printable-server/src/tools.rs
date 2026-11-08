@@ -18,11 +18,11 @@ use native::NativeViewParams;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::TAU;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -41,8 +41,8 @@ use tokio::sync::Semaphore;
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
     Alignment, AssemblyOptions, ComparisonOptions, DimensionOptions, DimensionRequirement,
-    DraftOptions, FeatureRequest, LinearMotion, Measure, RotationalMotion, Shape,
-    ValidationOptions, ValidationReport, analyze_stl, decode_stl,
+    DraftOptions, FeatureRequest, GeometryError, LinearMotion, Measure, RotationalMotion, Shape,
+    ValidationOptions, ValidationReport, analyze_stl, decode_stl, limit::WorkLimit,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -71,6 +71,17 @@ static VISUAL_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphor
 // into private files and expanded only in the isolated child. Serialize geometry
 // operations so concurrent sessions do not multiply memory and scratch usage.
 static GEOMETRY_OPS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+/// How long one operation may hold the geometry lane before it stops with
+/// `geometry_time_limit`.
+const GEOMETRY_TIME_LIMIT: Duration = Duration::from_secs(600);
+// How often a geometry worker is checked for completion, its time limit and
+// cancellation.
+const GEOMETRY_WORKER_POLL: Duration = Duration::from_millis(10);
+
+tokio::task_local! {
+    /// Cancelled when the client cancels the tool call being served.
+    pub(crate) static REQUEST_CANCELLATION: tokio_util::sync::CancellationToken;
+}
 pub(crate) const PREVIEW_INLINE_MAX_BYTES: u64 = 1024 * 1024;
 // Bounds pass through f32 mesh storage, world transforms, and bisect interpolation.
 const BLENDER_BOUNDS_TOLERANCE_ULPS: f64 = 64.0;
@@ -4934,13 +4945,41 @@ where
     T: Send + 'static,
     E: Into<ToolError> + Send + 'static,
 {
-    let geometry_permit = Arc::clone(&GEOMETRY_OPS)
-        .acquire_owned()
-        .await
-        .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?;
+    geometry_blocking_within(GEOMETRY_TIME_LIMIT, f).await
+}
+
+/// Run `f` in the geometry lane. Its sampling loops and any geometry worker
+/// it starts stop once `time_limit` passes after the lane is taken, or once
+/// the tool call is cancelled, so neither crafted input nor an abandoned
+/// request holds the lane.
+async fn geometry_blocking_within<T, E>(
+    time_limit: Duration,
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ToolError>
+where
+    T: Send + 'static,
+    E: Into<ToolError> + Send + 'static,
+{
+    let cancellation = REQUEST_CANCELLATION.try_with(Clone::clone).ok();
+    let cancelled = async {
+        match &cancellation {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    let geometry_permit = tokio::select! {
+        permit = Arc::clone(&GEOMETRY_OPS).acquire_owned() => permit
+            .map_err(|_| ToolError::Validation("server is shutting down".to_string()))?,
+        () = cancelled => return Err(GeometryError::Cancelled.into()),
+    };
+    let limit = WorkLimit::new(time_limit, move || {
+        cancellation
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    });
     blocking(move || {
         let _geometry_permit = geometry_permit;
-        f()
+        limit.apply(f)
     })
     .await
 }
@@ -5107,16 +5146,37 @@ fn run_geometry_worker_process(
     memory_bytes: u64,
     args: &[&std::ffi::OsStr],
 ) -> Result<Value, ToolError> {
+    let mut stdout = tempfile::tempfile()?;
     let mut command = Command::new(worker_bin);
-    command.args(args);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(Stdio::null());
     set_worker_memory_limit(&mut command, memory_bytes)?;
-    let output = command.output().map_err(|_| {
+    let mut child = command.spawn().map_err(|_| {
         geometry_worker_error(
             "geometry_worker_unavailable",
             "could not start the isolated geometry worker",
         )
     })?;
-    parse_geometry_worker_output(output.status.success(), &output.stdout)
+    // The worker cannot see the geometry lane's limit, so it is stopped from
+    // here.
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if let Err(stop) = printable_geom::limit::check() {
+            child.kill()?;
+            child.wait()?;
+            return Err(stop.into());
+        }
+        std::thread::sleep(GEOMETRY_WORKER_POLL);
+    };
+    let mut output = Vec::new();
+    stdout.seek(SeekFrom::Start(0))?;
+    stdout.read_to_end(&mut output)?;
+    parse_geometry_worker_output(status.success(), &output)
 }
 
 fn parse_geometry_worker_output(status_success: bool, stdout: &[u8]) -> Result<Value, ToolError> {
@@ -6346,6 +6406,49 @@ mod visual_contract_tests {
         )
         .expect("path-based worker does not read inputs in the server");
         assert_eq!(report["path_inputs"], json!(true));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_geometry_worker_past_the_time_limit_is_stopped() {
+        let started = std::time::Instant::now();
+        let result = geometry_blocking_within(Duration::from_millis(100), || {
+            run_geometry_worker_process(
+                std::path::Path::new("/bin/sleep"),
+                1024 * 1024 * 1024,
+                &[std::ffi::OsStr::new("30")],
+            )
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code(), "geometry_time_limit");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_call_releases_the_geometry_lane() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let sampling = || -> Result<(), GeometryError> {
+            loop {
+                printable_geom::limit::check()?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let call =
+            tokio::spawn(REQUEST_CANCELLATION.scope(token.clone(), geometry_blocking(sampling)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("cancelled work stops promptly")
+            .expect("geometry call task");
+        assert_eq!(result.unwrap_err().code(), "cancelled");
+        let next = tokio::time::timeout(
+            Duration::from_secs(5),
+            geometry_blocking(|| Ok::<_, ToolError>(7)),
+        )
+        .await
+        .expect("the lane is free again");
+        assert_eq!(next.unwrap(), 7);
     }
 
     #[test]

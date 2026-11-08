@@ -234,6 +234,22 @@ Regions add a `deviation_beyond_tolerance` warning. The response also names
 the reference in `reference_artifact`. A comparison measures surfaces; it does
 not say which mesh is right.
 
+## Time limit and cancellation
+
+The server runs geometry work one operation at a time. That covers mesh
+validation, the analysis of an OpenSCAD build, assembly analysis, bust
+preparation and mechanical clearance jobs. Once an operation starts, it may
+run for 10 minutes; time spent waiting for its turn does not count. A mesh of
+many overlapping triangles can make every surface point's search visit every
+triangle, so wall thickness and comparison check the limit at each point, and
+the isolated geometry worker is stopped when the limit passes.
+
+An operation that reaches the limit fails with code `geometry_time_limit`,
+writes no artifact, and frees the server for the next one. Simplify or remesh
+the part, or ask for fewer checks in one call, then try again. Cancelling a
+tool call stops its geometry work in the same way, so an abandoned request
+does not hold up other callers.
+
 ## Compatibility
 
 `printable` remains equal to `solid_geometry` for existing callers. It is
