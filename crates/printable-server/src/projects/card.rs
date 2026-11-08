@@ -261,6 +261,15 @@ impl Inputs {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+
+    /// The project's files, sorted by path, with paths relative to the
+    /// project directory.
+    pub(crate) fn project_files(&self) -> impl Iterator<Item = (&str, &ArtifactMeta)> {
+        let prefix = format!("{}/", self.project.root);
+        self.files
+            .iter()
+            .filter_map(move |file| Some((file.path.strip_prefix(&prefix)?, file)))
+    }
 }
 
 /// Build a project's card from its current records.

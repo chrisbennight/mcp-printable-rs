@@ -74,6 +74,7 @@ fn test_settings(blender_port: u16) -> Settings {
         allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
         allowed_origins: Vec::new(),
         download_base_url: None,
+        web: None,
     }
 }
 
