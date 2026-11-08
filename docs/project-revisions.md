@@ -1,8 +1,9 @@
 # Retain design requirements and revisions
 
 Projects can keep an optional design manifest without changing ordinary file,
-modeling, or rendering workflows. Existing project metadata stays at version 1;
-there is no implicit migration or inference of requirements from old files.
+modeling, or rendering workflows. Revisions do not change project metadata, and
+requirements are never inferred from old files. The
+[project library](project-library.md) describes the project record itself.
 
 Read `printable://contracts/project/revise` and
 `printable://contracts/project/revision` for the typed requests. A revision

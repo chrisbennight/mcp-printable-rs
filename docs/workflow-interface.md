@@ -137,6 +137,8 @@ tools; loading a skill does not execute the workflow.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.
+[Project library records](project-library.md) keep each project's dates,
+editable description, tags and cover picture under an expected record version.
 [Design revisions](project-revisions.md) retain typed requirements, parameter
 ranges, source snapshots, and parent identities; native CAD checks the declared
 requirements against its measurements.

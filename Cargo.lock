@@ -2291,6 +2291,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "crc32fast",
+ "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "image",
@@ -4297,6 +4298,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "848dad21639597378c3be94c59fd4de683f0f6d8a5387575896e1245737d4f37"
 dependencies = [
  "crc32fast",
+ "flate2",
  "getrandom 0.4.3",
  "indexmap",
  "memchr",

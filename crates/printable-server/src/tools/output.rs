@@ -491,7 +491,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
-            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}}
+            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
+                "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
         ]}),
         "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(
@@ -708,9 +709,10 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "project" => {
             let mut generator = schemars::SchemaGenerator::default();
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
+            let project = generator.subschema_for::<crate::projects::Project>();
             json!({"type":"object","anyOf":[
             revision,
-            serde_json::to_value(schemars::schema_for!(crate::projects::Project)).expect("project schema serializes"),
+            project,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
