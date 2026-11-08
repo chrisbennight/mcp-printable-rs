@@ -393,7 +393,7 @@ model behind an unchanged name.
 
 Embedding runs in each background pass after the cards are updated, and in
 `project reindex`. A pass embeds at most 256 project texts in
-requests of up to 32, then at most 32 pictures in requests of up to 4, and
+requests of up to 32, then at most 32 pictures one per request, and
 starts no request after two minutes; later passes continue. A project whose
 text or picture changes is embedded again. Requests time out after 60
 seconds. When the service answers `429` or `503`, passes, including
