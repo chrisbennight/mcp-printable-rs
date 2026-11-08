@@ -82,7 +82,8 @@ pub struct Settings {
     /// leaves reconstruction unadvertised.
     pub recon: Option<std::sync::Arc<crate::recon::ReconClient>>,
     /// The derived project search index: a file in
-    /// `PRINTABLE_PROJECT_INDEX_DIR`, or memory when that is unset.
+    /// `PRINTABLE_PROJECT_INDEX_DIR`, or memory when that is unset, with the
+    /// optional embeddings and re-ranking services it uses.
     pub project_index: std::sync::Arc<crate::projects::index::ProjectIndex>,
     /// OpenSCAD subprocess concurrency limit.
     pub scad_concurrency: usize,
@@ -129,6 +130,8 @@ pub enum SettingsError {
     Web(&'static str),
     #[error("PRINTABLE_WEB_LISTEN requires PRINTABLE_WORKSPACE_ROOT")]
     WebRequiresWorkspace,
+    #[error("project search setting {0} is missing or invalid")]
+    ProjectSearch(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]

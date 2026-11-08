@@ -18,7 +18,7 @@ use super::{Project, get};
 use crate::{error::ToolError, library::MANIFEST, printers::ledger, slicing::summary};
 
 /// Changes whenever the card layout changes, so stored cards are rebuilt.
-const LAYOUT_VERSION: u32 = 1;
+const LAYOUT_VERSION: u32 = 2;
 /// Largest `state.json`, `summary.json` or `source.json` a card reads.
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 /// Cap for each list of printers, materials, colours and printer counts.
@@ -31,6 +31,8 @@ const MAX_DOWNLOAD_RECORDS: usize = 16;
 const MAX_SLICE_STATES: usize = 256;
 const MAX_UNREADABLE: usize = 16;
 const MAX_INDEXED_FILE_NAMES: usize = 256;
+/// Longest text sent to an embeddings service for one project.
+const MAX_MEANING_CHARS: usize = 2048;
 const OUTCOMES: [&str; 5] = ["completed", "failed", "cancelled", "skipped", "unknown"];
 
 /// A project's library card.
@@ -137,6 +139,8 @@ pub struct SliceSummary {
     pub printer_model: Option<String>,
     pub process: Option<String>,
     pub plate_count: Option<u64>,
+    /// Plates with a thumbnail picture in the slice's package, at most 16.
+    pub thumbnails: Vec<u32>,
     pub filaments: Vec<SliceFilament>,
     pub filaments_truncated: bool,
 }
@@ -209,6 +213,37 @@ pub(crate) struct SearchText {
     pub description: String,
     pub source: String,
     pub files: String,
+}
+
+impl SearchText {
+    /// The text sent to an embeddings service for meaning search: the name,
+    /// tags, description, download sources and file names, one per line, at
+    /// most 2048 characters.
+    pub(crate) fn meaning(&self) -> String {
+        let text = [
+            &self.name,
+            &self.tags,
+            &self.description,
+            &self.source,
+            &self.files,
+        ]
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+        clip(&text, MAX_MEANING_CHARS).0
+    }
+}
+
+/// The picture that shows a project in picture search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PictureSource {
+    /// The stored cover picture.
+    Cover { path: String },
+    /// A plate thumbnail in the newest slice's package.
+    SliceThumbnail { package: String, plate: u32 },
 }
 
 /// What a card is built from: the project record and two directory listings.
@@ -474,6 +509,14 @@ fn slice_summary(output_dir: &str, summary: &Value, names: &mut Names) -> SliceS
         printer_model,
         process: text(&summary["process"]),
         plate_count: summary["plate_count"].as_u64(),
+        thumbnails: summary["thumbnails"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(|plate| plate.as_u64().and_then(|plate| u32::try_from(plate).ok()))
+            .filter(|plate| *plate > 0)
+            .take(MAX_NAMES)
+            .collect(),
         filaments,
         filaments_truncated: all.len() > MAX_NAMES,
     }
@@ -770,6 +813,30 @@ impl Card {
             })
             .filter(|(_, value)| !value.is_empty())
             .collect()
+    }
+
+    /// The cover, or else the first plate thumbnail of the newest slice's
+    /// package, with a key that changes whenever that picture may change.
+    /// Stored covers are named by their digest; a thumbnail's key follows its
+    /// package's size and modification time.
+    pub(crate) fn picture(&self, inputs: &Inputs) -> Option<(PictureSource, String)> {
+        if let Some(cover) = &self.cover {
+            return Some((
+                PictureSource::Cover {
+                    path: cover.path.clone(),
+                },
+                format!("cover:{}", cover.path),
+            ));
+        }
+        let newest = self.slices.newest.as_ref()?;
+        let plate = *newest.thumbnails.first()?;
+        let package = format!("{}/{}", newest.output_dir, summary::PACKAGE);
+        let meta = inputs.files.iter().find(|file| file.path == package)?;
+        let key = format!(
+            "thumbnail:{package}:{plate}:{}:{}",
+            meta.size_bytes, meta.modified_ns
+        );
+        Some((PictureSource::SliceThumbnail { package, plate }, key))
     }
 
     pub(crate) fn search_text(&self, inputs: &Inputs) -> SearchText {

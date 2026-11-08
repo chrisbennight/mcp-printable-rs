@@ -7,7 +7,7 @@
 
 use std::io::Cursor;
 
-use image::{ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use printable_workspace::{Workspace, WsError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -155,18 +155,24 @@ fn require_model(path: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn read_picture(workspace: &Workspace, path: &str) -> Result<Vec<u8>, ToolError> {
+/// Read a PNG, JPEG or WebP picture of at most 16 MiB from the workspace.
+pub(crate) fn read_picture(workspace: &Workspace, path: &str) -> Result<Vec<u8>, ToolError> {
     if !["png", "jpg", "jpeg", "webp"]
         .iter()
         .any(|ext| path.ends_with(&format!(".{ext}")))
     {
-        return Err(invalid("a cover image must be a PNG, JPEG or WebP file"));
+        return Err(invalid("a picture must be a PNG, JPEG or WebP file"));
     }
     let snapshot = workspace.snapshot_artifact_bounded(path, MAX_COVER_BYTES)?;
     Ok(std::fs::read(snapshot.path())?)
 }
 
-fn read_thumbnail(workspace: &Workspace, path: &str, plate: u32) -> Result<Vec<u8>, ToolError> {
+/// Read one plate's thumbnail from a sliced 3MF package in the workspace.
+pub(crate) fn read_thumbnail(
+    workspace: &Workspace,
+    path: &str,
+    plate: u32,
+) -> Result<Vec<u8>, ToolError> {
     if !path.ends_with(".3mf") {
         return Err(invalid("a slice thumbnail must come from a 3MF package"));
     }
@@ -249,16 +255,17 @@ pub fn plan(workspace: &Workspace, params: &CoverParams) -> Result<Plan, ToolErr
     })
 }
 
-/// Decode the picture under size limits and report its type and dimensions.
-fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32), ToolError> {
+/// Decode a PNG, JPEG or WebP picture of at most 8192 pixels on a side,
+/// returning its media type and pixels.
+pub(crate) fn decode(bytes: &[u8]) -> Result<(&'static str, DynamicImage), ToolError> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|_| invalid("cover picture cannot be read"))?;
+        .map_err(|_| invalid("the picture cannot be read"))?;
     let media_type = match reader.format() {
         Some(ImageFormat::Png) => "image/png",
         Some(ImageFormat::Jpeg) => "image/jpeg",
         Some(ImageFormat::WebP) => "image/webp",
-        _ => return Err(invalid("a cover picture must be PNG, JPEG or WebP")),
+        _ => return Err(invalid("a picture must be PNG, JPEG or WebP")),
     };
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_COVER_SIDE);
@@ -267,7 +274,13 @@ fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32), ToolError> {
     reader.limits(limits);
     let image = reader
         .decode()
-        .map_err(|error| invalid(format!("cover picture cannot be decoded: {error}")))?;
+        .map_err(|error| invalid(format!("the picture cannot be decoded: {error}")))?;
+    Ok((media_type, image))
+}
+
+/// Decode the picture under size limits and report its type and dimensions.
+fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32), ToolError> {
+    let (media_type, image) = decode(bytes)?;
     Ok((media_type, image.width(), image.height()))
 }
 

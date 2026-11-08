@@ -103,7 +103,7 @@ Building one never contacts a printer backend or a model site. It reports:
 | `cover` | The stored cover's path, media type and size, or null |
 | `file_count`, `formats`, `has_3mf` | File names in the project directory, counted by format: `3mf`, `gcode.3mf` (sliced), `gcode`, `stl`, `step`, `scad`, `blend`, `obj`, `glb`, `gltf`, `ply`, `off`, `dxf` and `svg`; `has_3mf` includes sliced 3MF files |
 | `downloads` | Site, model ID, page URL, title, designer, license name and retrieval time from each `source.json` |
-| `slices` | The number of completed slices and the newest one's printer, process, plate count, filament types and colours, and finish time |
+| `slices` | The number of completed slices and the newest one's printer, process, plate count, plates with a thumbnail picture, filament types and colours, and finish time |
 | `prints` | Counts by outcome, completed prints per printer, the latest outcome and the last printed time |
 | `printers`, `materials`, `colours` | Names from the print records and the newest slice, merged without regard to letter case; hexadecimal colours are shown as `#RRGGBB` |
 | `unreadable` | Records that could not be read, with an error code; the rest of the card is still built |
@@ -128,7 +128,10 @@ text.
 ```
 
 All parameters are optional. Search reads a search index built from the
-library cards; use `card` for one project's current details.
+library cards; use `card` for one project's current details. With an
+embeddings service configured, `best_match` also finds projects by what the
+text means and by a picture; see
+[meaning and picture search](#meaning-and-picture-search).
 
 ### Words
 
@@ -147,7 +150,7 @@ three-letter pieces: `spirl` gives `spi`, `pir` and `irl`. A project is a near
 match when its name contains at least half of all the pieces. Near matches are
 marked `"match": "near"`, and their `score` is the share of pieces found. Word
 matches are marked `"match": "words"`, and their `score` is a relevance value
-where higher is better. Results without `text` have neither.
+where higher is better. Results without `text` or `picture` have neither.
 
 ### Filters
 
@@ -174,23 +177,189 @@ colours can be filtered only by the first 16 in alphabetical order.
 
 | `sort` | Order |
 | --- | --- |
-| `best_match` | Highest score first; the default with `text`, and requires it |
+| `best_match` | Highest score first; the default with `text` or `picture`, and requires one of them |
 | `newest` | Most recently created first; the default without `text` |
 | `last_printed` | Most recently printed first; projects never printed come last |
 | `name` | By name |
 
 Ties are broken by name and then project ID, so pages are stable. `limit` is
 1 to 50 (default 20) and `offset` is 0 to 1000. `total` counts every match, and
-`next_offset` is null on the last page.
+`next_offset` is null on the last page. A search with `picture` is always
+ordered by `best_match`; the other orders use word matching only.
 
 ### Coverage and limits
 
-Every response lists unavailable search capabilities in `degraded`. Search
-matches words only: searching by meaning (`meaning_search_unavailable`) and by
-picture (`picture_search_unavailable`) are not available. `coverage` reports
-how many of the workspace's projects are indexed and how many failed. When some
-are missing, `degraded` also contains `index_incomplete`, and results cover the
-indexed projects only.
+Every response lists unavailable search capabilities in `degraded`, each with
+a `code`, a `message` and a `reason`:
+
+| Code | Meaning |
+| --- | --- |
+| `meaning_search_unavailable` | Searching by meaning is unavailable |
+| `picture_search_unavailable` | Searching by picture is unavailable |
+| `rerank_unavailable` | Re-ranking is unavailable or failed for this search; results keep their combined order |
+
+| `reason` | Why |
+| --- | --- |
+| `not_configured` | The service's settings are not set |
+| `turned_off` | `PRINTABLE_EMBEDDING_IMAGES` is off |
+| `pictures_rejected` | The embeddings model refused pictures |
+| `not_ready` | No vectors from the configured model exist yet, or the service now reports a different model |
+| `unreachable` | The service could not be reached or failed |
+| `busy` | The service answered `429` or `503` |
+| `refused` | The service refused the request; a setting is probably wrong |
+| `incompatible` | The service's answer could not be used |
+
+Without an embeddings service, search matches words only and every response
+lists all three codes with reason `not_configured`; results are the same as
+with no services at all. `coverage` reports how many of the workspace's
+projects are indexed and how many failed. When some are missing, `degraded`
+also contains `index_incomplete`, and results cover the indexed projects only.
+When a search uses meaning or picture search while some projects still lack
+vectors, `degraded` contains `meaning_index_incomplete` or
+`picture_index_incomplete`, and those projects are found by words only.
+
+## Meaning and picture search
+
+Meaning search finds projects whose library card means something close to the
+search text, even when they share no words with it. Picture search finds
+projects whose picture looks like a query picture. Both need an embeddings
+service, and re-ranking needs a re-ranking service. All three are optional and
+off unless configured.
+
+```json
+{"action": "search", "params": {"text": "something to hold flowers",
+  "combine": "standardised", "limit": 10}}
+{"action": "search", "params": {"picture": "photos/broken-part.jpg"}}
+```
+
+### Settings
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `PRINTABLE_EMBEDDING_URL` | unset | Base URL of an OpenAI-compatible embeddings API; requests go to `<base>/embeddings`, so `https://host/v1` works. HTTPS, or plain HTTP only to a private or loopback address or a single-label host name such as `http://embedder:8080/v1`. No credentials, query or fragment. Unset turns meaning and picture search off. |
+| `PRINTABLE_EMBEDDING_MODEL` | none | The model name to request; required with the URL |
+| `PRINTABLE_EMBEDDING_API_KEY` | unset | Sent as `Authorization: Bearer <key>` |
+| `PRINTABLE_EMBEDDING_DIMENSIONS` | unset | Vector length to request, 1 to 8192, for models that can shorten their vectors |
+| `PRINTABLE_EMBEDDING_QUERY_PREFIX` | empty | Text put before search text, kept exactly as set, such as `query: ` for E5 models |
+| `PRINTABLE_EMBEDDING_DOCUMENT_PREFIX` | empty | Text put before project text, such as `passage: ` |
+| `PRINTABLE_EMBEDDING_REVISION` | unset | A label of your choice; changing it embeds every project again |
+| `PRINTABLE_EMBEDDING_IMAGES` | `off` | `on` sends pictures for picture search |
+| `PRINTABLE_RERANK_URL` | unset | Base URL of a re-ranking API; requests go to `<base>/rerank`. The same address rules apply. |
+| `PRINTABLE_RERANK_MODEL` | none | The re-ranking model; required with its URL |
+| `PRINTABLE_RERANK_API_KEY` | unset | Sent as `Authorization: Bearer <key>` |
+
+The other embedding settings take effect only with `PRINTABLE_EMBEDDING_URL`,
+and the re-ranking ones only with `PRINTABLE_RERANK_URL`. The server refuses
+to start when a set value is invalid; the error names the setting, never its
+value. Supply API keys through your deployment's secret mechanism. They are
+sent only in the `Authorization` header and never appear in responses,
+status, errors or logs. Requests are not redirected and do not use a proxy.
+
+### What the services receive
+
+Card text and pictures are sent to the configured services and nowhere else.
+For each project the embeddings service receives the document prefix and the
+project's name, tags, description, download sites, titles and designers, file
+names, materials and printers, one per line, at most 2048 characters. Searches
+send the query prefix and the search text. A re-ranking request contains the
+search text and the same project text for the leading results.
+
+Embeddings requests use OpenAI's request shape, with at most 32 inputs each:
+
+```json
+{"model": "nomic-embed-text", "input": ["passage: Desk organizer\n..."],
+  "encoding_format": "float", "dimensions": 768}
+```
+
+`dimensions` is sent only when set. The answer's `data[].embedding` vectors
+are used in `index` order, and its `model` names the model. Answers are read
+up to 8 MiB and vectors up to 8192 numbers long; any other answer counts as
+unusable.
+
+Picture input is not part of the OpenAI API: it is an extension that some
+multimodal servers accept, and it is off by default. With
+`PRINTABLE_EMBEDDING_IMAGES=on`, each picture is decoded, reduced to at most
+1024 pixels on its long side, encoded as PNG and sent as one input:
+
+```json
+{"model": "...", "input": [[{"type": "image_url",
+  "image_url": {"url": "data:image/png;base64,..."}}]], "encoding_format": "float"}
+```
+
+A project's picture is its cover, or else the first plate thumbnail in its
+newest slice's package. A search `picture` is a PNG, JPEG or WebP file in the
+workspace of at most 16 MiB and 8192 pixels on a side; upload one with the
+workspace file tools first. If the model refuses pictures, picture search is
+reported unavailable with reason `pictures_rejected`, and no more pictures are
+sent until the embedding settings or the model change, or until a pass runs
+with the setting off.
+
+Re-ranking requests use the shape that Cohere, Jina, vLLM and Text Embeddings
+Inference share:
+
+```json
+{"model": "bge-reranker-v2-m3", "query": "drawer organiser",
+  "documents": ["Desk organizer\n...", "..."], "top_n": 2}
+```
+
+The answer's `results[].index` and `relevance_score` reorder the documents.
+
+### How results are combined
+
+`best_match` gathers the projects that match the words (or, when none do, the
+near matches), the 50 projects closest in meaning to the text, and the 50
+projects whose pictures are closest to the query picture. Meaning and picture
+scores are the cosine similarity of vectors, computed exactly against every
+current vector after the filters. When more than 2000 projects match the
+words, the 2000 best word matches take part; `total` still counts every match.
+
+When only one method finds anything, results keep that method's own score, so
+word search alone ranks exactly as it does without the services. Otherwise
+`combine` sets how the methods' scores are joined:
+
+| `combine` | Score |
+| --- | --- |
+| `standardised` | The default. Each method's scores are standardised across the results (the score minus the mean, divided by the standard deviation) and added. A project with no word match counts as word score 0; one without a vector counts as that method's lowest score. |
+| `reciprocal_rank` | The sum of 1 / (60 + rank) over the methods that found the project, ranks starting at 1 |
+
+Ties are broken by name and then project ID, so the same request gives the
+same order. Each result's `match` is `words` or `near` when the words found it,
+otherwise `meaning` or `picture`. Its `score` is the combined score, and
+`scores` holds each method's own score: `words`, `meaning`, `picture` and
+`rerank`.
+
+With a re-ranking service, a `best_match` search with text sends the leading
+40 results to it and puts them in its order, highest relevance first; later
+results keep their combined order, and a page that starts at offset 40 or
+later does not ask the service. If re-ranking fails, results keep their
+combined order and `degraded` contains `rerank_unavailable`.
+
+### Model identity and re-embedding
+
+Vectors are kept in the search index with the identity of the model that made
+them: the configured model, dimensions, revision label and document prefix;
+the model name the service reports; the vector length; and the vector of a
+fixed probe text. Each background pass first embeds the probe text once. When
+any part of the identity differs, or the probe's vector has moved by more than
+a cosine similarity of 0.001, every stored vector is discarded and each
+project is embedded again. Until then, meaning and picture search report
+`not_ready` rather than compare vectors from different models. Change
+`PRINTABLE_EMBEDDING_REVISION` to embed everything again after replacing a
+model behind an unchanged name.
+
+Embedding runs in each background pass after the cards are updated, and in
+`index_rebuild` and `index_retry`. A pass embeds at most 256 project texts in
+requests of up to 32, then at most 32 pictures in requests of up to 4, and
+starts no request after two minutes; later passes continue. A project whose
+text or picture changes is embedded again. Requests time out after 60
+seconds. When the service answers `429` or `503`, passes, including
+`index_rebuild` and `index_retry`, make no embedding requests until the time in
+its `Retry-After` header, at most an hour (a minute without one); searches
+still try. A refusal with `401`, `403`, `404` or `405`, an unreachable
+service and other server errors stop the pass and are reported in
+`index_status`. Other refusals and unusable answers count against the projects
+in that request: each is tried again alone after 5 minutes, then 10, doubling
+up to a day, or at once on `index_retry`.
 
 ## Search index
 
@@ -222,9 +391,9 @@ is tried again when its files change or on `index_retry`.
 
 | Action | Effect |
 | --- | --- |
-| `index_status` | Storage kind (`file` or `memory`), indexed, pending and failed counts, up to 16 failures, the interval, and the latest pass since the server started |
-| `index_rebuild` | Clears the index and rebuilds every card now, then reports the pass |
-| `index_retry` | Updates changed projects and tries failed ones again now, then reports the pass |
+| `index_status` | Storage kind (`file` or `memory`), indexed, pending and failed counts, up to 16 failures, the interval, the latest pass since the server started, which of meaning search, picture search and re-ranking are available (`methods`) and why not (`unavailable`), and under `embeddings` the model identity with embedded, pending and failed vector counts and up to 16 vector failures |
+| `index_rebuild` | Clears the index, including its vectors, and rebuilds every card now, then embeds what a pass allows and reports the pass |
+| `index_retry` | Updates changed projects and tries failed cards and vectors again now, then reports the pass |
 
 Only one pass runs at a time; a rebuild or retry requested during a background
 pass starts when that pass ends. To rebuild the index file offline, stop the

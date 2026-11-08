@@ -9,6 +9,7 @@ use crate::error::ToolError;
 
 pub mod card;
 pub mod cover;
+mod embeddings;
 mod export;
 pub mod index;
 pub mod requirements;
