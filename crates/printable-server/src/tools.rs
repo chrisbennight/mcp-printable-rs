@@ -2023,7 +2023,10 @@ pub(crate) async fn dispatch_with_content(
         }
         "printable_project_search" => {
             let params: crate::projects::index::SearchParams = de(args)?;
-            let response = settings.project_index.search(workspace, params).await?;
+            let response = settings
+                .project_index
+                .search(workspace, params, &WORKSPACE_OPS)
+                .await?;
             Ok(ToolOutput::without_inline(serde_json::to_value(response)?))
         }
         "printable_project_index_status" => {

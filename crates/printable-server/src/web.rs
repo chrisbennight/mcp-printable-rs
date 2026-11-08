@@ -599,7 +599,7 @@ async fn library(State(web): State<Web>, uri: Uri) -> Response {
         Err(message) => return page(&paths, StatusCode::BAD_REQUEST, "Cannot search", &message),
     };
     let params = form.search_params();
-    match web.index.search(&web.workspace, params).await {
+    match web.index.search(&web.workspace, params, &web.reads).await {
         Ok(response) => html(StatusCode::OK, pages::library(&paths, &form, Ok(&response))),
         Err(ToolError::Validation(message)) => html(
             StatusCode::BAD_REQUEST,

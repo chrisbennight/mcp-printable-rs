@@ -19,7 +19,7 @@
 //! parameter. The SQLite connection is never held across a network request.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
@@ -32,6 +32,7 @@ use rusqlite::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -39,7 +40,11 @@ use super::{
     cover,
     embeddings::{self, Embedded, Embeddings, Input, Reranker, ServiceError},
 };
-use crate::{config::SettingsError, error::ToolError, tools::blocking};
+use crate::{
+    config::SettingsError,
+    error::ToolError,
+    tools::{blocking, blocking_with},
+};
 
 const DIR_KEY: &str = "PRINTABLE_PROJECT_INDEX_DIR";
 const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
@@ -88,6 +93,13 @@ const MAX_WORD_CANDIDATES: usize = 2000;
 const RERANK_DEPTH: usize = 40;
 /// Reciprocal rank fusion's constant.
 const RANK_CONSTANT: f64 = 60.0;
+const PICTURE_LENGTH_DIFFERS: &str =
+    "the embeddings service returned picture vectors of another length than text vectors";
+
+fn pictures_refused_with(status: u16) -> String {
+    format!("the embeddings service refused pictures with HTTP status {status}")
+}
+
 const MODEL_CHANGED: &str = "the embeddings service now reports a different model; the next background pass embeds every project again";
 
 const SCHEMA: &str = "
@@ -1230,6 +1242,14 @@ impl Identity {
         self.settings == service.fingerprint()
     }
 
+    /// Whether both describe the same model, so their vectors compare.
+    fn same_model(&self, other: &Identity) -> bool {
+        self.settings == other.settings
+            && self.service_model == other.service_model
+            && self.dimensions == other.dimensions
+            && self.probe == other.probe
+    }
+
     /// Whether an answer comes from this model, so its vectors compare with
     /// the stored ones.
     fn matches(&self, embedded: &Embedded) -> bool {
@@ -1744,6 +1764,8 @@ struct QueryVectors {
     meaning: Option<Vec<f32>>,
     picture: Option<Vec<f32>>,
     rerank: bool,
+    /// The stored model the query vectors were checked against.
+    made_by: Option<Identity>,
 }
 
 /// Rank word, meaning and picture candidates for `best_match`, and load what
@@ -1780,6 +1802,9 @@ fn rank(
             });
         }
     }
+    // Each method adds its closest projects as candidates; then every
+    // candidate is scored by every method that has a vector for it.
+    let mut lists = Vec::new();
     for (kind, vector, matched) in [
         (
             VectorKind::Text,
@@ -1804,27 +1829,29 @@ fn rank(
                 .then_with(|| a.name_folded.cmp(&b.name_folded))
                 .then_with(|| a.project_id.cmp(&b.project_id))
         });
-        for (place, scored) in similar.into_iter().enumerate() {
-            let score = scored.score;
-            let position = match positions.get(&scored.row) {
-                Some(position) => *position,
-                None if place < MAX_SIMILAR => {
-                    positions.insert(scored.row, candidates.len());
-                    candidates.push(Candidate {
-                        row: scored.row,
-                        project_id: scored.project_id,
-                        name_folded: scored.name_folded,
-                        matched,
-                        scores: MethodScores::default(),
-                    });
-                    candidates.len() - 1
-                }
-                None => continue,
+        for scored in similar.iter().take(MAX_SIMILAR) {
+            if let Entry::Vacant(slot) = positions.entry(scored.row) {
+                slot.insert(candidates.len());
+                candidates.push(Candidate {
+                    row: scored.row,
+                    project_id: scored.project_id.clone(),
+                    name_folded: scored.name_folded.clone(),
+                    matched,
+                    scores: MethodScores::default(),
+                });
+            }
+        }
+        lists.push((kind, similar));
+    }
+    for (kind, similar) in lists {
+        for scored in similar {
+            let Some(&position) = positions.get(&scored.row) else {
+                continue;
             };
             let scores = &mut candidates[position].scores;
             match kind {
-                VectorKind::Text => scores.meaning = Some(score),
-                VectorKind::Picture => scores.picture = Some(score),
+                VectorKind::Text => scores.meaning = Some(scored.score),
+                VectorKind::Picture => scores.picture = Some(scored.score),
             }
         }
     }
@@ -2338,11 +2365,8 @@ impl ProjectIndex {
                         .await?;
                 }
                 Ok(embedded) if embedded.model == step.identity.service_model => {
-                    self.refuse_pictures(
-                        "the embeddings service returned picture vectors of another length than text vectors"
-                            .to_owned(),
-                    )
-                    .await?;
+                    self.refuse_pictures(PICTURE_LENGTH_DIFFERS.to_owned())
+                        .await?;
                     return Ok(());
                 }
                 Ok(_) => {
@@ -2352,10 +2376,7 @@ impl ProjectIndex {
                 Err(ServiceError::Refused(status))
                     if !ServiceError::Refused(status).is_service_wide() =>
                 {
-                    self.refuse_pictures(format!(
-                        "the embeddings service refused pictures with HTTP status {status}"
-                    ))
-                    .await?;
+                    self.refuse_pictures(pictures_refused_with(status)).await?;
                     return Ok(());
                 }
                 Err(error) if error.is_service_wide() => {
@@ -2486,21 +2507,26 @@ impl ProjectIndex {
         note(Capability::Rerank, reason(error), Some(detail))
     }
 
+    /// Search the index. `permits` bounds its blocking index reads, so a
+    /// caller with its own pool does not use the MCP tools' workspace
+    /// operations.
     pub async fn search(
         self: &Arc<Self>,
         workspace: &Arc<Workspace>,
         params: SearchParams,
+        permits: &Arc<Semaphore>,
     ) -> Result<SearchResponse, ToolError> {
         let query = Arc::new(Query::new(params)?);
         let index = Arc::clone(self);
-        let identity =
-            blocking(move || index.with_connection(|connection| Ok(read_identity(connection)?)))
-                .await?
-                .filter(|identity| {
-                    self.embeddings
-                        .as_ref()
-                        .is_some_and(|service| identity.current(service))
-                });
+        let identity = blocking_with(permits, move || {
+            index.with_connection(|connection| Ok(read_identity(connection)?))
+        })
+        .await?
+        .filter(|identity| {
+            self.embeddings
+                .as_ref()
+                .is_some_and(|service| identity.current(service))
+        });
         let mut degraded = Vec::new();
         let meaning = self
             .query_meaning(&query, identity.as_ref(), &mut degraded)
@@ -2516,15 +2542,18 @@ impl ProjectIndex {
             degraded.push(note(Capability::Rerank, Reason::NotConfigured, None));
             false
         };
+        let made_by = identity.filter(|_| meaning.is_some() || picture.is_some());
         let vectors = QueryVectors {
             meaning,
             picture,
             rerank,
+            made_by,
         };
         let index = Arc::clone(self);
         let indexed = Arc::clone(workspace);
         let request = Arc::clone(&query);
-        let draft = blocking(move || index.draft(&indexed, &request, &vectors)).await?;
+        let draft =
+            blocking_with(permits, move || index.draft(&indexed, &request, vectors)).await?;
         let (results, total, coverage) = match draft {
             Draft::Page {
                 page,
@@ -2613,7 +2642,7 @@ impl ProjectIndex {
     /// The vector of the query picture, or the note saying why there is none.
     /// A picture that cannot be read is the caller's error.
     async fn query_picture(
-        &self,
+        self: &Arc<Self>,
         workspace: &Arc<Workspace>,
         query: &Query,
         identity: Option<&Identity>,
@@ -2646,13 +2675,40 @@ impl ProjectIndex {
             embeddings::prepare_picture(&cover::read_picture(&pictures_from, &path)?)
         })
         .await?;
+        let refused = |detail: &str| {
+            format!(
+                "{detail}, so pictures are not sent again until the embedding settings or the model change"
+            )
+        };
         Ok(match service.embed(&[Input::Picture(&png)]).await {
             Ok(embedded) if identity.matches(&embedded) => embedded.vectors.into_iter().next(),
+            Ok(embedded) if embedded.model == identity.service_model => {
+                let detail = PICTURE_LENGTH_DIFFERS.to_owned();
+                self.refuse_pictures(detail.clone()).await?;
+                degraded.push(note(
+                    Capability::Picture,
+                    Reason::PicturesRejected,
+                    Some(refused(&detail)),
+                ));
+                None
+            }
             Ok(_) => {
                 degraded.push(note(
                     Capability::Picture,
                     Reason::NotReady,
                     Some(MODEL_CHANGED.to_owned()),
+                ));
+                None
+            }
+            Err(ServiceError::Refused(status))
+                if !ServiceError::Refused(status).is_service_wide() =>
+            {
+                let detail = pictures_refused_with(status);
+                self.refuse_pictures(detail.clone()).await?;
+                degraded.push(note(
+                    Capability::Picture,
+                    Reason::PicturesRejected,
+                    Some(refused(&detail)),
                 ));
                 None
             }
@@ -2674,7 +2730,7 @@ impl ProjectIndex {
         &self,
         workspace: &Workspace,
         query: &Query,
-        vectors: &QueryVectors,
+        mut vectors: QueryVectors,
     ) -> Result<Draft, ToolError> {
         let ids = project_ids(workspace)?;
         let background = self.interval.is_some();
@@ -2682,6 +2738,25 @@ impl ProjectIndex {
             let coverage = coverage(connection, &ids)?;
             let mut notes: Vec<Degradation> =
                 incomplete(coverage, background).into_iter().collect();
+            // A background pass may have replaced the model while the query
+            // was being embedded; its vectors no longer compare.
+            if let Some(made_by) = vectors.made_by.take()
+                && !read_identity(connection)?.is_some_and(|now| now.same_model(&made_by))
+            {
+                for (vector, capability) in [
+                    (vectors.meaning.take(), Capability::Meaning),
+                    (vectors.picture.take(), Capability::Picture),
+                ] {
+                    if vector.is_some() {
+                        notes.push(note(
+                            capability,
+                            Reason::NotReady,
+                            Some(MODEL_CHANGED.to_owned()),
+                        ));
+                    }
+                }
+            }
+            let vectors = &vectors;
             let ranked = query.sort == SearchSort::BestMatch
                 && (vectors.meaning.is_some() || vectors.picture.is_some() || vectors.rerank);
             if ranked {
@@ -2937,11 +3012,16 @@ mod tests {
         workspace: &Arc<Workspace>,
         request: Value,
     ) -> Result<SearchResponse, ToolError> {
+        let permits = Arc::new(Semaphore::new(4));
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(index.search(workspace, serde_json::from_value(request).unwrap()))
+            .block_on(index.search(
+                workspace,
+                serde_json::from_value(request).unwrap(),
+                &permits,
+            ))
     }
 
     fn search(
@@ -2958,7 +3038,11 @@ mod tests {
         request: Value,
     ) -> SearchResponse {
         index
-            .search(workspace, serde_json::from_value(request).unwrap())
+            .search(
+                workspace,
+                serde_json::from_value(request).unwrap(),
+                &Arc::new(Semaphore::new(4)),
+            )
             .await
             .unwrap()
     }
@@ -3664,7 +3748,8 @@ mod tests {
             for (name, value) in [
                 (
                     "state.json",
-                    json!({"status": "completed", "finished_unix_ms": 20_000}),
+                    json!({"status": "completed", "finished_unix_ms": 20_000,
+                        "slice": {"project_id": id, "output_dir": output}}),
                 ),
                 (
                     "summary.json",
@@ -3952,6 +4037,7 @@ mod tests {
                 .search(
                     &workspace,
                     serde_json::from_value(json!({"picture": "queries/missing.png"})).unwrap(),
+                    &Arc::new(Semaphore::new(4)),
                 )
                 .await
                 .unwrap_err();
@@ -4005,6 +4091,76 @@ mod tests {
                 Some(Reason::PicturesRejected)
             );
             assert_eq!(picture_requests(&server).await, 1);
+        }
+
+        #[tokio::test]
+        async fn a_refused_query_picture_turns_picture_search_off() {
+            let server = MockServer::start().await;
+            served(
+                &server,
+                FakeModel {
+                    refuse_pictures: true,
+                    ..FakeModel::new()
+                },
+            )
+            .await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            let index = configured(&server, &[("PRINTABLE_EMBEDDING_IMAGES", "on")]);
+            index.run(&workspace, PassKind::Incremental).await.unwrap();
+            assert_eq!(
+                picture_requests(&server).await,
+                0,
+                "no project has a picture"
+            );
+            workspace
+                .write_artifact("queries/red.png", &coloured_png([250, 0, 0]), false)
+                .unwrap();
+            for _ in 0..2 {
+                let found = find(&index, &workspace, json!({"picture": "queries/red.png"})).await;
+                assert_eq!(
+                    noted(&found.degraded, "picture_search_unavailable")
+                        .unwrap()
+                        .reason,
+                    Some(Reason::PicturesRejected)
+                );
+            }
+            assert_eq!(
+                picture_requests(&server).await,
+                1,
+                "pictures are not sent again"
+            );
+            let status = index.status(&workspace).unwrap();
+            assert!(status.methods.meaning && !status.methods.picture);
+        }
+
+        #[tokio::test]
+        async fn query_vectors_from_a_replaced_model_are_not_compared() {
+            let server = MockServer::start().await;
+            served(&server, FakeModel::new()).await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            let index = configured(&server, &[]);
+            index.run(&workspace, PassKind::Incremental).await.unwrap();
+            let mut earlier = index
+                .with_connection(|connection| Ok(read_identity(connection)?))
+                .unwrap()
+                .unwrap();
+            earlier.probe.reverse();
+            let query =
+                Query::new(serde_json::from_value(json!({"text": "vase"})).unwrap()).unwrap();
+            let vectors = QueryVectors {
+                meaning: Some(vec![0.0; earlier.dimensions]),
+                picture: None,
+                rerank: false,
+                made_by: Some(earlier),
+            };
+            let Draft::Page { notes, .. } = index.draft(&workspace, &query, vectors).unwrap()
+            else {
+                panic!("vectors from another model are not ranked");
+            };
+            let note = noted(&notes, "meaning_search_unavailable").unwrap();
+            assert_eq!(note.reason, Some(Reason::NotReady));
         }
 
         #[tokio::test]

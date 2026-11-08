@@ -27,6 +27,8 @@ tower-http = { version = "0.7", features = ["trace", "limit"] }
 rmcp = { version = "3.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # HTTP self-probe and validated HTTP URL parsing.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Reads Retry-After dates from embedding and re-ranking services.
+httpdate = "1"
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps response object keys in declared/insertion order for
 # stable wire output; schemars is rmcp's (same major) for #[derive(JsonSchema)].

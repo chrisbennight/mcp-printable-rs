@@ -13,7 +13,11 @@
 //! only in the `Authorization` header and never appear in errors, logs or
 //! status.
 
-use std::{fmt, io::Cursor, time::Duration};
+use std::{
+    fmt,
+    io::Cursor,
+    time::{Duration, SystemTime},
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
@@ -445,14 +449,24 @@ async fn post(
     Ok(bytes)
 }
 
-/// The wait a busy answer asks for in whole seconds, at most an hour. A date
-/// or a missing value waits a minute.
+/// The wait a busy answer asks for, in seconds or until a date, at most an
+/// hour. A missing or unreadable value waits a minute.
 fn retry_after(headers: &HeaderMap) -> Duration {
     headers
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map_or(DEFAULT_RETRY_AFTER, Duration::from_secs)
+        .map(str::trim)
+        .and_then(|value| {
+            value
+                .parse::<u64>()
+                .map(Duration::from_secs)
+                .ok()
+                .or_else(|| {
+                    let at = httpdate::parse_http_date(value).ok()?;
+                    Some(at.duration_since(SystemTime::now()).unwrap_or_default())
+                })
+        })
+        .unwrap_or(DEFAULT_RETRY_AFTER)
         .min(MAX_RETRY_AFTER)
 }
 
@@ -862,6 +876,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_retry_date_waits_until_that_time() {
+        let mut headers = HeaderMap::new();
+        let later = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(20 * 60));
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&later).unwrap());
+        let wait = retry_after(&headers);
+        assert!(
+            wait > Duration::from_secs(19 * 60) && wait <= Duration::from_secs(20 * 60),
+            "{wait:?}"
+        );
+    }
+
     #[tokio::test]
     async fn statuses_map_to_waits_refusals_and_failures() {
         let server = MockServer::start().await;
@@ -878,6 +904,15 @@ mod tests {
             (
                 ResponseTemplate::new(503),
                 ServiceError::Busy(DEFAULT_RETRY_AFTER),
+            ),
+            (
+                ResponseTemplate::new(503).insert_header("retry-after", "soon"),
+                ServiceError::Busy(DEFAULT_RETRY_AFTER),
+            ),
+            (
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT"),
+                ServiceError::Busy(Duration::ZERO),
             ),
             (ResponseTemplate::new(401), ServiceError::Refused(401)),
             (ResponseTemplate::new(400), ServiceError::Refused(400)),
