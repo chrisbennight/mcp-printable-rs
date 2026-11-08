@@ -106,6 +106,9 @@ pub struct Settings {
     pub allowed_origins: Vec<String>,
     /// Trusted external base, including any reverse-proxy prefix and trailing slash.
     pub download_base_url: Option<reqwest::Url>,
+    /// The read-only project library web page from `PRINTABLE_WEB_LISTEN`;
+    /// absent leaves it off.
+    pub web: Option<crate::web::WebSettings>,
 }
 
 /// Stable operator-facing settings errors; the offending variable name is the
@@ -122,6 +125,10 @@ pub enum SettingsError {
     Library(&'static str),
     #[error("project search index setting {0} is invalid")]
     ProjectIndex(&'static str),
+    #[error("web page setting {0} is missing or invalid")]
+    Web(&'static str),
+    #[error("PRINTABLE_WEB_LISTEN requires PRINTABLE_WORKSPACE_ROOT")]
+    WebRequiresWorkspace,
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
@@ -197,6 +204,10 @@ impl Settings {
         if blender_workspace_root.is_some() && workspace_root.is_none() {
             return Err(SettingsError::BlenderWorkspaceRequiresWorkspace);
         }
+        let web = crate::web::configure(&get)?;
+        if web.is_some() && workspace_root.is_none() {
+            return Err(SettingsError::WebRequiresWorkspace);
+        }
         Ok(Self {
             http_host: present_or(&get, "PRINTABLE_HTTP_HOST", DEFAULT_HTTP_HOST),
             http_port: port(&get, "PRINTABLE_HTTP_PORT", DEFAULT_HTTP_PORT)?,
@@ -228,6 +239,7 @@ impl Settings {
             allowed_hosts: allowed_hosts(nonempty(&get, "PRINTABLE_ALLOWED_HOSTS")),
             allowed_origins: allowed_origins(nonempty(&get, "PRINTABLE_ALLOWED_ORIGINS"))?,
             download_base_url: download_base_url(nonempty(&get, "PRINTABLE_DOWNLOAD_BASE_URL"))?,
+            web,
         })
     }
 }
@@ -515,6 +527,7 @@ mod tests {
         assert_eq!(s.geometry_worker_memory_bytes, 1024 * 1024 * 1024);
         assert_eq!(s.allowed_hosts, vec!["localhost", "127.0.0.1", "::1"]);
         assert!(s.allowed_origins.is_empty());
+        assert!(s.web.is_none());
         assert!(format!("{s:?}").contains("BearerSecret([REDACTED])"));
         assert!(!format!("{s:?}").contains("0123456789abcdef"));
     }
@@ -686,6 +699,35 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "PRINTABLE_BLENDER_WORKSPACE_ROOT requires PRINTABLE_WORKSPACE_ROOT"
+        );
+    }
+
+    #[test]
+    fn the_web_page_requires_a_workspace() {
+        let web = [
+            ("PRINTABLE_WEB_LISTEN", "127.0.0.1:8080"),
+            ("PRINTABLE_WEB_TRUSTED_PROXIES", "127.0.0.1"),
+            ("PRINTABLE_WEB_USER_HEADER", "X-Printable-User"),
+            ("PRINTABLE_WEB_USERS", "alice"),
+        ];
+        assert_eq!(
+            Settings::from_lookup(lookup(&web)).unwrap_err(),
+            SettingsError::WebRequiresWorkspace
+        );
+        let mut with_workspace = web.to_vec();
+        with_workspace.push(("PRINTABLE_WORKSPACE_ROOT", "/data/app"));
+        let settings = Settings::from_lookup(lookup(&with_workspace)).unwrap();
+        assert_eq!(
+            settings.web.unwrap().listen,
+            "127.0.0.1:8080".parse::<std::net::SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            Settings::from_lookup(lookup(&web[1..]))
+                .unwrap()
+                .web
+                .map(|w| w.listen),
+            None,
+            "the other web settings are read only with PRINTABLE_WEB_LISTEN"
         );
     }
 

@@ -1,5 +1,6 @@
-//! The axum router: `/healthz` liveness, `/readyz` dependency readiness, and
-//! the streamable-HTTP `/mcp` endpoint.
+//! The axum routers: `/healthz` liveness, `/readyz` dependency readiness, and
+//! the streamable-HTTP `/mcp` endpoint, plus the optional read-only library
+//! web page, which has a router and listener of its own.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -46,7 +47,21 @@ const MAX_REQUEST_BODY_BYTES: usize = CHUNK_MAX_DECODED.div_ceil(3) * 4 + 64 * 1
 
 const DUPLICATE_JSON_MEMBER: &str = "duplicate JSON object member";
 
-/// Build the router. `/mcp` is the stateful streamable-HTTP transport, guarded
+/// The routers for the server's listeners.
+pub struct Routers {
+    /// The MCP endpoint, file transfers and health routes.
+    pub mcp: Router,
+    /// The read-only project library page, present when `PRINTABLE_WEB_LISTEN`
+    /// is set. It never shares a listener with the MCP endpoint.
+    pub web: Option<Router>,
+}
+
+/// Build the MCP router; see [`build_routers`].
+pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::Result<Router> {
+    Ok(build_routers(settings, cancel)?.mcp)
+}
+
+/// Build the routers. `/mcp` is the stateful streamable-HTTP transport, guarded
 /// by browser Origin policy, the shared bearer, and the `Host` allowlist,
 /// and wired to `cancel` so graceful shutdown tears sessions down; `/healthz`
 /// is static liveness and `/readyz` is a sanitized live dependency probe.
@@ -54,8 +69,9 @@ const DUPLICATE_JSON_MEMBER: &str = "duplicate JSON object member";
 /// Fallible: opening the confined workspace validates `PRINTABLE_WORKSPACE_ROOT`
 /// (a non-directory is a startup config error). The backend handles are
 /// constructed once here and shared across sessions; the streamable-HTTP factory
-/// clones the `Arc`-backed server per session.
-pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::Result<Router> {
+/// clones the `Arc`-backed server per session. The web page shares the
+/// workspace and search index but none of the MCP routes or middleware.
+pub fn build_routers(settings: &Settings, cancel: CancellationToken) -> anyhow::Result<Routers> {
     let workspace = Arc::new(
         Workspace::open(
             settings.workspace_root.as_deref(),
@@ -92,6 +108,13 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
             cancel.child_token(),
         );
     }
+    let web = settings.web.as_ref().map(|web| {
+        crate::web::router(
+            web.clone(),
+            Arc::clone(&workspace),
+            Arc::clone(&settings.project_index),
+        )
+    });
     let server = PrintableServer::new(workspace, blender, Arc::new(settings.clone()));
     let readiness_server = server.clone();
     let incoming_files = server.incoming_files();
@@ -144,7 +167,7 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
         )
         .with_state(incoming_files);
 
-    Ok(Router::new()
+    let mcp = Router::new()
         .merge(downloads)
         .merge(uploads)
         .route("/healthz", get(healthz))
@@ -156,7 +179,8 @@ pub fn build_router(settings: &Settings, cancel: CancellationToken) -> anyhow::R
             }),
         )
         .nest_service("/mcp", mcp)
-        .layer(TraceLayer::new_for_http()))
+        .layer(TraceLayer::new_for_http());
+    Ok(Routers { mcp, web })
 }
 
 /// Unauthenticated process-liveness probe. Backend readiness is the
@@ -349,12 +373,95 @@ impl<'de> Visitor<'de> for UniqueJsonVisitor {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::HashMap, fs, net::SocketAddr};
 
+    use axum::{
+        body::Body,
+        extract::ConnectInfo,
+        http::{Request, StatusCode},
+    };
     use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt as _;
 
-    use super::build_router;
+    use super::{build_router, build_routers};
     use crate::config::Settings;
+
+    fn settings(pairs: &[(&str, &str)]) -> Settings {
+        let mut values: HashMap<String, String> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        values.insert(
+            "PRINTABLE_MCP_BEARER".into(),
+            concat!(
+                "0123456789abcdef",
+                "0123456789abcdef",
+                "0123456789abcdef",
+                "0123456789abcdef"
+            )
+            .into(),
+        );
+        Settings::from_lookup(move |key| values.get(key).cloned()).expect("valid settings")
+    }
+
+    fn get(path: &str) -> Request<Body> {
+        let mut request = Request::get(path)
+            .header("x-printable-user", "alice")
+            .body(Body::empty())
+            .expect("request");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+        request
+    }
+
+    #[tokio::test]
+    async fn the_web_page_has_its_own_router_only_when_configured() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let root = workspace.path().to_str().expect("UTF-8 path");
+        let cancel = CancellationToken::new();
+        let off = build_routers(
+            &settings(&[("PRINTABLE_WORKSPACE_ROOT", root)]),
+            cancel.child_token(),
+        )
+        .expect("routers");
+        assert!(off.web.is_none());
+        let on = build_routers(
+            &settings(&[
+                ("PRINTABLE_WORKSPACE_ROOT", root),
+                ("PRINTABLE_WEB_LISTEN", "127.0.0.1:8080"),
+                ("PRINTABLE_WEB_TRUSTED_PROXIES", "127.0.0.1"),
+                ("PRINTABLE_WEB_USER_HEADER", "X-Printable-User"),
+                ("PRINTABLE_WEB_USERS", "alice"),
+            ]),
+            cancel.child_token(),
+        )
+        .expect("routers");
+        let web = on
+            .web
+            .expect("a web router when PRINTABLE_WEB_LISTEN is set");
+        // The MCP router behaves the same either way and serves no web pages.
+        for mcp in [off.mcp, on.mcp] {
+            let health = mcp
+                .clone()
+                .oneshot(get("/healthz"))
+                .await
+                .expect("response");
+            assert_eq!(health.status(), StatusCode::OK);
+            for path in ["/", "/static/app.css", "/projects/desk"] {
+                let page = mcp.clone().oneshot(get(path)).await.expect("response");
+                assert_eq!(page.status(), StatusCode::NOT_FOUND, "{path}");
+            }
+        }
+        // The web router serves pages and none of the MCP routes.
+        let page = web.clone().oneshot(get("/")).await.expect("response");
+        assert_eq!(page.status(), StatusCode::OK);
+        for path in ["/healthz", "/readyz", "/mcp", "/file-transfers/download/x"] {
+            let response = web.clone().oneshot(get(path)).await.expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        cancel.cancel();
+    }
 
     #[test]
     fn workspace_open_failure_retains_startup_context_and_io_cause() {

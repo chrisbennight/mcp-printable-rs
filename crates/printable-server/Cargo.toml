@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 futures-util = { version = "0.3", default-features = false }
 axum = "0.8"
-tower = { version = "0.5", features = ["limit"] }
+tower = { version = "0.5", features = ["limit", "util"] }
 tower-http = { version = "0.7", features = ["trace", "limit"] }
 rmcp = { version = "3.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # HTTP self-probe and validated HTTP URL parsing.
@@ -68,6 +68,9 @@ jsonschema = { version = "0.52", default-features = false }
 # The derived project search index. The bundled SQLite build includes FTS5 and
 # its trigram tokenizer, so the server needs no system SQLite library.
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+# Templates for the read-only library web page. Interpolated values are
+# HTML-escaped unless explicitly marked as markup.
+maud = "0.27"
 
 [dev-dependencies]
 wiremock = "0.6"
