@@ -100,12 +100,12 @@ Building one never contacts a printer backend or a model site. It reports:
 | `dates.downloaded_unix_ms` | The earliest retrieval time in the project's `source.json` records |
 | `dates.last_printed_unix_ms` | The recording time of the newest completed print |
 | `cover` | The stored cover's path, media type and size, or null |
-| `file_count`, `formats`, `has_3mf` | File names in the project directory, counted by format: `3mf`, `gcode.3mf` (sliced), `gcode`, `stl`, `step`, `scad`, `blend`, `obj`, `glb`, `gltf`, `ply`, `off`, `dxf` and `svg`; `has_3mf` includes sliced 3MF files |
+| `file_count`, `formats`, `has_3mf` | File names in the project directory, counted by format: `3mf`, `gcode.3mf` (sliced), `gcode`, `stl`, `step`, `scad`, `blend`, `obj`, `glb`, `gltf`, `ply`, `off`, `dxf`, `svg`, `py` (CadQuery sources) and `cadmodel` (CAD build models); `has_3mf` includes sliced 3MF files |
 | `downloads` | Site, model ID, page URL, title, designer, license name and retrieval time from each `source.json` |
 | `slices` | The number of completed slices and the newest one's printer, process, plate count, filament types and colours, and finish time |
 | `prints` | Counts by outcome, completed prints per printer, the latest outcome and the last printed time |
 | `printers`, `materials`, `colours` | Names from the print records and the newest slice, merged without regard to letter case; hexadecimal colours are shown as `#RRGGBB` |
-| `unreadable` | Records that could not be read, with an error code; the rest of the card is still built |
+| `unreadable` | Up to 16 records that could not be read, each with an error code; the rest of the card is still built |
 
 Lists of printers, materials, colours, per-printer counts and slice filaments
 hold at most 16 entries, and a `truncated` flag reports when more exist. A card
