@@ -86,7 +86,7 @@ fn bed_faces(mesh: &TriangleMesh) -> Vec<bool> {
         .iter()
         .map(|vertex| vertex[2])
         .fold(f64::INFINITY, f64::min);
-    let tolerance = BED_TOLERANCE * extent(mesh);
+    let tolerance = BED_TOLERANCE * extent(&mesh.vertices);
     mesh.triangles
         .iter()
         .map(|triangle| {
@@ -108,7 +108,7 @@ pub(crate) fn thin(
     base_mm: f64,
     head: &[(u32, [f64; 3])],
 ) -> Result<SurfaceFinding, GeometryError> {
-    let size = extent(mesh);
+    let size = extent(&mesh.vertices);
     let start = RAY_START * size;
     let base = base_mm + BED_TOLERANCE * size;
     let on_bed = bed_faces(mesh);
@@ -228,7 +228,7 @@ fn finding(mesh: &TriangleMesh, flagged: &[bool], head: &[(u32, [f64; 3])]) -> S
     SurfaceFinding { area_mm2, regions }
 }
 
-fn root(parent: &mut [usize], mut index: usize) -> usize {
+pub(crate) fn root(parent: &mut [usize], mut index: usize) -> usize {
     while parent[index] != index {
         parent[index] = parent[parent[index]];
         index = parent[index];
@@ -236,10 +236,10 @@ fn root(parent: &mut [usize], mut index: usize) -> usize {
     index
 }
 
-fn extent(mesh: &TriangleMesh) -> f64 {
+pub(crate) fn extent(vertices: &[[f64; 3]]) -> f64 {
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
-    for vertex in &mesh.vertices {
+    for vertex in vertices {
         for axis in 0..3 {
             low[axis] = low[axis].min(vertex[axis]);
             high[axis] = high[axis].max(vertex[axis]);
@@ -250,7 +250,7 @@ fn extent(mesh: &TriangleMesh) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn unit_normal([a, b, c]: [[f64; 3]; 3]) -> Option<[f64; 3]> {
+pub(crate) fn unit_normal([a, b, c]: [[f64; 3]; 3]) -> Option<[f64; 3]> {
     let normal = cross(sub(b, a), sub(c, a));
     let length = (0..3)
         .map(|axis| normal[axis] * normal[axis])
@@ -259,7 +259,7 @@ fn unit_normal([a, b, c]: [[f64; 3]; 3]) -> Option<[f64; 3]> {
     (length > 0.0).then(|| normal.map(|value| value / length))
 }
 
-fn area([a, b, c]: [[f64; 3]; 3]) -> f64 {
+pub(crate) fn area([a, b, c]: [[f64; 3]; 3]) -> f64 {
     let normal = cross(sub(b, a), sub(c, a));
     0.5 * (0..3)
         .map(|axis| normal[axis] * normal[axis])

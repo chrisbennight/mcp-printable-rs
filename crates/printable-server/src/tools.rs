@@ -40,7 +40,8 @@ use tokio::sync::Semaphore;
 
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
-    AssemblyOptions, LinearMotion, RotationalMotion, ValidationOptions, analyze_stl,
+    AssemblyOptions, LinearMotion, RotationalMotion, ValidationOptions, ValidationReport,
+    analyze_stl,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -995,6 +996,9 @@ struct ValidateMeshParams {
     overhang_angle_degrees: f64,
     /// Optional material density in grams per cubic centimetre for mass estimation.
     density_g_cm3: Option<f64>,
+    /// Optional minimum wall thickness in millimetres. When given, a valid solid's wall thickness is measured from points spread over its surface and reported in `wall_thickness`, with any regions below the minimum.
+    #[schemars(range(min = 0.0))]
+    minimum_wall_mm: Option<f64>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1632,7 +1636,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, and overhang support. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, and optional wall thickness against a minimum. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -4697,6 +4701,7 @@ async fn validate_mesh_artifact(
                 build_direction: params.build_direction,
                 overhang_angle_degrees: params.overhang_angle_degrees,
                 density_g_cm3: params.density_g_cm3,
+                minimum_wall_mm: params.minimum_wall_mm,
             },
         )?;
         Ok::<_, ToolError>(json!({
@@ -5245,17 +5250,24 @@ fn insert_design_profile(result: &mut Value, profile: Option<&ProductDesignProfi
     }
 }
 
-fn insert_manufacturing_evidence(result: &mut Value, profile: &ProductDesignProfile) {
+fn insert_manufacturing_evidence(
+    result: &mut Value,
+    profile: &ProductDesignProfile,
+    validation: &ValidationReport,
+) {
+    let wall = &validation.assessment.criteria["wall_thickness"];
     result["manufacturing_evidence"] = json!({
         "units": "millimeters",
         "build_direction": [0.0, 0.0, 1.0],
-        "measured": ["topology", "bounds", "build_plate_contact", "overhang"],
+        "measured": ["topology", "bounds", "build_plate_contact", "overhang", "wall_thickness"],
         "kit_local_wall_assertions": {
             "status": "enforced_when_used",
             "minimum_wall_mm": profile.manufacturing.minimum_wall_mm,
         },
         "global_minimum_wall": {
-            "status": "not_certified",
+            "status": wall.status,
+            "minimum_wall_mm": profile.manufacturing.minimum_wall_mm,
+            "evidence": wall.evidence.map(|pointer| format!("/validation{pointer}")),
         },
         "moving_clearance": {
             "status": "not_run",
@@ -5288,6 +5300,9 @@ async fn scad_compile(
             |profile| profile.manufacturing.maximum_overhang_degrees,
         ),
         density_g_cm3: None,
+        minimum_wall_mm: product_profile
+            .as_ref()
+            .map(|profile| profile.manufacturing.minimum_wall_mm),
     };
     let definition_metadata = scad_definition_metadata(&definitions);
     let source = bind_scad_variant(params.source, &definitions);
@@ -5320,7 +5335,7 @@ async fn scad_compile(
         });
         insert_design_profile(&mut result, params.design_profile.as_ref());
         if let Some(profile) = params.design_profile.as_ref() {
-            insert_manufacturing_evidence(&mut result, profile);
+            insert_manufacturing_evidence(&mut result, profile, &validation);
         }
         Ok::<_, ToolError>(result)
     })
