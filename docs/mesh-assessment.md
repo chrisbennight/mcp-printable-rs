@@ -184,6 +184,53 @@ no `base` group. A face crossing the plane is split there, so each part is
 judged against its own half, and no patch spans both halves. A face lying on
 the plane belongs to the half it faces.
 
+## Compare with a reference
+
+Pass `compare` to `validate_mesh` to measure how far the mesh's surface lies
+from a reference mesh, and where. Use it to check how far a repaired, rebuilt
+or hollowed mesh moved from its source, to compare two revisions by shape, or
+to compare a scan of a printed part with its design:
+
+```json
+{"path": "scans/bracket-scan.stl", "compare": {
+  "reference_path": "models/bracket.stl", "alignment": "best_fit", "tolerance_mm": 0.2
+}}
+```
+
+With `alignment: "none"`, the default, both meshes are taken to share a
+frame. With `best_fit`, the mesh is rotated and moved onto the reference, but
+never scaled, so a size error such as shrinkage shows as deviation. The fit
+starts from the meshes as given and from every rotation that maps one mesh's
+principal axes onto the other's, refines each by point-to-plane iterative
+closest point with outliers left out, and keeps the pose with the smallest
+distances over all its points, each capped and measured to surface facing the
+point's way, so a pose that turns a surface over loses. A part with a rotational or
+mirror symmetry can fit equally well in more than one pose.
+
+Points spread over the mesh's surface are each measured against the nearest
+reference surface that faces the same way, so a point on one side of a thin
+wall is not measured against the other side. Deviation is measured along that
+surface's outward normal: positive outside it, where the mesh has extra
+material, and negative inside it, where material is missing. A point with no reference surface facing its way
+within `max_distance_mm`, a tenth of the reference's diagonal by default, is
+unmeasured. So is a point whose search for that surface would pass more than
+1,024 reference faces turned the other way, which keeps the work in proportion
+to the mesh when its faces turn away from the reference's, as with reversed
+normals.
+
+| Field | Meaning |
+| --- | --- |
+| `alignment` | The method, the rotation and translation that carry the mesh into the reference's frame, and the rotation angle. A best fit also reports its points, the points matched in its last step, and their RMS distance from the reference. |
+| `sample_spacing_mm`, `samples` | How densely the surface was sampled, and the points measured. The spacing widens on large meshes so that large faces do not multiply the work. Every triangle keeps at least one point, so on a dense mesh the work grows with the triangle count, like the rest of the analysis. |
+| `unmeasured_samples`, `measured_area_share` | Points with no reference surface facing their way in reach, or whose search for it gave up, and the share of the surface measured. |
+| `deviation_mm` | Area-weighted minimum, 5th, 50th and 95th percentiles, maximum, mean and RMS of the measured deviation. |
+| `within_tolerance_share` | Share of the measured surface within `tolerance_mm` either side. |
+| `region_count`, `regions` | Clusters of points beyond the tolerance, outside and inside the reference separately, largest first. Points within about two sample spacings join one cluster, so both faces of a wall that came out thicker form one region. Each gives its area, largest deviation, where that lies, its centre, and its bounds, in the reference's frame. |
+
+Regions add a `deviation_beyond_tolerance` warning. The response also names
+the reference in `reference_artifact`. A comparison measures surfaces; it does
+not say which mesh is right.
+
 ## Compatibility
 
 `printable` remains equal to `solid_geometry` for existing callers. It is

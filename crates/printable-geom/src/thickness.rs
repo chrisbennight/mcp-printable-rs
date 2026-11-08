@@ -211,7 +211,11 @@ pub(crate) fn measure(
 /// [`MAX_SAMPLES`] points. The floor keeps the count estimate finite, and
 /// widening then reaches the budget in a step or two. Every triangle has at
 /// least one point, so widening stops once it no longer reduces the count.
-fn sample_spacing(vertices: &[[f64; 3]], triangles: &[[u32; 3]], minimum_wall_mm: f64) -> f64 {
+pub(crate) fn sample_spacing(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    minimum_wall_mm: f64,
+) -> f64 {
     // Each triangle's length along its longest edge and height across it.
     let shapes: Vec<(f64, f64)> = triangles
         .iter()
@@ -269,7 +273,7 @@ fn longest_edge([a, b, c]: [[f64; 3]; 3]) -> (f64, [[f64; 3]; 3]) {
 /// gives its centroid and exact area. Every point of the triangle therefore
 /// lies within `spacing` of a sample, and a sliver gets one row of cells
 /// along its length.
-fn triangle_samples(points: [[f64; 3]; 3], spacing: f64) -> Vec<([f64; 3], f64)> {
+pub(crate) fn triangle_samples(points: [[f64; 3]; 3], spacing: f64) -> Vec<([f64; 3], f64)> {
     let (longest, [p, q, r]) = longest_edge(points);
     if longest == 0.0 {
         return Vec::new();

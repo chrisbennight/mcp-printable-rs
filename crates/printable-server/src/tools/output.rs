@@ -288,6 +288,63 @@ fn mesh_report() -> Value {
         }),
         &["measure", "features", "nominal", "tolerance", "status"],
     );
+    let deviation_region = object(
+        json!({
+            "area_mm2": number,
+            "extreme_mm": number,
+            "extreme_point_mm": point,
+            "centre_mm": point,
+            "bounds": bounds
+        }),
+        &[
+            "area_mm2",
+            "extreme_mm",
+            "extreme_point_mm",
+            "centre_mm",
+            "bounds",
+        ],
+    );
+    let comparison = object(
+        json!({
+            "alignment": object(
+                json!({
+                    "method": {"enum": ["none", "best_fit"]},
+                    "rotation": {"type": "array", "items": point, "minItems": 3, "maxItems": 3},
+                    "translation_mm": point,
+                    "rotation_degrees": number,
+                    "fit_points": {"type": "integer", "minimum": 0},
+                    "matched_points": {"type": "integer", "minimum": 0},
+                    "rms_mm": number
+                }),
+                &["method", "rotation", "translation_mm", "rotation_degrees"]
+            ),
+            "tolerance_mm": number,
+            "max_distance_mm": number,
+            "sample_spacing_mm": number,
+            "samples": {"type": "integer", "minimum": 0},
+            "unmeasured_samples": {"type": "integer", "minimum": 0},
+            "measured_area_share": number,
+            "deviation_mm": object(
+                json!({"minimum": number, "p5": number, "p50": number, "p95": number, "maximum": number, "mean": number, "rms": number}),
+                &["minimum", "p5", "p50", "p95", "maximum", "mean", "rms"]
+            ),
+            "within_tolerance_share": number,
+            "region_count": {"type": "integer", "minimum": 0},
+            "regions": {"type": "array", "items": deviation_region}
+        }),
+        &[
+            "alignment",
+            "tolerance_mm",
+            "max_distance_mm",
+            "sample_spacing_mm",
+            "samples",
+            "unmeasured_samples",
+            "measured_area_share",
+            "within_tolerance_share",
+            "region_count",
+            "regions",
+        ],
+    );
     let dimensions = object(
         json!({
             "features": {"type": "array", "items": feature},
@@ -351,6 +408,7 @@ fn mesh_report() -> Value {
         json!({
             "wall_thickness": wall_thickness,
             "dimensions": dimensions,
+            "comparison": comparison,
             "draft": draft,
             "solid_geometry": {"type": "boolean"},
             "printable": {"type": "boolean", "deprecated": true,
@@ -682,7 +740,8 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         ),
         "validate_mesh" => object(
             json!({
-                "artifact": artifact(), "units": {"const": "millimetres"}, "report": mesh_report()
+                "artifact": artifact(), "reference_artifact": artifact(),
+                "units": {"const": "millimetres"}, "report": mesh_report()
             }),
             &["artifact", "units", "report"],
         ),

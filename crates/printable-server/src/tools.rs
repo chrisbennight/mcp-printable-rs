@@ -40,9 +40,9 @@ use tokio::sync::Semaphore;
 
 use printable_blender::{BlenderClient, Deadline, Params};
 use printable_geom::{
-    AssemblyOptions, DimensionOptions, DimensionRequirement, DraftOptions, FeatureRequest,
-    LinearMotion, Measure, RotationalMotion, Shape, ValidationOptions, ValidationReport,
-    analyze_stl,
+    Alignment, AssemblyOptions, ComparisonOptions, DimensionOptions, DimensionRequirement,
+    DraftOptions, FeatureRequest, LinearMotion, Measure, RotationalMotion, Shape,
+    ValidationOptions, ValidationReport, analyze_stl, decode_stl,
 };
 use printable_imaging::{PanelLayout, Tile, TileLayout, constants, side_by_side, tile_images};
 use printable_scad::{RunOutput, ScadPermit, ScadRunner};
@@ -1004,6 +1004,32 @@ struct ValidateMeshParams {
     dimensions: Option<DimensionParams>,
     /// Optional mould release check. Reports how far each face leans off the pull direction, and the faces that catch on the mould.
     draft: Option<DraftParams>,
+    /// Optional comparison with a reference mesh. Reports the signed distance of this mesh's surface from the reference in `comparison`: positive where this mesh has extra material, negative where material is missing, with the regions beyond the tolerance.
+    compare: Option<CompareParams>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CompareParams {
+    /// Confined STL artifact to compare against, in millimetres.
+    reference_path: String,
+    /// `none` when both meshes share a frame (default), or `best_fit` for a rigid fit of this mesh onto the reference, rotation and translation without scale.
+    #[serde(default)]
+    alignment: CompareAlignment,
+    /// Deviation either side that counts as matching, in millimetres.
+    #[schemars(range(min = 0.0))]
+    tolerance_mm: f64,
+    /// Optional search distance in millimetres. Surface points farther than this from any reference surface facing their way are unmeasured (default a tenth of the reference's diagonal).
+    #[schemars(range(min = 0.0))]
+    max_distance_mm: Option<f64>,
+}
+
+#[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CompareAlignment {
+    #[default]
+    None,
+    BestFit,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -1773,7 +1799,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "printable_validate_mesh",
-        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional mould draft along a pull direction, and optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances. Returns actionable errors and warnings without modifying the artifact.",
+        description: "Validate a confined STL for watertightness, winding, manifold solid geometry, self-intersections, connected components, bounds, volume, surface area, center of mass, build-plate contact, overhang support, optional wall thickness against a minimum, optional mould draft along a pull direction, optional dimensions of planes, cylinders and spheres fitted around seed points against nominal values and tolerances, and optional signed deviation from a reference mesh after an optional rigid best fit. Returns actionable errors and warnings without modifying the artifact.",
         schema: schema_of::<ValidateMeshParams>,
         annotations: read_only_idempotent,
     },
@@ -4866,10 +4892,32 @@ async fn validate_mesh_artifact(
     params: ValidateMeshParams,
 ) -> Result<Value, ToolError> {
     validate_blender_artifact(&workspace, &params.path, ".stl", true)?;
+    if let Some(compare) = &params.compare {
+        validate_blender_artifact(&workspace, &compare.reference_path, ".stl", true)?;
+    }
     geometry_blocking(move || {
         let snapshot = workspace.snapshot_artifact(&params.path)?;
         let artifact = snapshot.meta().clone();
         let bytes = std::fs::read(snapshot.path())?;
+        let (comparison, reference_artifact) = match params.compare {
+            Some(compare) => {
+                let snapshot = workspace.snapshot_artifact(&compare.reference_path)?;
+                let reference = decode_stl(&std::fs::read(snapshot.path())?).map_err(|error| {
+                    ToolError::Validation(format!("compare.reference_path: {error}"))
+                })?;
+                let options = ComparisonOptions {
+                    reference,
+                    alignment: match compare.alignment {
+                        CompareAlignment::None => Alignment::None,
+                        CompareAlignment::BestFit => Alignment::BestFit,
+                    },
+                    tolerance_mm: compare.tolerance_mm,
+                    max_distance_mm: compare.max_distance_mm,
+                };
+                (Some(options), Some(snapshot.meta().clone()))
+            }
+            None => (None, None),
+        };
         let report = analyze_stl(
             &bytes,
             ValidationOptions {
@@ -4878,6 +4926,7 @@ async fn validate_mesh_artifact(
                 density_g_cm3: params.density_g_cm3,
                 minimum_wall_mm: params.minimum_wall_mm,
                 dimensions: params.dimensions.map(DimensionOptions::from),
+                comparison,
                 draft: params.draft.map(|draft| DraftOptions {
                     pull_direction: draft.pull_direction,
                     minimum_draft_degrees: draft.minimum_draft_degrees,
@@ -4885,11 +4934,15 @@ async fn validate_mesh_artifact(
                 }),
             },
         )?;
-        Ok::<_, ToolError>(json!({
+        let mut result = json!({
             "artifact": artifact,
             "units": "millimetres",
             "report": report,
-        }))
+        });
+        if let Some(reference) = reference_artifact {
+            result["reference_artifact"] = json!(reference);
+        }
+        Ok::<_, ToolError>(result)
     })
     .await
 }
@@ -5485,6 +5538,7 @@ async fn scad_compile(
             .as_ref()
             .map(|profile| profile.manufacturing.minimum_wall_mm),
         dimensions: None,
+        comparison: None,
         draft: None,
     };
     let definition_metadata = scad_definition_metadata(&definitions);

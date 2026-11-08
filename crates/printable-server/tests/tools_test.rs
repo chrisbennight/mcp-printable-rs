@@ -2667,6 +2667,60 @@ async fn mesh_validation_fits_features_and_checks_dimensions() {
 }
 
 #[tokio::test]
+async fn mesh_validation_compares_with_a_reference_mesh() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    ws.write_artifact("models/boss.stl", &boss_stl(10.0, 20.0, 64), false)
+        .expect("seed reference STL");
+    ws.write_artifact("models/wide.stl", &boss_stl(10.3, 20.0, 64), false)
+        .expect("seed compared STL");
+    let validator = jsonschema::validator_for(
+        &printable_server::resources::contracts::read(
+            "printable://contracts/validate_mesh",
+            Default::default(),
+        )
+        .unwrap()["outputSchema"],
+    )
+    .unwrap();
+    let (uploads, client, settings) = (uploads(), client("127.0.0.1", 9), settings("127.0.0.1", 9));
+    let validate = |reference: &str| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": "models/wide.stl", "compare": {
+                "reference_path": reference, "tolerance_mm": 0.1
+            }}),
+        )
+    };
+
+    let result = validate("models/boss.stl")
+        .await
+        .expect("compare with reference");
+    validator.validate(&result).unwrap();
+    assert_eq!(result["reference_artifact"]["path"], "models/boss.stl");
+    let comparison = &result["report"]["comparison"];
+    assert_eq!(comparison["alignment"]["method"], "none");
+    assert_eq!(comparison["unmeasured_samples"], json!(0));
+    let largest = &comparison["regions"][0];
+    let extreme = largest["extreme_mm"].as_f64().unwrap();
+    assert!((extreme - 0.3).abs() < 1e-3, "{largest}");
+    assert!(
+        result["report"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "deviation_beyond_tolerance")
+    );
+
+    validate("models/missing.stl")
+        .await
+        .expect_err("refuse a missing reference");
+}
+
+#[tokio::test]
 async fn mesh_validation_reports_open_geometry_and_rejects_invalid_stl() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));
