@@ -321,11 +321,12 @@ unusable.
 Picture input is not part of the OpenAI API: it is an extension that some
 multimodal servers accept, and it is off by default. With
 `PRINTABLE_EMBEDDING_IMAGES=on`, each picture is decoded, reduced to at most
-1024 pixels on its long side, encoded as PNG and sent as one input:
+1024 pixels on its long side, encoded as PNG and sent alone, as an
+`image_url` content part in place of a string in `input`:
 
 ```json
-{"model": "...", "input": [[{"type": "image_url",
-  "image_url": {"url": "data:image/png;base64,..."}}]], "encoding_format": "float"}
+{"model": "...", "input": [{"type": "image_url",
+  "image_url": {"url": "data:image/png;base64,..."}}], "encoding_format": "float"}
 ```
 
 A project's picture is its cover, or else the first plate thumbnail in its
@@ -334,7 +335,8 @@ workspace of at most 16 MiB and 8192 pixels on a side; upload one with the
 workspace file tools first. If the model refuses pictures, picture search is
 reported unavailable with reason `pictures_rejected`, and no more pictures are
 sent until the embedding settings or the model change, or until a pass runs
-with the setting off.
+with the setting off. An answer of `413`, request too large, does not count as
+a refusal: that picture is tried again later like any other failed input.
 
 Re-ranking requests use the shape that Cohere, Jina, vLLM and Text Embeddings
 Inference share:
