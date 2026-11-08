@@ -69,9 +69,12 @@ Only prints staged through Printable from a file that Printable uploaded with
 `print import` are followed. Prints started from other software, prints staged
 from a print archive or from a library file Printable did not upload, a staging
 request whose outcome was unknown, and additional copies from a request with a
-quantity above one have no submission link and are not recorded. When a print
-was staged and later started, the most recent acceptance supplies its printer
-and setup details.
+quantity above one have no submission link and are not recorded. The link is
+written just after the submission record, so a server that stops between the
+two leaves that print unfollowed. A print whose link or submission record
+cannot be read is skipped with a warning in the server log, and other prints
+are still followed. When a print was staged and later started, the most recent
+acceptance supplies its printer and setup details.
 
 ## Failure semantics
 
