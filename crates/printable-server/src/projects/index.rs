@@ -21,6 +21,7 @@ use printable_workspace::{Workspace, WsError};
 use rusqlite::{Connection, TransactionBehavior, params, params_from_iter, types::Value as Sql};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::card::{self, CompactCard, Inputs};
@@ -89,6 +90,8 @@ pub struct ProjectIndex {
     connection: Mutex<Option<Connection>>,
     /// Serialises passes so two never interleave their writes.
     passes: Mutex<()>,
+    /// Requested passes wait here rather than on the blocking pool.
+    turns: Arc<Semaphore>,
     last_pass: Mutex<Option<PassReport>>,
     /// Stops a running pass between projects at shutdown.
     stop: CancellationToken,
@@ -789,6 +792,7 @@ impl ProjectIndex {
             interval,
             connection: Mutex::new(None),
             passes: Mutex::new(()),
+            turns: Arc::new(Semaphore::new(1)),
             last_pass: Mutex::new(None),
             stop: CancellationToken::new(),
         }
@@ -944,11 +948,20 @@ impl ProjectIndex {
         workspace: &Arc<Workspace>,
         kind: PassKind,
     ) -> Result<PassReport, ToolError> {
+        // The turn moves into the pass, so a dropped request still lets its
+        // pass finish before the next one starts.
+        let turn = Arc::clone(&self.turns)
+            .acquire_owned()
+            .await
+            .map_err(|_| ToolError::Validation("server is shutting down".to_owned()))?;
         let index = Arc::clone(self);
         let workspace = Arc::clone(workspace);
-        tokio::task::spawn_blocking(move || index.pass(&workspace, kind))
-            .await
-            .map_err(|error| ToolError::Io(std::io::Error::other(error)))?
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            index.pass(&workspace, kind)
+        })
+        .await
+        .map_err(|error| ToolError::Io(std::io::Error::other(error)))?
     }
 
     pub fn search(
