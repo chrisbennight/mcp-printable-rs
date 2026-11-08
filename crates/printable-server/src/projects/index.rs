@@ -199,8 +199,9 @@ pub struct ProjectIndex {
     services: Mutex<ServiceState>,
     /// How generated pictures are made; `None` turns them off.
     pictures: Option<PictureSettings>,
-    /// Plate pictures the latest card pass found to make.
-    picture_plans: Mutex<Vec<pictures::Plan>>,
+    /// Plate pictures the latest card pass found to make, and how many
+    /// projects wait to retry a failed picture.
+    picture_plans: Mutex<(Vec<pictures::Plan>, usize)>,
 }
 
 /// How generated pictures are made.
@@ -326,7 +327,8 @@ pub struct PictureReport {
     /// Projects whose picture could not be made in this pass; each is tried
     /// again later, sooner on `project reindex` with `retry`.
     pub failed: usize,
-    /// Projects still waiting for a picture when the pass ended.
+    /// Projects that still lack a current picture when the pass ended,
+    /// including those waiting to retry a failure.
     pub waiting: usize,
     /// True when the slicer was busy, so previews wait for a later pass.
     pub deferred: bool,
@@ -2200,7 +2202,7 @@ impl ProjectIndex {
             reranker: None,
             services: Mutex::new(ServiceState::default()),
             pictures: None,
-            picture_plans: Mutex::new(Vec::new()),
+            picture_plans: Mutex::new((Vec::new(), 0)),
         }
     }
 
@@ -2339,6 +2341,7 @@ impl ProjectIndex {
             started_unix_ms
         };
         let mut plans = Vec::new();
+        let mut retrying = 0;
         for id in &ids {
             if self.stop.is_cancelled() {
                 report.stopped = true;
@@ -2347,10 +2350,12 @@ impl ProjectIndex {
             let prior = known.get(id);
             let retry = kind == PassKind::Retry && prior.is_some_and(|(_, failed)| *failed);
             let gathered = Inputs::gather(workspace, id);
-            if let (Some(settings), Ok(inputs)) = (&self.pictures, &gathered)
-                && let Some(plan) = inputs.picture_plan(settings.slicer.is_some(), picture_time)
-            {
-                plans.push(plan);
+            if let (Some(settings), Ok(inputs)) = (&self.pictures, &gathered) {
+                match inputs.picture_need(settings.slicer.is_some(), picture_time) {
+                    pictures::Need::Make(plan) => plans.push(*plan),
+                    pictures::Need::Retry => retrying += 1,
+                    pictures::Need::Nothing => {}
+                }
             }
             // An unreadable record has no input hash; it is retried when it
             // becomes readable or on request.
@@ -2392,7 +2397,7 @@ impl ProjectIndex {
         *self
             .picture_plans
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = plans;
+            .unwrap_or_else(PoisonError::into_inner) = (plans, retrying);
         report.finished_unix_ms = super::unix_ms();
         self.remember(&report);
         Ok(report)
@@ -2423,13 +2428,13 @@ impl ProjectIndex {
                 .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
         let mut report = report?;
         if self.pictures.is_some() && !self.stop.is_cancelled() {
-            let plans = std::mem::take(
+            let (plans, retrying) = std::mem::take(
                 &mut *self
                     .picture_plans
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner),
             );
-            report.pictures = Some(self.make_pictures(workspace, plans).await?);
+            report.pictures = Some(self.make_pictures(workspace, plans, retrying).await?);
             report.finished_unix_ms = super::unix_ms();
             self.remember(&report);
         }
@@ -2449,9 +2454,10 @@ impl ProjectIndex {
         self: &Arc<Self>,
         workspace: &Arc<Workspace>,
         plans: Vec<pictures::Plan>,
+        retrying: usize,
     ) -> Result<PictureReport, ToolError> {
         let mut report = PictureReport {
-            waiting: plans.len(),
+            waiting: plans.len() + retrying,
             ..PictureReport::default()
         };
         let deadline = Instant::now() + PICTURE_BUDGET;
@@ -2461,14 +2467,17 @@ impl ProjectIndex {
                 break;
             }
             match self.make_picture(workspace, plan).await? {
-                Made::Picture => report.made += 1,
+                Made::Picture => {
+                    report.made += 1;
+                    report.waiting -= 1;
+                }
+                // A failed project still lacks a picture and waits to retry.
                 Made::Nothing => report.failed += 1,
                 Made::Deferred => {
                     report.deferred = true;
                     break;
                 }
             }
-            report.waiting -= 1;
         }
         Ok(report)
     }
@@ -4462,7 +4471,7 @@ mod tests {
                 .unwrap()
                 .pictures
                 .unwrap();
-            assert_eq!((refused.made, refused.failed), (0, 1));
+            assert_eq!((refused.made, refused.failed, refused.waiting), (0, 1, 1));
             let failure = pictures::read(&workspace, "later")
                 .unwrap()
                 .unwrap()
@@ -4480,7 +4489,7 @@ mod tests {
                 .unwrap()
                 .pictures
                 .unwrap();
-            assert_eq!((waiting.failed, waiting.waiting), (0, 0));
+            assert_eq!((waiting.failed, waiting.waiting), (0, 1));
             let retried = index
                 .run(&workspace, PassKind::Retry)
                 .await

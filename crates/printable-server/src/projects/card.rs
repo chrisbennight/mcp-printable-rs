@@ -336,8 +336,8 @@ impl Inputs {
             .collect()
     }
 
-    /// How to make the project's plate picture, if one needs making now.
-    pub(crate) fn picture_plan(&self, previews: bool, now_unix_ms: u64) -> Option<pictures::Plan> {
+    /// What the project's plate picture needs.
+    pub(crate) fn picture_need(&self, previews: bool, now_unix_ms: u64) -> pictures::Need {
         let files: Vec<_> = self.project_files().collect();
         pictures::plan(
             &self.project.project_id,

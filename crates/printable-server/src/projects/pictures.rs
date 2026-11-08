@@ -115,21 +115,31 @@ impl Record {
 }
 
 /// Read a project's record. A missing record, or one this version cannot
-/// read, is `None`: the pictures are derived data, made again and the record
-/// replaced at the next opportunity.
+/// read, is `None`, and a record whose picture file is gone has no picture:
+/// the pictures are derived data, made again and the record replaced at the
+/// next opportunity.
 pub(crate) fn read(workspace: &Workspace, project_id: &str) -> Result<Option<Record>, ToolError> {
     let path = record_path(project_id);
-    match workspace.stat_artifact(&path) {
-        Ok(meta) if meta.size_bytes > MAX_RECORD_BYTES => Ok(None),
-        Ok(_) => {
-            let (_, bytes) = workspace.read_artifact(&path)?;
-            Ok(serde_json::from_slice::<Record>(&bytes)
-                .ok()
-                .filter(|record| record.format_version == FORMAT_VERSION))
+    let bytes = match workspace.stat_artifact(&path) {
+        Ok(meta) if meta.size_bytes > MAX_RECORD_BYTES => return Ok(None),
+        Ok(_) => workspace.read_artifact(&path)?.1,
+        Err(WsError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(mut record) = serde_json::from_slice::<Record>(&bytes)
+        .ok()
+        .filter(|record| record.format_version == FORMAT_VERSION)
+    else {
+        return Ok(None);
+    };
+    if let Some(plate) = &record.plate {
+        match workspace.stat_artifact(&plate.path) {
+            Ok(_) => {}
+            Err(WsError::NotFound(_)) => record.plate = None,
+            Err(error) => return Err(error.into()),
         }
-        Err(WsError::NotFound(_)) => Ok(None),
-        Err(error) => Err(error.into()),
     }
+    Ok(Some(record))
 }
 
 /// One way to make a project's plate picture; a plan tries its steps in
@@ -145,6 +155,18 @@ pub(crate) enum Step {
         /// The model's path within the project directory.
         relative: String,
     },
+}
+
+/// What a project's plate picture needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Need {
+    /// Nothing: the project has a cover or no model, or its picture shows
+    /// its current files.
+    Nothing,
+    /// The picture is not current, and a failure waits for its retry time.
+    Retry,
+    /// Make the picture now.
+    Make(Box<Plan>),
 }
 
 /// How to make one project's plate picture.
@@ -175,10 +197,11 @@ fn newest<'a>(
         })
 }
 
-/// Decide how to make a project's plate picture. `files` are the project's
+/// Decide what a project's plate picture needs. `files` are the project's
 /// files with their paths within the project directory. There is nothing to
-/// do when the project has a cover or no model, when its picture already
-/// shows its current files, or while a recent failure waits to be retried.
+/// do when the project has a cover or no model, or when its picture shows its
+/// current files. A recorded failure is retried once its wait has passed,
+/// even while an earlier picture is kept.
 pub(crate) fn plan(
     project_id: &str,
     files: &[(&str, &ArtifactMeta)],
@@ -186,9 +209,9 @@ pub(crate) fn plan(
     record: Option<&Record>,
     previews: bool,
     now_unix_ms: u64,
-) -> Option<Plan> {
+) -> Need {
     if has_cover {
-        return None;
+        return Need::Nothing;
     }
     let lower = |relative: &str| relative.to_ascii_lowercase();
     let sliced = |relative: &str, _: &ArtifactMeta| lower(relative).ends_with(".gcode.3mf");
@@ -235,7 +258,7 @@ pub(crate) fn plan(
         });
     }
     if steps.is_empty() {
-        return None;
+        return Need::Nothing;
     }
     let candidates: String = digest
         .finalize()
@@ -243,20 +266,19 @@ pub(crate) fn plan(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     if let Some(record) = record.filter(|record| record.candidates == candidates) {
-        let retry_later = record
-            .plate_failure
-            .as_ref()
-            .is_some_and(|failure| failure.next_attempt_unix_ms > now_unix_ms);
-        if record.plate.is_some() || retry_later {
-            return None;
+        match &record.plate_failure {
+            Some(failure) if failure.next_attempt_unix_ms > now_unix_ms => return Need::Retry,
+            Some(_) => {}
+            None if record.plate.is_some() => return Need::Nothing,
+            None => {}
         }
     }
-    Some(Plan {
+    Need::Make(Box::new(Plan {
         project_id: project_id.to_owned(),
         candidates,
         steps,
         prior: record.cloned(),
-    })
+    }))
 }
 
 /// The first plate thumbnail stored in a workspace 3MF package.
@@ -403,12 +425,19 @@ mod tests {
         }
     }
 
-    fn plan_for(files: &[ArtifactMeta], record: Option<&Record>, previews: bool) -> Option<Plan> {
+    fn plan_for(files: &[ArtifactMeta], record: Option<&Record>, previews: bool) -> Need {
         let listed: Vec<_> = files
             .iter()
             .map(|meta| (meta.path.strip_prefix("projects/part/").unwrap(), meta))
             .collect();
         plan("part", &listed, false, record, previews, 1_000)
+    }
+
+    fn make(need: Need) -> Plan {
+        match need {
+            Need::Make(plan) => *plan,
+            other => panic!("expected a plan, found {other:?}"),
+        }
     }
 
     #[test]
@@ -420,7 +449,7 @@ mod tests {
             meta("slice-1/model.gcode.3mf", 2),
             meta("notes.txt", 9),
         ];
-        let planned = plan_for(&files, None, true).unwrap();
+        let planned = make(plan_for(&files, None, true));
         assert_eq!(
             planned.steps,
             [
@@ -439,17 +468,20 @@ mod tests {
             ]
         );
         // Without a slicer, only stored thumbnails are tried.
-        assert_eq!(plan_for(&files, None, false).unwrap().steps.len(), 2);
+        assert_eq!(make(plan_for(&files, None, false)).steps.len(), 2);
         // Nothing to picture, or a cover, means nothing to do.
-        assert!(plan_for(&[meta("notes.txt", 1)], None, true).is_none());
+        assert_eq!(plan_for(&[meta("notes.txt", 1)], None, true), Need::Nothing);
         let listed = [("new.stl", &files[1])];
-        assert!(plan("part", &listed, true, None, true, 1_000).is_none());
+        assert_eq!(
+            plan("part", &listed, true, None, true, 1_000),
+            Need::Nothing
+        );
     }
 
     #[test]
     fn a_made_picture_stands_until_its_files_change_and_failures_wait() {
         let files = [meta("part.stl", 1)];
-        let first = plan_for(&files, None, true).unwrap();
+        let first = make(plan_for(&files, None, true));
         let picture = Picture {
             path: format!("{}/{}.png", directory("part"), "a".repeat(64)),
             sha256: "a".repeat(64),
@@ -467,9 +499,9 @@ mod tests {
         };
         assert_eq!(made.plate("part"), Some(&picture));
         assert_eq!(made.plate("other"), None);
-        assert!(plan_for(&files, Some(&made), true).is_none());
+        assert_eq!(plan_for(&files, Some(&made), true), Need::Nothing);
         // A changed model is pictured again.
-        let changed = plan_for(&[meta("part.stl", 2)], Some(&made), true).unwrap();
+        let changed = make(plan_for(&[meta("part.stl", 2)], Some(&made), true));
         assert_ne!(changed.candidates, first.candidates);
         // A failure waits for its retry time.
         let waiting = Record {
@@ -481,9 +513,16 @@ mod tests {
             }),
             ..made.clone()
         };
-        assert!(plan_for(&files, Some(&waiting), true).is_none());
+        assert_eq!(plan_for(&files, Some(&waiting), true), Need::Retry);
         let listed = [("part.stl", &files[0])];
-        assert!(plan("part", &listed, false, Some(&waiting), true, 5_000).is_some());
+        make(plan("part", &listed, false, Some(&waiting), true, 5_000));
+        // A failed refresh keeps the earlier picture and is still retried.
+        let refreshing = Record {
+            plate: Some(picture.clone()),
+            ..waiting.clone()
+        };
+        assert_eq!(plan_for(&files, Some(&refreshing), true), Need::Retry);
+        make(plan("part", &listed, false, Some(&refreshing), true, 5_000));
     }
 
     #[test]
@@ -494,7 +533,7 @@ mod tests {
         image::RgbImage::from_pixel(8, 6, image::Rgb([200, 40, 40]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let planned = plan_for(&[meta("part.stl", 1)], None, true).unwrap();
+        let planned = make(plan_for(&[meta("part.stl", 1)], None, true));
         let picture = store(
             &workspace,
             "part",
@@ -541,6 +580,12 @@ mod tests {
             (second.attempts, second.next_attempt_unix_ms),
             (2, 1_000 + 2 * FIRST_RETRY_MS)
         );
+
+        // A picture whose file is gone is made again.
+        workspace.remove_reserved_artifact(&picture.path).unwrap();
+        let gone = read(&workspace, "part").unwrap().unwrap();
+        assert_eq!(gone.plate, None);
+        assert!(gone.plate_failure.is_some());
 
         // An unreadable record is treated as absent.
         workspace

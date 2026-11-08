@@ -115,9 +115,12 @@ never conflicts with an edit. A pass makes at most 16 pictures and starts none
 after two minutes. A plate preview is skipped while the slicer is busy and made
 in a later pass. A picture that cannot be made is tried again after 5 minutes,
 then after twice the previous wait, up to a day; `project reindex` with
-`"mode": "retry"` tries it again at once. In `catalog status`, the latest pass's
-`pictures` field counts the pictures made, failed and still waiting, and
-reports whether previews waited for a busy slicer.
+`"mode": "retry"` tries it again at once. An earlier picture is shown until a
+new one replaces it, and a picture whose file is missing is made again. In
+`catalog status`, the latest pass's `pictures` field counts the pictures made
+and failed in that pass and the projects that still lack a current picture,
+including those waiting to retry, and reports whether previews waited for a
+busy slicer.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
