@@ -124,6 +124,11 @@ do not certify the evaluated/exported solid. Assembly clearance requires its
 separate analysis workflow. Render smoothing must not substitute for actual
 modeled edge breaks.
 
+In the final report, label each conclusion as measured, partly supported, or
+inferred, and name the measurement behind a measured one. Report unmeasured
+criteria as unmeasured, never as passed, and say "not done" with the remaining
+gaps when an agreed requirement is not met.
+
 On an execution timeout after delivery, do not retry the mutation. Wait for
 healthy status and inspect the scene or restore the checkpoint. A watchdog
 restart loses unsaved scene state. Long renders belong in durable render jobs.
