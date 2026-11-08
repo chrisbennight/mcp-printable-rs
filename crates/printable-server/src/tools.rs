@@ -1702,6 +1702,30 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: write_annotations,
     },
     ToolDef {
+        name: "printable_project_search",
+        description: "Find projects in the derived search index by words in their records, by filters and by sort order, returning short library cards with index coverage and the search capabilities that are unavailable.",
+        schema: schema_of::<crate::projects::index::SearchParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "printable_project_index_status",
+        description: "Report how many projects the search index holds, which failed, where it is stored and its latest pass.",
+        schema: schema_of::<crate::projects::index::IndexParams>,
+        annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "printable_project_index_rebuild",
+        description: "Clear the derived project search index and rebuild every card from project records now.",
+        schema: schema_of::<crate::projects::index::IndexParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: "printable_project_index_retry",
+        description: "Update the project search index now and try projects whose cards failed again.",
+        schema: schema_of::<crate::projects::index::IndexParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_project_export_blender",
         description: "Export selected native Blender project inputs and a packed editable entrypoint into a new ZIP, using an isolated child under the caller's work budget without changing the live scene. Retains units, engine metadata, source hashes and explicit dependency limitations.",
         schema: schema_of::<crate::projects::NativeExportParams>,
@@ -2022,6 +2046,30 @@ pub(crate) async fn dispatch_with_content(
             project_cover(Arc::clone(workspace), Arc::clone(scad), params)
                 .await
                 .map(ToolOutput::without_inline)
+        }
+        "printable_project_search" => {
+            let params: crate::projects::index::SearchParams = de(args)?;
+            let index = Arc::clone(&settings.project_index);
+            let ws = Arc::clone(workspace);
+            let response = blocking(move || index.search(&ws, params)).await?;
+            Ok(ToolOutput::without_inline(serde_json::to_value(response)?))
+        }
+        "printable_project_index_status" => {
+            let _: crate::projects::index::IndexParams = de(args)?;
+            let index = Arc::clone(&settings.project_index);
+            let ws = Arc::clone(workspace);
+            let status = blocking(move || index.status(&ws)).await?;
+            Ok(ToolOutput::without_inline(serde_json::to_value(status)?))
+        }
+        "printable_project_index_rebuild" | "printable_project_index_retry" => {
+            let _: crate::projects::index::IndexParams = de(args)?;
+            let kind = if name == "printable_project_index_rebuild" {
+                crate::projects::index::PassKind::Rebuild
+            } else {
+                crate::projects::index::PassKind::Retry
+            };
+            let report = settings.project_index.run(workspace, kind).await?;
+            Ok(ToolOutput::without_inline(serde_json::to_value(report)?))
         }
         "printable_render_job_submit" => {
             let params: RenderJobSubmitParams = de(args)?;

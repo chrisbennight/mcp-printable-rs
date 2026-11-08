@@ -490,6 +490,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         library: None,
         flame: None,
         recon: None,
+        project_index: Default::default(),
         scad_concurrency: 2,
         ffmpeg_bin: PathBuf::from("ffmpeg"),
         render_job_queue_depth: 16,
