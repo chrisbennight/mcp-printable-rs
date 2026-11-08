@@ -466,7 +466,7 @@ impl SliceWorker {
         let worker = Arc::clone(self);
         let response = state.clone();
         tokio::spawn(async move {
-            let _permit = permit;
+            let admission = permit;
             let result = worker
                 .execute(&staging, &local_source, &params, &colours, &cancel)
                 .await;
@@ -531,6 +531,8 @@ impl SliceWorker {
             };
             *active = None;
             drop(active);
+            // The slice is finished; admit new work before the optional summary.
+            drop(admission);
             if completed && persisted {
                 // The summary is a convenience copy: status computes it again
                 // when this write fails, so a failure is logged, not raised.
