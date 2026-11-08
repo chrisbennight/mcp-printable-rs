@@ -33,7 +33,9 @@ pub enum Requirement {
         tolerance_mm: f64,
     },
     /// Vertical cylindrical inner walls at these XY positions, in model coordinates.
-    /// This measurement does not establish thread, through-hole, or fastener fit.
+    /// A mesh hole matches only when its radius over the whole wall lies within
+    /// the tolerance. This measurement does not establish thread, through-hole,
+    /// or fastener fit.
     HolePattern {
         centers_mm: Vec<[f64; 2]>,
         radius_mm: f64,
@@ -87,6 +89,10 @@ fn description(v: &str) -> bool {
 struct Hole {
     center_mm: [f64; 2],
     radius_mm: f64,
+    /// The smallest and largest radius over the wall, when measured from a
+    /// mesh rather than an exact cylinder.
+    #[serde(default)]
+    radius_range_mm: Option<[f64; 2]>,
 }
 
 fn match_holes(expected: &[[f64; 2]], radius: f64, tolerance: f64, measured: &[Hole]) -> bool {
@@ -102,6 +108,9 @@ fn match_holes(expected: &[[f64; 2]], radius: f64, tolerance: f64, measured: &[H
                         .zip(hole.center_mm)
                         .all(|(a, b)| (a - b).abs() <= tolerance)
                         && (radius - hole.radius_mm).abs() <= tolerance
+                        && hole.radius_range_mm.is_none_or(|range| {
+                            range.iter().all(|end| (radius - end).abs() <= tolerance)
+                        })
                 })
                 .map(|(i, _)| i)
                 .collect()
@@ -191,6 +200,22 @@ impl Manifest {
         Ok(())
     }
 
+    /// Every declared hole as its centre in X and Y and its radius.
+    pub fn declared_holes(&self) -> Vec<([f64; 2], f64)> {
+        self.requirements
+            .values()
+            .filter_map(|requirement| match requirement {
+                Requirement::HolePattern {
+                    centers_mm,
+                    radius_mm,
+                    ..
+                } => Some(centers_mm.iter().map(|center| (*center, *radius_mm))),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
     /// Values remain in their declared parameter units; no hidden conversion.
     pub fn values(&self) -> BTreeMap<String, Value> {
         self.parameters
@@ -210,9 +235,12 @@ impl Manifest {
             report["vertical_holes"]["status"] == "measured"
                 && report["valid"] == true
                 && known_mm
-                && holes
-                    .iter()
-                    .all(|h| positive(h.radius_mm) && h.center_mm.iter().all(|n| n.is_finite()))
+                && holes.iter().all(|h| {
+                    positive(h.radius_mm)
+                        && h.center_mm.iter().all(|n| n.is_finite())
+                        && h.radius_range_mm
+                            .is_none_or(|range| range.iter().all(|n| positive(*n)))
+                })
         });
         let checked = |pass: bool, evidence: &str| json!({"status":if pass {"passed"} else {"failed"}, "evidence":evidence});
         let unmeasured = || json!({"status":"unmeasured"});
@@ -320,10 +348,12 @@ mod tests {
             Hole {
                 center_mm: [0.0, 0.0],
                 radius_mm: 1.0,
+                radius_range_mm: None,
             },
             Hole {
                 center_mm: [0.1, 0.0],
                 radius_mm: 1.0,
+                radius_range_mm: None,
             },
         ];
         assert!(match_holes(&[[0.05, 0.0], [-0.05, 0.0]], 1.0, 0.06, &holes));
@@ -332,6 +362,28 @@ mod tests {
             1.0,
             0.06,
             &holes[..1]
+        ));
+    }
+
+    #[test]
+    fn a_mesh_hole_matches_only_when_its_whole_radius_range_does() {
+        let hole = |radius_range_mm| Hole {
+            center_mm: [0.0, 0.0],
+            radius_mm: 2.0,
+            radius_range_mm,
+        };
+        assert!(match_holes(
+            &[[0.0, 0.0]],
+            2.0,
+            0.05,
+            &[hole(Some([1.99, 2.0]))]
+        ));
+        // A taper whose fitted radius matches but whose ends do not.
+        assert!(!match_holes(
+            &[[0.0, 0.0]],
+            2.0,
+            0.05,
+            &[hole(Some([1.9, 2.1]))]
         ));
     }
     #[test]
