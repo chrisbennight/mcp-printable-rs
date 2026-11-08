@@ -46,6 +46,11 @@ const START_RING: usize = 8;
 const AXIS_MIN_BEND_DEGREES: f64 = 0.5;
 /// Faces within this angle of running along an axis support it.
 const ALONG_AXIS_DEGREES: f64 = 5.0;
+/// A cylinder's first circle uses faces within this angle of running along
+/// the axis, so a side tapering by more than this stays out of it.
+const START_ALONG_AXIS_DEGREES: f64 = 1.0;
+/// The fewest points that place a first circle: two rings of three.
+const START_MIN_POINTS: usize = 6;
 /// Axis directions tried, and faces scored against each, at most.
 const MAX_AXIS_CANDIDATES: usize = 200;
 const MAX_AXIS_FACES: usize = 2_000;
@@ -740,20 +745,36 @@ fn first_estimate(
             Some((model, spread(&model, &points, &weights)))
         }
         Shape::Cylinder => {
-            let axis = match hint {
-                Some(axis) => axis,
-                None => axis_from_normals(surface, seed, &start_patch(surface, seed, &smooth))?,
+            // The surface fixes the axis; an approximate direction stands in
+            // only when the surface cannot, or disagrees with it entirely.
+            let estimate = axis_from_normals(surface, seed, &start_patch(surface, seed, &smooth));
+            let axis = match (estimate, hint) {
+                (Some(axis), Some(hint))
+                    if axis.dot(&hint).abs() >= HINT_DEGREES.to_radians().cos() =>
+                {
+                    axis
+                }
+                (_, Some(hint)) => hint,
+                (estimate, None) => estimate?,
             };
             // The first circle uses only faces that run along the axis, which
-            // leaves out a chamfer or the face across an end. Across a coarse
-            // polygon these faces meet at sharp angles.
-            let along = ALONG_AXIS_DEGREES.to_radians().sin();
-            let patch = start_patch(surface, seed, &|_, to| {
-                surface.normals[to].is_some_and(|normal| normal.dot(&axis).abs() <= along)
-            });
-            let (points, weights) = surface.points(&patch);
-            let model = circle_estimate(&points, &weights, axis)?;
-            Some((model, spread(&model, &points, &weights)))
+            // leaves out a taper, a chamfer or the face across an end. Across a
+            // coarse polygon these faces meet at sharp angles. A noisy surface
+            // may need the wider limit to give enough points.
+            [START_ALONG_AXIS_DEGREES, ALONG_AXIS_DEGREES]
+                .into_iter()
+                .find_map(|limit| {
+                    let along = limit.to_radians().sin();
+                    let patch = start_patch(surface, seed, &|_, to| {
+                        surface.normals[to].is_some_and(|normal| normal.dot(&axis).abs() <= along)
+                    });
+                    let (points, weights) = surface.points(&patch);
+                    if points.len() < START_MIN_POINTS {
+                        return None;
+                    }
+                    let model = circle_estimate(&points, &weights, axis)?;
+                    Some((model, spread(&model, &points, &weights)))
+                })
         }
         Shape::Sphere => {
             let patch = start_patch(surface, seed, &smooth);
@@ -869,10 +890,12 @@ fn fit_plane(points: &[V3], weights: &[f64], facing: V3) -> Option<Model> {
 
 /// The axis of a curved patch. The seed face and any other face of a
 /// cylinder both lie along its axis, so the cross product of their normals
-/// points along it. Each such direction is scored by the area of the patch's
-/// faces that run along it, which a chamfer or fillet beside the seed cannot
-/// win, and the directions agreeing with the best are averaged. None when no
-/// face bends away from the seed, as on a flat patch.
+/// points along it, and every such pair gives the same direction. Pairs with
+/// a chamfer, taper or fillet beside the seed give directions that differ
+/// from each other. The direction most other candidates agree with wins,
+/// with ties going to the one most patch faces run along, and the
+/// directions agreeing with it are averaged. None when no face bends away
+/// from the seed, as on a flat patch.
 fn axis_from_normals(surface: &Surface, seed: usize, patch: &[usize]) -> Option<V3> {
     let seed_normal = surface.normals[seed]?;
     let faces: Vec<(V3, f64)> = patch
@@ -880,33 +903,39 @@ fn axis_from_normals(surface: &Surface, seed: usize, patch: &[usize]) -> Option<
         .filter_map(|&face| surface.normals[face].map(|normal| (normal, surface.areas[face])))
         .collect();
     let bend = AXIS_MIN_BEND_DEGREES.to_radians().sin();
-    let candidates: Vec<V3> = faces
+    let candidates: Vec<(V3, f64)> = faces
         .iter()
-        .filter_map(|(normal, _)| {
+        .filter_map(|(normal, area)| {
             let cross = seed_normal.cross(normal);
-            (cross.norm() > bend).then(|| cross.normalize())
+            (cross.norm() > bend).then(|| (cross.normalize(), *area))
         })
         .collect();
     let candidates = evenly(&candidates, MAX_AXIS_CANDIDATES);
     let scored = evenly(&faces, MAX_AXIS_FACES);
+    let agree = AXIS_AGREEMENT_DEGREES.to_radians().cos();
     let along = ALONG_AXIS_DEGREES.to_radians().sin();
-    let support = |axis: &V3| -> f64 {
-        scored
+    let score = |axis: &V3| -> (f64, f64) {
+        let agreement = candidates
+            .iter()
+            .filter(|(other, _)| axis.dot(other).abs() >= agree)
+            .map(|(_, area)| area)
+            .sum();
+        let support = scored
             .iter()
             .filter(|(normal, _)| normal.dot(axis).abs() <= along)
             .map(|(_, area)| area)
-            .sum()
+            .sum();
+        (agreement, support)
     };
     let best = candidates
         .iter()
-        .map(|axis| (*axis, support(axis)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))?
+        .map(|(axis, _)| (*axis, score(axis)))
+        .max_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.1.1.total_cmp(&b.1.1)))?
         .0;
-    let agree = AXIS_AGREEMENT_DEGREES.to_radians().cos();
     let mean = candidates
         .iter()
-        .filter(|other| best.dot(other).abs() >= agree)
-        .map(|other| other * best.dot(other).signum())
+        .filter(|(other, _)| best.dot(other).abs() >= agree)
+        .map(|(other, area)| other * best.dot(other).signum() * *area)
         .sum::<V3>();
     unit(mean)
 }
@@ -1874,14 +1903,17 @@ mod tests {
     #[test]
     fn a_coarse_bore_stops_at_a_shallow_chamfer() {
         // Six sides, as OpenSCAD's $fn = 6 gives, with a chamfer turned
-        // about 11 degrees above a 1 mm band.
-        let mesh = plate(20.0, 2.0, &[(4.0, 0.0), (4.0, 1.0), (4.2, 2.0)], 6);
+        // about 11 or about 3 degrees above a 1 mm band.
         let seed = [
             3.5 * 75_f64.to_radians().cos(),
             3.5 * 75_f64.to_radians().sin(),
             0.5,
         ];
-        for direction in [None, Some([0.0, 0.0, 1.0])] {
+        for (top, direction) in [4.2, 4.05]
+            .into_iter()
+            .flat_map(|top| [(top, None), (top, Some([0.0, 0.0, 1.0]))])
+        {
+            let mesh = plate(20.0, 2.0, &[(4.0, 0.0), (4.0, 1.0), (top, 2.0)], 6);
             let mut request = feature("bore", Shape::Cylinder, seed);
             request.direction = direction;
             let report = measure(
@@ -1892,10 +1924,29 @@ mod tests {
                 },
             );
             let (radius, _, length, _) = cylinder(&report.features[0]);
-            assert!(close(radius, 4.0, 1e-9), "{direction:?} {radius}");
+            assert!(close(radius, 4.0, 1e-9), "{top} {direction:?} {radius}");
             assert!(close(length, 1.0, 1e-9));
             assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 12);
         }
+    }
+
+    #[test]
+    fn an_approximate_direction_still_finds_the_bore() {
+        let mesh = plate_with_hole(20.0, 10.0, 4.0, 48);
+        let tilt = 10_f64.to_radians();
+        let mut request = feature("bore", Shape::Cylinder, [4.0, 0.3, 5.0]);
+        request.direction = Some([tilt.sin(), 0.0, tilt.cos()]);
+        let report = measure(
+            &mesh,
+            &DimensionOptions {
+                features: vec![request],
+                requirements: Vec::new(),
+            },
+        );
+        let (radius, axis, ..) = cylinder(&report.features[0]);
+        assert!(close(radius, 4.0, 1e-9));
+        assert!(close(axis[2].abs(), 1.0, 1e-9));
+        assert_eq!(report.features[0].fit.as_ref().unwrap().faces, 96);
     }
 
     #[test]

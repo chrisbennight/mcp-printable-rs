@@ -109,7 +109,8 @@ spread or the coordinates' rounding, whichever is larger, and its normal agrees
 with the shape's to within 45 degrees. The shape
 is refitted to the region's vertices until the region stops changing, so the
 fit stops where the surface leaves the shape, such as at an edge or where a
-chamfer or fillet begins. A seed beside an
+chamfer or fillet begins. A side tapering by less than 1 degree from a
+cylinder's axis counts as part of the cylinder. A seed beside an
 edge can land on the neighbouring face. Give `direction`, a plane's outward
 normal or a cylinder's axis, and the region starts from the nearest face that
 agrees with it. `exclude_beyond_sigma` (1, 2 or 3) refits without vertices
