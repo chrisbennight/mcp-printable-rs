@@ -67,6 +67,18 @@ admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
 
+Terminal states record `finished_unix_ms`. When a slice completes, the worker
+also writes `summary.json` next to the outputs, and `status` returns it as
+`summary`: finish time, build plate, printer and process, the profile names
+stored in the package, the sliced plates and plates with thumbnails, and each
+filament slot's profile, type and colour. A colour left to the source 3MF is
+read from the sliced package; `filaments_truncated: true` means the package
+listed more slots than the summary reports. Writing the summary never changes
+the slice result: if it fails, the slice still completes without one. Slices
+completed before summaries existed have no `summary.json`; background
+consumers summarise them from the package, with the finish time estimated from
+`state.json` and `finished_estimated: true`.
+
 A failed slice repeats OrcaSlicer's own message and return code when OrcaSlicer
 records a reason. A failed exit without a recorded reason is reported as a likely
 crash. `build-log.json` keeps OrcaSlicer's output in both cases.

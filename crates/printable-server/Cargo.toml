@@ -57,8 +57,12 @@ sha2 = "=0.11.0"
 subtle = "=2.6.1"
 # Clears Bambu Lab sign-in secrets from memory when they are dropped.
 zeroize = "1.9"
-# Store project bundles without optional archive codecs or encryption.
-zip = { version = "9.2.1", default-features = false }
+# Store project bundles without encryption. Deflate reads plate thumbnails and
+# settings from sliced 3MF packages.
+zip = { version = "9.2.1", default-features = false, features = ["deflate-flate2"] }
+# Not imported directly: zip builds flate2 without a backend, so this selects
+# the pure-Rust one already in the lockfile.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 jsonschema = { version = "0.52", default-features = false }
 

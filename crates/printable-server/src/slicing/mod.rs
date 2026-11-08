@@ -1,8 +1,10 @@
 //! Durable, explicitly configured Orca preparation in an isolated native worker.
 
+pub mod package;
 pub mod profiles;
 pub mod review;
 pub mod setup;
+pub mod summary;
 #[cfg(test)]
 mod tests;
 
@@ -301,6 +303,9 @@ impl SliceWorker {
             state["cancel_requested"] = json!(job.cancel.is_cancelled());
             return Ok(state);
         }
+        // Retained state needs no lock; summarising an older slice can take a
+        // while and must not delay the active slice's progress or controls.
+        drop(active);
         let (_, bytes) = self
             .workspace
             .read_generated_bytes(&format!("{output}/state.json"))?;
@@ -310,6 +315,18 @@ impl SliceWorker {
             state["error"] = json!(
                 "worker restarted or could not persist completion; inspect retained outputs before preparing a new revision"
             );
+        }
+        if state["status"] == "completed" {
+            // Only a recorded summary is returned here: computing one for an
+            // older slice copies its whole package, which is background work.
+            match self
+                .workspace
+                .read_generated_bytes(&format!("{output}/{}", summary::FILE))
+            {
+                Ok((_, bytes)) => state["summary"] = serde_json::from_slice(&bytes)?,
+                Err(printable_workspace::WsError::NotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(state)
     }
@@ -447,7 +464,7 @@ impl SliceWorker {
         let worker = Arc::clone(self);
         let response = state.clone();
         tokio::spawn(async move {
-            let _permit = permit;
+            let admission = permit;
             let result = worker
                 .execute(&staging, &local_source, &params, &colours, &cancel)
                 .await;
@@ -489,6 +506,8 @@ impl SliceWorker {
                     terminal["error"] = json!(error.to_string());
                 }
             }
+            terminal["finished_unix_ms"] = json!(projects::unix_ms());
+            let completed = terminal["status"] == "completed";
             let persisted = serde_json::to_vec(&terminal)
                 .map_err(ToolError::from)
                 .and_then(|bytes| {
@@ -498,13 +517,37 @@ impl SliceWorker {
                         .map(|_| ())
                         .map_err(ToolError::from)
                 });
-            if let Err(error) = persisted {
-                tracing::error!(
-                    code = error.code(),
-                    "could not persist terminal slice state"
-                );
-            }
+            let persisted = match persisted {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::error!(
+                        code = error.code(),
+                        "could not persist terminal slice state"
+                    );
+                    false
+                }
+            };
             *active = None;
+            drop(active);
+            // The slice is finished; admit new work before the optional summary.
+            drop(admission);
+            if completed && persisted {
+                // The summary is a convenience copy: status computes it again
+                // when this write fails, so a failure is logged, not raised.
+                let workspace = Arc::clone(&worker.workspace);
+                let written = tokio::task::spawn_blocking(move || {
+                    summary::write(&workspace, &output, &terminal)
+                })
+                .await;
+                match written {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(
+                        code = error.code(),
+                        "could not record slice summary; status computes it on request"
+                    ),
+                    Err(_) => tracing::warn!("slice summary task did not complete"),
+                }
+            }
         });
         Ok(response)
     }

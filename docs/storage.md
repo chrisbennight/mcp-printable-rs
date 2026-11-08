@@ -12,7 +12,9 @@ provided Compose file forwards this setting. The server writes the policy into
 the shared workspace on startup, so CAD and slicer workers observe the same
 limit without separate settings. An unset value disables the service limit.
 Lowering it does not delete files or stop already admitted work. Use one server
-configuration per workspace and a local filesystem supporting advisory locks.
+configuration per workspace on a filesystem whose advisory locks are shared by
+every process that uses it: a local filesystem, or an NFS version 4.1 mount with
+locking enabled (do not mount it with `nolock`).
 
 Managed artifact writes check capacity under a shared filesystem lock, held
 through the atomic copy and commit. Concurrent processes cannot spend that
@@ -58,8 +60,10 @@ ceiling. Invalid identifiers and actual filesystem errors remain errors.
 
 Cleanup only traverses managed temporary directories and never follows symbolic
 links. All public artifacts and retained internal data stay protected, including
-active job checkpoints, revision snapshots, transfer source files, and delivery
-records. These conservative rules can leave substantial old render output on
+active job checkpoints, revision snapshots, transfer source files, delivery
+records, project records and cover pictures. Back up the whole `.printable`
+directory with the project files; the [project library](project-library.md)
+describes the records it holds. These conservative rules can leave substantial old render output on
 disk. There is no age-based whole-workspace collector. Follow the
 [operations guide](operations.md#storage-and-cleanup) before removing retained
 data or externally referenced Blender assets.
