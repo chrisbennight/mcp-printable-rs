@@ -1,6 +1,7 @@
 //! Printer observation and physical print control share the Printable endpoint.
 
 mod delivery;
+pub mod ledger;
 mod operations;
 mod print_jobs;
 mod records;
@@ -105,6 +106,8 @@ pub enum PrintRequest {
 pub struct PrinterService {
     read: Arc<Client>,
     control: Arc<Client>,
+    /// Background following of staged prints; absent when turned off.
+    follow: Option<ledger::FollowSettings>,
 }
 
 impl std::fmt::Debug for PrinterService {
@@ -140,6 +143,7 @@ pub fn configure(
     Ok(Some(Arc::new(PrinterService {
         read: Arc::new(read),
         control: Arc::new(control),
+        follow: ledger::settings(get)?,
     })))
 }
 

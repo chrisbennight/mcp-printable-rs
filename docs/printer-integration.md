@@ -44,6 +44,31 @@ The workflow resource explains plate readiness, calibration, AMS mapping and
 replacement-print handling. Slicing itself is a separate capability; use a
 compatible slicer to prepare and visually review the printer-ready file.
 
+## Print outcome records
+
+While a backend is configured, the server follows each print that Printable
+staged or started until the backend reports `completed`, `failed`, `cancelled`
+or `skipped`, then writes one record to
+`.printable/prints/<project_id>/<print_id>.json`. The record keeps the outcome,
+the backend's status, printer identity and model, plate, AMS mapping, filament
+type and colour as the backend reports them, start and completion times, any
+error message, and references to the submission records. It is written once and
+does not depend on the backend keeping its own history; back it up with the
+rest of `.printable`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `PRINTABLE_PRINT_FOLLOW_INTERVAL_SECONDS` | 60 | Seconds between passes, up to 3600; `0` turns following off |
+| `PRINTABLE_PRINT_FOLLOW_MAX_HOURS` | 168 | Hours after submission, 1 to 8760, after which an unfinished print is recorded as `unknown` |
+
+A print the backend no longer has, or one that is still unfinished after the
+follow time, is recorded with outcome `unknown` and a reason; Printable never
+guesses success or failure. A failed backend read is retried on the next pass.
+Only prints staged through Printable are followed. Prints started from other
+software, a staging request whose outcome was unknown, and additional copies
+from a request with a quantity above one have no submission link and are not
+recorded.
+
 ## Failure semantics
 
 Reads retry one transient failure. Mutations are sent once. Transport failure or

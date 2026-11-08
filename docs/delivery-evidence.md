@@ -59,6 +59,8 @@ the error identifies the known library or queue identifier. Submission intents
 are under `.printable/evidence/submission`; accepted queue links are under
 `.printable/evidence/print_jobs/<print id>`. Import intents and receipts have
 their own directories under `.printable/evidence`.
+The final outcome of each followed print is recorded under `.printable/prints`;
+see [print outcome records](printer-integration.md#print-outcome-records).
 
 Historical slices and imports remain readable. Missing retained records do not
 acquire invented revision, review, or submission history. Manual library files
