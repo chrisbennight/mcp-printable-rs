@@ -510,7 +510,9 @@ fn slices(
                 continue;
             }
         };
-        if state["status"] != "completed" {
+        // CAD builds also keep a `state.json`; only slice states name their
+        // slice.
+        if state["status"] != "completed" || !state["slice"].is_object() {
             continue;
         }
         count += 1;
@@ -568,11 +570,20 @@ fn slices(
     }
 }
 
-fn prints(workspace: &Workspace, project_id: &str, names: &mut Names, notes: &mut Notes) -> Prints {
-    let records = ledger::project_prints(workspace, project_id).unwrap_or_else(|error| {
-        notes.add(&ledger::project_records(project_id), &error);
-        Vec::new()
-    });
+fn prints(
+    workspace: &Workspace,
+    files: &[ArtifactMeta],
+    names: &mut Names,
+    notes: &mut Notes,
+) -> Prints {
+    // A damaged record is noted and the others still count.
+    let mut records = Vec::with_capacity(files.len());
+    for file in files {
+        match read_json(workspace, &file.path) {
+            Ok(record) => records.push(record),
+            Err(error) => notes.add(&file.path, &error),
+        }
+    }
     let mut outcomes = Outcomes::default();
     let mut by_printer: BTreeMap<String, (String, usize)> = BTreeMap::new();
     // The most recently recorded print: record time, print id, outcome.
@@ -648,7 +659,7 @@ pub(crate) fn build(workspace: &Workspace, inputs: &Inputs, summaries: Summaries
     }
     let downloads = downloads(workspace, &inputs.files, &mut notes);
     let slices = slices(workspace, &inputs.files, &mut names, &mut notes, summaries);
-    let prints = prints(workspace, &project.project_id, &mut names, &mut notes);
+    let prints = prints(workspace, &inputs.prints, &mut names, &mut notes);
     let (description, description_truncated) = clip(&project.description, MAX_DESCRIPTION_CHARS);
     let names_truncated = [&names.printers, &names.materials, &names.colours]
         .iter()
@@ -866,6 +877,7 @@ pub(crate) mod tests {
             .write_artifact(
                 &format!("{output}/state.json"),
                 &serde_json::to_vec(&json!({"status": "completed", "finished_unix_ms": finished,
+                    "slice": {"project_id": id, "output_dir": output},
                     "setup": {"printer": {"name": "Bambu Lab P1S 0.4 nozzle"}}}))
                 .unwrap(),
                 true,
@@ -894,6 +906,35 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(Some(root.path()), None).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn cad_builds_are_not_slices_and_a_damaged_print_record_hides_only_itself() {
+        let (_root, workspace) = workspace();
+        create(&workspace, "desk", "Desk organizer", "");
+        slice(&workspace, "desk", "slice-1", 5_000);
+        workspace
+            .write_artifact(
+                "projects/desk/cad/build-1/state.json",
+                &serde_json::to_vec(&json!({"status": "completed", "phase": "terminal",
+                    "build": {"project_id": "desk", "output_dir": "projects/desk/cad/build-1"}}))
+                .unwrap(),
+                false,
+            )
+            .unwrap();
+        print(&workspace, "desk", 7, "completed", 10_000);
+        workspace
+            .write_reserved_artifact(&ledger::record_path("desk", 8), b"{not json", false)
+            .unwrap();
+        let card = card(&workspace, "desk").unwrap();
+        assert_eq!(card.slices.count, 1);
+        let newest = card.slices.newest.as_ref().unwrap();
+        assert_eq!(newest.output_dir, "projects/desk/slice-1");
+        assert_eq!(card.prints.count, 1);
+        assert_eq!(card.prints.outcomes.completed, 1);
+        assert_eq!(card.dates.last_printed_unix_ms, Some(10_000));
+        assert_eq!(card.unreadable.len(), 1);
+        assert_eq!(card.unreadable[0].path, ledger::record_path("desk", 8));
     }
 
     #[test]
@@ -1032,6 +1073,7 @@ pub(crate) mod tests {
             .write_artifact(
                 &format!("{output}/state.json"),
                 &serde_json::to_vec(&json!({"status": "completed",
+                    "slice": {"project_id": "bracket", "output_dir": output},
                     "setup": {"printer": {"name": "Voron"}, "filaments": []}}))
                 .unwrap(),
                 false,
