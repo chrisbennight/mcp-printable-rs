@@ -1032,6 +1032,10 @@ struct CompareParams {
     /// For `best_fit`: fit only this mesh's surface inside these bounds, such
     /// as a part beside its fixture. All of it is still measured.
     fit_region: Option<FitRegionParams>,
+    /// Also count missing and extra material in cells at least
+    /// `tolerance_mm` across, with its largest lumps. Needs closed meshes.
+    #[serde(default)]
+    volume: bool,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -5089,6 +5093,7 @@ async fn validate_mesh_artifact(
                         minimum_mm: region.minimum_mm,
                         maximum_mm: region.maximum_mm,
                     }),
+                    volume: compare.volume,
                 };
                 (Some(options), Some(snapshot.meta().clone()))
             }

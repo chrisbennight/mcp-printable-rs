@@ -160,7 +160,8 @@ impl Field {
                 high[axis] = high[axis].max(vertex[axis]);
             }
         }
-        let columns = Columns::new(vertices, triangles, low, high, cell);
+        let columns = Columns::new(vertices, triangles, low, high, cell, u32::MAX as usize)
+            .ok_or_else(|| GeometryError::Kernel("remeshing input is too large".into()))?;
         let voxels = Voxels::new(vertices, triangles, low, high, band)?;
         Ok(Self {
             surface,
@@ -263,7 +264,7 @@ impl Field {
 /// Whether `point` projects onto the closed side of the counterclockwise edge
 /// from `from` to `to`, with each boundary point owned by exactly one of the
 /// two triangles sharing the edge.
-fn covers(from: Point, to: Point, point: Point) -> bool {
+pub(crate) fn covers(from: Point, to: Point, point: Point) -> bool {
     let side = orient2d(
         Coord {
             x: from[0],
@@ -278,7 +279,7 @@ fn covers(from: Point, to: Point, point: Point) -> bool {
     side > 0.0 || (side == 0.0 && (to[1] < from[1] || (to[1] == from[1] && to[0] > from[0])))
 }
 
-fn orient2(a: Point, b: Point, c: Point) -> f64 {
+pub(crate) fn orient2(a: Point, b: Point, c: Point) -> f64 {
     orient2d(
         Coord { x: a[0], y: a[1] },
         Coord { x: b[0], y: b[1] },
@@ -296,7 +297,7 @@ fn coord3(point: Point) -> Coord3D<f64> {
 
 /// Triangles bucketed by the grid cells their projection onto the xy plane
 /// overlaps.
-struct Columns {
+pub(crate) struct Columns {
     low: [f64; 2],
     cell: f64,
     size: [usize; 2],
@@ -305,13 +306,16 @@ struct Columns {
 }
 
 impl Columns {
-    fn new(
+    /// None when the triangles would fill more than `max_entries` bucket
+    /// entries, at most `u32::MAX`.
+    pub(crate) fn new(
         vertices: &[Vector],
         triangles: &[[u32; 3]],
         low: Point,
         high: Point,
         cell: f64,
-    ) -> Self {
+        max_entries: usize,
+    ) -> Option<Self> {
         let size = [0, 1].map(|axis| ((high[axis] - low[axis]) / cell).floor() as usize + 1);
         let mut columns = Self {
             low: [low[0], low[1]],
@@ -338,6 +342,13 @@ impl Columns {
                 (span(0), span(1))
             })
             .collect();
+        let entries = spans
+            .iter()
+            .map(|((x0, x1), (y0, y1))| (x1 - x0 + 1).saturating_mul(y1 - y0 + 1))
+            .fold(0usize, usize::saturating_add);
+        if entries > max_entries.min(u32::MAX as usize) {
+            return None;
+        }
         for ((x0, x1), (y0, y1)) in &spans {
             for y in *y0..=*y1 {
                 for x in *x0..=*x1 {
@@ -359,14 +370,14 @@ impl Columns {
                 }
             }
         }
-        columns
+        Some(columns)
     }
 
     fn cell_of(&self, axis: usize, value: f64) -> usize {
         (((value - self.low[axis]) / self.cell).floor().max(0.0) as usize).min(self.size[axis] - 1)
     }
 
-    fn candidates(&self, point: Point) -> &[u32] {
+    pub(crate) fn candidates(&self, point: Point) -> &[u32] {
         let inside = (0..2).all(|axis| {
             point[axis] >= self.low[axis]
                 && point[axis] <= self.low[axis] + self.cell * self.size[axis] as f64
