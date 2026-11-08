@@ -128,23 +128,27 @@ difference() {
 
 ## Manufacturing evidence
 
-Compile measures final-STL topology, bounds, build-plate contact, and overhang
-using the profile's actual `maximum_overhang_degrees`. Kit modules reject local
-wall, rib, boss, radius, and shell arguments that violate their constructive
-invariants.
+Compile measures final-STL topology, bounds, build-plate contact, overhang
+using the profile's actual `maximum_overhang_degrees`, and wall thickness
+against the profile's `minimum_wall_mm`. Kit modules reject local wall, rib,
+boss, radius, and shell arguments that violate their constructive invariants.
 
 Read `validation.assessment` alongside these measurements. Its criteria use
 `passed`, `failed`, `unmeasured`, and `physical_test_required`. A valid solid
 with no detected support requirement still has an `incomplete` assessment:
-geometry alone does not establish wall suitability, fit, material/process
-suitability, or physical performance. The compatibility field `printable`
-retains its original meaning as an alias for `solid_geometry`.
+geometry alone does not establish fit, material/process suitability, or
+physical performance. The compatibility field `printable` retains its original
+meaning as an alias for `solid_geometry`.
 
-That is not a global wall-thickness proof for arbitrary caller geometry.
-`global_minimum_wall.status` therefore remains `not_certified`. A product that
-requires wall proof must encode exact constructive assertions or companion proof
-geometry. `moving_clearance.status` remains `not_run`; moving products must
-export each rigid body separately and pass `analyze_assembly`.
+`global_minimum_wall.status` repeats the `wall_thickness` criterion: `passed`
+when no point sampled over the final surface is thinner than the profile
+minimum, `failed` with the thin regions listed in `validation.wall_thickness`,
+or `unmeasured` when the output is not a valid solid or no point could be
+measured. Sampling can miss a
+feature narrower than the reported spacing, so a product that requires wall
+proof must still encode exact constructive assertions.
+`moving_clearance.status` remains `not_run`; moving products must export each
+rigid body separately and pass `analyze_assembly`.
 
 ## Complete product workflow
 

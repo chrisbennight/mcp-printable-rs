@@ -185,8 +185,57 @@ fn mesh_report() -> Value {
         .iter()
         .map(|name| ((*name).to_owned(), criterion.clone()))
         .collect();
+    let number = json!({"type": "number"});
+    let point = json!({"type": "array", "items": number, "minItems": 3, "maxItems": 3});
+    let thin_region = object(
+        json!({
+            "area_mm2": number,
+            "minimum_thickness_mm": number,
+            "thinnest_point_mm": point,
+            "bounds": object(
+                json!({"minimum_mm": point, "maximum_mm": point, "dimensions_mm": point}),
+                &["minimum_mm", "maximum_mm", "dimensions_mm"]
+            )
+        }),
+        &[
+            "area_mm2",
+            "minimum_thickness_mm",
+            "thinnest_point_mm",
+            "bounds",
+        ],
+    );
+    let wall_thickness = object(
+        json!({
+            "minimum_wall_mm": number,
+            "cone_half_angle_degrees": number,
+            "rays_per_sample": {"type": "integer", "minimum": 1},
+            "max_exit_deviation_degrees": number,
+            "sample_spacing_mm": number,
+            "samples": {"type": "integer", "minimum": 0},
+            "unmeasured_samples": {"type": "integer", "minimum": 0},
+            "measured_area_share": number,
+            "thickness_mm": object(
+                json!({"minimum": number, "p5": number, "p50": number, "p95": number, "maximum": number}),
+                &["minimum", "p5", "p50", "p95", "maximum"]
+            ),
+            "thin_area_mm2": number,
+            "thin_region_count": {"type": "integer", "minimum": 0},
+            "thin_regions": {"type": "array", "items": thin_region}
+        }),
+        &[
+            "minimum_wall_mm",
+            "sample_spacing_mm",
+            "samples",
+            "unmeasured_samples",
+            "measured_area_share",
+            "thin_area_mm2",
+            "thin_region_count",
+            "thin_regions",
+        ],
+    );
     object(
         json!({
+            "wall_thickness": wall_thickness,
             "solid_geometry": {"type": "boolean"},
             "printable": {"type": "boolean", "deprecated": true,
                 "description": "Compatibility alias for solid_geometry only. Does not establish manufacturing qualification."},

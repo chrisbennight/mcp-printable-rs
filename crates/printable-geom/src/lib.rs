@@ -28,6 +28,7 @@ mod intersect;
 mod isosurface;
 mod print_check;
 mod remesh;
+mod thickness;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
 pub use bust::{
@@ -36,6 +37,7 @@ pub use bust::{
     Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
+pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
 
 pub use assembly::{
     AssemblyOptions, AssemblyPartSummary, AssemblyRelation, AssemblyReport, AssemblyStaticReport,
@@ -56,6 +58,9 @@ pub struct ValidationOptions {
     pub build_direction: [f64; 3],
     pub overhang_angle_degrees: f64,
     pub density_g_cm3: Option<f64>,
+    /// Measure wall thickness against this minimum, in millimetres, when the
+    /// mesh is a valid solid.
+    pub minimum_wall_mm: Option<f64>,
 }
 
 impl Default for ValidationOptions {
@@ -64,6 +69,7 @@ impl Default for ValidationOptions {
             build_direction: [0.0, 0.0, 1.0],
             overhang_angle_degrees: 45.0,
             density_g_cm3: None,
+            minimum_wall_mm: None,
         }
     }
 }
@@ -185,6 +191,8 @@ pub struct ValidationReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solid_properties: Option<SolidProperties>,
     pub overhang: OverhangReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_thickness: Option<WallThicknessReport>,
     pub solid_geometry: bool,
     /// Compatibility alias for solid_geometry, not manufacturing qualification.
     pub printable: bool,
@@ -265,6 +273,14 @@ fn prepare_mesh(
     {
         return Err(GeometryError::InvalidOptions(
             "density_g_cm3 must be a finite positive number".to_string(),
+        ));
+    }
+    if options
+        .minimum_wall_mm
+        .is_some_and(|wall| !wall.is_finite() || wall <= 0.0)
+    {
+        return Err(GeometryError::InvalidOptions(
+            "minimum_wall_mm must be a finite positive number".to_string(),
         ));
     }
     for (index, vertex) in mesh.vertices.iter().enumerate() {
@@ -536,10 +552,62 @@ fn prepare_mesh(
         ));
     }
 
+    let wall_thickness = match (options.minimum_wall_mm, &manifold) {
+        (Some(minimum_wall_mm), Some(solid)) => {
+            // The checked solid, with any overlapping shells united, so that
+            // buried surfaces cannot read as the far side of a wall.
+            let (vertices, properties, triangles) = solid.to_mesh_f64();
+            let vertices: Vec<[f64; 3]> = vertices
+                .chunks_exact(properties)
+                .map(|vertex| [vertex[0], vertex[1], vertex[2]])
+                .collect();
+            let triangles: Vec<[u32; 3]> = triangles
+                .chunks_exact(3)
+                .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
+                .collect();
+            let report = thickness::measure(&vertices, &triangles, minimum_wall_mm)?;
+            if report.unmeasured_samples == report.samples {
+                issues.push(warning_issue(
+                    "wall_thickness_unmeasured",
+                    "wall thickness could not be measured because every ray left the solid through a neighbouring face".to_string(),
+                    "Judge the walls from a section view or the model's dimensions.",
+                ));
+            } else if report.thin_area_mm2 > 0.0 {
+                issues.push(warning_issue(
+                    "thin_walls",
+                    format!(
+                        "{:.1} mm2 of surface in {} regions is thinner than the {minimum_wall_mm} mm minimum wall",
+                        report.thin_area_mm2, report.thin_region_count
+                    ),
+                    "Thicken the reported regions, or confirm the minimum wall for this printer and material.",
+                ));
+            }
+            Some(report)
+        }
+        (Some(_), None) => {
+            issues.push(warning_issue(
+                "wall_thickness_unmeasured",
+                "wall thickness was not measured because the mesh is not a valid solid".to_string(),
+                "Repair the reported topology issues, then validate again.",
+            ));
+            None
+        }
+        (None, _) => None,
+    };
+
     let assessment = MeshAssessment::new(
         solid_geometry,
         bounds.dimensions_mm.iter().all(|value| value.is_finite()),
         overhang.requires_support,
+        wall_thickness.as_ref().map(|report| {
+            if report.thin_area_mm2 > 0.0 {
+                CriterionStatus::Failed
+            } else if report.unmeasured_samples == report.samples {
+                CriterionStatus::Unmeasured
+            } else {
+                CriterionStatus::Passed
+            }
+        }),
     );
     Ok(PreparedMesh {
         report: ValidationReport {
@@ -566,6 +634,7 @@ fn prepare_mesh(
             solid_properties,
             assessment,
             overhang,
+            wall_thickness,
             solid_geometry,
             printable: solid_geometry,
             issues,

@@ -1220,12 +1220,22 @@ async fn product_v1_profile_and_wrapper_are_consistent_across_scad_workflows() {
                 json!({
                     "units": "millimeters",
                     "build_direction": [0.0, 0.0, 1.0],
-                    "measured": ["topology", "bounds", "build_plate_contact", "overhang"],
+                    "measured": [
+                        "topology",
+                        "bounds",
+                        "build_plate_contact",
+                        "overhang",
+                        "wall_thickness"
+                    ],
                     "kit_local_wall_assertions": {
                         "status": "enforced_when_used",
                         "minimum_wall_mm": 2.0,
                     },
-                    "global_minimum_wall": {"status": "not_certified"},
+                    "global_minimum_wall": {
+                        "status": "passed",
+                        "minimum_wall_mm": 2.0,
+                        "evidence": "/validation/wall_thickness",
+                    },
                     "moving_clearance": {
                         "status": "not_run",
                         "requested_mm": 0.35,
@@ -2427,6 +2437,63 @@ async fn mesh_validation_returns_actionable_solid_and_support_properties() {
         .read_artifact("models/cube.stl")
         .expect("read cube after analysis");
     assert_eq!(after, original, "validation must not modify the artifact");
+}
+
+#[tokio::test]
+async fn mesh_validation_measures_wall_thickness_against_a_requested_minimum() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    ws.write_artifact("models/cube.stl", &cube_stl(10.0), false)
+        .expect("seed cube STL");
+    let validator = jsonschema::validator_for(
+        &printable_server::resources::contracts::read(
+            "printable://contracts/validate_mesh",
+            Default::default(),
+        )
+        .unwrap()["outputSchema"],
+    )
+    .unwrap();
+    let (uploads, client, settings) = (uploads(), client("127.0.0.1", 9), settings("127.0.0.1", 9));
+    let validate = |minimum_wall_mm: f64| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": "models/cube.stl", "minimum_wall_mm": minimum_wall_mm}),
+        )
+    };
+
+    let thin = validate(12.0).await.expect("validate thin cube");
+    validator.validate(&thin).unwrap();
+    let report = &thin["report"];
+    assert_eq!(report["wall_thickness"]["minimum_wall_mm"], json!(12.0));
+    assert_eq!(report["wall_thickness"]["thin_area_mm2"], json!(600.0));
+    assert_eq!(report["wall_thickness"]["thickness_mm"]["p50"], json!(10.0));
+    assert_eq!(
+        report["assessment"]["criteria"]["wall_thickness"],
+        json!({"status": "failed", "evidence": "/wall_thickness"})
+    );
+    assert_eq!(report["assessment"]["status"], "failed");
+    assert!(
+        report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "thin_walls")
+    );
+
+    let thick = validate(5.0).await.expect("validate thick cube");
+    validator.validate(&thick).unwrap();
+    assert_eq!(
+        thick["report"]["assessment"]["criteria"]["wall_thickness"]["status"],
+        "passed"
+    );
+    assert_eq!(thick["report"]["assessment"]["status"], "incomplete");
+
+    let error = validate(0.0).await.expect_err("reject a zero minimum wall");
+    assert!(error.to_string().contains("minimum_wall_mm"), "{error}");
 }
 
 #[tokio::test]
