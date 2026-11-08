@@ -410,8 +410,8 @@ const SAME_HOLE_MM: f64 = 1e-7;
 /// faces joined to it that point at the axis, goes all the way round, so
 /// every section of a stepped opening that is a complete hole is reported,
 /// and one that is not, such as a nut trap's flats, hides nothing. A found
-/// wall, or a flat patch whose fit failed, is not tried again by any
-/// declaration. The fitted centre and radius are reported, so a hole that
+/// wall, a wall that stops short of going round, or a flat patch whose fit
+/// failed, is not tried again by any declaration. The fitted centre and radius are reported, so a hole that
 /// moved or changed size is measured as it is, not as declared, and sections
 /// of one bore with the same centre and radius are one hole. Stops with the
 /// geometry time limit when one applies.
@@ -429,8 +429,8 @@ pub fn vertical_holes(
         .collect();
     walls.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
     let mut found: Vec<VerticalHole> = Vec::new();
-    // The faces of the walls found, and of the flat patches whose fit
-    // failed, which no declaration tries again.
+    // The faces of the walls found or stopping short, and of the flat
+    // patches whose fit failed, which no declaration tries again.
     let mut tried = HashSet::new();
     for &(center, radius) in declared {
         let reach = 2.0 * radius;
@@ -471,18 +471,27 @@ pub fn vertical_holes(
                 continue;
             }
             crate::limit::check()?;
-            let Some((hole, wall)) = fit_hole(&surface, face) else {
-                // A flat patch, such as the side of a nut trap or one facet
-                // of a bore, is passed over as a whole.
-                let Some(flat) = surface.normals[face] else {
+            let (hole, wall) = match fit_hole(&surface, face) {
+                Ok(found) => found,
+                // Seeds are tried best placed first, so a wall that stops
+                // short has already been tried from its best face.
+                Err(wall) if !wall.is_empty() => {
+                    tried.extend(wall);
                     continue;
-                };
-                tried.extend(surface.grow(face, |_, next| {
-                    surface.normals[next].is_some_and(|normal| {
-                        normal.dot(&flat) >= PLANE_EXACT_DEGREES.to_radians().cos()
-                    })
-                }));
-                continue;
+                }
+                Err(_) => {
+                    // A flat patch, such as the side of a nut trap or one facet
+                    // of a bore, is passed over as a whole.
+                    let Some(flat) = surface.normals[face] else {
+                        continue;
+                    };
+                    tried.extend(surface.grow(face, |_, next| {
+                        surface.normals[next].is_some_and(|normal| {
+                            normal.dot(&flat) >= PLANE_EXACT_DEGREES.to_radians().cos()
+                        })
+                    }));
+                    continue;
+                }
             };
             tried.extend(wall);
             // Sections of one bore on either side of a wider relief are one
@@ -521,9 +530,11 @@ fn points_at_axis(surface: &Surface, face: usize, point: V3, axis: V3) -> bool {
 }
 
 /// A complete vertical inner wall fitted from `face`, with its wall's faces
-/// in order.
-fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)> {
-    let fit = fit_from(surface, face, Shape::Cylinder, Some(V3::z()), None).ok()?;
+/// in order. Otherwise the faces of the wall that stops short of going
+/// round, or none when no wall was found.
+fn fit_hole(surface: &Surface, face: usize) -> Result<(VerticalHole, Vec<usize>), Vec<usize>> {
+    let fit =
+        fit_from(surface, face, Shape::Cylinder, Some(V3::z()), None).map_err(|_| Vec::new())?;
     let Geometry::Cylinder {
         axis_point_mm,
         axis_direction,
@@ -531,17 +542,17 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)
         ..
     } = fit.geometry
     else {
-        return None;
+        return Err(Vec::new());
     };
     let (point, axis) = (V3::from(axis_point_mm), V3::from(axis_direction));
     if axis.z.abs() < HOLE_AXIS_DEGREES.to_radians().cos() {
-        return None;
+        return Err(Vec::new());
     }
     // An inner wall faces its axis; a boss's wall faces away from it, and the
     // sides of a slot or passage leading off the hole face across it.
     let facing_axis = |face: usize| points_at_axis(surface, face, point, axis);
     if !facing_axis(face) {
-        return None;
+        return Err(Vec::new());
     }
     // The whole wall runs from the seed over faces that stay nearly vertical
     // and face the axis, ending at rims, chamfers, steps, and slots or
@@ -556,7 +567,7 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)
     // wall keeps them, so the wall decides whether the hole goes all the way
     // round.
     if arc_degrees(surface, &wall, point, axis) < HOLE_ARC_DEGREES {
-        return None;
+        return Err(wall);
     }
     let model = Model::Cylinder {
         point,
@@ -569,7 +580,7 @@ fn fit_hole(surface: &Surface, face: usize) -> Option<(VerticalHole, Vec<usize>)
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (a, b)| {
             (low.min(a), high.max(b))
         });
-    Some((
+    Ok((
         VerticalHole {
             center_mm: [point.x, point.y],
             radius_mm,
