@@ -167,6 +167,7 @@ pub(crate) fn measure(
             continue;
         };
         for (point, area) in triangle_samples(corners(vertices, triangle), spacing) {
+            crate::limit::check()?;
             let inward = normal.map(|value| -value);
             let start = RAY_START * scale_along(point, inward);
             let reading = cone(inward)

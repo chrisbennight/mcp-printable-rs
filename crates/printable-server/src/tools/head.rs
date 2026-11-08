@@ -1501,6 +1501,7 @@ async fn print_bust(
                 ),
             ));
         }
+        printable_geom::limit::check()?;
         let artifact = workspace.write_generated_bytes(&path, &bytes, overwrite)?;
         let mut report = serde_json::to_value(report)?;
         if let (Some(filter), Some(applied)) = (detail_filter, report.get_mut("displacement")) {
