@@ -203,6 +203,9 @@ pub struct ProjectIndex {
     /// Plate pictures the latest card pass found to make, and how many
     /// projects wait to retry a failed picture.
     picture_plans: Mutex<(Vec<pictures::Plan>, usize)>,
+    /// Projects whose picture work ended in an error that could not be
+    /// recorded, and when to try them again.
+    picture_holds: Mutex<HashMap<String, u64>>,
 }
 
 /// How generated pictures are made.
@@ -2204,6 +2207,7 @@ impl ProjectIndex {
             services: Mutex::new(ServiceState::default()),
             pictures: None,
             picture_plans: Mutex::new((Vec::new(), 0)),
+            picture_holds: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2353,6 +2357,9 @@ impl ProjectIndex {
             let gathered = Inputs::gather(workspace, id);
             if let (Some(settings), Ok(inputs)) = (&self.pictures, &gathered) {
                 match inputs.picture_need(settings.slicer.is_some(), picture_time) {
+                    pictures::Need::Make(_) if self.picture_held(id, picture_time) => {
+                        retrying += 1;
+                    }
                     pictures::Need::Make(plan) => plans.push(*plan),
                     pictures::Need::Retry => retrying += 1,
                     pictures::Need::Nothing => {}
@@ -2504,12 +2511,23 @@ impl ProjectIndex {
             }
             let project_id = plan.project_id.clone();
             let made = match self.make_picture(workspace, plan, previews).await {
-                Ok(made) => made,
+                Ok(made) => {
+                    if !matches!(made, Made::Deferred) {
+                        self.hold_picture(&project_id, None);
+                    }
+                    made
+                }
                 Err(error) => {
                     tracing::warn!(
                         project_id = %project_id,
                         code = error.code(),
                         "could not make or record a project picture"
+                    );
+                    // Nothing records this failure, so hold the project
+                    // back here instead.
+                    self.hold_picture(
+                        &project_id,
+                        Some(super::unix_ms().saturating_add(FIRST_RETRY_MS)),
                     );
                     Made::Nothing
                 }
@@ -2534,6 +2552,31 @@ impl ProjectIndex {
             }
         }
         report
+    }
+
+    /// Whether a project's picture is held back until after `now_unix_ms`.
+    fn picture_held(&self, project_id: &str, now_unix_ms: u64) -> bool {
+        self.picture_holds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(project_id)
+            .is_some_and(|until| *until > now_unix_ms)
+    }
+
+    /// Hold a project's picture back until `until`, or release it.
+    fn hold_picture(&self, project_id: &str, until: Option<u64>) {
+        let mut holds = self
+            .picture_holds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match until {
+            Some(until) => {
+                holds.insert(project_id.to_owned(), until);
+            }
+            None => {
+                holds.remove(project_id);
+            }
+        }
     }
 
     /// Try a plan's steps in order and record the picture, or the failure.
@@ -4679,10 +4722,8 @@ mod tests {
                     false,
                 )
                 .unwrap();
-            let report = pictured(&server)
-                .run(&workspace, PassKind::Incremental)
-                .await
-                .unwrap();
+            let index = pictured(&server);
+            let report = index.run(&workspace, PassKind::Incremental).await.unwrap();
             let made = report.pictures.unwrap();
             assert_eq!((made.made, made.failed), (1, 1));
             assert!(
@@ -4692,6 +4733,25 @@ mod tests {
                     .plate
                     .is_some()
             );
+            // The unrecorded failure holds the project back, unless a retry
+            // pass asks again.
+            let asked = preview_requests(&server).await.len();
+            let held = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!((held.failed, held.waiting), (0, 1));
+            assert_eq!(preview_requests(&server).await.len(), asked);
+            let retried = index
+                .run(&workspace, PassKind::Retry)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!(retried.failed, 1);
+            assert_eq!(preview_requests(&server).await.len(), asked + 1);
         }
 
         #[test]

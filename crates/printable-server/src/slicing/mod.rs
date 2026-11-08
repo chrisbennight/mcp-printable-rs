@@ -343,8 +343,11 @@ impl SliceWorker {
             permit: Some(permit),
             previewing: Arc::clone(&self.previewing),
         };
-        self.export_preview(&source, &extension)
+        // The whole preview, copying included, keeps to the deadline that an
+        // interactive request waiting on it allows for.
+        tokio::time::timeout(PREVIEW_TIMEOUT, self.export_preview(&source, &extension))
             .await
+            .map_err(|_| PreviewError::Failed("plate preview exceeded its deadline".into()))?
             .map_err(failed)
     }
 
