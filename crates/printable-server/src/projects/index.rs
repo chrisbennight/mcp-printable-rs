@@ -19,7 +19,7 @@
 //! parameter. The SQLite connection is never held across a network request.
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map},
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
@@ -40,11 +40,7 @@ use super::{
     cover,
     embeddings::{self, Embedded, Embeddings, Input, Reranker, ServiceError},
 };
-use crate::{
-    config::SettingsError,
-    error::ToolError,
-    tools::{blocking, blocking_with},
-};
+use crate::{config::SettingsError, error::ToolError, tools::blocking_with};
 
 const DIR_KEY: &str = "PRINTABLE_PROJECT_INDEX_DIR";
 const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
@@ -1830,7 +1826,7 @@ fn rank(
                 .then_with(|| a.project_id.cmp(&b.project_id))
         });
         for scored in similar.iter().take(MAX_SIMILAR) {
-            if let Entry::Vacant(slot) = positions.entry(scored.row) {
+            if let hash_map::Entry::Vacant(slot) = positions.entry(scored.row) {
                 slot.insert(candidates.len());
                 candidates.push(Candidate {
                     row: scored.row,
@@ -2590,7 +2586,8 @@ impl ProjectIndex {
         };
         let next = query.offset + results.len();
         Ok(SearchResponse {
-            next_offset: (!results.is_empty() && next < total).then_some(next),
+            next_offset: (!results.is_empty() && next < total && next <= MAX_OFFSET)
+                .then_some(next),
             results,
             total,
             degraded,
