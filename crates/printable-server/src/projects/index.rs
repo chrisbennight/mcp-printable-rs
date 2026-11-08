@@ -2582,7 +2582,13 @@ impl ProjectIndex {
         let mut state = self.state();
         if let Some(wait) = wait {
             let wait = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
-            state.retry_after_unix_ms = Some(super::unix_ms().saturating_add(wait));
+            let until = super::unix_ms().saturating_add(wait);
+            // Never shorten a longer wait another request recorded.
+            state.retry_after_unix_ms = Some(
+                state
+                    .retry_after_unix_ms
+                    .map_or(until, |known| known.max(until)),
+            );
         }
         if state
             .embeddings
