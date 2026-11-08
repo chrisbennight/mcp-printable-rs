@@ -33,6 +33,15 @@ const MAX_REGIONS: usize = 10;
 /// Draws used to fit the alignment and to score each starting pose, spread
 /// over the surface by area.
 const FIT_POINTS: usize = 4_000;
+/// A fit region must hold at least this many surface points.
+const MIN_FIT_REGION_POINTS: usize = 6;
+
+/// Picked pairs accepted, at most.
+pub const MAX_START_PAIRS: usize = 32;
+/// Picked coordinates lie within this many millimetres of the origin, so no
+/// product formed while fitting them can overflow.
+const MAX_PICK_MM: f64 = 1e9;
+
 /// Draws used to refine each starting pose before it is scored.
 const START_POINTS: usize = 1_000;
 const START_ITERATIONS: usize = 8;
@@ -77,6 +86,36 @@ pub struct ComparisonOptions {
     /// Points farther than this from any reference surface facing their way
     /// are unmeasured.
     pub max_distance_mm: Option<f64>,
+    /// For a best fit, three or more picked pairs of the same place on the
+    /// compared mesh and on the reference. The fit also starts from the
+    /// motion that best carries one onto the other, and keeps that result
+    /// unless an automatic start fits clearly better; on a symmetric part the
+    /// picks decide which of the equally good fits is meant.
+    pub start_pairs: Vec<PointPair>,
+    /// For a best fit, only the compared mesh's surface inside these bounds
+    /// is fitted, so that fixtures or supports do not pull the fit off. The
+    /// whole surface is still measured.
+    pub fit_region: Option<FitRegion>,
+}
+
+/// The same place picked on the compared mesh and on the reference.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointPair {
+    pub mesh_mm: [f64; 3],
+    pub reference_mm: [f64; 3],
+}
+
+/// Axis-aligned bounds in the compared mesh's frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FitRegion {
+    pub minimum_mm: [f64; 3],
+    pub maximum_mm: [f64; 3],
+}
+
+impl FitRegion {
+    fn contains(&self, point: &V3) -> bool {
+        (0..3).all(|axis| (self.minimum_mm[axis]..=self.maximum_mm[axis]).contains(&point[axis]))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -116,6 +155,10 @@ pub struct AlignmentReport {
     /// absent when no step paired enough points to move the mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rms_mm: Option<f64>,
+    /// For a fit started from picked pairs, how far apart the pairs remain
+    /// after the starting motion; a large value means a mispicked pair.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_pairs_rms_mm: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -154,6 +197,58 @@ pub(crate) fn validate(options: &ComparisonOptions) -> Result<(), GeometryError>
     {
         return invalid("comparison max_distance_mm must be a finite positive number");
     }
+    if (!options.start_pairs.is_empty() || options.fit_region.is_some())
+        && options.alignment != Alignment::BestFit
+    {
+        return invalid("comparison start_pairs and fit_region apply to a best_fit alignment");
+    }
+    if !options.start_pairs.is_empty() {
+        if options.start_pairs.len() < 3 {
+            return invalid("comparison start_pairs needs at least three pairs");
+        }
+        if options.start_pairs.len() > MAX_START_PAIRS {
+            return Err(GeometryError::InvalidOptions(format!(
+                "comparison start_pairs accepts at most {MAX_START_PAIRS} pairs"
+            )));
+        }
+        let sides = [
+            options
+                .start_pairs
+                .iter()
+                .map(|pair| V3::from(pair.mesh_mm))
+                .collect::<Vec<_>>(),
+            options
+                .start_pairs
+                .iter()
+                .map(|pair| V3::from(pair.reference_mm))
+                .collect(),
+        ];
+        if sides.iter().flatten().any(|point| {
+            !point
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_PICK_MM)
+        }) {
+            return Err(GeometryError::InvalidOptions(format!(
+                "comparison start_pairs coordinates must be finite and within {MAX_PICK_MM:e} mm of the origin"
+            )));
+        }
+        if !sides.iter().all(|side| spans_a_plane(side)) {
+            return invalid(
+                "comparison start_pairs lie nearly on one line, which leaves the rotation about it unknown; pick points spread over the part",
+            );
+        }
+    }
+    if let Some(region) = &options.fit_region
+        && !(0..3).all(|axis| {
+            region.minimum_mm[axis].is_finite()
+                && region.maximum_mm[axis].is_finite()
+                && region.minimum_mm[axis] <= region.maximum_mm[axis]
+        })
+    {
+        return invalid(
+            "comparison fit_region needs finite bounds with each minimum at most its maximum",
+        );
+    }
     let reference = &options.reference;
     if reference.vertices.is_empty() || reference.triangles.is_empty() {
         return invalid("the comparison reference must contain triangles");
@@ -174,6 +269,66 @@ pub(crate) fn validate(options: &ComparisonOptions) -> Result<(), GeometryError>
         return invalid("the comparison reference refers to a missing vertex");
     }
     Ok(())
+}
+
+/// Whether points spread across a plane rather than along a line: the widest
+/// triangle they form has at least a tenth of the area of a square as wide as
+/// their extent.
+fn spans_a_plane(points: &[V3]) -> bool {
+    let extent = points
+        .iter()
+        .flat_map(|a| points.iter().map(move |b| (a - b).norm()))
+        .fold(0.0, f64::max);
+    let widest = points
+        .iter()
+        .flat_map(|a| {
+            points
+                .iter()
+                .flat_map(move |b| points.iter().map(move |c| (b - a).cross(&(c - a)).norm()))
+        })
+        .fold(0.0, f64::max);
+    extent > 0.0 && widest >= 0.2 * extent * extent
+}
+
+/// The rigid motion that best carries each pair's mesh point onto its
+/// reference point, in closed form, and how far apart the pairs remain.
+fn pose_from_pairs(pairs: &[PointPair]) -> (Pose, f64) {
+    let count = pairs.len() as f64;
+    let (from, to): (Vec<V3>, Vec<V3>) = pairs
+        .iter()
+        .map(|pair| (V3::from(pair.mesh_mm), V3::from(pair.reference_mm)))
+        .unzip();
+    let from_centre = from.iter().sum::<V3>() / count;
+    let to_centre = to.iter().sum::<V3>() / count;
+    let covariance = from
+        .iter()
+        .zip(&to)
+        .map(|(a, b)| (a - from_centre) * (b - to_centre).transpose())
+        .sum::<Matrix3<f64>>();
+    let svd = covariance.svd(true, true);
+    let (u, v) = (
+        svd.u.unwrap_or_else(Matrix3::identity),
+        svd.v_t.unwrap_or_else(Matrix3::identity).transpose(),
+    );
+    // Turn the axis of least spread over if the motion would mirror.
+    let mut flip = Matrix3::identity();
+    if (v * u.transpose()).determinant() < 0.0 {
+        let weakest = svd.singular_values.imin();
+        flip[(weakest, weakest)] = -1.0;
+    }
+    let rotation = v * flip * u.transpose();
+    let pose = Pose {
+        rotation,
+        translation: to_centre - rotation * from_centre,
+    };
+    let rms = (from
+        .iter()
+        .zip(&to)
+        .map(|(a, b)| (pose.apply(a) - b).norm_squared())
+        .sum::<f64>()
+        / count)
+        .sqrt();
+    (pose, rms)
 }
 
 /// A rigid motion: rotate, then translate.
@@ -198,6 +353,7 @@ impl Pose {
 
 /// A point on the compared surface, with the area it stands for and its
 /// face's normal.
+#[derive(Clone, Copy)]
 struct SurfacePoint {
     position: V3,
     normal: V3,
@@ -379,7 +535,35 @@ pub(crate) fn measure(
             Pose::identity(),
             alignment_report(Alignment::None, &Pose::identity()),
         ),
-        Alignment::BestFit => best_fit(mesh, &options.reference, &reference, &points, diagonal),
+        Alignment::BestFit => {
+            let in_region: Vec<SurfacePoint>;
+            let fitted: &[SurfacePoint] = match &options.fit_region {
+                Some(region) => {
+                    in_region = points
+                        .iter()
+                        .filter(|point| region.contains(&point.position))
+                        .copied()
+                        .collect();
+                    if in_region.len() < MIN_FIT_REGION_POINTS {
+                        return Err(GeometryError::InvalidOptions(
+                            "comparison fit_region holds too little of the mesh's surface to fit; widen it"
+                                .to_string(),
+                        ));
+                    }
+                    &in_region
+                }
+                None => &points,
+            };
+            best_fit(
+                mesh,
+                &options.reference,
+                &reference,
+                fitted,
+                &options.start_pairs,
+                options.fit_region.as_ref(),
+                diagonal,
+            )
+        }
     };
 
     let readings: Vec<(V3, f64, Option<f64>)> = points
@@ -433,14 +617,30 @@ fn best_fit(
     reference_mesh: &TriangleMesh,
     reference: &Reference,
     points: &[SurfacePoint],
+    start_pairs: &[PointPair],
+    fit_region: Option<&FitRegion>,
     diagonal: f64,
 ) -> (Pose, AlignmentReport) {
     let fit = spread(points, FIT_POINTS);
     let start = spread(points, START_POINTS);
     let cap = SCORE_CAP_SHARE * diagonal;
+    let picked = (!start_pairs.is_empty()).then(|| pose_from_pairs(start_pairs));
     let mut starts = vec![Pose::identity()];
+    // The automatic starts match the principal axes of the fitted part of
+    // the mesh to the reference's. Within a region, that part is the surface
+    // its samples stand for, wherever the triangles they lie on end.
+    let compared = match fit_region {
+        Some(_) => points.first().and_then(|first| {
+            let mut moments = SurfaceMoments::about(first.position);
+            for point in points {
+                moments.add_point(point.position, point.area);
+            }
+            moments.axes()
+        }),
+        None => principal_axes(mesh),
+    };
     if let (Some((compared_centre, compared_axes)), Some((reference_centre, reference_axes))) =
-        (principal_axes(mesh), principal_axes(reference_mesh))
+        (compared, principal_axes(reference_mesh))
     {
         for turn in axis_rotations() {
             let rotation = reference_axes * turn * compared_axes.transpose();
@@ -464,16 +664,26 @@ fn best_fit(
             })
             .sum()
     };
-    let best = starts
+    let refined = |pose: Pose| {
+        let (pose, ..) = refine(reference, &start, pose, START_ITERATIONS, cap, diagonal);
+        (score(&pose), pose)
+    };
+    let automatic = starts
         .into_iter()
-        .map(|pose| {
-            let (pose, ..) = refine(reference, &start, pose, START_ITERATIONS, cap, diagonal);
-            (score(&pose), pose)
-        })
+        .map(refined)
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map_or(Pose::identity(), |(_, pose)| pose);
+        .unwrap_or((f64::INFINITY, Pose::identity()));
+    // The fit from picked pairs is kept unless an automatic start fits
+    // clearly better, as it does after a mispicked pair. A symmetric part
+    // fits equally well several ways, and the picks say which is meant.
+    let rounding = fit.iter().map(|(_, weight)| weight).sum::<f64>() * (1e-6 * diagonal).powi(2);
+    let best = match picked.map(|(pose, _)| refined(pose)) {
+        Some((score, pose)) if score <= 2.0 * automatic.0 + rounding => pose,
+        _ => automatic.1,
+    };
     let (pose, matched, rms) = refine(reference, &fit, best, FIT_ITERATIONS, cap, diagonal);
     let mut report = alignment_report(Alignment::BestFit, &pose);
+    report.start_pairs_rms_mm = picked.map(|(_, rms)| rms);
     report.fit_points = Some(fit.len());
     report.matched_points = Some(matched);
     report.rms_mm = (matched > 0).then_some(rms);
@@ -559,42 +769,75 @@ fn refine(
     (pose, matched, rms)
 }
 
-/// The area-weighted centre of a mesh's surface and its principal axes, as
-/// the columns of a proper rotation, largest spread first.
+/// The centre of a mesh's surface and its principal axes, largest spread
+/// first, as the columns of a rotation.
 fn principal_axes(mesh: &TriangleMesh) -> Option<(V3, Matrix3<f64>)> {
     // Moments about a vertex of the mesh, so a part far from the origin
     // does not lose precision.
-    let origin = V3::from(*mesh.vertices.first()?);
-    let (mut area, mut first, mut second) = (0.0, V3::zeros(), Matrix3::zeros());
+    let mut moments = SurfaceMoments::about(V3::from(*mesh.vertices.first()?));
     for triangle in &mesh.triangles {
-        let [a, b, c] = triangle.map(|index| V3::from(mesh.vertices[index as usize]) - origin);
-        let piece = 0.5 * (b - a).cross(&(c - a)).norm();
-        if piece == 0.0 {
-            continue;
+        moments.add_triangle(triangle.map(|index| V3::from(mesh.vertices[index as usize])));
+    }
+    moments.axes()
+}
+
+/// The area of a surface and its first and second moments about a point
+/// near it.
+struct SurfaceMoments {
+    origin: V3,
+    area: f64,
+    first: V3,
+    second: Matrix3<f64>,
+}
+
+impl SurfaceMoments {
+    fn about(origin: V3) -> Self {
+        Self {
+            origin,
+            area: 0.0,
+            first: V3::zeros(),
+            second: Matrix3::zeros(),
         }
+    }
+
+    fn add_triangle(&mut self, corners: [V3; 3]) {
+        let [a, b, c] = corners.map(|corner| corner - self.origin);
+        let piece = 0.5 * (b - a).cross(&(c - a)).norm();
         let middle = (a + b + c) / 3.0;
-        area += piece;
-        first += middle * piece;
-        second += (a * a.transpose()
+        self.area += piece;
+        self.first += middle * piece;
+        self.second += (a * a.transpose()
             + b * b.transpose()
             + c * c.transpose()
             + middle * middle.transpose() * 9.0)
             * (piece / 12.0);
     }
-    if area <= 0.0 {
-        return None;
+
+    /// A sample standing for `area` of the surface around `position`.
+    fn add_point(&mut self, position: V3, area: f64) {
+        let offset = position - self.origin;
+        self.area += area;
+        self.first += offset * area;
+        self.second += offset * offset.transpose() * area;
     }
-    let centre = first / area;
-    let eigen = (second / area - centre * centre.transpose()).symmetric_eigen();
-    let mut order = [0, 1, 2];
-    order.sort_by(|a, b| eigen.eigenvalues[*b].total_cmp(&eigen.eigenvalues[*a]));
-    let mut axes =
-        Matrix3::from_columns(&order.map(|index| eigen.eigenvectors.column(index).into_owned()));
-    if axes.determinant() < 0.0 {
-        let flipped = -axes.column(2);
-        axes.set_column(2, &flipped);
+
+    fn axes(&self) -> Option<(V3, Matrix3<f64>)> {
+        if self.area <= 0.0 {
+            return None;
+        }
+        let centre = self.first / self.area;
+        let eigen = (self.second / self.area - centre * centre.transpose()).symmetric_eigen();
+        let mut order = [0, 1, 2];
+        order.sort_by(|a, b| eigen.eigenvalues[*b].total_cmp(&eigen.eigenvalues[*a]));
+        let mut axes = Matrix3::from_columns(
+            &order.map(|index| eigen.eigenvectors.column(index).into_owned()),
+        );
+        if axes.determinant() < 0.0 {
+            let flipped = -axes.column(2);
+            axes.set_column(2, &flipped);
+        }
+        Some((centre + self.origin, axes))
     }
-    Some((centre + origin, axes))
 }
 
 /// The 24 rotations that map the coordinate axes onto themselves, as signed
@@ -636,6 +879,7 @@ fn alignment_report(method: Alignment, pose: &Pose) -> AlignmentReport {
         fit_points: None,
         matched_points: None,
         rms_mm: None,
+        start_pairs_rms_mm: None,
     }
 }
 
@@ -949,6 +1193,8 @@ mod tests {
                 alignment,
                 tolerance_mm,
                 max_distance_mm: None,
+                start_pairs: Vec::new(),
+                fit_region: None,
             },
         )
         .unwrap()
@@ -1174,6 +1420,8 @@ mod tests {
                 alignment: Alignment::None,
                 tolerance_mm: 0.01,
                 max_distance_mm: Some(0.32),
+                start_pairs: Vec::new(),
+                fit_region: None,
             },
         )
         .unwrap();
@@ -1213,6 +1461,8 @@ mod tests {
                         alignment: Alignment::None,
                         tolerance_mm: 0.01,
                         max_distance_mm: Some(reach),
+                        start_pairs: Vec::new(),
+                        fit_region: None,
                     },
                 )
                 .unwrap()
@@ -1259,6 +1509,8 @@ mod tests {
                 alignment: Alignment::None,
                 tolerance_mm: 0.01,
                 max_distance_mm: Some(0.32),
+                start_pairs: Vec::new(),
+                fit_region: None,
             },
         )
         .unwrap();
@@ -1324,6 +1576,8 @@ mod tests {
                 alignment: Alignment::None,
                 tolerance_mm: 0.01,
                 max_distance_mm: Some(0.32),
+                start_pairs: Vec::new(),
+                fit_region: None,
             },
         )
         .unwrap();
@@ -1594,6 +1848,8 @@ mod tests {
                 alignment: Alignment::None,
                 tolerance_mm,
                 max_distance_mm,
+                start_pairs: Vec::new(),
+                fit_region: None,
             }
         };
         let block = block(1.0, 1.0, 1.0);
@@ -1606,9 +1862,278 @@ mod tests {
             triangles: Vec::new(),
         };
         assert!(validate(&options(0.1, None, empty)).is_err());
-        let mut broken = block;
+        let mut broken = block.clone();
         broken.triangles[0][0] = 99;
         assert!(validate(&options(0.1, None, broken)).is_err());
+
+        let pair = |x: f64, y: f64, z: f64| PointPair {
+            mesh_mm: [x, y, z],
+            reference_mm: [x, y, z],
+        };
+        let spread = vec![
+            pair(0.0, 0.0, 0.0),
+            pair(10.0, 0.0, 0.0),
+            pair(0.0, 10.0, 0.0),
+        ];
+        let fitted = |start_pairs: Vec<PointPair>, fit_region: Option<FitRegion>| {
+            let mut options = options(0.1, None, block.clone());
+            options.alignment = Alignment::BestFit;
+            options.start_pairs = start_pairs;
+            options.fit_region = fit_region;
+            validate(&options)
+        };
+        assert!(fitted(spread.clone(), None).is_ok());
+        assert!(fitted(spread[..2].to_vec(), None).is_err());
+        let too_many = spread.iter().cycle().take(MAX_START_PAIRS + 1).copied();
+        assert!(fitted(too_many.collect(), None).is_err());
+        let along_a_line = vec![
+            pair(0.0, 0.0, 0.0),
+            pair(10.0, 0.0, 0.0),
+            pair(20.0, 0.1, 0.0),
+        ];
+        assert!(fitted(along_a_line, None).is_err());
+        let mut not_finite = spread.clone();
+        not_finite[1].reference_mm[2] = f64::NAN;
+        assert!(fitted(not_finite, None).is_err());
+        // Finite, but far enough out for the fit's arithmetic to overflow.
+        let remote = vec![
+            pair(0.0, 0.0, 0.0),
+            PointPair {
+                mesh_mm: [1.0, 0.0, 0.0],
+                reference_mm: [1e155, 0.0, 0.0],
+            },
+            PointPair {
+                mesh_mm: [0.0, 1.0, 0.0],
+                reference_mm: [0.0, 1e155, 0.0],
+            },
+        ];
+        let error = fitted(remote, None).unwrap_err().to_string();
+        assert!(error.contains("within 1e9 mm"), "{error}");
+        let remote = vec![
+            pair(0.0, 0.0, 0.0),
+            pair(1e200, 0.0, 0.0),
+            pair(0.0, 1e200, 0.0),
+        ];
+        assert!(fitted(remote, None).is_err());
+        let region = |minimum_mm: [f64; 3], maximum_mm: [f64; 3]| {
+            Some(FitRegion {
+                minimum_mm,
+                maximum_mm,
+            })
+        };
+        assert!(fitted(Vec::new(), region([0.0; 3], [1.0; 3])).is_ok());
+        assert!(fitted(Vec::new(), region([1.0; 3], [0.0; 3])).is_err());
+        assert!(fitted(Vec::new(), region([0.0; 3], [f64::INFINITY; 3])).is_err());
+        let mut unaligned = options(0.1, None, block);
+        unaligned.start_pairs = spread;
+        assert!(validate(&unaligned).is_err());
+    }
+
+    fn fit_onto(
+        mesh: &TriangleMesh,
+        reference: &TriangleMesh,
+        start_pairs: Vec<PointPair>,
+        fit_region: Option<FitRegion>,
+    ) -> Result<ComparisonReport, GeometryError> {
+        measure(
+            mesh,
+            &ComparisonOptions {
+                reference: reference.clone(),
+                alignment: Alignment::BestFit,
+                tolerance_mm: 0.01,
+                max_distance_mm: None,
+                start_pairs,
+                fit_region,
+            },
+        )
+    }
+
+    #[test]
+    fn picked_pairs_start_the_fit_and_report_how_far_apart_they_stay() {
+        let pose = Pose {
+            rotation: Rotation3::new(V3::new(0.2, 0.9, -0.4).normalize() * 170_f64.to_radians())
+                .into_inner(),
+            translation: V3::new(40.0, 5.0, -20.0),
+        };
+        let reference = bracket();
+        let mesh = moved(&reference, &pose);
+        let picks = [
+            [0.0, 0.0, 0.0],
+            [30.0, 0.0, 0.0],
+            [0.0, 12.0, 20.0],
+            [30.0, 12.0, 6.0],
+        ];
+        let pairs = |error: f64| -> Vec<PointPair> {
+            picks
+                .iter()
+                .enumerate()
+                .map(|(index, &place)| PointPair {
+                    mesh_mm: pose.apply(&V3::from(place)).into(),
+                    reference_mm: [
+                        place[0] + if index == 0 { error } else { 0.0 },
+                        place[1],
+                        place[2],
+                    ],
+                })
+                .collect()
+        };
+        for error in [0.0, 3.0] {
+            let report = fit_onto(&mesh, &reference, pairs(error), None).unwrap();
+            let residual = report.alignment.start_pairs_rms_mm.unwrap();
+            // A mispicked pair shows in the residual; the fit still settles.
+            assert!(
+                (error == 0.0 && residual < 1e-9) || (error > 0.0 && residual > 0.5),
+                "{:?}",
+                report.alignment
+            );
+            assert!(
+                (report.alignment.rotation_degrees - 170.0).abs() < 1e-6,
+                "{:?}",
+                report.alignment
+            );
+            let deviation = report.deviation_mm.unwrap();
+            assert!(
+                deviation.minimum.abs() < 1e-6 && deviation.maximum.abs() < 1e-6,
+                "{error} {deviation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn picked_pairs_choose_among_the_fits_of_a_symmetric_part() {
+        // A plain block turned half a turn about its own centre lies exactly
+        // where it started, so it fits its reference turned or unturned; the
+        // picks say which.
+        let reference = block(20.0, 10.0, 6.0);
+        let centre = V3::new(10.0, 3.0, 5.0);
+        let rotation = Rotation3::new(V3::z() * std::f64::consts::PI).into_inner();
+        let turned = Pose {
+            rotation,
+            translation: centre - rotation * centre,
+        };
+        let mesh = moved(&reference, &turned);
+        for (pose, degrees) in [(turned, 180.0), (Pose::identity(), 0.0)] {
+            let pairs = [[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [0.0, 6.0, 10.0]]
+                .iter()
+                .map(|&place| PointPair {
+                    mesh_mm: pose.apply(&V3::from(place)).into(),
+                    reference_mm: place,
+                })
+                .collect();
+            let report = fit_onto(&mesh, &reference, pairs, None).unwrap();
+            assert!(
+                (report.alignment.rotation_degrees - degrees).abs() < 1e-6,
+                "{degrees} {:?}",
+                report.alignment
+            );
+            let deviation = report.deviation_mm.unwrap();
+            assert!(deviation.minimum.abs() < 1e-6 && deviation.maximum.abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn surface_samples_give_the_triangles_principal_axes() {
+        let mesh = bracket();
+        let spacing = sample_spacing(&mesh.vertices, &mesh.triangles, 0.2);
+        let mut moments = SurfaceMoments::about(V3::from(mesh.vertices[0]));
+        for triangle in &mesh.triangles {
+            for (position, area) in
+                triangle_samples(triangle.map(|index| mesh.vertices[index as usize]), spacing)
+            {
+                moments.add_point(V3::from(position), area);
+            }
+        }
+        let (sampled_centre, sampled_axes) = moments.axes().unwrap();
+        let (centre, axes) = principal_axes(&mesh).unwrap();
+        assert!(
+            (sampled_centre - centre).norm() < 0.05,
+            "{sampled_centre} {centre}"
+        );
+        for axis in 0..3 {
+            let agreement = sampled_axes.column(axis).dot(&axes.column(axis)).abs();
+            assert!(agreement > 0.999, "{sampled_axes} {axes}");
+        }
+    }
+
+    #[test]
+    fn a_mesh_with_few_samples_fits_without_a_region() {
+        let tetrahedron = TriangleMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+        };
+        let options = |fit_region| ComparisonOptions {
+            reference: tetrahedron.clone(),
+            alignment: Alignment::BestFit,
+            tolerance_mm: 10.0,
+            max_distance_mm: None,
+            start_pairs: Vec::new(),
+            fit_region,
+        };
+        let report = measure(&tetrahedron, &options(None)).unwrap();
+        assert_eq!(report.samples, 4);
+        let around = FitRegion {
+            minimum_mm: [-1.0; 3],
+            maximum_mm: [2.0; 3],
+        };
+        let error = measure(&tetrahedron, &options(Some(around))).unwrap_err();
+        assert!(error.to_string().contains("widen it"), "{error}");
+    }
+
+    #[test]
+    fn a_fit_region_fits_only_the_part_inside_it() {
+        // The part as scanned beside a fixture block that the reference lacks.
+        let reference = bracket();
+        let fixture = moved(
+            &block(10.0, 10.0, 10.0),
+            &Pose {
+                rotation: Matrix3::identity(),
+                translation: V3::new(45.0, 1.0, 0.0),
+            },
+        );
+        let offset = [1.0, 2.0, 3.0];
+        let scanned = {
+            let shift = Pose {
+                rotation: Matrix3::identity(),
+                translation: V3::from(offset),
+            };
+            let (part, fixture) = (moved(&reference, &shift), moved(&fixture, &shift));
+            let base = part.vertices.len() as u32;
+            TriangleMesh {
+                vertices: [part.vertices, fixture.vertices].concat(),
+                triangles: part
+                    .triangles
+                    .into_iter()
+                    .chain(fixture.triangles.into_iter().map(|t| t.map(|i| i + base)))
+                    .collect(),
+            }
+        };
+        let region = FitRegion {
+            minimum_mm: [offset[0] - 0.5, offset[1] - 0.5, offset[2] - 0.5],
+            maximum_mm: [offset[0] + 30.5, offset[1] + 12.5, offset[2] + 20.5],
+        };
+        let report = fit_onto(&scanned, &reference, Vec::new(), Some(region)).unwrap();
+        let translation = report.alignment.translation_mm;
+        assert!(
+            (0..3).all(|axis| (translation[axis] + offset[axis]).abs() < 1e-6),
+            "{:?}",
+            report.alignment
+        );
+        assert!(report.alignment.rotation_degrees < 1e-6);
+        // The fixture is still measured, beyond the reference's reach.
+        assert!(report.unmeasured_samples > 0);
+        let empty = FitRegion {
+            minimum_mm: [500.0; 3],
+            maximum_mm: [501.0; 3],
+        };
+        assert!(matches!(
+            fit_onto(&scanned, &reference, Vec::new(), Some(empty)),
+            Err(GeometryError::InvalidOptions(_))
+        ));
     }
 
     #[test]
@@ -1623,6 +2148,8 @@ mod tests {
                         alignment: Alignment::None,
                         tolerance_mm: 0.05,
                         max_distance_mm: None,
+                        start_pairs: Vec::new(),
+                        fit_region: None,
                     }),
                     ..ValidationOptions::default()
                 },
@@ -1673,6 +2200,8 @@ mod tests {
                 alignment: Alignment::None,
                 tolerance_mm: 0.1,
                 max_distance_mm: None,
+                start_pairs: Vec::new(),
+                fit_region: None,
             }),
             ..ValidationOptions::default()
         };

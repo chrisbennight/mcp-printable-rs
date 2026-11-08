@@ -341,7 +341,8 @@ fn mesh_report() -> Value {
                     "rotation_degrees": number,
                     "fit_points": {"type": "integer", "minimum": 0},
                     "matched_points": {"type": "integer", "minimum": 0},
-                    "rms_mm": number
+                    "rms_mm": number,
+                    "start_pairs_rms_mm": number
                 }),
                 &["method", "rotation", "translation_mm", "rotation_degrees"]
             ),
