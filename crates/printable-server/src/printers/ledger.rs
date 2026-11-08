@@ -138,10 +138,13 @@ fn pending(
     }
     let mut pending = Vec::new();
     let mut recorded = Vec::new();
-    for (print_id, links) in grouped {
-        let submitted_unix_ms = links.iter().map(|(_, ms)| *ms).min().unwrap_or(0);
+    for (print_id, mut links) in grouped {
+        // Oldest first: the earliest link is the submission time and the
+        // latest acceptance describes the print as it was last sent.
+        links.sort_by(|(a, a_ms), (b, b_ms)| a_ms.cmp(b_ms).then_with(|| a.path.cmp(&b.path)));
+        let submitted_unix_ms = links.first().map_or(0, |(_, ms)| *ms);
         let submissions: Vec<RecordRef> = links.into_iter().map(|(link, _)| link).collect();
-        let record = read_submission(workspace, &submissions[0])?;
+        let record = read_submission(workspace, &submissions[submissions.len() - 1])?;
         let Some(project_id) = record["project_id"].as_str().map(str::to_owned) else {
             continue;
         };
@@ -597,6 +600,44 @@ mod tests {
             ),
             (Some(11), Some("unknown"))
         );
+    }
+
+    #[tokio::test]
+    async fn the_latest_acceptance_supplies_details_when_the_backend_lost_the_print() {
+        let backend = MockServer::start().await;
+        printers(&backend).await;
+        job(&backend, 12, 404, json!({"detail":"Not found"})).await;
+        let (_root, workspace) = workspace();
+        for (printer_id, plate_id) in [(1, 1), (2, 4)] {
+            let reference = provenance::store(
+                &workspace,
+                Kind::Submission,
+                "desk",
+                json!({"outcome":"accepted","print_id":12,"queue_acknowledgement":{"id":12,
+                    "printer_id":printer_id,"manual_start":true,"status":"pending","plate_id":plate_id}}),
+            )
+            .unwrap();
+            workspace
+                .write_reserved_artifact(
+                    &format!("{LINKS}/12/{}.json", reference.sha256),
+                    &serde_json::to_vec(&reference).unwrap(),
+                    false,
+                )
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let service = service(&backend);
+        let now = crate::printers::observations::now_ms();
+        pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
+        let print = &project_prints(&workspace, "desk").unwrap()[0];
+        assert_eq!(print["outcome"], "unknown");
+        assert_eq!(
+            (print["printer"]["id"].as_u64(), print["plate_id"].as_u64()),
+            (Some(2), Some(4))
+        );
+        assert_eq!(print["submissions"].as_array().unwrap().len(), 2);
     }
 
     #[test]

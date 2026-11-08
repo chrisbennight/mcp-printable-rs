@@ -65,10 +65,13 @@ A print the backend no longer has, or one that is still unfinished after the
 follow time, is recorded with outcome `unknown` and a reason; Printable never
 guesses success or failure. A failed backend read is retried on the next pass
 until the follow time ends; after that the print is recorded as `unknown`.
-Only prints staged through Printable are followed. Prints started from other
-software, a staging request whose outcome was unknown, and additional copies
-from a request with a quantity above one have no submission link and are not
-recorded.
+Only prints staged through Printable from a file that Printable uploaded with
+`print import` are followed. Prints started from other software, prints staged
+from a print archive or from a library file Printable did not upload, a staging
+request whose outcome was unknown, and additional copies from a request with a
+quantity above one have no submission link and are not recorded. When a print
+was staged and later started, the most recent acceptance supplies its printer
+and setup details.
 
 ## Failure semantics
 
