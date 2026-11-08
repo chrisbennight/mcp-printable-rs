@@ -34,8 +34,9 @@ const INTERVAL_KEY: &str = "PRINTABLE_PRINT_FOLLOW_INTERVAL_SECONDS";
 const MAX_FOLLOW_KEY: &str = "PRINTABLE_PRINT_FOLLOW_MAX_HOURS";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const DEFAULT_MAX_FOLLOW_HOURS: u64 = 168;
-/// Submission records are small JSON documents; anything larger is refused.
-const MAX_SUBMISSION_BYTES: u64 = 1024 * 1024;
+/// Submission records embed a backend acknowledgement of at most 1 MiB in a
+/// small envelope; anything larger is refused.
+const MAX_SUBMISSION_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FollowSettings {
@@ -107,6 +108,8 @@ fn read_submission(workspace: &Workspace, reference: &RecordRef) -> Result<Value
 
 /// Collect submitted prints that have no final record yet, skipping prints
 /// already known to be recorded. Also returns prints found to be recorded.
+/// A print whose link or submission cannot be read is logged and skipped, so
+/// it never stops other prints from being followed.
 fn pending(
     workspace: &Workspace,
     finished: &HashSet<u64>,
@@ -129,8 +132,21 @@ fn pending(
         if finished.contains(&print_id) {
             continue;
         }
-        let (_, bytes) = workspace.read_generated_bytes(&link.path)?;
-        let reference: RecordRef = serde_json::from_slice(&bytes)?;
+        let reference = match workspace
+            .read_generated_bytes(&link.path)
+            .map_err(ToolError::from)
+            .and_then(|(_, bytes)| Ok(serde_json::from_slice::<RecordRef>(&bytes)?))
+        {
+            Ok(reference) => reference,
+            Err(error) => {
+                tracing::warn!(
+                    print_id,
+                    code = error.code(),
+                    "skipping an unreadable print submission link"
+                );
+                continue;
+            }
+        };
         grouped
             .entry(print_id)
             .or_default()
@@ -144,7 +160,17 @@ fn pending(
         links.sort_by(|(a, a_ms), (b, b_ms)| a_ms.cmp(b_ms).then_with(|| a.path.cmp(&b.path)));
         let submitted_unix_ms = links.first().map_or(0, |(_, ms)| *ms);
         let submissions: Vec<RecordRef> = links.into_iter().map(|(link, _)| link).collect();
-        let record = read_submission(workspace, &submissions[submissions.len() - 1])?;
+        let record = match read_submission(workspace, &submissions[submissions.len() - 1]) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(
+                    print_id,
+                    code = error.code(),
+                    "skipping a print whose submission record cannot be read"
+                );
+                continue;
+            }
+        };
         let Some(project_id) = record["project_id"].as_str().map(str::to_owned) else {
             continue;
         };
@@ -520,6 +546,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again, PassReport::default());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_submission_does_not_stop_other_prints() {
+        let backend = MockServer::start().await;
+        printers(&backend).await;
+        job(
+            &backend,
+            7,
+            200,
+            json!({"id":7,"printer_id":1,"manual_start":false,"status":"completed"}),
+        )
+        .await;
+        let (_root, workspace) = workspace();
+        submit(&workspace, 7);
+        // A link whose submission does not match the digest it names.
+        let stored = provenance::store(
+            &workspace,
+            Kind::Submission,
+            "desk",
+            json!({"action":"stage","outcome":"accepted","print_id":9}),
+        )
+        .unwrap();
+        let mut tampered = serde_json::to_value(stored).unwrap();
+        tampered["sha256"] = json!("0".repeat(64));
+        workspace
+            .write_reserved_artifact(
+                &format!("{LINKS}/9/{}.json", "0".repeat(64)),
+                &serde_json::to_vec(&tampered).unwrap(),
+                false,
+            )
+            .unwrap();
+        // A link that is not a record reference.
+        workspace
+            .write_reserved_artifact(&format!("{LINKS}/10/broken.json"), b"not json", false)
+            .unwrap();
+        let service = service(&backend);
+        let now = crate::printers::observations::now_ms();
+        let report = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(report.recorded, 1);
+        let prints = project_prints(&workspace, "desk").unwrap();
+        assert_eq!(prints.len(), 1);
+        assert_eq!(prints[0]["print_id"], 7);
     }
 
     #[tokio::test]
