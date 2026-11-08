@@ -1869,7 +1869,8 @@ fn rank(
         lists.push((kind, similar));
     }
     // A candidate found by meaning or picture may be one of the word matches
-    // that were not loaded; `unloaded` already counts it.
+    // that were not loaded: it gets its word score, and `unloaded`, which
+    // already counts it, is reduced.
     let added: Vec<i64> = candidates
         .iter()
         .filter(|candidate| candidate.scores.words.is_none())
@@ -1884,7 +1885,25 @@ fn rank(
             format!("{outer} AND id IN ({rows})")
         };
         values.extend(added.iter().map(|row| Sql::Integer(*row)));
-        unloaded = unloaded.saturating_sub(Query::count(connection, &inner, &outer, &values)?);
+        let (matched, pieces) = if word_matching == Matching::Near {
+            (MatchKind::Near, query.pieces().len().max(1) as f64)
+        } else {
+            (MatchKind::Words, 1.0)
+        };
+        let found = connection
+            .prepare(&format!("SELECT id, score FROM ({inner}) {outer}"))?
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)? / pieces))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        unloaded = unloaded.saturating_sub(found.len());
+        for (row, score) in found {
+            if let Some(&position) = positions.get(&row) {
+                let candidate = &mut candidates[position];
+                candidate.scores.words = Some(score);
+                candidate.matched = matched;
+            }
+        }
     }
     for (kind, similar) in lists {
         for scored in similar {
