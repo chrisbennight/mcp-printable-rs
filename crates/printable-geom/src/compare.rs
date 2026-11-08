@@ -30,10 +30,10 @@ use crate::{GeometryError, MeshBounds, TriangleMesh};
 
 /// At most this many regions are listed, largest first.
 const MAX_REGIONS: usize = 10;
-/// Points used to fit the alignment and to score each starting pose, drawn
+/// Draws used to fit the alignment and to score each starting pose, spread
 /// over the surface by area.
 const FIT_POINTS: usize = 4_000;
-/// Points used to refine each starting pose before it is scored.
+/// Draws used to refine each starting pose before it is scored.
 const START_POINTS: usize = 1_000;
 const START_ITERATIONS: usize = 8;
 const FIT_ITERATIONS: usize = 60;
@@ -452,13 +452,13 @@ fn best_fit(
     // capped, so a pose that turns a surface over scores badly.
     let score = |pose: &Pose| -> f64 {
         fit.iter()
-            .map(|point| {
+            .map(|(point, weight)| {
                 let position = pose.apply(&point.position);
                 let normal = pose.rotation * point.normal;
                 let distance = reference
                     .nearest_facing(&position, &normal, cap)
                     .map_or(cap, |(nearest, _)| (position - nearest).norm());
-                point.area * distance.min(cap).powi(2)
+                weight * distance.min(cap).powi(2)
             })
             .sum()
     };
@@ -486,7 +486,7 @@ fn best_fit(
 /// point-to-plane RMS.
 fn refine(
     reference: &Reference,
-    points: &[&SurfacePoint],
+    points: &[(&SurfacePoint, f64)],
     mut pose: Pose,
     iterations: usize,
     cap: f64,
@@ -497,12 +497,12 @@ fn refine(
     for _ in 0..iterations {
         let mut pairs: Vec<(V3, V3, V3, f64, f64)> = points
             .iter()
-            .filter_map(|point| {
+            .filter_map(|(point, weight)| {
                 let position = pose.apply(&point.position);
                 let (nearest, normal, _) = reference.nearest(&position, cap)?;
                 (normal.dot(&(pose.rotation * point.normal)) >= agree).then(|| {
                     let distance = (position - nearest).norm();
-                    (position, nearest, normal, point.area, distance)
+                    (position, nearest, normal, *weight, distance)
                 })
             })
             .collect();
@@ -759,26 +759,37 @@ fn distribution(sorted: &[(f64, f64)], total: f64) -> Option<DeviationDistributi
     })
 }
 
-/// At most `count` of `points`, drawn by area: weighted sampling without
-/// replacement, with a fixed hash of each point's index in place of a random
-/// draw. A broad surface sampled coarsely keeps its points beside a small,
-/// finely tessellated patch, and the facet order does not matter.
-fn spread(points: &[SurfacePoint], count: usize) -> Vec<&SurfacePoint> {
+/// At most `count` of `points`, each with the area it stands for in the fit.
+/// When there are more, `count` draws are spaced evenly along the points'
+/// running area, taken in a fixed hashed order of their indices, and each
+/// drawn point stands for its draws' share of the surface. Equal areas then
+/// weigh equally however finely they are tessellated, and the facet order
+/// does not matter.
+fn spread(points: &[SurfacePoint], count: usize) -> Vec<(&SurfacePoint, f64)> {
     if points.len() <= count {
-        return points.iter().collect();
+        return points.iter().map(|point| (point, point.area)).collect();
     }
-    let mut ranked: Vec<(f64, &SurfacePoint)> = points
+    let mut ordered: Vec<(u64, &SurfacePoint)> = points
         .iter()
         .enumerate()
-        .map(|(index, point)| {
-            // A uniform draw in (0, 1) from the hash's top 53 bits.
-            let draw = ((scatter(index as u64) >> 11) as f64 + 0.5) / (1_u64 << 53) as f64;
-            (-draw.ln() / point.area, point)
-        })
+        .map(|(index, point)| (scatter(index as u64), point))
         .collect();
-    ranked.select_nth_unstable_by(count - 1, |a, b| a.0.total_cmp(&b.0));
-    ranked.truncate(count);
-    ranked.into_iter().map(|(_, point)| point).collect()
+    ordered.sort_unstable_by_key(|(rank, _)| *rank);
+    let step = points.iter().map(|point| point.area).sum::<f64>() / count as f64;
+    let (mut running, mut next) = (0.0, 0.5 * step);
+    let mut drawn = Vec::new();
+    for (_, point) in ordered {
+        running += point.area;
+        let mut draws = 0_u32;
+        while next < running {
+            draws += 1;
+            next += step;
+        }
+        if draws > 0 {
+            drawn.push((point, f64::from(draws) * step));
+        }
+    }
+    drawn
 }
 
 /// A fixed mixing of an index (SplitMix64), used only to spread a subset of
@@ -1404,21 +1415,34 @@ mod tests {
     }
 
     #[test]
-    fn fit_points_are_drawn_by_area() {
-        // A broad surface sampled by a few points, beside a small patch
-        // sampled by many: every fit keeps all the broad surface's points.
+    fn fit_points_weigh_in_by_area_however_finely_tessellated() {
+        // Two surfaces of equal area, one sampled by two points and the other
+        // by many: each weighs in by its area, and the coarse surface keeps
+        // both its points.
         let point = |area: f64| SurfacePoint {
             position: V3::zeros(),
             normal: V3::z(),
             area,
         };
-        let mut points: Vec<SurfacePoint> = (0..12).map(|_| point(1600.0 / 12.0)).collect();
-        points.extend((0..20_000).map(|_| point(1.0 / 20_000.0)));
+        let mut points: Vec<SurfacePoint> = (0..2).map(|_| point(50.0)).collect();
+        points.extend((0..40_000).map(|_| point(100.0 / 40_000.0)));
         for count in [START_POINTS, FIT_POINTS] {
-            let chosen = spread(&points, count);
-            assert_eq!(chosen.len(), count);
-            let broad = chosen.iter().filter(|point| point.area > 1.0).count();
-            assert_eq!(broad, 12, "{count}");
+            let drawn = spread(&points, count);
+            assert!(drawn.len() <= count);
+            let step = 200.0 / count as f64;
+            let coarse: Vec<f64> = drawn
+                .iter()
+                .filter(|(point, _)| point.area > 1.0)
+                .map(|(_, weight)| *weight)
+                .collect();
+            assert_eq!(coarse.len(), 2, "{count}");
+            assert!(coarse.iter().all(|weight| (weight - 50.0).abs() <= step));
+            let fine: f64 = drawn
+                .iter()
+                .filter(|(point, _)| point.area < 1.0)
+                .map(|(_, weight)| weight)
+                .sum();
+            assert!((fine - 100.0).abs() <= step, "{count} {fine}");
         }
     }
 
