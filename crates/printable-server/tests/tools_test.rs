@@ -112,6 +112,29 @@ fn binary_stl(vertices: &[[f32; 3]], triangles: &[[usize; 3]]) -> Vec<u8> {
     bytes
 }
 
+/// A closed round boss along Z whose side corners lie on the circle.
+fn boss_stl(radius: f32, height: f32, segments: usize) -> Vec<u8> {
+    let mut vertices = vec![[0.0, 0.0, 0.0], [0.0, 0.0, height]];
+    for index in 0..segments {
+        let angle = std::f32::consts::TAU * index as f32 / segments as f32;
+        let (x, y) = (radius * angle.cos(), radius * angle.sin());
+        vertices.push([x, y, 0.0]);
+        vertices.push([x, y, height]);
+    }
+    let mut triangles = Vec::new();
+    for i in 0..segments {
+        let j = (i + 1) % segments;
+        let (bottom_i, top_i, bottom_j, top_j) = (2 + 2 * i, 3 + 2 * i, 2 + 2 * j, 3 + 2 * j);
+        triangles.extend([
+            [0, bottom_j, bottom_i],
+            [1, top_i, top_j],
+            [bottom_i, bottom_j, top_j],
+            [bottom_i, top_j, top_i],
+        ]);
+    }
+    binary_stl(&vertices, &triangles)
+}
+
 fn cube_stl(size: f32) -> Vec<u8> {
     cube_stl_at(size, [0.0; 3])
 }
@@ -2554,6 +2577,91 @@ async fn mesh_validation_reports_mould_draft_along_a_pull_direction() {
         .await
         .expect_err("reject a zero pull direction");
     assert!(error.to_string().contains("pull_direction"), "{error}");
+}
+
+#[tokio::test]
+async fn mesh_validation_fits_features_and_checks_dimensions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = workspace(Some(tmp.path()));
+    ws.write_artifact("models/boss.stl", &boss_stl(10.0, 20.0, 64), false)
+        .expect("seed boss STL");
+    let validator = jsonschema::validator_for(
+        &printable_server::resources::contracts::read(
+            "printable://contracts/validate_mesh",
+            Default::default(),
+        )
+        .unwrap()["outputSchema"],
+    )
+    .unwrap();
+    let (uploads, client, settings) = (uploads(), client("127.0.0.1", 9), settings("127.0.0.1", 9));
+    let validate = |requirements: serde_json::Value| {
+        dispatch(
+            &ws,
+            &uploads,
+            &client,
+            &settings,
+            "printable_validate_mesh",
+            json!({"path": "models/boss.stl", "dimensions": {
+                "features": [
+                    {"name": "boss", "shape": "cylinder", "seed_mm": [10.0, 0.5, 10.0]},
+                    {"name": "top", "shape": "plane", "seed_mm": [0.0, 0.0, 20.0]},
+                    {"name": "bottom", "shape": "plane", "seed_mm": [2.0, 1.0, 0.0], "direction": [0, 0, -1]}
+                ],
+                "requirements": requirements
+            }}),
+        )
+    };
+
+    let passed = validate(json!([
+        {"measure": "diameter", "features": ["boss"], "nominal": 20.0, "tolerance": 0.1},
+        {"measure": "distance", "features": ["top", "bottom"], "nominal": 20.0, "tolerance": 0.01},
+        {"measure": "angle", "features": ["boss", "top"], "nominal": 90.0, "tolerance": 0.1}
+    ]))
+    .await
+    .expect("validate boss dimensions");
+    validator.validate(&passed).unwrap();
+    let report = &passed["report"];
+    let boss = &report["dimensions"]["features"][0]["fit"];
+    let diameter = boss["cylinder"]["diameter_mm"].as_f64().unwrap();
+    assert!((diameter - 20.0).abs() < 1e-4, "{boss}");
+    assert_eq!(boss["faces"], json!(128));
+    for requirement in report["dimensions"]["requirements"].as_array().unwrap() {
+        assert_eq!(requirement["status"], "passed", "{requirement}");
+    }
+    assert_eq!(
+        report["assessment"]["criteria"]["dimensional_requirements"],
+        json!({"status": "passed", "evidence": "/dimensions"})
+    );
+    assert_eq!(report["assessment"]["status"], "incomplete");
+
+    let failed = validate(json!([
+        {"measure": "distance", "features": ["top", "bottom"], "nominal": 25.0, "tolerance": 0.1}
+    ]))
+    .await
+    .expect("validate a wrong height");
+    validator.validate(&failed).unwrap();
+    let report = &failed["report"];
+    assert_eq!(report["dimensions"]["requirements"][0]["status"], "failed");
+    assert_eq!(report["assessment"]["status"], "failed");
+    assert!(
+        report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "dimensions_out_of_tolerance")
+    );
+
+    let error = validate(json!([
+        {"measure": "diameter", "features": ["top"], "nominal": 20.0, "tolerance": 0.1}
+    ]))
+    .await
+    .expect_err("reject a plane's diameter");
+    assert!(
+        error
+            .to_string()
+            .contains("a diameter requirement cannot use the plane feature"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

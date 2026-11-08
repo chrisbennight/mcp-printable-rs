@@ -233,6 +233,68 @@ fn mesh_report() -> Value {
             "thin_regions",
         ],
     );
+    let bounds = object(
+        json!({"minimum_mm": point, "maximum_mm": point, "dimensions_mm": point}),
+        &["minimum_mm", "maximum_mm", "dimensions_mm"],
+    );
+    let feature = object(
+        json!({
+            "name": {"type": "string"},
+            "shape": {"enum": ["plane", "cylinder", "sphere"]},
+            "seed_distance_mm": number,
+            "unmeasured_reason": {"type": "string"},
+            "fit": object(
+                json!({
+                    "faces": {"type": "integer", "minimum": 0},
+                    "area_mm2": number,
+                    "points": {"type": "integer", "minimum": 0},
+                    "excluded_points": {"type": "integer", "minimum": 0},
+                    "sigma_mm": number,
+                    "deviation_mm": {"type": "array", "items": number, "minItems": 2, "maxItems": 2},
+                    "form_error_mm": number,
+                    "region": bounds,
+                    "plane": object(json!({"point_mm": point, "normal": point}), &["point_mm", "normal"]),
+                    "cylinder": object(
+                        json!({
+                            "axis_point_mm": point,
+                            "axis_direction": point,
+                            "radius_mm": number,
+                            "diameter_mm": number,
+                            "length_mm": number,
+                            "arc_degrees": number
+                        }),
+                        &["axis_point_mm", "axis_direction", "radius_mm", "diameter_mm", "length_mm", "arc_degrees"]
+                    ),
+                    "sphere": object(
+                        json!({"centre_mm": point, "radius_mm": number, "diameter_mm": number}),
+                        &["centre_mm", "radius_mm", "diameter_mm"]
+                    )
+                }),
+                &["faces", "area_mm2", "points", "excluded_points", "sigma_mm", "deviation_mm", "form_error_mm", "region"]
+            )
+        }),
+        &["name", "shape"],
+    );
+    let requirement = object(
+        json!({
+            "measure": {"enum": ["diameter", "distance", "angle"]},
+            "features": {"type": "array", "items": {"type": "string"}},
+            "nominal": number,
+            "tolerance": number,
+            "status": {"enum": ["passed", "failed", "unmeasured"]},
+            "measured": number,
+            "range": {"type": "array", "items": number, "minItems": 2, "maxItems": 2},
+            "nominal_far_from_measured": {"type": "boolean"}
+        }),
+        &["measure", "features", "nominal", "tolerance", "status"],
+    );
+    let dimensions = object(
+        json!({
+            "features": {"type": "array", "items": feature},
+            "requirements": {"type": "array", "items": requirement}
+        }),
+        &["features", "requirements"],
+    );
     let faces = object(
         json!({"faces": {"type": "integer", "minimum": 0}, "area_mm2": number}),
         &["faces", "area_mm2"],
@@ -288,6 +350,7 @@ fn mesh_report() -> Value {
     object(
         json!({
             "wall_thickness": wall_thickness,
+            "dimensions": dimensions,
             "draft": draft,
             "solid_geometry": {"type": "boolean"},
             "printable": {"type": "boolean", "deprecated": true,
