@@ -194,7 +194,13 @@ fn record(
         "backend_status": item.map(|item| item.status.as_str()),
         "printer": {
             "id": printer_id,
-            "name": item.and_then(|item| item.printer_name.clone()).or_else(|| ack.and_then(|item| item.printer_name.clone())).or_else(|| known.map(|(name, _)| name.clone())),
+            "name": item
+                .and_then(|item| item.printer_name.clone())
+                .or_else(|| known.map(|(name, _)| name.clone()))
+                .or_else(|| {
+                    ack.filter(|item| item.printer_id == printer_id)
+                        .and_then(|item| item.printer_name.clone())
+                }),
             "model": known.and_then(|(_, model)| model.clone()),
         },
         "plate_id": item.and_then(|item| item.plate_id).or_else(|| ack.and_then(|item| item.plate_id)),
@@ -258,21 +264,28 @@ pub async fn pass(
     if pending.is_empty() {
         return Ok(report);
     }
-    // Printer models are optional detail: a failed list leaves them out.
-    let printers: BTreeMap<u64, (String, Option<String>)> = service
-        .read
-        .printers()
-        .await
-        .map(|printers| {
+    // Records are written once, so a print waits for a pass that can also read
+    // the printer list; only a print past its follow time is recorded without.
+    let listed = match service.read.printers().await {
+        Ok(printers) => Some(
             printers
                 .into_iter()
                 .map(|printer| (printer.id, (printer.name, printer.model)))
-                .collect()
-        })
-        .unwrap_or_default();
+                .collect::<BTreeMap<u64, (String, Option<String>)>>(),
+        ),
+        Err(error) => {
+            tracing::warn!(error = %error, "could not read the printer list; deferring unfinished prints");
+            None
+        }
+    };
+    let printers = listed.clone().unwrap_or_default();
     let max_follow_ms = u64::try_from(settings.max_follow.as_millis()).unwrap_or(u64::MAX);
     for print in pending {
         let expired = now_unix_ms.saturating_sub(print.submitted_unix_ms) > max_follow_ms;
+        if listed.is_none() && !expired {
+            report.deferred += 1;
+            continue;
+        }
         let value = match service.read.print_job(print.print_id).await {
             Ok(item) if FINAL_STATES.contains(&item.status.as_str()) => {
                 let outcome = item.status.clone();
@@ -638,6 +651,39 @@ mod tests {
             (Some(2), Some(4))
         );
         assert_eq!(print["submissions"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_printer_list_defers_unfinished_prints() {
+        let backend = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/printers/"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&backend)
+            .await;
+        job(
+            &backend,
+            13,
+            200,
+            json!({"id":13,"printer_id":1,"manual_start":false,"status":"completed"}),
+        )
+        .await;
+        let (_root, workspace) = workspace();
+        submit(&workspace, 13);
+        let service = service(&backend);
+        let now = crate::printers::observations::now_ms();
+        let report = pass(&service, &workspace, settings(), now, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            PassReport {
+                followed: 1,
+                recorded: 0,
+                deferred: 1
+            }
+        );
+        assert!(project_prints(&workspace, "desk").unwrap().is_empty());
     }
 
     #[test]
