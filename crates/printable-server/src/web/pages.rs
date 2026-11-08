@@ -165,7 +165,8 @@ fn summary(form: &LibraryForm, response: &SearchResponse) -> String {
 }
 
 fn pager(form: &LibraryForm, response: &SearchResponse) -> Markup {
-    let more = response.next_offset.is_some();
+    // `total` counts every match, including those past the last page shown.
+    let more = response.total > form.page * PAGE_SIZE;
     let previous = (form.page > 1).then(|| form.query(form.page - 1));
     let next = (more && form.page < MAX_PAGE).then(|| form.query(form.page + 1));
     let capped = more && form.page >= MAX_PAGE;
