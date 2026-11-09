@@ -3827,6 +3827,37 @@ class HandlerValidationTests(unittest.TestCase):
             select_all.assert_not_called()
             handlers.close()
 
+    def test_picture_import_verifies_the_snapshot_before_replacing_the_worker_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker")
+            model = value.workspace_root / ".printable/pictures/part/model.stl"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            reset = Mock(return_value={"FINISHED"})
+            imported = Mock(return_value={"FINISHED"})
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))]),
+                ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=reset, stl_import=imported)),
+            )
+            handlers = BlenderHandlers(value, lambda: False, bpy)
+            params = {"path": ".printable/pictures/part/model.stl", "expected_sha256": "0" * 64}
+            with self.assertRaisesRegex(HandlerError, "source digest"):
+                handlers._job_import_model(params)
+            reset.assert_not_called()
+            params["expected_sha256"] = hashlib.sha256(b"model").hexdigest()
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+                self.assertEqual(handlers._job_import_model(params), {"objects": ["Body"]})
+            reset.assert_called_once_with(use_empty=True)
+            staged = Path(imported.call_args.kwargs["filepath"])
+            self.assertNotEqual(staged, model)
+            self.assertFalse(staged.exists())
+            handlers._config = replace(value, role="live")
+            with self.assertRaisesRegex(HandlerError, "background render worker"):
+                handlers._job_import_model(params)
+            handlers.close()
+
     def test_job_restore_stages_checkpoint_and_disables_embedded_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

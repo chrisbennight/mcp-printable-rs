@@ -21,7 +21,7 @@
 use std::{
     collections::{HashMap, HashSet, hash_map},
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
     time::{Duration, Instant},
 };
 
@@ -53,7 +53,7 @@ const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
 const PICTURES_KEY: &str = "PRINTABLE_PROJECT_PICTURES";
 const SLICER_KEY: &str = "PRINTABLE_SLICER_ENDPOINT";
 const DEFAULT_INTERVAL_SECONDS: u64 = 30;
-/// Projects whose plate picture one pass makes or records a failure for.
+/// Pictures one pass makes or records a failure for.
 /// Plans deferred while the slicer is busy do not count.
 const MAX_PICTURES_MADE_PER_PASS: usize = 16;
 /// A pass starts making no picture after this long.
@@ -200,12 +200,13 @@ pub struct ProjectIndex {
     services: Mutex<ServiceState>,
     /// How generated pictures are made; `None` turns them off.
     pictures: Option<PictureSettings>,
-    /// Plate pictures the latest card pass found to make, and how many
-    /// projects wait to retry a failed picture.
+    /// Pictures the latest card pass found to make, and how many
+    /// pictures wait to retry a failure.
     picture_plans: Mutex<(Vec<pictures::Plan>, usize)>,
     /// Projects whose picture work ended in an error that could not be
     /// recorded, and when to try them again.
     picture_holds: Mutex<HashMap<String, u64>>,
+    renderer: Mutex<Weak<crate::jobs::JobRegistry>>,
 }
 
 /// How generated pictures are made.
@@ -328,13 +329,13 @@ pub struct PassReport {
 pub struct PictureReport {
     /// Pictures made in this pass.
     pub made: usize,
-    /// Projects whose picture could not be made in this pass; each is tried
+    /// Pictures that could not be made in this pass; each is tried
     /// again later, sooner on `project reindex` with `retry`.
     pub failed: usize,
-    /// Projects that still lack a current picture when the pass ended,
+    /// Pictures that still need to be made when the pass ended,
     /// including those waiting to retry a failure.
     pub waiting: usize,
-    /// True when the slicer was busy, so previews wait for a later pass.
+    /// True when the slicer or render worker was busy, so pictures wait.
     pub deferred: bool,
     /// True when the pass's time ran out or the server stopped.
     pub stopped: bool,
@@ -2194,6 +2195,10 @@ struct Step<'a> {
 }
 
 impl ProjectIndex {
+    pub(crate) fn set_renderer(&self, renderer: &Arc<crate::jobs::JobRegistry>) {
+        *self.renderer.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(renderer);
+    }
+
     fn new(storage: Storage, interval: Option<Duration>) -> Self {
         Self {
             storage,
@@ -2208,6 +2213,7 @@ impl ProjectIndex {
             pictures: None,
             picture_plans: Mutex::new((Vec::new(), 0)),
             picture_holds: Mutex::new(HashMap::new()),
+            renderer: Mutex::new(Weak::new()),
         }
     }
 
@@ -2356,13 +2362,28 @@ impl ProjectIndex {
             let retry = kind == PassKind::Retry && prior.is_some_and(|(_, failed)| *failed);
             let gathered = Inputs::gather(workspace, id);
             if let (Some(settings), Ok(inputs)) = (&self.pictures, &gathered) {
-                match inputs.picture_need(settings.slicer.is_some(), picture_time) {
-                    pictures::Need::Make(_) if self.picture_held(id, picture_time) => {
-                        retrying += 1;
+                let renderer = self
+                    .renderer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .upgrade();
+                let needs = [
+                    inputs.picture_need(settings.slicer.is_some(), picture_time),
+                    if renderer.is_some_and(|renderer| renderer.project_pictures_available()) {
+                        inputs.render_need(picture_time)
+                    } else {
+                        pictures::Need::Nothing
+                    },
+                ];
+                for need in needs {
+                    match need {
+                        pictures::Need::Make(_) if self.picture_held(id, picture_time) => {
+                            retrying += 1;
+                        }
+                        pictures::Need::Make(plan) => plans.push(*plan),
+                        pictures::Need::Retry => retrying += 1,
+                        pictures::Need::Nothing => {}
                     }
-                    pictures::Need::Make(plan) => plans.push(*plan),
-                    pictures::Need::Retry => retrying += 1,
-                    pictures::Need::Nothing => {}
                 }
             }
             // An unreadable record has no input hash; it is retried when it
@@ -2473,7 +2494,7 @@ impl ProjectIndex {
         Ok(report)
     }
 
-    /// Make the plate pictures the card pass found missing, at most a pass's
+    /// Make the pictures the card pass found missing, at most a pass's
     /// share. A busy slicer defers previews without counting a failure, so
     /// background previews never queue behind interactive work. Pictures are
     /// optional: an error in one project's picture is logged and counted as a
@@ -2510,6 +2531,7 @@ impl ProjectIndex {
                 continue;
             }
             let project_id = plan.project_id.clone();
+            let rendering = plan.render;
             let made = match self.make_picture(workspace, plan, previews).await {
                 Ok(made) => {
                     if !matches!(made, Made::Deferred) {
@@ -2547,7 +2569,9 @@ impl ProjectIndex {
                 // ask for no previews until a later pass.
                 Made::Deferred => {
                     report.deferred = true;
-                    previews = false;
+                    if !rendering {
+                        previews = false;
+                    }
                 }
             }
         }
@@ -2599,6 +2623,37 @@ impl ProjectIndex {
             let files = Arc::clone(workspace);
             let project_id = plan.project_id.clone();
             let made = match step.clone() {
+                pictures::Step::Render { model } => {
+                    let renderer = self
+                        .renderer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .upgrade();
+                    let Some(renderer) = renderer else {
+                        deferred = true;
+                        continue;
+                    };
+                    match renderer.project_picture(&project_id, &model).await {
+                        Ok(Some(bytes)) => {
+                            crate::tools::visual_blocking(move || {
+                                pictures::store(
+                                    &files,
+                                    &project_id,
+                                    &bytes,
+                                    &model,
+                                    pictures::Origin::BlenderRender,
+                                    super::unix_ms(),
+                                )
+                            })
+                            .await
+                        }
+                        Ok(None) => {
+                            deferred = true;
+                            continue;
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
                 pictures::Step::Thumbnail { package, origin } => {
                     // Copying a large package needs no image work, so only
                     // decoding the thumbnail waits for image capacity.

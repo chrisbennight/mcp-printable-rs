@@ -253,6 +253,10 @@ pub fn router(
         .route("/projects/{project_id}", get(project))
         .route("/projects/{project_id}/cover", get(cover_picture))
         .route("/projects/{project_id}/pictures/plate", get(plate_picture))
+        .route(
+            "/projects/{project_id}/pictures/render",
+            get(render_picture),
+        )
         .route("/projects/{project_id}/files/{*path}", get(file))
         .route("/static/app.css", get(stylesheet))
         .fallback(not_found)
@@ -739,6 +743,32 @@ async fn plate_picture(
                 }))
         },
         "This project has no generated plate picture.",
+    )
+    .await
+}
+
+async fn render_picture(
+    State(web): State<Web>,
+    uri: Uri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+) -> Response {
+    stored_picture(
+        web,
+        uri,
+        headers,
+        path,
+        |workspace, project_id| {
+            projects::get(workspace, project_id)?;
+            Ok(pictures::read(workspace, project_id)
+                .and_then(|record| record.render(project_id).cloned())
+                .map(|picture| StoredPicture {
+                    media_type: "image/png".into(),
+                    sha256: picture.sha256,
+                    path: picture.path,
+                }))
+        },
+        "This project has no generated Blender picture.",
     )
     .await
 }

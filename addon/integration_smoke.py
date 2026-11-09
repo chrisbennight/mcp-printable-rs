@@ -2033,6 +2033,48 @@ finally:
         print(json.dumps({"ui_probe": observed, "after_restore": restored}))
 
 
+def project_picture_smoke(host: str, port: int) -> None:
+    import hashlib
+    from pathlib import Path
+
+    root = Path("/workspace/.printable/pictures/smoke")
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / "source.stl"
+    output = root / "render.png"
+    vertices = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)]
+    facets = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+    lines = ["solid tetrahedron"]
+    for face in facets:
+        lines.extend(["facet normal 0 0 0", "outer loop"])
+        lines.extend("vertex " + " ".join(str(axis) for axis in vertices[index]) for index in face)
+        lines.extend(["endloop", "endfacet"])
+    lines.append("endsolid tetrahedron")
+    source.write_text("\n".join(lines), encoding="ascii")
+    try:
+        imported = command(host, port, "job_import_model", {
+            "path": ".printable/pictures/smoke/source.stl",
+            "expected_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        })
+        if not imported.get("objects"):
+            raise RuntimeError("project picture imported no objects")
+        rendered = command(host, port, "job_render_product", {
+            "path": ".printable/pictures/smoke/render.png",
+            "presentation": {"profile": "studio_neutral"},
+            "engine": "CYCLES", "samples": 1, "width": 64, "height": 64,
+            "timeout_seconds": 60,
+        })
+        png = output.read_bytes()
+        if (not png.startswith(b"\x89PNG\r\n\x1a\n")
+                or hashlib.sha256(png).hexdigest() != rendered.get("sha256")
+                or not rendered.get("source_state_verified")
+                or not rendered.get("cleanup_verified")):
+            raise RuntimeError("project picture render did not verify its PNG and scene")
+    finally:
+        source.unlink(missing_ok=True)
+        output.unlink(missing_ok=True)
+    print("PROJECT_PICTURE_SMOKE_OK")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True)
@@ -2042,6 +2084,7 @@ def main() -> int:
         choices=(
             "capabilities",
             "durable-fixture",
+            "project-picture",
             "gpu-eevee",
             "gpu-cycles",
             "ui",
@@ -2060,6 +2103,8 @@ def main() -> int:
         project_scene_smoke(args.host, args.port)
     elif args.mode == "durable-fixture":
         durable_fixture(args.host, args.port)
+    elif args.mode == "project-picture":
+        project_picture_smoke(args.host, args.port)
     elif args.mode == "gpu-eevee":
         gpu_eevee_smoke(args.host, args.port)
     elif args.mode == "gpu-cycles":

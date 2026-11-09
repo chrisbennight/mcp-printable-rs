@@ -612,6 +612,7 @@ class BlenderHandlers:
             "attach_cad": self._attach_cad,
             "job_measure_sequence_bounds": self._job_measure_sequence_bounds,
             "job_render_product": self._job_render_product,
+            "job_import_model": self._job_import_model,
             "job_render_frame": self._job_render_frame,
             "job_render_still": self._job_render_still,
             "job_render_views": self._job_render_views,
@@ -1882,6 +1883,45 @@ class BlenderHandlers:
 
     def _restore_checkpoint(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._restore_checkpoint_scoped(params, reserved=False)
+
+    def _job_import_model(self, params: dict[str, Any]) -> dict[str, Any]:
+        _only_keys(params, {"path", "expected_sha256"})
+        if self._config.role != "render_worker" or not self._bpy.app.background:
+            raise HandlerError("model picture import requires the background render worker")
+        raw = params.get("path")
+        suffix = Path(raw).suffix.lower() if isinstance(raw, str) else ""
+        if suffix not in {".stl", ".obj", ".ply", ".glb"}:
+            raise HandlerError("model picture import requires STL, OBJ, PLY, or GLB")
+        request = self._workspace.validate_reserved(raw, suffix)
+        expected = params.get("expected_sha256")
+        if not isinstance(expected, str) or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+            raise HandlerError("expected_sha256 must be a lowercase SHA-256 digest")
+        deadline = time.monotonic() + 60.0
+        try:
+            self._execution_watchdog.arm(deadline)
+        except WatchdogError as error:
+            raise HandlerError("render watchdog is unavailable") from error
+        try:
+            with self._workspace.stage_input(request) as source:
+                with source.open("rb") as model:
+                    if hashlib.file_digest(model, "sha256").hexdigest() != expected:
+                        raise HandlerError("model bytes do not match the submitted source digest")
+                self._require_finished(self._bpy.ops.wm.read_factory_settings(use_empty=True), "empty render scene initialization")
+                if suffix == ".stl":
+                    result = self._bpy.ops.wm.stl_import(filepath=str(source))
+                elif suffix == ".obj":
+                    result = self._bpy.ops.wm.obj_import(filepath=str(source))
+                elif suffix == ".ply":
+                    result = self._bpy.ops.wm.ply_import(filepath=str(source))
+                else:
+                    result = self._bpy.ops.import_scene.gltf(filepath=str(source))
+                self._require_finished(result, "model picture import")
+            return {"objects": self._renderable_product_names()}
+        finally:
+            try:
+                self._execution_watchdog.disarm()
+            except WatchdogError as error:
+                raise HandlerError("render watchdog is unavailable") from error
 
     def _job_restore_checkpoint(self, params: dict[str, Any]) -> dict[str, Any]:
         restored = self._restore_checkpoint_scoped(params, reserved=True)

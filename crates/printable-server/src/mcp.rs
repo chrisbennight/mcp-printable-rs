@@ -95,6 +95,7 @@ impl PrintableServer {
             settings.geometry_worker_memory_bytes,
             worker,
         ));
+        settings.project_index.set_renderer(&jobs);
         Self {
             published_files: Arc::new(PublishedFiles::new(Arc::clone(&workspace))),
             incoming_files: Arc::new(IncomingFiles::new(

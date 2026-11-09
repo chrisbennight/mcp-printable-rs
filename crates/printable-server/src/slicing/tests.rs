@@ -516,6 +516,54 @@ async fn previews_export_the_plate_picture_without_slicing() {
     ));
 }
 
+#[test]
+fn cancelled_preview_keeps_admission_until_its_source_copy_finishes() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let worker = fixture(directory.path(), false);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        waiting.await.unwrap();
+        let pending = Arc::clone(&worker);
+        let preview =
+            tokio::spawn(async move { pending.preview(preview_params("source.stl")).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !*worker.previewing.lock().unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        preview.abort();
+        assert!(preview.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            worker.admission.available_permits(),
+            0,
+            "the queued copy retains admission"
+        );
+        assert!(*worker.previewing.lock().unwrap());
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while *worker.previewing.lock().unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(worker.admission.available_permits(), 1);
+    });
+}
+
 #[tokio::test]
 async fn previews_yield_to_slices_and_slices_wait_for_previews() {
     let directory = tempfile::tempdir().unwrap();
