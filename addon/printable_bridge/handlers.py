@@ -32,6 +32,7 @@ from .workspace import SecureWorkspace, WorkspacePath
 
 
 DEFAULT_RENDER_TIMEOUT_SECONDS = 3600.0
+DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS = 300.0
 PRODUCT_PRESENTATION_MARGIN = 1.15
 
 PRODUCT_PRESENTATION_PROFILES = {
@@ -1885,7 +1886,7 @@ class BlenderHandlers:
         return self._restore_checkpoint_scoped(params, reserved=False)
 
     def _job_import_model(self, params: dict[str, Any]) -> dict[str, Any]:
-        _only_keys(params, {"path", "expected_sha256"})
+        _only_keys(params, {"path", "expected_sha256", "timeout_seconds"})
         if self._config.role != "render_worker" or not self._bpy.app.background:
             raise HandlerError("model picture import requires the background render worker")
         raw = params.get("path")
@@ -1896,7 +1897,10 @@ class BlenderHandlers:
         expected = params.get("expected_sha256")
         if not isinstance(expected, str) or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
             raise HandlerError("expected_sha256 must be a lowercase SHA-256 digest")
-        deadline = time.monotonic() + 60.0
+        timeout_seconds = _positive_float(
+            params, "timeout_seconds", DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS
+        )
+        deadline = time.monotonic() + timeout_seconds
         try:
             self._execution_watchdog.arm(deadline)
         except WatchdogError as error:

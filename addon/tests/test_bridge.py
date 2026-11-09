@@ -3841,14 +3841,20 @@ class HandlerValidationTests(unittest.TestCase):
                 data=SimpleNamespace(scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))]),
                 ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=reset, stl_import=imported)),
             )
-            handlers = BlenderHandlers(value, lambda: False, bpy)
-            params = {"path": ".printable/pictures/part/model.stl", "expected_sha256": "0" * 64}
+            watchdog = Mock()
+            handlers = BlenderHandlers(value, lambda: False, bpy, watchdog)
+            params = {"path": ".printable/pictures/part/model.stl", "expected_sha256": "0" * 64,
+                      "timeout_seconds": 240.0}
             with self.assertRaisesRegex(HandlerError, "source digest"):
                 handlers._job_import_model(params)
             reset.assert_not_called()
             params["expected_sha256"] = hashlib.sha256(b"model").hexdigest()
-            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+            watchdog.reset_mock()
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]), \
+                 patch("printable_bridge.handlers.time.monotonic", return_value=10.0):
                 self.assertEqual(handlers._job_import_model(params), {"objects": ["Body"]})
+            watchdog.arm.assert_called_once_with(250.0)
+            watchdog.disarm.assert_called_once_with()
             reset.assert_called_once_with(use_empty=True)
             staged = Path(imported.call_args.kwargs["filepath"])
             self.assertNotEqual(staged, model)
