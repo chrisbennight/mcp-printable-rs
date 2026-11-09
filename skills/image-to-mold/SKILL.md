@@ -171,6 +171,12 @@ physical evidence.
 
 ## Slice and print when requested
 
+Load `prepare-fdm-print` through `skill.get` for profile selection, orientation,
+surface finish and actual toolpath review. Relief masters without a tray may
+benefit from printing on their side to reduce stair-stepping; compare this with
+bed contact, supports, release surfaces and strength. Preserve the casting
+orientation when changing the build orientation.
+
 Use native slicing with the actual printer, nozzle, material, plate, and explicit
 placement. A positive master with a tray normally sits flat on its base with the
 relief facing up. Select layer height and wall generation for the useful detail.
@@ -178,6 +184,14 @@ Inspect actual first-layer, background, lettering, and peak-feature toolpaths.
 Explain important features that merge or disappear and propose enlargement or
 simplification when needed. Retain source hashes, profiles, overrides, estimates,
 and unresolved native warnings. Keep changed slices in new output paths.
+
+The printed surface transfers into the mold and cast. Apply intentional texture
+only where that transfer is wanted. Ironing can help a flat background but does
+not smooth every relief surface and can blur useful detail. Protect lettering,
+release surfaces and clearances from fuzzy skin or displacement. Coatings,
+sanding and extra flow can change dimensions; remeasure the finished master or
+cavity when those changes matter. Nominal 100% infill, a smooth preview or clear
+plastic does not prove a casting tray is leakproof; retain physical leak testing.
 
 Read `printable://printing/workflow-v1` before physical dispatch. Reuse existing
 authorization and current setup answers; creating a model or slice does not itself

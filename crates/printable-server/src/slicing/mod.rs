@@ -150,12 +150,16 @@ pub struct PrepareParams {
     /// Physical upward-facing surface, independent of the numbered project plate.
     pub build_plate: setup::BuildPlate,
     pub printer: ProfileSelection,
+    /// Compatible baseline process plus deliberate overrides. Load prepare-fdm-print
+    /// through skill.get for orientation, strength, fit and surface-finish choices.
     pub process: ProfileSelection,
     /// Ordered material slots, matching the source plate's filament indices.
     pub filaments: Vec<FilamentSelection>,
     /// Orca plate index, one-based; zero slices every plate.
     #[serde(default = "default_plate")]
     pub plate: u16,
+    /// Native automatic orientation; leave false to preserve an orientation selected
+    /// for loads, fitting faces or surface finish. This does not optimize strength.
     #[serde(default)]
     pub auto_orient: bool,
     #[serde(default)]

@@ -24,6 +24,10 @@ It also slices for the two-nozzle H2D with two filaments loaded, and checks
 process and filament overrides, slot colours and vendor subfolder profiles.
 
 Read `printable://contracts/slice/{action}` for exact request parameters.
+For uploaded-model preparation and profile choices, load
+[`prepare-fdm-print`](../skills/prepare-fdm-print/SKILL.md) through `skill.get`.
+The [preparation guide](fdm-preparation.md) describes the workflow, evidence
+behind its decisions, and capabilities that still need native support.
 Use `profiles` to find printer, process and filament profiles, and `settings` to
 inspect inherited settings before preparing a slice. Profiles come from the BBL
 collection, including its vendor subfolders such as Polymaker and the P1P

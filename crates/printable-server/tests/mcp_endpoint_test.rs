@@ -720,6 +720,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         "printable://modeling/blender-v1",
         "printable://design/product-v1",
         "printable://render/product-v1",
+        "prepare-fdm-print",
         "measured, partly supported, or inferred",
         "unmeasured is not passed",
         "say not done when an agreed target is unmet",
@@ -872,7 +873,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let resources = result["resources"]
         .as_array()
         .expect("resources/list carries a resources array");
-    assert_eq!(resources.len(), 7, "resource catalog: {result}");
+    assert_eq!(resources.len(), 8, "resource catalog: {result}");
     assert_eq!(
         resources[0]["uri"],
         json!("printable://modeling/blender-v1")
@@ -892,7 +893,11 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         resources[5]["uri"],
         json!("printable://skills/image-to-mold/SKILL.md")
     );
-    assert_eq!(resources[6]["uri"], json!("printable://contracts"));
+    assert_eq!(
+        resources[6]["uri"],
+        json!("printable://skills/prepare-fdm-print/SKILL.md")
+    );
+    assert_eq!(resources[7]["uri"], json!("printable://contracts"));
     // Bundled skills remain available with the printer service unconfigured.
     let skill_list = json!({"jsonrpc":"2.0","id":81,"method":"tools/call",
         "params":{"name":"skill","arguments":{"action":"list","params":{}}}});
@@ -907,6 +912,19 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         .unwrap();
     assert_eq!(skill_tool["annotations"]["readOnlyHint"], true);
     assert_eq!(skill_tool["annotations"]["idempotentHint"], true);
+    let slice_tool = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "slice")
+        .unwrap();
+    assert!(
+        slice_tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("prepare-fdm-print"),
+        "slicing discovery must route profile selection to its preparation skill"
+    );
     assert!(skill_tool.get("outputSchema").is_none());
     let contract = printable_server::resources::contracts::read(
         "printable://contracts/skill/list",
@@ -916,7 +934,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
     let output = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
     assert!(output.is_valid(&listed["structuredContent"]));
     let skills = listed["structuredContent"]["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 2);
+    assert_eq!(skills.len(), 3);
     for (metadata, (name, expected_body)) in skills.iter().zip([
         (
             "inspect-printer-camera",
@@ -925,6 +943,10 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
         (
             "image-to-mold",
             include_str!("../../../skills/image-to-mold/SKILL.md"),
+        ),
+        (
+            "prepare-fdm-print",
+            include_str!("../../../skills/prepare-fdm-print/SKILL.md"),
         ),
     ]) {
         assert_eq!(metadata["name"], name);
