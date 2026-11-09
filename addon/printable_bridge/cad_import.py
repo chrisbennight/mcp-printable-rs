@@ -3,10 +3,32 @@
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
 import tempfile
+
+
+def read_self_contained_glb(original):
+    """Read a GLB header and reject file references outside its own bytes."""
+    header = original.read(20)
+    if len(header) != 20:
+        raise ValueError("GLB header is incomplete")
+    magic, version, total, json_size, kind = struct.unpack("<5I", header)
+    if (magic != 0x46546C67 or version != 2 or total != os.fstat(original.fileno()).st_size
+            or kind != 0x4E4F534A or json_size > total - 20 or json_size % 4):
+        raise ValueError("model import requires a complete GLB 2.0 document")
+    document = json.loads(original.read(json_size))
+    if not isinstance(document, dict):
+        raise ValueError("GLB document must be an object")
+    for key in ("buffers", "images"):
+        items = document.get(key, [])
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise ValueError("GLB buffers and images must be arrays of objects")
+        if any("uri" in item for item in items):
+            raise ValueError("model import requires self-contained GLB buffers and images")
+    return (magic, version, total, json_size, kind), document
 
 
 @contextmanager
@@ -17,16 +39,7 @@ def prepare_glb(source: Path, inventory: Path):
     with source.open("rb") as original:
         digest = hashlib.file_digest(original, "sha256").hexdigest()
         original.seek(0)
-        header = original.read(20)
-        if len(header) != 20:
-            raise ValueError("CAD GLB header is incomplete")
-        magic, version, total, json_size, kind = struct.unpack("<5I", header)
-        if (magic != 0x46546C67 or version != 2 or total != source.stat().st_size
-                or kind != 0x4E4F534A or json_size > total - 20 or json_size % 4):
-            raise ValueError("CAD input requires a complete GLB 2.0 document")
-        document = json.loads(original.read(json_size))
-        if any("uri" in item for key in ("buffers", "images") for item in document.get(key, [])):
-            raise ValueError("CAD attachment requires self-contained GLB buffers and images")
+        (magic, version, total, json_size, kind), document = read_self_contained_glb(original)
         nodes = document.get("nodes", [])
         if not isinstance(nodes, list):
             raise ValueError("CAD GLB nodes must be an array")

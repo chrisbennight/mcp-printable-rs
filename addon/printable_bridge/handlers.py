@@ -1906,6 +1906,27 @@ class BlenderHandlers:
                 with source.open("rb") as model:
                     if hashlib.file_digest(model, "sha256").hexdigest() != expected:
                         raise HandlerError("model bytes do not match the submitted source digest")
+                    if suffix == ".glb":
+                        from .cad_import import read_self_contained_glb
+                        model.seek(0)
+                        try:
+                            read_self_contained_glb(model)
+                        except ValueError as error:
+                            raise HandlerError(str(error)) from error
+                if suffix == ".obj":
+                    import shutil
+                    from tempfile import TemporaryFile
+                    # Import geometry only; material libraries can name files
+                    # outside the verified model snapshot.
+                    with TemporaryFile(dir=source.parent) as geometry:
+                        with source.open("rb") as original:
+                            for line in original:
+                                words = line.split(None, 1)
+                                if words and words[0] in {b"v", b"vt", b"vn", b"f", b"o", b"g", b"s", b"l", b"p"}:
+                                    geometry.write(line)
+                        geometry.seek(0)
+                        with source.open("wb") as prepared:
+                            shutil.copyfileobj(geometry, prepared)
                 self._require_finished(self._bpy.ops.wm.read_factory_settings(use_empty=True), "empty render scene initialization")
                 if suffix == ".stl":
                     result = self._bpy.ops.wm.stl_import(filepath=str(source))

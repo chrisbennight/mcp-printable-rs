@@ -732,11 +732,13 @@ impl JobRegistry {
         let identity = transaction
             .send_value("bridge_status", Params::new())
             .await?;
+        self.inner.worker_verified.store(false, Ordering::SeqCst);
         if identity["role"] != "render_worker" || identity["background"] != true {
             return Err(ToolError::Job(
                 "configured render endpoint is not a background render worker".into(),
             ));
         }
+        self.inner.worker_verified.store(true, Ordering::SeqCst);
         let workspace = Arc::clone(&self.inner.workspace);
         let model = model.to_owned();
         let suffix = std::path::Path::new(&model)
@@ -5028,6 +5030,10 @@ mod tests {
         let files = Arc::clone(&workspace);
         let png = crate::slicing::package::fixture::png(512, 512);
         let expected = png.clone();
+        let rendering = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let started = Arc::clone(&rendering);
+        let released = Arc::clone(&release);
         let worker = FakeAddon::spawn(move |command, params| {
             let result = match command.as_str() {
                 "bridge_status" => json!({"role": "render_worker", "background": true}),
@@ -5044,7 +5050,11 @@ mod tests {
                     files
                         .write_reserved_artifact(params["path"].as_str().unwrap(), &png, false)
                         .unwrap();
-                    json!({"size_bytes": png.len(), "sha256": crate::provenance::digest(&png)})
+                    return ResponseSpec::SuccessWhenReleased {
+                        result: json!({"size_bytes": png.len(), "sha256": crate::provenance::digest(&png)}),
+                        addon_version: None,
+                        started: Arc::clone(&started), release: Arc::clone(&released),
+                    };
                 }
                 other => panic!("unexpected picture command {other}"),
             };
@@ -5095,13 +5105,23 @@ mod tests {
                 .is_none()
         );
         registry.inner.state.lock().await.jobs.clear();
-        assert_eq!(
-            registry
+        let picture_registry = registry.clone();
+        let picture = tokio::spawn(async move {
+            picture_registry
                 .project_picture("part", "projects/part/model.stl")
                 .await
-                .unwrap(),
-            Some(expected)
+        });
+        tokio::time::timeout(Duration::from_secs(5), rendering.notified())
+            .await
+            .unwrap();
+        let health = registry.worker_health().await;
+        assert_eq!(health["status"], "busy");
+        assert_eq!(
+            health["available"], true,
+            "verified picture rendering remains ready"
         );
+        release.notify_one();
+        assert_eq!(picture.await.unwrap().unwrap(), Some(expected));
         assert!(
             registry.inner.state.lock().await.jobs.is_empty(),
             "pictures do not enter user job history"

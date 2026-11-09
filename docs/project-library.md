@@ -110,7 +110,9 @@ It never touches the live scene or adds a job to the user's job history.
 Pictures wait while user render jobs are queued or running. A job submitted
 during a picture waits for that bounded render, then takes priority. Import
 and render each have a one-minute work budget; failed pictures use the same
-retry policy as plate pictures.
+retry policy as plate pictures. GLB buffers and images must be embedded in the
+model; external URI references are refused. OBJ pictures import geometry only,
+without following material-library references.
 
 The newest file is the most recently modified one in the project directory.
 When any of these files changes, the picture is made again. A project with none
