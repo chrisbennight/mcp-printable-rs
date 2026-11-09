@@ -114,6 +114,7 @@ fn trusted_ranges_match_addresses_in_either_form() {
 struct Library {
     root: tempfile::TempDir,
     workspace: Arc<Workspace>,
+    index: Arc<ProjectIndex>,
     router: Router,
 }
 
@@ -126,10 +127,14 @@ impl Library {
         let library = Self {
             root,
             workspace,
+            index,
             router,
         };
         library.fill();
-        index.pass(&library.workspace, PassKind::Rebuild).unwrap();
+        library
+            .index
+            .pass(&library.workspace, PassKind::Rebuild)
+            .unwrap();
         library
     }
 
@@ -484,6 +489,63 @@ async fn covers_are_served_as_stored_with_their_media_type() {
     assert!(body.is_empty());
     assert_eq!(
         library.get("/projects/evil/cover").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn generated_plate_pictures_show_projects_without_a_cover() {
+    let library = Library::new();
+    let workspace = &*library.workspace;
+    let plan = pictures::Plan {
+        project_id: "evil".into(),
+        candidates: "candidates".into(),
+        steps: Vec::new(),
+        prior: None,
+    };
+    let png = fixture::png(8, 6);
+    let picture = pictures::store(
+        workspace,
+        "evil",
+        &png,
+        "projects/evil/model.stl",
+        pictures::Origin::SlicerPreview,
+        1_000,
+    )
+    .unwrap();
+    pictures::record_made(workspace, &plan, picture.clone()).unwrap();
+    library
+        .index
+        .pass(&library.workspace, PassKind::Incremental)
+        .unwrap();
+    let grid = library.page("/").await;
+    assert!(
+        grid.contains("src=\"./projects/evil/pictures/plate\""),
+        "{grid}"
+    );
+    assert!(
+        grid.contains("src=\"./projects/desk/cover\""),
+        "a cover still wins"
+    );
+    let page = library.page("/projects/evil").await;
+    assert!(page.contains("src=\"../projects/evil/pictures/plate\""));
+    assert!(page.contains("Generated plate preview"));
+
+    let (status, headers, body) = library.get("/projects/evil/pictures/plate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_secure(&headers);
+    assert_eq!(body, png);
+    assert_eq!(
+        headers[header::ETAG].to_str().unwrap(),
+        format!("\"{}\"", picture.sha256)
+    );
+    assert_eq!(
+        library.get("/projects/desk/pictures/plate").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        library.get("/projects/missing/pictures/plate").await.0,
         StatusCode::NOT_FOUND
     );
 }

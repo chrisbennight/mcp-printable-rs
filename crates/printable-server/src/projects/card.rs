@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{Project, get};
+use super::{Project, get, pictures};
 use crate::{error::ToolError, library::MANIFEST, printers::ledger, slicing::summary};
 
 /// Changes whenever the card layout changes, so stored cards are rebuilt.
-const LAYOUT_VERSION: u32 = 2;
+const LAYOUT_VERSION: u32 = 3;
 /// Largest `state.json`, `summary.json` or `source.json` a card reads.
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 /// Cap for each list of printers, materials, colours and printer counts.
@@ -47,6 +47,9 @@ pub struct Card {
     pub record_version: u64,
     pub dates: Dates,
     pub cover: Option<CoverSummary>,
+    /// Pictures generated from the project's files, shown when it has no
+    /// cover.
+    pub pictures: Pictures,
     /// Workspace files in the project directory.
     pub file_count: usize,
     pub formats: Vec<FormatCount>,
@@ -88,6 +91,23 @@ pub struct CoverSummary {
     pub media_type: String,
     pub width: u32,
     pub height: u32,
+}
+
+/// Pictures generated from a project's files.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Pictures {
+    /// OrcaSlicer's view of the project's model on the build plate.
+    pub plate: Option<pictures::Picture>,
+}
+
+/// Which picture shows a project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PictureKind {
+    /// The cover set for the project.
+    Cover,
+    /// The generated plate picture.
+    Plate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -194,6 +214,10 @@ pub struct CompactCard {
     /// The first 200 characters of the description.
     pub description: String,
     pub cover_path: Option<String>,
+    /// The picture that shows the project: its cover, or else a generated
+    /// picture; null when it has neither.
+    #[serde(default)]
+    pub picture: Option<PictureKind>,
     pub dates: Dates,
     /// Completed prints.
     pub printed: usize,
@@ -244,13 +268,17 @@ pub(crate) enum PictureSource {
     Cover { path: String },
     /// A plate thumbnail in the newest slice's package.
     SliceThumbnail { package: String, plate: u32 },
+    /// A stored generated picture.
+    Generated { path: String },
 }
 
-/// What a card is built from: the project record and two directory listings.
+/// What a card is built from: the project record, two directory listings and
+/// the record of generated pictures.
 pub(crate) struct Inputs {
     project: Project,
     files: Vec<ArtifactMeta>,
     prints: Vec<ArtifactMeta>,
+    pictures: Option<pictures::Record>,
 }
 
 fn listing(workspace: &Workspace, directory: &str) -> Result<Vec<ArtifactMeta>, ToolError> {
@@ -266,14 +294,16 @@ impl Inputs {
         let project = get(workspace, project_id)?;
         let files = listing(workspace, &project.root)?;
         let prints = listing(workspace, &ledger::project_records(project_id))?;
+        let pictures = pictures::read(workspace, project_id);
         Ok(Self {
             project,
             files,
             prints,
+            pictures,
         })
     }
 
-    /// A digest of the record and of every listed file's path, size and
+    /// A digest of the records and of every listed file's path, size and
     /// modification time. A card built from equal inputs is equal.
     pub(crate) fn hash(&self) -> String {
         let mut hasher = Sha256::new();
@@ -290,11 +320,33 @@ impl Inputs {
                 hasher.update(file.modified_ns.to_le_bytes());
             }
         }
+        // Only the picture a card shows counts: recording a failed attempt
+        // leaves the card as it was.
+        let plate = self
+            .pictures
+            .as_ref()
+            .and_then(|record| record.plate(&self.project.project_id));
+        let pictures = serde_json::to_vec(&plate).expect("a picture serializes");
+        hasher.update((pictures.len() as u64).to_le_bytes());
+        hasher.update(&pictures);
         hasher
             .finalize()
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    /// What the project's plate picture needs.
+    pub(crate) fn picture_need(&self, previews: bool, now_unix_ms: u64) -> pictures::Need {
+        let files: Vec<_> = self.project_files().collect();
+        pictures::plan(
+            &self.project.project_id,
+            &files,
+            self.project.cover.is_some(),
+            self.pictures.as_ref(),
+            previews,
+            now_unix_ms,
+        )
     }
 
     /// The project's files, sorted by path, with paths relative to the
@@ -750,6 +802,13 @@ pub(crate) fn build(workspace: &Workspace, inputs: &Inputs, summaries: Summaries
             width: cover.width,
             height: cover.height,
         }),
+        pictures: Pictures {
+            plate: inputs
+                .pictures
+                .as_ref()
+                .and_then(|record| record.plate(&project.project_id))
+                .cloned(),
+        },
         file_count: inputs.files.len(),
         has_3mf: formats.contains_key("3mf") || formats.contains_key("gcode.3mf"),
         formats: formats
@@ -808,6 +867,7 @@ impl Card {
             name: self.name.clone(),
             description: clip(&self.description, SHORT_DESCRIPTION_CHARS).0,
             cover_path: self.cover.as_ref().map(|cover| cover.path.clone()),
+            picture: self.picture_kind(),
             dates: self.dates.clone(),
             printed: self.prints.outcomes.completed,
             last_outcome: self.prints.last_outcome.clone(),
@@ -864,10 +924,22 @@ impl Card {
             .collect()
     }
 
-    /// The cover, or else the first plate thumbnail of the newest slice's
-    /// package, with a key that changes whenever that picture may change.
-    /// Stored covers are named by their digest; a thumbnail's key follows its
-    /// package's size and modification time.
+    /// Which picture shows the project.
+    pub fn picture_kind(&self) -> Option<PictureKind> {
+        if self.cover.is_some() {
+            Some(PictureKind::Cover)
+        } else if self.pictures.plate.is_some() {
+            Some(PictureKind::Plate)
+        } else {
+            None
+        }
+    }
+
+    /// The cover, else the generated plate picture, else the first plate
+    /// thumbnail of the newest slice's package, with a key that changes
+    /// whenever that picture may change. Stored covers and generated pictures
+    /// are named by their digest; a thumbnail's key follows its package's
+    /// size and modification time.
     pub(crate) fn picture(&self, inputs: &Inputs) -> Option<(PictureSource, String)> {
         if let Some(cover) = &self.cover {
             return Some((
@@ -875,6 +947,14 @@ impl Card {
                     path: cover.path.clone(),
                 },
                 format!("cover:{}", cover.path),
+            ));
+        }
+        if let Some(plate) = &self.pictures.plate {
+            return Some((
+                PictureSource::Generated {
+                    path: plate.path.clone(),
+                },
+                format!("generated:{}", plate.path),
             ));
         }
         let newest = self.slices.newest.as_ref()?;

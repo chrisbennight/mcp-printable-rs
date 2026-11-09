@@ -39,12 +39,25 @@ use super::{
     card::{self, CompactCard, Inputs, PictureSource},
     cover,
     embeddings::{self, Embedded, Embeddings, Input, Reranker, ServiceError},
+    pictures,
 };
-use crate::{config::SettingsError, error::ToolError, slicing::summary, tools::blocking_with};
+use crate::{
+    config::SettingsError,
+    error::ToolError,
+    slicing::{self, summary},
+    tools::blocking_with,
+};
 
 const DIR_KEY: &str = "PRINTABLE_PROJECT_INDEX_DIR";
 const INTERVAL_KEY: &str = "PRINTABLE_PROJECT_INDEX_INTERVAL_SECONDS";
+const PICTURES_KEY: &str = "PRINTABLE_PROJECT_PICTURES";
+const SLICER_KEY: &str = "PRINTABLE_SLICER_ENDPOINT";
 const DEFAULT_INTERVAL_SECONDS: u64 = 30;
+/// Projects whose plate picture one pass makes or records a failure for.
+/// Plans deferred while the slicer is busy do not count.
+const MAX_PICTURES_MADE_PER_PASS: usize = 16;
+/// A pass starts making no picture after this long.
+const PICTURE_BUDGET: Duration = Duration::from_secs(120);
 const MAX_INTERVAL_SECONDS: u64 = 86_400;
 const FILE_NAME: &str = "index.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -185,6 +198,30 @@ pub struct ProjectIndex {
     reranker: Option<Reranker>,
     /// What the latest contacts with those services found.
     services: Mutex<ServiceState>,
+    /// How generated pictures are made; `None` turns them off.
+    pictures: Option<PictureSettings>,
+    /// Plate pictures the latest card pass found to make, and how many
+    /// projects wait to retry a failed picture.
+    picture_plans: Mutex<(Vec<pictures::Plan>, usize)>,
+    /// Projects whose picture work ended in an error that could not be
+    /// recorded, and when to try them again.
+    picture_holds: Mutex<HashMap<String, u64>>,
+}
+
+/// How generated pictures are made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PictureSettings {
+    /// The slicer worker that exports plate previews. Without one, pictures
+    /// are only copied from 3MF packages that carry a plate thumbnail.
+    slicer: Option<String>,
+}
+
+/// The outcome of one attempt to make a project's picture.
+enum Made {
+    Picture,
+    Nothing,
+    /// The slicer was busy, so the attempt waits for a later pass.
+    Deferred,
 }
 
 impl std::fmt::Debug for ProjectIndex {
@@ -195,6 +232,7 @@ impl std::fmt::Debug for ProjectIndex {
             .field("interval", &self.interval)
             .field("embeddings", &self.embeddings)
             .field("reranker", &self.reranker)
+            .field("pictures", &self.pictures)
             .finish_non_exhaustive()
     }
 }
@@ -235,10 +273,19 @@ pub fn configure(
             .filter(|seconds| *seconds <= MAX_INTERVAL_SECONDS)
             .ok_or(SettingsError::ProjectIndex(INTERVAL_KEY))?,
     };
+    let pictures = match value(PICTURES_KEY).map(|raw| raw.trim().to_ascii_lowercase()) {
+        None => true,
+        Some(raw) if raw == "on" => true,
+        Some(raw) if raw == "off" => false,
+        Some(_) => return Err(SettingsError::ProjectIndex(PICTURES_KEY)),
+    };
     let services = embeddings::configure(get)?;
     let mut index = ProjectIndex::new(storage, (seconds > 0).then(|| Duration::from_secs(seconds)));
     index.embeddings = services.embeddings;
     index.reranker = services.reranker;
+    index.pictures = pictures.then(|| PictureSettings {
+        slicer: value(SLICER_KEY).map(|raw| raw.trim().to_owned()),
+    });
     Ok(Arc::new(index))
 }
 
@@ -272,6 +319,25 @@ pub struct PassReport {
     pub finished_unix_ms: u64,
     /// What the pass embedded; null without an embeddings service.
     pub embedding: Option<EmbeddingReport>,
+    /// What the pass did about generated pictures; null when they are off.
+    pub pictures: Option<PictureReport>,
+}
+
+/// What one pass did about generated pictures.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PictureReport {
+    /// Pictures made in this pass.
+    pub made: usize,
+    /// Projects whose picture could not be made in this pass; each is tried
+    /// again later, sooner on `project reindex` with `retry`.
+    pub failed: usize,
+    /// Projects that still lack a current picture when the pass ended,
+    /// including those waiting to retry a failure.
+    pub waiting: usize,
+    /// True when the slicer was busy, so previews wait for a later pass.
+    pub deferred: bool,
+    /// True when the pass's time ran out or the server stopped.
+    pub stopped: bool,
 }
 
 /// What one pass embedded.
@@ -1735,6 +1801,7 @@ fn picture_input(workspace: &Workspace, source: &str) -> Result<Vec<u8>, ToolErr
         PictureSource::SliceThumbnail { package, plate } => {
             cover::read_thumbnail(workspace, &package, plate)?
         }
+        PictureSource::Generated { path } => cover::read_picture(workspace, &path)?,
     };
     embeddings::prepare_picture(&bytes)
 }
@@ -2138,6 +2205,9 @@ impl ProjectIndex {
             embeddings: None,
             reranker: None,
             services: Mutex::new(ServiceState::default()),
+            pictures: None,
+            picture_plans: Mutex::new((Vec::new(), 0)),
+            picture_holds: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2267,7 +2337,16 @@ impl ProjectIndex {
             started_unix_ms,
             finished_unix_ms: started_unix_ms,
             embedding: None,
+            pictures: None,
         };
+        // A retry pass also tries failed pictures again at once.
+        let picture_time = if kind == PassKind::Retry {
+            u64::MAX
+        } else {
+            started_unix_ms
+        };
+        let mut plans = Vec::new();
+        let mut retrying = 0;
         for id in &ids {
             if self.stop.is_cancelled() {
                 report.stopped = true;
@@ -2276,6 +2355,16 @@ impl ProjectIndex {
             let prior = known.get(id);
             let retry = kind == PassKind::Retry && prior.is_some_and(|(_, failed)| *failed);
             let gathered = Inputs::gather(workspace, id);
+            if let (Some(settings), Ok(inputs)) = (&self.pictures, &gathered) {
+                match inputs.picture_need(settings.slicer.is_some(), picture_time) {
+                    pictures::Need::Make(_) if self.picture_held(id, picture_time) => {
+                        retrying += 1;
+                    }
+                    pictures::Need::Make(plan) => plans.push(*plan),
+                    pictures::Need::Retry => retrying += 1,
+                    pictures::Need::Nothing => {}
+                }
+            }
             // An unreadable record has no input hash; it is retried when it
             // becomes readable or on request.
             let hash = gathered
@@ -2313,6 +2402,10 @@ impl ProjectIndex {
                 }
             }
         }
+        *self
+            .picture_plans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (plans, retrying);
         report.finished_unix_ms = super::unix_ms();
         self.remember(&report);
         Ok(report)
@@ -2337,11 +2430,40 @@ impl ProjectIndex {
         let guard = Arc::clone(&self.passes).lock_owned().await;
         let index = Arc::clone(self);
         let cards = Arc::clone(workspace);
-        let (report, guard) =
+        let (report, mut guard) =
             tokio::task::spawn_blocking(move || (index.pass(&cards, kind), guard))
                 .await
                 .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
         let mut report = report?;
+        if self.pictures.is_some() && !self.stop.is_cancelled() {
+            let (plans, retrying) = std::mem::take(
+                &mut *self
+                    .picture_plans
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+            let pictures = self.make_pictures(workspace, plans, retrying).await;
+            if pictures.made > 0 && !self.stop.is_cancelled() {
+                // Bring the cards whose pictures were just made up to date, so
+                // the pictures show and are embedded in this run. Like the
+                // first card pass, this one owns the guard while it runs.
+                let index = Arc::clone(self);
+                let cards = Arc::clone(workspace);
+                let (refreshed, returned) = tokio::task::spawn_blocking(move || {
+                    (index.pass(&cards, PassKind::Incremental), guard)
+                })
+                .await
+                .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
+                guard = returned;
+                let refreshed = refreshed?;
+                report.rebuilt += refreshed.rebuilt;
+                report.failed += refreshed.failed;
+                report.removed += refreshed.removed;
+            }
+            report.pictures = Some(pictures);
+            report.finished_unix_ms = super::unix_ms();
+            self.remember(&report);
+        }
         if self.embeddings.is_some() && !self.stop.is_cancelled() {
             report.embedding = Some(self.embed(workspace, kind).await?);
             report.finished_unix_ms = super::unix_ms();
@@ -2349,6 +2471,223 @@ impl ProjectIndex {
         }
         drop(guard);
         Ok(report)
+    }
+
+    /// Make the plate pictures the card pass found missing, at most a pass's
+    /// share. A busy slicer defers previews without counting a failure, so
+    /// background previews never queue behind interactive work. Pictures are
+    /// optional: an error in one project's picture is logged and counted as a
+    /// failure, and the rest of the run goes on.
+    async fn make_pictures(
+        self: &Arc<Self>,
+        workspace: &Arc<Workspace>,
+        plans: Vec<pictures::Plan>,
+        retrying: usize,
+    ) -> PictureReport {
+        let mut report = PictureReport {
+            waiting: plans.len() + retrying,
+            ..PictureReport::default()
+        };
+        let deadline = Instant::now() + PICTURE_BUDGET;
+        let mut previews = true;
+        let mut attempts = 0;
+        for plan in plans {
+            if self.stop.is_cancelled() || Instant::now() >= deadline {
+                report.stopped = true;
+                break;
+            }
+            if attempts == MAX_PICTURES_MADE_PER_PASS {
+                break;
+            }
+            // While the slicer is busy, a plan that can only ask for a
+            // preview waits for a later pass at no cost.
+            if !previews
+                && plan
+                    .steps
+                    .iter()
+                    .all(|step| matches!(step, pictures::Step::Preview { .. }))
+            {
+                continue;
+            }
+            let project_id = plan.project_id.clone();
+            let made = match self.make_picture(workspace, plan, previews).await {
+                Ok(made) => {
+                    if !matches!(made, Made::Deferred) {
+                        self.hold_picture(&project_id, None);
+                    }
+                    made
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        project_id = %project_id,
+                        code = error.code(),
+                        "could not make or record a project picture"
+                    );
+                    // Nothing records this failure, so hold the project
+                    // back here instead.
+                    self.hold_picture(
+                        &project_id,
+                        Some(super::unix_ms().saturating_add(FIRST_RETRY_MS)),
+                    );
+                    Made::Nothing
+                }
+            };
+            match made {
+                Made::Picture => {
+                    attempts += 1;
+                    report.made += 1;
+                    report.waiting -= 1;
+                }
+                // A failed project still lacks a picture and waits to retry.
+                Made::Nothing => {
+                    attempts += 1;
+                    report.failed += 1;
+                }
+                // The slicer is busy: later plans still copy thumbnails, but
+                // ask for no previews until a later pass.
+                Made::Deferred => {
+                    report.deferred = true;
+                    previews = false;
+                }
+            }
+        }
+        report
+    }
+
+    /// Whether a project's picture is held back until after `now_unix_ms`.
+    fn picture_held(&self, project_id: &str, now_unix_ms: u64) -> bool {
+        self.picture_holds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(project_id)
+            .is_some_and(|until| *until > now_unix_ms)
+    }
+
+    /// Hold a project's picture back until `until`, or release it.
+    fn hold_picture(&self, project_id: &str, until: Option<u64>) {
+        let mut holds = self
+            .picture_holds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match until {
+            Some(until) => {
+                holds.insert(project_id.to_owned(), until);
+            }
+            None => {
+                holds.remove(project_id);
+            }
+        }
+    }
+
+    /// Try a plan's steps in order and record the picture, or the failure.
+    /// Without `previews`, or while the slicer is busy, a preview step is
+    /// skipped; a plan that made nothing then waits for a later pass rather
+    /// than recording a failure.
+    async fn make_picture(
+        &self,
+        workspace: &Arc<Workspace>,
+        plan: pictures::Plan,
+        previews: bool,
+    ) -> Result<Made, ToolError> {
+        let slicer = self
+            .pictures
+            .as_ref()
+            .and_then(|settings| settings.slicer.clone());
+        let mut problem = "no way to make a picture was available".to_owned();
+        let mut deferred = false;
+        for step in &plan.steps {
+            let files = Arc::clone(workspace);
+            let project_id = plan.project_id.clone();
+            let made = match step.clone() {
+                pictures::Step::Thumbnail { package, origin } => {
+                    // Copying a large package needs no image work, so only
+                    // decoding the thumbnail waits for image capacity.
+                    let reader = Arc::clone(&files);
+                    let source = package.clone();
+                    let read = tokio::task::spawn_blocking(move || {
+                        pictures::package_thumbnail(&reader, &source)
+                    })
+                    .await
+                    .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
+                    match read {
+                        Ok(bytes) => {
+                            crate::tools::visual_blocking(move || {
+                                pictures::store(
+                                    &files,
+                                    &project_id,
+                                    &bytes,
+                                    &package,
+                                    origin,
+                                    super::unix_ms(),
+                                )
+                            })
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                pictures::Step::Preview { model, relative } => {
+                    let Some(endpoint) = slicer.as_ref().filter(|_| previews) else {
+                        deferred |= slicer.is_some();
+                        continue;
+                    };
+                    let request = pictures::preview_request(&project_id, &relative);
+                    match slicing::preview(endpoint, &request).await {
+                        Ok(bytes) => {
+                            crate::tools::visual_blocking(move || {
+                                pictures::store(
+                                    &files,
+                                    &project_id,
+                                    &bytes,
+                                    &model,
+                                    pictures::Origin::SlicerPreview,
+                                    super::unix_ms(),
+                                )
+                            })
+                            .await
+                        }
+                        Err(slicing::PreviewError::Busy) => {
+                            deferred = true;
+                            continue;
+                        }
+                        Err(slicing::PreviewError::Failed(message)) => {
+                            Err(ToolError::Slice(message))
+                        }
+                    }
+                }
+            };
+            match made {
+                Ok(picture) => {
+                    let workspace = Arc::clone(workspace);
+                    let plan = plan.clone();
+                    tokio::task::spawn_blocking(move || {
+                        // A project removed meanwhile keeps no record.
+                        if super::get(&workspace, &plan.project_id).is_err() {
+                            return Ok(());
+                        }
+                        pictures::record_made(&workspace, &plan, picture)
+                    })
+                    .await
+                    .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+                    return Ok(Made::Picture);
+                }
+                Err(error) => problem = error.to_string(),
+            }
+        }
+        if deferred {
+            return Ok(Made::Deferred);
+        }
+        tracing::warn!(project_id = %plan.project_id, "could not make a project picture");
+        let workspace = Arc::clone(workspace);
+        tokio::task::spawn_blocking(move || {
+            if super::get(&workspace, &plan.project_id).is_err() {
+                return Ok(());
+            }
+            pictures::record_failed(&workspace, &plan, &problem, super::unix_ms())
+        })
+        .await
+        .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+        Ok(Made::Nothing)
     }
 
     /// Check the model identity, then embed the texts and pictures that lack
@@ -4098,6 +4437,333 @@ mod tests {
                 panic!("an image cover is stored directly")
             };
             cover::commit(workspace, &params, Some(picture)).unwrap();
+        }
+
+        /// An index that makes pictures with the slicer behind `server`, without
+        /// embeddings.
+        fn pictured(server: &MockServer) -> Arc<ProjectIndex> {
+            let uri = server.uri();
+            configure(&move |key: &str| match key {
+                INTERVAL_KEY => Some("0".to_owned()),
+                SLICER_KEY => Some(uri.clone()),
+                _ => None,
+            })
+            .unwrap()
+        }
+
+        async fn preview_requests(server: &MockServer) -> Vec<Value> {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.url.path() == "/preview")
+                .map(|request| serde_json::from_slice(&request.body).unwrap())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn projects_without_a_cover_get_a_generated_plate_picture() {
+            let server = MockServer::start().await;
+            let preview = coloured_png([220, 110, 70]);
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"png_base64": STANDARD.encode(&preview)})),
+                )
+                .mount(&server)
+                .await;
+            let (_root, workspace) = workspace();
+            for id in ["part", "sliced", "boxed", "empty"] {
+                super::record(&workspace, id, id, "", 1_000);
+            }
+            workspace
+                .write_artifact("projects/part/part.stl", b"solid part", false)
+                .unwrap();
+            sliced_thumbnail(&workspace, "sliced", [20, 40, 230]);
+            workspace
+                .write_artifact("projects/boxed/boxed.stl", b"solid boxed", false)
+                .unwrap();
+            set_cover(&workspace, "boxed", [250, 250, 250]);
+            workspace
+                .write_artifact("projects/empty/notes.json", b"{}", false)
+                .unwrap();
+            let index = pictured(&server);
+            let made = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!((made.made, made.failed, made.waiting), (2, 0, 0));
+            assert_eq!(
+                preview_requests(&server).await,
+                [json!({"project_id": "part", "source": "part.stl"})],
+                "the sliced project's thumbnail is copied without the slicer"
+            );
+            let part = card::card(&workspace, "part").unwrap();
+            let plate = part.pictures.plate.clone().unwrap();
+            assert_eq!(plate.origin, pictures::Origin::SlicerPreview);
+            assert_eq!(plate.source, "projects/part/part.stl");
+            assert_eq!(workspace.read_artifact(&plate.path).unwrap().1, preview);
+            let sliced = card::card(&workspace, "sliced")
+                .unwrap()
+                .pictures
+                .plate
+                .unwrap();
+            assert_eq!(sliced.origin, pictures::Origin::SliceThumbnail);
+            assert!(
+                card::card(&workspace, "boxed")
+                    .unwrap()
+                    .pictures
+                    .plate
+                    .is_none()
+            );
+
+            // The same run published the pictures; the next makes nothing new.
+            let shown = |results: Vec<SearchResult>| -> HashMap<String, Option<card::PictureKind>> {
+                results
+                    .into_iter()
+                    .map(|result| (result.card.project_id, result.card.picture))
+                    .collect()
+            };
+            let listed = shown(find(&index, &workspace, json!({})).await.results);
+            assert_eq!(listed["part"], Some(card::PictureKind::Plate));
+            assert_eq!(listed["sliced"], Some(card::PictureKind::Plate));
+            assert_eq!(listed["boxed"], Some(card::PictureKind::Cover));
+            assert_eq!(listed["empty"], None);
+            let quiet = index.run(&workspace, PassKind::Incremental).await.unwrap();
+            assert_eq!(quiet.pictures.unwrap(), PictureReport::default());
+            assert_eq!(quiet.rebuilt, 0);
+            assert_eq!(preview_requests(&server).await.len(), 1);
+
+            // A busy slicer defers previews without recording a failure, and
+            // a later project's stored thumbnail is still copied.
+            super::record(&workspace, "later", "later", "", 2_000);
+            workspace
+                .write_artifact("projects/later/later.stl", b"solid later", false)
+                .unwrap();
+            super::record(&workspace, "packaged", "packaged", "", 2_000);
+            let package = crate::slicing::package::fixture::package(&[(
+                "Metadata/plate_1.png",
+                &coloured_png([10, 200, 10]),
+            )]);
+            workspace
+                .write_artifact("projects/packaged/design.3mf", &package, false)
+                .unwrap();
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(
+                    ResponseTemplate::new(409).set_body_json(
+                        json!({"code": "slicer_busy", "error": "the slicer is busy"}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            let deferred = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert!(deferred.deferred);
+            assert_eq!(
+                (deferred.made, deferred.failed, deferred.waiting),
+                (1, 0, 1)
+            );
+            assert_eq!(pictures::read(&workspace, "later"), None);
+            let packaged = card::card(&workspace, "packaged")
+                .unwrap()
+                .pictures
+                .plate
+                .unwrap();
+            assert_eq!(packaged.origin, pictures::Origin::PackageThumbnail);
+            assert_eq!(
+                preview_requests(&server).await.len(),
+                1,
+                "a busy slicer is asked once a pass"
+            );
+
+            // A refusal is recorded and waits, unless a retry pass asks again.
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(ResponseTemplate::new(422).set_body_json(
+                    json!({"code": "slice", "error": "OrcaSlicer could not export a plate preview"}),
+                ))
+                .mount(&server)
+                .await;
+            let refused = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!((refused.made, refused.failed, refused.waiting), (0, 1, 1));
+            let failure = pictures::read(&workspace, "later")
+                .unwrap()
+                .plate_failure
+                .unwrap();
+            assert_eq!(failure.attempts, 1);
+            assert!(
+                failure.error.contains("could not export"),
+                "{}",
+                failure.error
+            );
+            let waiting = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!((waiting.failed, waiting.waiting), (0, 1));
+            let retried = index
+                .run(&workspace, PassKind::Retry)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!(retried.failed, 1);
+            let failure = pictures::read(&workspace, "later")
+                .unwrap()
+                .plate_failure
+                .unwrap();
+            assert_eq!(failure.attempts, 2);
+        }
+
+        #[tokio::test]
+        async fn a_busy_slicer_still_lets_stored_thumbnails_through() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(
+                    ResponseTemplate::new(409).set_body_json(
+                        json!({"code": "slicer_busy", "error": "the slicer is busy"}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            let (_root, workspace) = workspace();
+            // More projects that need a preview than a pass may try, ahead of
+            // one whose 3MF carries a thumbnail. Half of them hold a 3MF
+            // without a thumbnail, which is tried and deferred, not counted.
+            let previews = MAX_PICTURES_MADE_PER_PASS + 1;
+            let bare =
+                crate::slicing::package::fixture::package(&[("3D/3dmodel.model", b"<model/>")]);
+            for number in 0..previews {
+                let id = format!("model-{number:02}");
+                super::record(&workspace, &id, &id, "", 1_000);
+                let (name, bytes): (&str, &[u8]) = if number % 2 == 0 {
+                    ("part.stl", b"solid part")
+                } else {
+                    ("part.3mf", &bare)
+                };
+                workspace
+                    .write_artifact(&format!("projects/{id}/{name}"), bytes, false)
+                    .unwrap();
+            }
+            super::record(&workspace, "packaged", "packaged", "", 1_000);
+            let package = crate::slicing::package::fixture::package(&[(
+                "Metadata/plate_1.png",
+                &coloured_png([10, 200, 10]),
+            )]);
+            workspace
+                .write_artifact("projects/packaged/design.3mf", &package, false)
+                .unwrap();
+            let report = pictured(&server)
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert!(report.deferred);
+            assert_eq!(
+                (report.made, report.failed, report.waiting),
+                (1, 0, previews)
+            );
+            assert_eq!(preview_requests(&server).await.len(), 1);
+            assert!(
+                card::card(&workspace, "packaged")
+                    .unwrap()
+                    .pictures
+                    .plate
+                    .is_some()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_picture_that_cannot_be_recorded_does_not_stop_the_run() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/preview"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    json!({"png_base64": STANDARD.encode(coloured_png([220, 110, 70]))}),
+                ))
+                .mount(&server)
+                .await;
+            let (_root, workspace) = workspace();
+            for id in ["blocked", "fine"] {
+                super::record(&workspace, id, id, "", 1_000);
+                workspace
+                    .write_artifact(&format!("projects/{id}/part.stl"), b"solid part", false)
+                    .unwrap();
+            }
+            // A directory where the project's picture record belongs makes
+            // recording its picture fail.
+            workspace
+                .write_reserved_artifact(
+                    &format!(
+                        "{}/pictures.json/in-the-way.json",
+                        pictures::directory("blocked")
+                    ),
+                    b"{}",
+                    false,
+                )
+                .unwrap();
+            let index = pictured(&server);
+            let report = index.run(&workspace, PassKind::Incremental).await.unwrap();
+            let made = report.pictures.unwrap();
+            assert_eq!((made.made, made.failed), (1, 1));
+            assert!(
+                card::card(&workspace, "fine")
+                    .unwrap()
+                    .pictures
+                    .plate
+                    .is_some()
+            );
+            // The unrecorded failure holds the project back, unless a retry
+            // pass asks again.
+            let asked = preview_requests(&server).await.len();
+            let held = index
+                .run(&workspace, PassKind::Incremental)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!((held.failed, held.waiting), (0, 1));
+            assert_eq!(preview_requests(&server).await.len(), asked);
+            let retried = index
+                .run(&workspace, PassKind::Retry)
+                .await
+                .unwrap()
+                .pictures
+                .unwrap();
+            assert_eq!(retried.failed, 1);
+            assert_eq!(preview_requests(&server).await.len(), asked + 1);
+        }
+
+        #[test]
+        fn generated_pictures_can_be_turned_off() {
+            let off =
+                configure(&|key: &str| (key == PICTURES_KEY).then(|| "off".to_owned())).unwrap();
+            assert_eq!(off.pictures, None);
+            let on = configure(&|_: &str| None).unwrap();
+            assert_eq!(on.pictures, Some(PictureSettings { slicer: None }));
+            assert!(
+                configure(&|key: &str| (key == PICTURES_KEY).then(|| "maybe".to_owned())).is_err()
+            );
         }
 
         /// A newer slice whose package has a plate thumbnail.

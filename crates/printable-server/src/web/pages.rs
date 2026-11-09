@@ -7,7 +7,7 @@ use maud::{DOCTYPE, Markup, html};
 
 use super::{FileEntry, LibraryForm, MAX_PAGE, PAGE_SIZE, Paths, ProjectView, TEXT_FILTERS};
 use crate::projects::{
-    card::{CompactCard, Dates, civil_date, utc_date},
+    card::{CompactCard, Dates, PictureKind, civil_date, utc_date},
     index::{MatchKind, SearchResponse, SearchSort},
 };
 
@@ -327,10 +327,16 @@ fn compact(paths: &Paths, card: &CompactCard, matched: Option<MatchKind>) -> Mar
     html! {
         article.card {
             a.pic href=(project) tabindex="-1" aria-hidden="true" {
-                @if card.cover_path.is_some() {
-                    img src={ (project) "/cover" } alt="" loading="lazy";
-                } @else {
-                    span.none { "No picture yet" }
+                @match card.picture.or(card.cover_path.as_ref().map(|_| PictureKind::Cover)) {
+                    Some(PictureKind::Cover) => {
+                        img src={ (project) "/cover" } alt="" loading="lazy";
+                    }
+                    Some(PictureKind::Plate) => {
+                        img src={ (project) "/pictures/plate" } alt="" loading="lazy";
+                    }
+                    None => {
+                        span.none { "No picture yet" }
+                    }
                 }
                 div.over {
                     span.badge.(state) { (state_text) }
@@ -641,6 +647,11 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                     @if let Some(cover) = &card.cover {
                         img src={ (project) "/cover" } alt="Cover picture"
                             width=(cover.width) height=(cover.height);
+                    } @else if let Some(plate) = &card.pictures.plate {
+                        img src={ (project) "/pictures/plate" }
+                            alt="Plate preview generated from the project's model"
+                            title="Generated plate preview"
+                            width=(plate.width) height=(plate.height);
                     } @else {
                         span.none { "No picture yet" }
                     }

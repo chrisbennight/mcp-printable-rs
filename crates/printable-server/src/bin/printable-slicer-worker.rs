@@ -5,7 +5,10 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use printable_server::slicing::{ENGINE_VERSION, SliceRequest, SliceWorker, profiles::Profiles};
+use base64::Engine as _;
+use printable_server::slicing::{
+    ENGINE_VERSION, PreviewError, PreviewParams, SliceRequest, SliceWorker, profiles::Profiles,
+};
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
@@ -77,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/slice", post(dispatch))
+        .route("/preview", post(preview))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(worker);
     axum::serve(tokio::net::TcpListener::bind(address).await?, app)
@@ -94,6 +98,28 @@ async fn dispatch(
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"code":error.code(),"error":error.to_string()})),
+        ),
+    }
+}
+
+/// OrcaSlicer's plate picture of a model, made without slicing. A busy
+/// slicer answers 409 so the caller asks again later.
+async fn preview(
+    State(worker): State<Arc<SliceWorker>>,
+    Json(params): Json<PreviewParams>,
+) -> (StatusCode, Json<Value>) {
+    match worker.preview(params).await {
+        Ok(png) => (
+            StatusCode::OK,
+            Json(json!({"png_base64": base64::engine::general_purpose::STANDARD.encode(png)})),
+        ),
+        Err(PreviewError::Busy) => (
+            StatusCode::CONFLICT,
+            Json(json!({"code":"slicer_busy","error":PreviewError::Busy.to_string()})),
+        ),
+        Err(PreviewError::Failed(message)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"code":"slice","error":message})),
         ),
     }
 }

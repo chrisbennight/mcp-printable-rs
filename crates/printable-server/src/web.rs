@@ -38,6 +38,7 @@ use crate::{
         card::{self, Card},
         cover,
         index::{MAX_OFFSET, ProjectIndex, SearchFilters, SearchParams, SearchSort},
+        pictures,
     },
 };
 
@@ -251,6 +252,7 @@ pub fn router(
         .route("/", get(library))
         .route("/projects/{project_id}", get(project))
         .route("/projects/{project_id}/cover", get(cover_picture))
+        .route("/projects/{project_id}/pictures/plate", get(plate_picture))
         .route("/projects/{project_id}/files/{*path}", get(file))
         .route("/static/app.css", get(stylesheet))
         .fallback(not_found)
@@ -681,13 +683,76 @@ fn etag_matches(condition: &[u8], tag: &str) -> bool {
     })
 }
 
-/// The stored cover picture, as stored. Covers are named by their digest, so
-/// the digest is the entity tag and an unchanged cover is not sent again.
+/// A stored picture to send: its media type, digest and workspace path.
+struct StoredPicture {
+    media_type: String,
+    sha256: String,
+    path: String,
+}
+
+/// The stored cover picture, as stored.
 async fn cover_picture(
     State(web): State<Web>,
     uri: Uri,
     headers: HeaderMap,
     path: Result<Path<String>, PathRejection>,
+) -> Response {
+    stored_picture(
+        web,
+        uri,
+        headers,
+        path,
+        |workspace, project_id| {
+            Ok(projects::get(workspace, project_id)?
+                .cover
+                .map(|cover| StoredPicture {
+                    media_type: cover.media_type,
+                    sha256: cover.sha256,
+                    path: cover.path,
+                }))
+        },
+        "This project has no cover picture.",
+    )
+    .await
+}
+
+/// The plate picture generated from the project's model.
+async fn plate_picture(
+    State(web): State<Web>,
+    uri: Uri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+) -> Response {
+    stored_picture(
+        web,
+        uri,
+        headers,
+        path,
+        |workspace, project_id| {
+            projects::get(workspace, project_id)?;
+            Ok(pictures::read(workspace, project_id)
+                .and_then(|record| record.plate(project_id).cloned())
+                .map(|plate| StoredPicture {
+                    media_type: "image/png".into(),
+                    sha256: plate.sha256,
+                    path: plate.path,
+                }))
+        },
+        "This project has no generated plate picture.",
+    )
+    .await
+}
+
+/// Send a stored picture as stored. Stored pictures are named by their
+/// digest, so the digest is the entity tag and an unchanged picture is not
+/// sent again.
+async fn stored_picture(
+    web: Web,
+    uri: Uri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+    find: fn(&Workspace, &str) -> Result<Option<StoredPicture>, ToolError>,
+    missing: &'static str,
 ) -> Response {
     let paths = Paths::for_request(uri.path());
     let Ok(Path(project_id)) = path else {
@@ -704,34 +769,29 @@ async fn cover_picture(
     let workspace = Arc::clone(&web.workspace);
     let outcome = web
         .blocking(move || {
-            let Some(cover) = projects::get(&workspace, &project_id)?.cover else {
+            let Some(picture) = find(&workspace, &project_id)? else {
                 return Ok(None);
             };
-            let tag = format!("\"{}\"", cover.sha256);
+            let tag = format!("\"{}\"", picture.sha256);
             if condition
                 .as_deref()
                 .is_some_and(|condition| etag_matches(condition, &tag))
             {
-                return Ok(Some((cover.media_type, tag, None)));
+                return Ok(Some((picture.media_type, tag, None)));
             }
-            if workspace.stat_artifact(&cover.path)?.size_bytes > cover::MAX_COVER_BYTES {
+            if workspace.stat_artifact(&picture.path)?.size_bytes > cover::MAX_COVER_BYTES {
                 return Err(ToolError::Validation(
-                    "the stored cover picture is larger than a cover may be".into(),
+                    "the stored picture is larger than a picture may be".into(),
                 ));
             }
-            let (_, bytes) = workspace.read_artifact(&cover.path)?;
-            Ok(Some((cover.media_type, tag, Some(bytes))))
+            let (_, bytes) = workspace.read_artifact(&picture.path)?;
+            Ok(Some((picture.media_type, tag, Some(bytes))))
         })
         .await;
     let (media_type, tag, bytes) = match outcome {
         Ok(Some(found)) => found,
         Ok(None) => {
-            return page(
-                &paths,
-                StatusCode::NOT_FOUND,
-                "Not found",
-                "This project has no cover picture.",
-            );
+            return page(&paths, StatusCode::NOT_FOUND, "Not found", missing);
         }
         Err(error) => return failure(&paths, &error),
     };
