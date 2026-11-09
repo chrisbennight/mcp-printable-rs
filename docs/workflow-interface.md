@@ -144,6 +144,11 @@ The [image to mold skill](image-to-mold.md) uses the same discovery and loading
 interface for calibrated relief maps, masters, casting trays, and cavities.
 The client runs the instructions through the existing public modeling and slicing
 tools; loading a skill does not execute the workflow.
+The [FDM preparation skill](fdm-preparation.md) guides the common uploaded-model
+workflow: establish purpose and setup, inspect geometry and orientation, choose
+compatible profiles and relevant overrides, slice, review actual toolpaths and
+deliver the selected package with its evidence. It is available before any
+modeling or printer backend is configured.
 
 [Project CAD builds](cad-build.md) retain source inputs, assembly structure and
 numerical reports without replacing the live Blender scene.

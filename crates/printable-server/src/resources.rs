@@ -59,4 +59,11 @@ pub static RESOURCES: &[ResourceDef] = &[
         mime_type: "text/markdown",
         body: skills::MOLD_BODY,
     },
+    ResourceDef {
+        uri: skills::PREPARE_URI,
+        name: skills::PREPARE_NAME,
+        description: skills::PREPARE_DESCRIPTION,
+        mime_type: "text/markdown",
+        body: skills::PREPARE_BODY,
+    },
 ];

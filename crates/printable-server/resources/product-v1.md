@@ -176,6 +176,14 @@ it was not oriented to drop straight in.
 
 ## Manufacturing evidence
 
+For FDM slicing, load `prepare-fdm-print` through `skill.get`. Choose the build
+orientation against service and installation loads as well as bed contact,
+support removal and visible faces. Automatic orientation does not optimize
+strength. Match wall and shell thickness to the actual toolpaths; finer layers,
+more infill and a better-looking surface do not by themselves establish stronger
+parts. Preserve critical interfaces when applying texture or finishing, and
+retain settings and physical evidence with the delivered revision.
+
 Compile measures final-STL topology, bounds, build-plate contact, overhang
 using the profile's actual `maximum_overhang_degrees`, and wall thickness
 against the profile's `minimum_wall_mm`. Kit modules reject local wall, rib,

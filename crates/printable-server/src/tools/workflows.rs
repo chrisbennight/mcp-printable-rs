@@ -562,13 +562,13 @@ static HEAD_WITH_RECONSTRUCTION: ToolDef = ToolDef {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "skill",
-        description: "List bundled client-run skills or get one's complete instructions by exact name. inspect-printer-camera guides vision review of printer camera snapshots; image-to-mold guides relief depth maps, mold geometry, validation and slicing. Loading instructions does no work and grants no authority.",
+        description: "List bundled client-run skills or get one's complete instructions by exact name. prepare-fdm-print guides uploaded-model slicing, compatible profiles, orientation, strength, fit, finish and toolpath review; image-to-mold guides relief maps and molds; inspect-printer-camera guides visual print checks. Loading instructions does no work and grants no authority.",
         schema: workflow_schema_of::<crate::resources::skills::SkillRequest>,
         annotations: read_only_idempotent,
     },
     ToolDef {
         name: "slice",
-        description: "Slice a project STL or 3MF: discover printer, process and filament profiles and settings, prepare a slice on an explicit build plate, inspect or cancel it, and review actual toolpath layers. Preparing never starts a print; use print for that. Inspect retained state before retrying an uncertain preparation.",
+        description: "Slice a project STL or 3MF: discover printer, process and filament profiles/settings, prepare on an explicit build surface, inspect or cancel, and review actual toolpaths. Before choosing settings for an uploaded or generated model, load prepare-fdm-print with skill.get for orientation, strength, fit, surface finish and calibration guidance. Preparing never starts a print. Inspect retained state before retrying an uncertain preparation.",
         schema: workflow_schema_of::<crate::slicing::SliceRequest>,
         annotations: write_annotations,
     },

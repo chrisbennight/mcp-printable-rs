@@ -13,7 +13,7 @@ SCOPE = Path(__file__).resolve().parents[1] / "ci-scope.sh"
 class BundledSkillScopeTests(unittest.TestCase):
     def test_skill_edits_select_rust_images_and_publication(self):
         for event in ("pull_request", "push"):
-            for name in ("image-to-mold", "inspect-printer-camera"):
+            for name in ("image-to-mold", "inspect-printer-camera", "prepare-fdm-print"):
                 with self.subTest(event=event, name=name), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
 

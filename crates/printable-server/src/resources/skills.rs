@@ -16,6 +16,11 @@ pub const MOLD_URI: &str = "printable://skills/image-to-mold/SKILL.md";
 pub const MOLD_DESCRIPTION: &str = "Turn images, logos, or SVG artwork into calibrated relief depth maps and printable positive masters, silicone casting trays, or negative cavities; validate geometry and review requested slices.";
 pub const MOLD_BODY: &str = include_str!("../../../../skills/image-to-mold/SKILL.md");
 
+pub const PREPARE_NAME: &str = "prepare-fdm-print";
+pub const PREPARE_URI: &str = "printable://skills/prepare-fdm-print/SKILL.md";
+pub const PREPARE_DESCRIPTION: &str = "Prepare uploaded or generated models for FDM printing: choose compatible profiles, orientation and settings for detail, strength, fit, finish and time; inspect actual toolpaths and retain the choice and its evidence.";
+pub const PREPARE_BODY: &str = include_str!("../../../../skills/prepare-fdm-print/SKILL.md");
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListParams {}
@@ -78,10 +83,19 @@ fn mold_metadata() -> SkillMetadata {
     }
 }
 
+fn prepare_metadata() -> SkillMetadata {
+    SkillMetadata {
+        name: PREPARE_NAME,
+        description: PREPARE_DESCRIPTION,
+        uri: PREPARE_URI,
+        sha256: crate::tools::sha256_hex(PREPARE_BODY.as_bytes()),
+    }
+}
+
 pub fn dispatch(request: SkillRequest) -> Result<Value, ToolError> {
     let result = match request {
         SkillRequest::List(_) => SkillResult::List {
-            skills: vec![camera_metadata(), mold_metadata()],
+            skills: vec![camera_metadata(), mold_metadata(), prepare_metadata()],
         },
         SkillRequest::Get(params) if params.name == CAMERA_NAME => SkillResult::Get {
             skill: camera_metadata(),
@@ -90,6 +104,10 @@ pub fn dispatch(request: SkillRequest) -> Result<Value, ToolError> {
         SkillRequest::Get(params) if params.name == MOLD_NAME => SkillResult::Get {
             skill: mold_metadata(),
             instructions: MOLD_BODY,
+        },
+        SkillRequest::Get(params) if params.name == PREPARE_NAME => SkillResult::Get {
+            skill: prepare_metadata(),
+            instructions: PREPARE_BODY,
         },
         SkillRequest::Get(_) => {
             return Err(ToolError::Validation("unknown bundled skill".into()));
