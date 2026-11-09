@@ -33,6 +33,7 @@ pub mod limit;
 mod print_check;
 mod remesh;
 mod thickness;
+mod volume;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
 pub use bust::{
@@ -51,6 +52,7 @@ pub use fit::{
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
+pub use volume::{Material, VolumeComparison, VolumeRegion};
 
 pub use assembly::{
     AssemblyOptions, AssemblyPartSummary, AssemblyRelation, AssemblyReport, AssemblyStaticReport,

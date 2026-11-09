@@ -2775,6 +2775,27 @@ async fn mesh_validation_compares_with_a_reference_mesh() {
         .await
         .expect_err("refuse a missing reference");
 
+    // The wider boss carries a 0.3 mm skin of extra material all round.
+    let enclosed = dispatch(
+        &ws,
+        &uploads,
+        &client,
+        &settings,
+        "printable_validate_mesh",
+        json!({"path": "models/wide.stl", "compare": {
+            "reference_path": "models/boss.stl", "tolerance_mm": 0.1, "volume": true
+        }}),
+    )
+    .await
+    .expect("compare enclosed volume");
+    validator.validate(&enclosed).unwrap();
+    let volume = &enclosed["report"]["comparison"]["volume"];
+    let extra = volume["extra_volume_mm3"].as_f64().unwrap();
+    let skin = std::f64::consts::PI * (10.3_f64.powi(2) - 10.0_f64.powi(2)) * 20.0;
+    assert!((extra - skin).abs() < 0.15 * skin, "{volume}");
+    assert_eq!(volume["missing_volume_mm3"], json!(0.0));
+    assert_eq!(volume["regions"][0]["material"], "extra");
+
     let guided = |alignment: &str| {
         dispatch(
             &ws,
