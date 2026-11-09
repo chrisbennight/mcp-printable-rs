@@ -339,27 +339,38 @@ impl SliceWorker {
             *previewing = true;
             permit
         };
-        let _admission = PreviewAdmission {
+        let admission = Arc::new(PreviewAdmission {
             permit: Some(permit),
             previewing: Arc::clone(&self.previewing),
-        };
+        });
         // The whole preview, copying included, keeps to the deadline that an
         // interactive request waiting on it allows for.
-        tokio::time::timeout(PREVIEW_TIMEOUT, self.export_preview(&source, &extension))
-            .await
-            .map_err(|_| PreviewError::Failed("plate preview exceeded its deadline".into()))?
-            .map_err(failed)
+        tokio::time::timeout(
+            PREVIEW_TIMEOUT,
+            self.export_preview(&source, &extension, admission),
+        )
+        .await
+        .map_err(|_| PreviewError::Failed("plate preview exceeded its deadline".into()))?
+        .map_err(failed)
     }
 
-    async fn export_preview(&self, source: &str, extension: &str) -> Result<Vec<u8>, ToolError> {
+    async fn export_preview(
+        &self,
+        source: &str,
+        extension: &str,
+        admission: Arc<PreviewAdmission>,
+    ) -> Result<Vec<u8>, ToolError> {
         use std::os::unix::process::CommandExt;
-        let staging = self
-            .workspace
-            .scratch(self.workspace.stat_artifact(source)?.size_bytes, "preview")?;
+        let staging = Arc::new(
+            self.workspace
+                .scratch(self.workspace.stat_artifact(source)?.size_bytes, "preview")?,
+        );
         let local_source = staging.path().join(format!("source.{extension}"));
         let workspace = Arc::clone(&self.workspace);
         let (from, to) = (source.to_owned(), local_source.clone());
+        let owners = (Arc::clone(&staging), Arc::clone(&admission));
         tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
+            let _owners = owners;
             let snapshot = workspace.snapshot_artifact(&from)?;
             std::fs::copy(snapshot.path(), &to)?;
             Ok(())
@@ -408,6 +419,7 @@ impl SliceWorker {
         let package = output.join("preview.3mf");
         tokio::task::spawn_blocking(move || {
             let _staging = staging;
+            let _admission = admission;
             package::plate_thumbnail(&package, 1)
         })
         .await
