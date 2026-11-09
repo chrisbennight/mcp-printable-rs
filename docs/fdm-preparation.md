@@ -8,9 +8,15 @@ printer, and no modeling or printer backend is needed to read it.
 
 ## Agent discovery
 
-The server's initialization instructions and the `slice` and `skill` descriptions
-route profile-selection tasks to the skill. It is listed by `skill` with
-`action: "list"` and loadable with this tool argument:
+The primary delivery path is the callable `skill` tool. The `slice` description
+directs profile-selection tasks to `prepare-fdm-print`; the agent calls `skill`
+through its MCP client or Gateway and receives the complete, self-contained
+instructions. No repository checkout, Markdown file access or central Gateway
+skill installation is required. This page records the design and evidence for
+maintainers; it is not the runtime instruction source agents must find.
+
+The skill is listed by `skill` with `action: "list"` and loadable with this
+tool argument:
 
 ```json
 {"action":"get","params":{"name":"prepare-fdm-print"}}
@@ -22,9 +28,24 @@ digest. Clients without resource support use `skill.get` and the schemas from
 `tools/list`; direct MCP use needs no gateway-specific skill installation.
 
 Discovery remains concise. The decision rules live in the skill, while exact
-parameter schemas remain in `printable://contracts/slice/{action}`. A host may
-ignore resources, descriptions or initialization instructions, so these routes
-make guidance available rather than enforce model behavior.
+parameter schemas remain in the advertised tool schemas and selected contract
+resources. Initialization instructions are a supplementary route: an aggregator
+need not put an upstream server's instructions into an agent's context.
+
+MCP resources are application-driven, so resource publication alone does not
+establish that an agent will see the content. MCP prompts are user-controlled
+and are not the primary route for an automatic uploaded-model workflow. Tool
+discovery and a normal read-only tool call provide a model-accessible path, while
+resources remain an alternative for hosts that support them. Instructions guide
+decisions; required compatibility and safety checks remain server validation.
+
+After deployment, verify the complete path through the Gateway: a slicing search
+returns the preparation route in the tool description; the selected skill tool
+schema accepts the request above; `list` advertises the skill; and `get` returns
+the complete instructions with the deployed digest. Confirm this without local
+file access. Direct-server tests do not prove Gateway admission, refreshed
+metadata, search ranking or retrieval. A separate behavioral evaluation must
+check whether a fresh agent follows the guidance on representative tasks.
 
 ## Ordinary uploaded-model workflow
 
@@ -114,7 +135,10 @@ The API review consulted Grounded Docs' `mcp-api-design` library at
 `0.0.0+published.20260906`, including
 [Block's workflow-first guidance](https://engineering.block.xyz/blog/blocks-playbook-for-designing-mcp-servers),
 [tool-description guidance](https://www.anthropic.com/engineering/writing-tools-for-agents)
-and the [MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
+and the MCP specifications for
+[tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
+[resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)
+and [prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts).
 The resulting change keeps initialization and discovery small, loads detailed
 guidance on demand, reuses typed public actions and structured results, and keeps
 artifact bytes outside instructions. The read-only skill loader remains distinct
