@@ -2040,6 +2040,7 @@ def project_picture_smoke(host: str, port: int) -> None:
     root = Path("/workspace/.printable/pictures/smoke")
     root.mkdir(parents=True, exist_ok=True)
     source = root / "source.stl"
+    glb = root / "source.glb"
     output = root / "render.png"
     vertices = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)]
     facets = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
@@ -2050,27 +2051,48 @@ def project_picture_smoke(host: str, port: int) -> None:
         lines.extend(["endloop", "endfacet"])
     lines.append("endsolid tetrahedron")
     source.write_text("\n".join(lines), encoding="ascii")
+    binary = b"".join(struct.pack("<3f", *(axis / 1000 for axis in vertex)) for vertex in vertices)
+    binary += b"".join(struct.pack("<3H", *face) for face in facets)
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0,
+        "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48, "target": 34962},
+                        {"buffer": 0, "byteOffset": 48, "byteLength": 24, "target": 34963}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [0.01, 0.01, 0.01]},
+                      {"bufferView": 1, "componentType": 5123, "count": 12, "type": "SCALAR"}],
+    }
+    encoded = json.dumps(document).encode()
+    encoded += b" " * (-len(encoded) % 4)
+    glb.write_bytes(struct.pack("<5I", 0x46546C67, 2, 28 + len(encoded) + len(binary), len(encoded), 0x4E4F534A)
+                    + encoded + struct.pack("<2I", len(binary), 0x004E4942) + binary)
     try:
-        imported = command(host, port, "job_import_model", {
-            "path": ".printable/pictures/smoke/source.stl",
-            "expected_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        })
-        if not imported.get("objects"):
-            raise RuntimeError("project picture imported no objects")
-        rendered = command(host, port, "job_render_product", {
-            "path": ".printable/pictures/smoke/render.png",
-            "presentation": {"profile": "studio_neutral"},
-            "engine": "CYCLES", "samples": 1, "width": 64, "height": 64,
-            "timeout_seconds": 60,
-        })
-        png = output.read_bytes()
-        if (not png.startswith(b"\x89PNG\r\n\x1a\n")
-                or hashlib.sha256(png).hexdigest() != rendered.get("sha256")
-                or not rendered.get("source_state_verified")
-                or not rendered.get("cleanup_verified")):
-            raise RuntimeError("project picture render did not verify its PNG and scene")
+        for model in (source, glb):
+            imported = command(host, port, "job_import_model", {
+                "path": ".printable/pictures/smoke/" + model.name,
+                "expected_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+            })
+            if not imported.get("objects"):
+                raise RuntimeError("project picture imported no objects")
+            rendered = command(host, port, "job_render_product", {
+                "path": ".printable/pictures/smoke/render.png",
+                "presentation": {"profile": "studio_neutral"},
+                "engine": "CYCLES", "samples": 1, "width": 64, "height": 64,
+                "timeout_seconds": 60,
+            })
+            if max(rendered["bounds"]["dimensions"]) < 9.0:
+                raise RuntimeError("project picture failed to preserve millimetre model dimensions")
+            png = output.read_bytes()
+            if (not png.startswith(b"\x89PNG\r\n\x1a\n")
+                    or hashlib.sha256(png).hexdigest() != rendered.get("sha256")
+                    or not rendered.get("source_state_verified")
+                    or not rendered.get("cleanup_verified")):
+                raise RuntimeError("project picture render did not verify its PNG and scene")
     finally:
         source.unlink(missing_ok=True)
+        glb.unlink(missing_ok=True)
         output.unlink(missing_ok=True)
     print("PROJECT_PICTURE_SMOKE_OK")
 

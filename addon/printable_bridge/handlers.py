@@ -1938,6 +1938,14 @@ class BlenderHandlers:
                 else:
                     result = self._bpy.ops.import_scene.gltf(filepath=str(source))
                 self._require_finished(result, "model picture import")
+                if suffix == ".glb":
+                    from mathutils import Matrix
+                    imported = set(self._bpy.context.scene.objects)
+                    scale = 1000.0 * self._bpy.context.scene.unit_settings.scale_length
+                    for obj in imported:
+                        if obj.parent not in imported:
+                            obj.matrix_world = Matrix.Scale(scale, 4) @ obj.matrix_world
+                    self._bpy.context.view_layer.update()
             return {"objects": self._renderable_product_names()}
         finally:
             try:
