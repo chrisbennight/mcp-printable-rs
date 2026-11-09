@@ -3858,6 +3858,41 @@ class HandlerValidationTests(unittest.TestCase):
                 handlers._job_import_model(params)
             handlers.close()
 
+    def test_picture_import_restores_optix_preferences_after_factory_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker", render_device="OPTIX")
+            model = value.workspace_root / ".printable/pictures/part/model.stl"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            scene = SimpleNamespace(cycles=SimpleNamespace(device=None))
+            cpu = SimpleNamespace(name="CPU", type="CPU", use=True)
+            gpu = SimpleNamespace(name="GPU", type="OPTIX", use=False)
+            preferences = SimpleNamespace(compute_device_type=None, devices=[cpu, gpu], get_devices=lambda: None)
+            def factory_reset(**_kwargs):
+                preferences.compute_device_type = "NONE"
+                cpu.use, gpu.use = True, False
+                scene.cycles.device = "CPU"
+                return {"FINISHED"}
+            def import_model(**_kwargs):
+                self.assertEqual(preferences.compute_device_type, "OPTIX")
+                self.assertTrue(gpu.use)
+                self.assertFalse(cpu.use)
+                self.assertEqual(scene.cycles.device, "GPU")
+                return {"FINISHED"}
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[scene]),
+                context=SimpleNamespace(preferences=SimpleNamespace(addons={"cycles": SimpleNamespace(preferences=preferences)})),
+                ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=factory_reset, stl_import=import_model)),
+            )
+            handlers = BlenderHandlers(value, lambda: False, bpy)
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+                handlers._job_import_model({"path": ".printable/pictures/part/model.stl",
+                                            "expected_sha256": hashlib.sha256(b"model").hexdigest()})
+            self.assertEqual(handlers._cycles_devices[1], {"name": "GPU", "type": "OPTIX", "enabled": True})
+            handlers.close()
+
     def test_picture_import_never_follows_glb_uris_or_obj_material_libraries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

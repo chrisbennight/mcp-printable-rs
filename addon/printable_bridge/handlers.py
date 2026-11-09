@@ -1928,6 +1928,7 @@ class BlenderHandlers:
                         with source.open("wb") as prepared:
                             shutil.copyfileobj(geometry, prepared)
                 self._require_finished(self._bpy.ops.wm.read_factory_settings(use_empty=True), "empty render scene initialization")
+                self._cycles_devices = self._configure_render_device()
                 if suffix == ".stl":
                     result = self._bpy.ops.wm.stl_import(filepath=str(source))
                 elif suffix == ".obj":
