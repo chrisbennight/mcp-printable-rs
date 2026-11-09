@@ -13,7 +13,7 @@ from .config import BridgeConfig
 from .envelope import EnvelopeError, Request, failure, parse_request
 from .execution import DEFAULT_TIMEOUT_SECONDS
 from .framing import FrameError, receive_json, send_json
-from .handlers import DEFAULT_RENDER_TIMEOUT_SECONDS
+from .handlers import DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS, DEFAULT_RENDER_TIMEOUT_SECONDS
 from .lifecycle import WorkItem
 from .native_view import DEFAULT_CAPTURE_TIMEOUT_SECONDS
 
@@ -32,7 +32,7 @@ def _request_budget_seconds(
         "attach_cad": 600,
         "export_project_blender": 120,
         "job_measure_sequence_bounds": DEFAULT_RENDER_TIMEOUT_SECONDS,
-        "job_import_model": 60,
+        "job_import_model": DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS,
         "job_prepare_mechanical_rotation": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_frame": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_product": DEFAULT_RENDER_TIMEOUT_SECONDS,
