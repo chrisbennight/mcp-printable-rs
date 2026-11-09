@@ -106,8 +106,9 @@ jobs:
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/actionlint.tar.gz" \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+            https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896 # actionlint 1.7.12
           printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "${RUNNER_TEMP}/actionlint.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
       - name: Validate GitHub workflows
@@ -319,13 +320,14 @@ jobs:
       - name: Install the pinned SBOM generator
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
-          SYFT_VERSION: "1.54.1"
+          SYFT_ASSET_URL: https://api.github.com/repos/anchore/syft/releases/assets/615916330 # Syft 1.54.1
           SYFT_CHECKSUM: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/syft.tar.gz" \
-            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+            "$SYFT_ASSET_URL"
           printf '%s  %s\n' "$SYFT_CHECKSUM" "${RUNNER_TEMP}/syft.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "$RUNNER_TEMP" syft
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
@@ -381,12 +383,14 @@ jobs:
       - name: Install the pinned attestation verifier
         env:
           GH_VERSION: "2.102.0"
+          GH_ASSET_URL: https://api.github.com/repos/cli/cli/releases/assets/599854672
           GH_CHECKSUM: bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/gh.tar.gz" \
-            "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+            "$GH_ASSET_URL"
           printf '%s  %s\n' "$GH_CHECKSUM" "${RUNNER_TEMP}/gh.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/gh.tar.gz" -C "$RUNNER_TEMP" "gh_${GH_VERSION}_linux_amd64/bin/gh"
           printf '%s\n' "${RUNNER_TEMP}/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"

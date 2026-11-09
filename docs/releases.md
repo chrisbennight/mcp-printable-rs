@@ -52,6 +52,10 @@ Publication uses the workflow's built-in `GITHUB_TOKEN` with `packages: write`.
 Test jobs have read-only repository permissions. Public package access is a
 registry setting; preserve it when adding packages.
 
+Public GitHub release downloads use the release-asset API with
+`Accept: application/octet-stream`. When updating a tool, update its asset ID,
+version annotation and pinned checksum together.
+
 ## SBOMs and attestations
 
 On a main-branch push, the container job runs pinned Syft against each tested

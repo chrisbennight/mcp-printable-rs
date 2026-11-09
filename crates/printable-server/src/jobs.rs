@@ -786,12 +786,13 @@ impl JobRegistry {
         .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
         let result = async {
             if self.inner.state.lock().await.jobs.values().any(|job| !job.state.terminal()) { return Ok(None); }
-            transaction.send_value_with_work_budget("job_import_model", serde_json::from_value(json!({"path": input, "expected_sha256": sha}))?, Duration::from_secs(60)).await?;
+            let work_budget = Duration::from_secs(300);
+            transaction.send_value_with_work_budget("job_import_model", serde_json::from_value(json!({"path": input, "expected_sha256": sha, "timeout_seconds": work_budget.as_secs()}))?, work_budget).await?;
             let rendered = transaction.send_value_with_work_budget("job_render_product", serde_json::from_value(json!({
                 "path": output, "presentation": {"profile": "studio_neutral"},
                 "width": 512, "height": 512, "samples": 32, "engine": "CYCLES",
-                "timeout_seconds": 60, "max_output_bytes": crate::projects::cover::MAX_COVER_BYTES
-            }))?, Duration::from_secs(60)).await?;
+                "timeout_seconds": work_budget.as_secs(), "max_output_bytes": crate::projects::cover::MAX_COVER_BYTES
+            }))?, work_budget).await?;
             verify_product_png_artifact(Arc::clone(&self.inner.workspace), output.clone(), &rendered, 512, 512).await.map(Some)
         }.await;
         for path in [&input, &output] {
@@ -5038,6 +5039,7 @@ mod tests {
             let result = match command.as_str() {
                 "bridge_status" => json!({"role": "render_worker", "background": true}),
                 "job_import_model" => {
+                    assert_eq!(params["timeout_seconds"], 300);
                     let (_, bytes) = files
                         .read_artifact(params["path"].as_str().unwrap())
                         .unwrap();
@@ -5047,6 +5049,7 @@ mod tests {
                 }
                 "job_render_product" => {
                     assert_eq!(params["presentation"]["profile"], "studio_neutral");
+                    assert_eq!(params["timeout_seconds"], 300);
                     files
                         .write_reserved_artifact(params["path"].as_str().unwrap(), &png, false)
                         .unwrap();

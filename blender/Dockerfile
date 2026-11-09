@@ -10,7 +10,8 @@ ARG URLLIB3_WHEEL_URL=https://files.pythonhosted.org/packages/92/9d/c4e665119135
 ARG URLLIB3_SHA256=0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
 ARG CERTIFI_WHEEL_URL=https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl
 ARG CERTIFI_SHA256=e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
-ARG VIRTUALGL_URL=https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb
+# VirtualGL 3.1.5.
+ARG VIRTUALGL_URL=https://api.github.com/repos/VirtualGL/virtualgl/releases/assets/514703793
 ARG VIRTUALGL_SHA256=df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e
 
 RUN apt-get update \
@@ -43,6 +44,7 @@ RUN apt-get update \
 
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
        --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 --retry-max-time 300 \
+       --header 'Accept: application/octet-stream' \
        --output /tmp/virtualgl.deb "${VIRTUALGL_URL}" \
     && echo "${VIRTUALGL_SHA256}  /tmp/virtualgl.deb" | sha256sum --check --strict
 

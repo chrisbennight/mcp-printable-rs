@@ -109,7 +109,7 @@ copy into an empty scene and uses the studio-neutral product presentation.
 It never touches the live scene or adds a job to the user's job history.
 Pictures wait while user render jobs are queued or running. A job submitted
 during a picture waits for that bounded render, then takes priority. Import
-and render each have a one-minute work budget; failed pictures use the same
+and render each have a five-minute work budget; failed pictures use the same
 retry policy as plate pictures. GLB buffers and images must be embedded in the
 model; external URI references are refused. OBJ pictures import geometry only,
 without following material-library references.
