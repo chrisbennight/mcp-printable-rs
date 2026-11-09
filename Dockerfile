@@ -14,19 +14,22 @@ WORKDIR /app
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake g++ git curl xz-utils \
  && rm -rf /var/lib/apt/lists/*
+# cargo-auditable 0.7.7, pinned by release asset ID and checksum.
 RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --header 'Accept: application/octet-stream' \
       --output /tmp/cargo-auditable.tar.xz \
-      https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.7/cargo-auditable-x86_64-unknown-linux-gnu.tar.xz \
+      https://api.github.com/repos/rust-secure-code/cargo-auditable/releases/assets/605646432 \
  && echo '4c8d3b08c3c34e9f2333367224dbbfb4aab68067698b43de59fe19aded3416dd  /tmp/cargo-auditable.tar.xz' | sha256sum --check --strict \
  && tar -xJf /tmp/cargo-auditable.tar.xz --strip-components=1 -C /usr/local/bin \
       cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable \
  && rm /tmp/cargo-auditable.tar.xz
 # cargo-chef reduces the workspace manifests to a recipe, so dependencies
 # compile in their own layer and stay reusable while only workspace sources
-# change.
+# change. Version 0.1.78 is pinned by release asset ID and checksum.
 RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --header 'Accept: application/octet-stream' \
       --output /tmp/cargo-chef.tar.xz \
-      https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.78/cargo-chef-x86_64-unknown-linux-gnu.tar.xz \
+      https://api.github.com/repos/LukeMathWalker/cargo-chef/releases/assets/511166776 \
  && echo '70ef940ef90d04d122f0176fdb8d6c39069191b484a1eaa29b327370c2e1c3c0  /tmp/cargo-chef.tar.xz' | sha256sum --check --strict \
  && tar -xJf /tmp/cargo-chef.tar.xz --strip-components=1 -C /usr/local/bin \
       cargo-chef-x86_64-unknown-linux-gnu/cargo-chef \
@@ -87,7 +90,10 @@ RUN apt-get update && apt-get upgrade -y \
  && rm -rf /var/lib/apt/lists/*
 # Extracted modes depend on the AppImage runtime embedded in each build, so the
 # bundle is made readable and traversable for the unprivileged worker explicitly.
-RUN curl --fail --location --output /tmp/orca.AppImage https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-b08db1a/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-b08db1a.AppImage \
+# OrcaSlicer local-2.4.2-b08db1a.
+RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --header 'Accept: application/octet-stream' \
+      --output /tmp/orca.AppImage https://api.github.com/repos/chrisbennight/OrcaSlicer/releases/assets/677113065 \
  && echo '27cedb3f138e13cddf542e24657961ded693b53f2c4cbadacb0cfe820dd19f26  /tmp/orca.AppImage' | sha256sum --check \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
