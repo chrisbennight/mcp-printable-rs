@@ -62,7 +62,7 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
 }
 
 /// Longest OrcaSlicer may take to export a plate preview.
-pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(120);
+pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(300);
 /// Largest preview answer read: a base64 thumbnail and its JSON envelope.
 const MAX_PREVIEW_RESPONSE: usize = 24 * 1024 * 1024;
 
@@ -289,7 +289,7 @@ impl SliceWorker {
         }
     }
 
-    /// Admit an interactive operation. A plate preview is short, so an
+    /// Admit an interactive operation. A plate preview is bounded, so an
     /// interactive request waits for a running one to finish instead of being
     /// refused; other work refuses it at once with `busy`.
     async fn admit(&self, busy: &str) -> Result<OwnedSemaphorePermit, ToolError> {

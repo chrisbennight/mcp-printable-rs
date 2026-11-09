@@ -124,7 +124,7 @@ The server sends `POST /preview` to the worker with a project and a
 project-relative STL, OBJ or 3MF. The worker runs OrcaSlicer with
 `--export-3mf` and no `--slice`, placing a bare mesh on the plate with
 `--arrange 1` while a 3MF keeps its own arrangement, and answers with the
-exported `Metadata/plate_1.png`. A preview may take two minutes. It is not an
+exported `Metadata/plate_1.png`. A preview may take five minutes. It is not an
 action of the `slice` tool.
 
 Previews are background work. One is refused with HTTP 409 while any other
