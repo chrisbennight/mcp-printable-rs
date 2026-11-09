@@ -87,13 +87,13 @@ picture stored without being referenced.
 
 ## Generated pictures
 
-A project without a cover gets a plate picture generated from its files, so a
-project with a model has a picture on its card, on the web page and in picture
-search. A cover always takes precedence and is never replaced; removing the
-cover shows the generated picture again.
+A project without a cover gets pictures generated from its files: a Blender
+product render and an OrcaSlicer plate picture. Its card, web page and picture
+search prefer the cover, then the Blender render, then the plate picture.
+A cover is never replaced; removing it shows the generated picture again.
 
 After each card pass, the background index makes the missing pictures, trying
-these sources in order:
+these sources in order for the plate picture:
 
 1. The first plate thumbnail of the newest sliced package (`*.gcode.3mf`): what
    OrcaSlicer showed for the newest slice.
@@ -102,6 +102,17 @@ these sources in order:
 3. A plate preview of the newest STL, OBJ or 3MF of at most 256 MiB, which the
    slicer worker exports with OrcaSlicer without slicing the model. This needs
    `PRINTABLE_SLICER_ENDPOINT`; see [plate previews](slicing.md#plate-previews).
+
+The Blender picture uses the newest STL, OBJ, PLY or GLB of at most 256 MiB.
+It needs the configured background render worker. The worker imports an immutable
+copy into an empty scene and uses the studio-neutral product presentation.
+It never touches the live scene or adds a job to the user's job history.
+Pictures wait while user render jobs are queued or running. A job submitted
+during a picture waits for that bounded render, then takes priority. Import
+and render each have a one-minute work budget; failed pictures use the same
+retry policy as plate pictures. GLB buffers and images must be embedded in the
+model; external URI references are refused. OBJ pictures import geometry only,
+without following material-library references.
 
 The newest file is the most recently modified one in the project directory.
 When any of these files changes, the picture is made again. A project with none
@@ -120,9 +131,9 @@ then after twice the previous wait, up to a day; `project reindex` with
 `"mode": "retry"` tries it again at once. An earlier picture is shown until a
 new one replaces it, and a picture whose file is missing is made again. In
 `catalog status`, the latest pass's `pictures` field counts the pictures made
-and failed in that pass and the projects that still lack a current picture,
+and failed in that pass and the pictures that still need to be made,
 including those waiting to retry, and reports whether previews waited for a
-busy slicer.
+busy slicer or render worker.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -153,6 +164,7 @@ Building one never contacts a printer backend or a model site. It reports:
 | `dates.downloaded_unix_ms` | The earliest retrieval time in the project's `source.json` records |
 | `dates.last_printed_unix_ms` | The recording time of the newest completed print |
 | `cover` | The stored cover's path, media type and size, or null |
+| `pictures.render` | The generated Blender product render, with origin `blender_render`, or null |
 | `pictures.plate` | The [generated plate picture](#generated-pictures): its path, digest and size, the workspace file it shows, how it was made (`slice_thumbnail`, `package_thumbnail` or `slicer_preview`) and when, or null |
 | `file_count`, `formats`, `has_3mf` | File names in the project directory, counted by format: `3mf`, `gcode.3mf` (sliced), `gcode`, `stl`, `step`, `scad`, `blend`, `obj`, `glb`, `gltf`, `ply`, `off`, `dxf`, `svg`, `py` (CadQuery sources) and `cadmodel` (CAD build models); `has_3mf` includes sliced 3MF files |
 | `downloads` | Site, model ID, page URL, title, designer, license name and retrieval time from each `source.json` |
@@ -205,7 +217,7 @@ search has `text` or a `picture`. Empty lists and absent values are left out:
 
 With `"detail": "full"`, each result is the stored short card: it adds
 `printers`, `materials`, `colours`, `last_outcome`, `cover_path`, `picture`
-(`cover`, `plate` or null: which picture shows the project), the `dates`
+(`cover`, `render`, `plate` or null: which picture shows the project), the `dates`
 object with every timestamp in Unix milliseconds, and `scores` with each
 search method's own score when several took part. Both forms share `total`,
 `next_offset`, `degraded` and `coverage`.
@@ -375,7 +387,7 @@ multimodal servers accept, and it is off by default. With
 ```
 
 A project's picture is its cover, or else its
-[generated plate picture](#generated-pictures), or else the first plate
+[generated Blender or plate picture](#generated-pictures), or else the first plate
 thumbnail in its newest slice's package. A search `picture` is a PNG, JPEG or WebP file in the
 workspace of at most 16 MiB and 8192 pixels on a side; upload one with the
 workspace file tools first. If the model refuses pictures, picture search is
@@ -504,7 +516,7 @@ never shares a port or any routes with the MCP endpoint.
 
 The library page shows a grid of library cards with a search box, a sort order
 and the [search filters](#filters). Each card shows the cover picture, or else
-the generated plate picture, whether
+the generated Blender or plate picture, whether
 and how often the project was printed, its file formats, its name, the start of
 its description, filament colours and materials, printers, tags, and when it
 was created and last printed. A page holds 24 cards, and like `catalog search` the
@@ -512,7 +524,7 @@ pages reach only the first 1008 results; add words or filters to narrow a
 larger search. The coverage and every unavailable search capability are shown
 above the grid.
 
-A project page shows the full card: the cover or else the generated plate
+A project page shows the full card: the cover or else the generated Blender or plate
 picture, the description, tags and dates,
 the newest slice, print outcomes per printer, model-site downloads, and up to
 500 of the project's files with download links. The page builds the card from

@@ -331,6 +331,9 @@ fn compact(paths: &Paths, card: &CompactCard, matched: Option<MatchKind>) -> Mar
                     Some(PictureKind::Cover) => {
                         img src={ (project) "/cover" } alt="" loading="lazy";
                     }
+                    Some(PictureKind::Render) => {
+                        img src={ (project) "/pictures/render" } alt="" loading="lazy";
+                    }
                     Some(PictureKind::Plate) => {
                         img src={ (project) "/pictures/plate" } alt="" loading="lazy";
                     }
@@ -647,6 +650,9 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                     @if let Some(cover) = &card.cover {
                         img src={ (project) "/cover" } alt="Cover picture"
                             width=(cover.width) height=(cover.height);
+                    } @else if let Some(render) = &card.pictures.render {
+                        img src={ (project) "/pictures/render" }
+                            width=(render.width) height=(render.height) alt="Blender render of the project's model";
                     } @else if let Some(plate) = &card.pictures.plate {
                         img src={ (project) "/pictures/plate" }
                             alt="Plate preview generated from the project's model"

@@ -64,6 +64,8 @@ pub struct Picture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
+    /// Blender's product presentation of the project's newest model.
+    BlenderRender,
     /// Copied from the first plate thumbnail of a sliced package.
     SliceThumbnail,
     /// Copied from the first plate thumbnail stored in a 3MF project file.
@@ -102,9 +104,20 @@ pub(crate) struct Record {
     pub candidates: String,
     pub plate: Option<Picture>,
     pub plate_failure: Option<Failure>,
+    #[serde(default)]
+    pub render_candidates: String,
+    #[serde(default)]
+    pub render: Option<Picture>,
+    #[serde(default)]
+    pub render_failure: Option<Failure>,
 }
 
 impl Record {
+    pub(crate) fn render(&self, project_id: &str) -> Option<&Picture> {
+        self.render
+            .as_ref()
+            .filter(|picture| picture.belongs_to(project_id))
+    }
     /// The plate picture, when it is stored where this project's pictures
     /// belong.
     pub(crate) fn plate(&self, project_id: &str) -> Option<&Picture> {
@@ -135,15 +148,28 @@ pub(crate) fn read(workspace: &Workspace, project_id: &str) -> Option<Record> {
     {
         record.plate = None;
     }
+    if record
+        .render
+        .as_ref()
+        .is_some_and(|picture| workspace.stat_artifact(&picture.path).is_err())
+    {
+        record.render = None;
+    }
     Some(record)
 }
 
-/// One way to make a project's plate picture; a plan tries its steps in
+/// One way to make a project picture; a plan tries its steps in
 /// order until one succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Step {
+    Render {
+        model: String,
+    },
     /// Copy the first plate thumbnail stored in a 3MF package.
-    Thumbnail { package: String, origin: Origin },
+    Thumbnail {
+        package: String,
+        origin: Origin,
+    },
     /// Ask the slicer to export a plate preview of a model.
     Preview {
         /// Workspace path of the model.
@@ -165,14 +191,13 @@ pub(crate) enum Need {
     Make(Box<Plan>),
 }
 
-/// How to make one project's plate picture.
+/// How to make one project picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Plan {
+    pub render: bool,
     pub project_id: String,
     pub candidates: String,
     pub steps: Vec<Step>,
-    /// The record this plan replaces.
-    pub prior: Option<Record>,
 }
 
 /// The newest of `files` that `wanted` selects, by modification time and
@@ -270,10 +295,58 @@ pub(crate) fn plan(
         }
     }
     Need::Make(Box::new(Plan {
+        render: false,
         project_id: project_id.to_owned(),
         candidates,
         steps,
-        prior: record.cloned(),
+    }))
+}
+
+/// Choose the newest model for Blender to import from a single staged file.
+pub(crate) fn render_plan(
+    project_id: &str,
+    files: &[(&str, &ArtifactMeta)],
+    has_cover: bool,
+    record: Option<&Record>,
+    now_unix_ms: u64,
+) -> Need {
+    if has_cover {
+        return Need::Nothing;
+    }
+    let Some((relative, meta)) = newest(files, |relative, meta| {
+        let name = relative.to_ascii_lowercase();
+        meta.size_bytes <= MAX_PREVIEW_MODEL_BYTES
+            && [".stl", ".obj", ".ply", ".glb"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+    }) else {
+        return Need::Nothing;
+    };
+    let mut hash = Sha256::new();
+    hash.update(b"blender-product-1");
+    hash.update(relative.as_bytes());
+    hash.update(meta.size_bytes.to_le_bytes());
+    hash.update(meta.modified_ns.to_le_bytes());
+    let candidates = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if let Some(record) = record.filter(|record| record.render_candidates == candidates) {
+        match &record.render_failure {
+            Some(failure) if failure.next_attempt_unix_ms > now_unix_ms => return Need::Retry,
+            Some(_) => {}
+            None if record.render(project_id).is_some() => return Need::Nothing,
+            None => {}
+        }
+    }
+    Need::Make(Box::new(Plan {
+        render: true,
+        project_id: project_id.to_owned(),
+        candidates,
+        steps: vec![Step::Render {
+            model: meta.path.clone(),
+        }],
     }))
 }
 
@@ -334,23 +407,33 @@ pub(crate) fn record_made(
     plan: &Plan,
     picture: Picture,
 ) -> Result<(), ToolError> {
-    let replaced = plan
-        .prior
+    let mut record = read(workspace, &plan.project_id).unwrap_or_else(empty_record);
+    let slot = if plan.render {
+        &mut record.render
+    } else {
+        &mut record.plate
+    };
+    let replaced = slot
         .as_ref()
-        .and_then(|prior| prior.plate(&plan.project_id))
+        .filter(|picture| picture.belongs_to(&plan.project_id))
         .filter(|prior| prior.path != picture.path)
         .map(|prior| prior.path.clone());
-    write(
-        workspace,
-        &plan.project_id,
-        &Record {
-            format_version: FORMAT_VERSION,
-            candidates: plan.candidates.clone(),
-            plate: Some(picture),
-            plate_failure: None,
-        },
-    )?;
-    if let Some(path) = replaced {
+    *slot = Some(picture);
+    if plan.render {
+        record.render_candidates = plan.candidates.clone();
+        record.render_failure = None;
+    } else {
+        record.candidates = plan.candidates.clone();
+        record.plate_failure = None;
+    }
+    write(workspace, &plan.project_id, &record)?;
+    if let Some(path) = replaced.filter(|path| {
+        !record
+            .plate
+            .iter()
+            .chain(record.render.iter())
+            .any(|picture| &picture.path == path)
+    }) {
         workspace.remove_reserved_artifact(&path)?;
     }
     Ok(())
@@ -364,31 +447,39 @@ pub(crate) fn record_failed(
     error: &str,
     now_unix_ms: u64,
 ) -> Result<(), ToolError> {
-    let prior = plan.prior.as_ref();
-    let attempts = prior
-        .filter(|prior| prior.candidates == plan.candidates)
-        .and_then(|prior| prior.plate_failure.as_ref())
+    let mut record = read(workspace, &plan.project_id).unwrap_or_else(empty_record);
+    let (candidates, failure) = if plan.render {
+        (&mut record.render_candidates, &mut record.render_failure)
+    } else {
+        (&mut record.candidates, &mut record.plate_failure)
+    };
+    let attempts = failure
+        .as_ref()
+        .filter(|_| *candidates == plan.candidates)
         .map_or(0, |failure| failure.attempts)
         .saturating_add(1);
     let wait = FIRST_RETRY_MS
         .saturating_mul(1 << (attempts - 1).min(20))
         .min(MAX_RETRY_MS);
-    write(
-        workspace,
-        &plan.project_id,
-        &Record {
-            format_version: FORMAT_VERSION,
-            candidates: plan.candidates.clone(),
-            plate: prior
-                .and_then(|prior| prior.plate(&plan.project_id))
-                .cloned(),
-            plate_failure: Some(Failure {
-                attempts,
-                next_attempt_unix_ms: now_unix_ms.saturating_add(wait),
-                error: error.chars().take(MAX_ERROR_CHARS).collect(),
-            }),
-        },
-    )
+    *candidates = plan.candidates.clone();
+    *failure = Some(Failure {
+        attempts,
+        next_attempt_unix_ms: now_unix_ms.saturating_add(wait),
+        error: error.chars().take(MAX_ERROR_CHARS).collect(),
+    });
+    write(workspace, &plan.project_id, &record)
+}
+
+fn empty_record() -> Record {
+    Record {
+        format_version: FORMAT_VERSION,
+        candidates: String::new(),
+        plate: None,
+        plate_failure: None,
+        render_candidates: String::new(),
+        render: None,
+        render_failure: None,
+    }
 }
 
 fn write(workspace: &Workspace, project_id: &str, record: &Record) -> Result<(), ToolError> {
@@ -492,6 +583,7 @@ mod tests {
             candidates: first.candidates.clone(),
             plate: Some(picture.clone()),
             plate_failure: None,
+            ..empty_record()
         };
         assert_eq!(made.plate("part"), Some(&picture));
         assert_eq!(made.plate("other"), None);
@@ -555,8 +647,7 @@ mod tests {
         let made = read(&workspace, "part").unwrap();
         assert_eq!(made.plate("part"), Some(&picture));
 
-        let mut retry = planned.clone();
-        retry.prior = Some(made);
+        let retry = planned.clone();
         record_failed(&workspace, &retry, "refused", 1_000).unwrap();
         let first = read(&workspace, "part").unwrap();
         assert_eq!(first.plate("part"), Some(&picture), "the picture is kept");
@@ -565,7 +656,6 @@ mod tests {
             (failure.attempts, failure.next_attempt_unix_ms),
             (1, 1_000 + FIRST_RETRY_MS)
         );
-        retry.prior = Some(first);
         record_failed(&workspace, &retry, "refused", 1_000).unwrap();
         let second = read(&workspace, "part").unwrap().plate_failure.unwrap();
         assert_eq!(
@@ -584,6 +674,67 @@ mod tests {
             .write_reserved_artifact(&record_path("part"), b"{not json", true)
             .unwrap();
         assert_eq!(read(&workspace, "part"), None);
+    }
+
+    #[test]
+    fn renders_and_plate_pictures_refresh_independently() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let files = [meta("part.stl", 1)];
+        let listed = [("part.stl", &files[0])];
+        let plate_plan = make(plan_for(&files, None, true));
+        let render_plan = make(render_plan("part", &listed, false, None, 1_000));
+        assert!(render_plan.render);
+        let png = crate::slicing::package::fixture::png(8, 6);
+        let plate = store(
+            &workspace,
+            "part",
+            &png,
+            &files[0].path,
+            Origin::SlicerPreview,
+            1,
+        )
+        .unwrap();
+        record_made(&workspace, &plate_plan, plate.clone()).unwrap();
+        let render = store(
+            &workspace,
+            "part",
+            &png,
+            &files[0].path,
+            Origin::BlenderRender,
+            2,
+        )
+        .unwrap();
+        record_made(&workspace, &render_plan, render.clone()).unwrap();
+        let both = read(&workspace, "part").unwrap();
+        assert_eq!(both.plate("part"), Some(&plate));
+        assert_eq!(both.render("part"), Some(&render));
+        assert_eq!(
+            self::render_plan("part", &listed, false, Some(&both), 1_000),
+            Need::Nothing
+        );
+        record_failed(&workspace, &render_plan, "worker unavailable", 1_000).unwrap();
+        let failed = read(&workspace, "part").unwrap();
+        assert_eq!(failed.plate("part"), Some(&plate));
+        assert_eq!(failed.render("part"), Some(&render));
+        assert_eq!(
+            self::render_plan("part", &listed, false, Some(&failed), 1_001),
+            Need::Retry
+        );
+        assert_eq!(
+            self::render_plan("part", &listed, true, None, 1_001),
+            Need::Nothing
+        );
+        assert_eq!(
+            self::render_plan(
+                "part",
+                &[("notes.txt", &meta("notes.txt", 1))],
+                false,
+                None,
+                1_000
+            ),
+            Need::Nothing
+        );
     }
 
     #[test]

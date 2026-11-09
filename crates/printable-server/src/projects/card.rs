@@ -18,7 +18,7 @@ use super::{Project, get, pictures};
 use crate::{error::ToolError, library::MANIFEST, printers::ledger, slicing::summary};
 
 /// Changes whenever the card layout changes, so stored cards are rebuilt.
-const LAYOUT_VERSION: u32 = 3;
+const LAYOUT_VERSION: u32 = 4;
 /// Largest `state.json`, `summary.json` or `source.json` a card reads.
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 /// Cap for each list of printers, materials, colours and printer counts.
@@ -96,6 +96,8 @@ pub struct CoverSummary {
 /// Pictures generated from a project's files.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Pictures {
+    /// Blender's product presentation of the project's model.
+    pub render: Option<pictures::Picture>,
     /// OrcaSlicer's view of the project's model on the build plate.
     pub plate: Option<pictures::Picture>,
 }
@@ -106,6 +108,8 @@ pub struct Pictures {
 pub enum PictureKind {
     /// The cover set for the project.
     Cover,
+    /// The generated Blender product render.
+    Render,
     /// The generated plate picture.
     Plate,
 }
@@ -320,13 +324,19 @@ impl Inputs {
                 hasher.update(file.modified_ns.to_le_bytes());
             }
         }
-        // Only the picture a card shows counts: recording a failed attempt
-        // leaves the card as it was.
-        let plate = self
+        // Picture changes rebuild the card; recording a failed attempt leaves
+        // its displayed pictures as they were.
+        let generated = self
             .pictures
             .as_ref()
-            .and_then(|record| record.plate(&self.project.project_id));
-        let pictures = serde_json::to_vec(&plate).expect("a picture serializes");
+            .map(|record| {
+                (
+                    record.render(&self.project.project_id),
+                    record.plate(&self.project.project_id),
+                )
+            })
+            .unwrap_or_default();
+        let pictures = serde_json::to_vec(&generated).expect("pictures serialize");
         hasher.update((pictures.len() as u64).to_le_bytes());
         hasher.update(&pictures);
         hasher
@@ -345,6 +355,17 @@ impl Inputs {
             self.project.cover.is_some(),
             self.pictures.as_ref(),
             previews,
+            now_unix_ms,
+        )
+    }
+
+    pub(crate) fn render_need(&self, now_unix_ms: u64) -> pictures::Need {
+        let files: Vec<_> = self.project_files().collect();
+        pictures::render_plan(
+            &self.project.project_id,
+            &files,
+            self.project.cover.is_some(),
+            self.pictures.as_ref(),
             now_unix_ms,
         )
     }
@@ -803,6 +824,11 @@ pub(crate) fn build(workspace: &Workspace, inputs: &Inputs, summaries: Summaries
             height: cover.height,
         }),
         pictures: Pictures {
+            render: inputs
+                .pictures
+                .as_ref()
+                .and_then(|record| record.render(&project.project_id))
+                .cloned(),
             plate: inputs
                 .pictures
                 .as_ref()
@@ -928,6 +954,8 @@ impl Card {
     pub fn picture_kind(&self) -> Option<PictureKind> {
         if self.cover.is_some() {
             Some(PictureKind::Cover)
+        } else if self.pictures.render.is_some() {
+            Some(PictureKind::Render)
         } else if self.pictures.plate.is_some() {
             Some(PictureKind::Plate)
         } else {
@@ -935,7 +963,7 @@ impl Card {
         }
     }
 
-    /// The cover, else the generated plate picture, else the first plate
+    /// The cover, else the Blender render, else the plate picture or first plate
     /// thumbnail of the newest slice's package, with a key that changes
     /// whenever that picture may change. Stored covers and generated pictures
     /// are named by their digest; a thumbnail's key follows its package's
@@ -949,7 +977,12 @@ impl Card {
                 format!("cover:{}", cover.path),
             ));
         }
-        if let Some(plate) = &self.pictures.plate {
+        if let Some(plate) = self
+            .pictures
+            .render
+            .as_ref()
+            .or(self.pictures.plate.as_ref())
+        {
             return Some((
                 PictureSource::Generated {
                     path: plate.path.clone(),

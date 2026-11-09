@@ -3827,6 +3827,113 @@ class HandlerValidationTests(unittest.TestCase):
             select_all.assert_not_called()
             handlers.close()
 
+    def test_picture_import_verifies_the_snapshot_before_replacing_the_worker_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker")
+            model = value.workspace_root / ".printable/pictures/part/model.stl"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            reset = Mock(return_value={"FINISHED"})
+            imported = Mock(return_value={"FINISHED"})
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))]),
+                ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=reset, stl_import=imported)),
+            )
+            handlers = BlenderHandlers(value, lambda: False, bpy)
+            params = {"path": ".printable/pictures/part/model.stl", "expected_sha256": "0" * 64}
+            with self.assertRaisesRegex(HandlerError, "source digest"):
+                handlers._job_import_model(params)
+            reset.assert_not_called()
+            params["expected_sha256"] = hashlib.sha256(b"model").hexdigest()
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+                self.assertEqual(handlers._job_import_model(params), {"objects": ["Body"]})
+            reset.assert_called_once_with(use_empty=True)
+            staged = Path(imported.call_args.kwargs["filepath"])
+            self.assertNotEqual(staged, model)
+            self.assertFalse(staged.exists())
+            handlers._config = replace(value, role="live")
+            with self.assertRaisesRegex(HandlerError, "background render worker"):
+                handlers._job_import_model(params)
+            handlers.close()
+
+    def test_picture_import_restores_optix_preferences_after_factory_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker", render_device="OPTIX")
+            model = value.workspace_root / ".printable/pictures/part/model.stl"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            scene = SimpleNamespace(cycles=SimpleNamespace(device=None))
+            cpu = SimpleNamespace(name="CPU", type="CPU", use=True)
+            gpu = SimpleNamespace(name="GPU", type="OPTIX", use=False)
+            preferences = SimpleNamespace(compute_device_type=None, devices=[cpu, gpu], get_devices=lambda: None)
+            def factory_reset(**_kwargs):
+                preferences.compute_device_type = "NONE"
+                cpu.use, gpu.use = True, False
+                scene.cycles.device = "CPU"
+                return {"FINISHED"}
+            def import_model(**_kwargs):
+                self.assertEqual(preferences.compute_device_type, "OPTIX")
+                self.assertTrue(gpu.use)
+                self.assertFalse(cpu.use)
+                self.assertEqual(scene.cycles.device, "GPU")
+                return {"FINISHED"}
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[scene]),
+                context=SimpleNamespace(preferences=SimpleNamespace(addons={"cycles": SimpleNamespace(preferences=preferences)})),
+                ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=factory_reset, stl_import=import_model)),
+            )
+            handlers = BlenderHandlers(value, lambda: False, bpy)
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+                handlers._job_import_model({"path": ".printable/pictures/part/model.stl",
+                                            "expected_sha256": hashlib.sha256(b"model").hexdigest()})
+            self.assertEqual(handlers._cycles_devices[1], {"name": "GPU", "type": "OPTIX", "enabled": True})
+            handlers.close()
+
+    def test_picture_import_never_follows_glb_uris_or_obj_material_libraries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker")
+            directory = value.workspace_root / ".printable/pictures/part"
+            directory.mkdir(parents=True)
+            reset = Mock(return_value={"FINISHED"})
+            gltf_import = Mock(return_value={"FINISHED"})
+            imported_obj = []
+            def obj_import(*, filepath):
+                imported_obj.append(Path(filepath).read_bytes())
+                return {"FINISHED"}
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))]),
+                ops=SimpleNamespace(wm=SimpleNamespace(read_factory_settings=reset, obj_import=obj_import),
+                                    import_scene=SimpleNamespace(gltf=gltf_import)),
+            )
+            handlers = BlenderHandlers(value, lambda: False, bpy)
+            for key in ("buffers", "images"):
+                for uri in ("../../outside.bin", "/unrelated/private.png"):
+                    with self.subTest(key=key, uri=uri):
+                        encoded = json.dumps({key: [{"uri": uri}]}).encode()
+                        encoded += b" " * (-len(encoded) % 4)
+                        blob = struct.pack("<5I", 0x46546C67, 2, 20 + len(encoded), len(encoded), 0x4E4F534A) + encoded
+                        (directory / "source.glb").write_bytes(blob)
+                        with self.assertRaisesRegex(HandlerError, "self-contained"):
+                            handlers._job_import_model({"path": ".printable/pictures/part/source.glb",
+                                                        "expected_sha256": hashlib.sha256(blob).hexdigest()})
+            reset.assert_not_called()
+            gltf_import.assert_not_called()
+            geometry = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+            original = b"mtllib /unrelated/materials.mtl\n" + geometry
+            (directory / "source.obj").write_bytes(original)
+            with patch.object(handlers, "_renderable_product_names", return_value=["Body"]):
+                handlers._job_import_model({"path": ".printable/pictures/part/source.obj",
+                                            "expected_sha256": hashlib.sha256(original).hexdigest()})
+            self.assertEqual(imported_obj, [geometry])
+            self.assertEqual((directory / "source.obj").read_bytes(), original)
+            handlers.close()
+
     def test_job_restore_stages_checkpoint_and_disables_embedded_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

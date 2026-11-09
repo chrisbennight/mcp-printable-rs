@@ -14,7 +14,7 @@ READ_COMMANDS = frozenset({
     "capture_native_view", "get_project_dependencies", "export_project_blender",
     "render_diagnostic", "render_views", "bridge_test_wait",
 })
-REPLACE_COMMANDS = frozenset({"clear_scene", "restore_checkpoint", "job_restore_checkpoint"})
+REPLACE_COMMANDS = frozenset({"clear_scene", "restore_checkpoint", "job_restore_checkpoint", "job_import_model"})
 
 
 class SceneStateError(ValueError):

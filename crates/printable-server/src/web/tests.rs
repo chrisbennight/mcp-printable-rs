@@ -498,10 +498,10 @@ async fn generated_plate_pictures_show_projects_without_a_cover() {
     let library = Library::new();
     let workspace = &*library.workspace;
     let plan = pictures::Plan {
+        render: false,
         project_id: "evil".into(),
         candidates: "candidates".into(),
         steps: Vec::new(),
-        prior: None,
     };
     let png = fixture::png(8, 6);
     let picture = pictures::store(
@@ -547,6 +547,46 @@ async fn generated_plate_pictures_show_projects_without_a_cover() {
     assert_eq!(
         library.get("/projects/missing/pictures/plate").await.0,
         StatusCode::NOT_FOUND
+    );
+    let render_plan = pictures::Plan {
+        render: true,
+        ..plan
+    };
+    let render = pictures::store(
+        workspace,
+        "evil",
+        &png,
+        "projects/evil/model.stl",
+        pictures::Origin::BlenderRender,
+        2_000,
+    )
+    .unwrap();
+    pictures::record_made(workspace, &render_plan, render).unwrap();
+    library
+        .index
+        .pass(&library.workspace, PassKind::Incremental)
+        .unwrap();
+    let grid = library.page("/").await;
+    assert!(grid.contains("src=\"./projects/evil/pictures/render\""));
+    assert!(
+        grid.contains("src=\"./projects/desk/cover\""),
+        "an explicit cover still wins"
+    );
+    assert!(
+        library
+            .page("/projects/evil")
+            .await
+            .contains("src=\"../projects/evil/pictures/render\"")
+    );
+    let (status, headers, body) = library.get("/projects/evil/pictures/render").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(body, png);
+    assert_secure(&headers);
+    assert_eq!(
+        library.get("/projects/evil/pictures/plate").await.0,
+        StatusCode::OK,
+        "both pictures remain available"
     );
 }
 

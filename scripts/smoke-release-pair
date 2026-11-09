@@ -114,6 +114,12 @@ docker run -d --name "$worker_name" --platform linux/amd64 \
   -e PRINTABLE_BLENDER_EEVEE_SAMPLES=1 \
   "$blender_ref" >/dev/null
 wait_healthy "$worker_name"
+if ! docker exec "$worker_name" python3 \
+  /opt/printable/addon/integration_smoke.py \
+  --host 127.0.0.1 --mode project-picture; then
+  docker logs "$worker_name" || true
+  exit 1
+fi
 
 docker run -d --name "$server_name" --platform linux/amd64 \
   --network "$network" --network-alias printable-server \

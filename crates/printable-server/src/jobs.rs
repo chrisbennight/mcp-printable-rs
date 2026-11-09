@@ -660,6 +660,8 @@ struct JobRegistryInner {
     persistence: Arc<Mutex<()>>,
     cancellations: Mutex<HashMap<String, CancellationToken>>,
     queue: Arc<JobQueue>,
+    /// Shared by user jobs and optional project pictures; pictures never queue.
+    render_lane: Arc<Mutex<()>>,
     recovery_integrity: RecoveryIntegrity,
     encoder_health: OnceCell<Value>,
     worker_verified: AtomicBool,
@@ -677,6 +679,132 @@ pub(crate) struct JobRegistry {
 }
 
 impl JobRegistry {
+    pub(crate) fn project_pictures_available(&self) -> bool {
+        self.inner.render_worker.is_some()
+            && self.inner.isolation.established()
+            && !self.inner.recovery_integrity.blocked()
+    }
+
+    /// Use the isolated worker only when no user job needs it. A newly
+    /// submitted job waits for this one bounded render, then takes priority.
+    pub(crate) async fn project_picture(
+        &self,
+        project_id: &str,
+        model: &str,
+    ) -> Result<Option<Vec<u8>>, ToolError> {
+        // A cancelled index request cannot release the worker while its
+        // picture is still rendering or leave its staged model behind.
+        let registry = self.clone();
+        let (project_id, model) = (project_id.to_owned(), model.to_owned());
+        tokio::spawn(async move { registry.make_project_picture(&project_id, &model).await })
+            .await
+            .map_err(|error| ToolError::Io(std::io::Error::other(error)))?
+    }
+
+    async fn make_project_picture(
+        &self,
+        project_id: &str,
+        model: &str,
+    ) -> Result<Option<Vec<u8>>, ToolError> {
+        if !self.project_pictures_available() {
+            return Ok(None);
+        }
+        let Ok(lane) = Arc::clone(&self.inner.render_lane).try_lock_owned() else {
+            return Ok(None);
+        };
+        if self
+            .inner
+            .state
+            .lock()
+            .await
+            .jobs
+            .values()
+            .any(|job| !job.state.terminal())
+        {
+            return Ok(None);
+        }
+        let worker = self
+            .inner
+            .render_worker
+            .as_ref()
+            .expect("checked render worker");
+        let mut transaction = worker.transaction(worker.default_deadline()).await?;
+        let identity = transaction
+            .send_value("bridge_status", Params::new())
+            .await?;
+        self.inner.worker_verified.store(false, Ordering::SeqCst);
+        if identity["role"] != "render_worker" || identity["background"] != true {
+            return Err(ToolError::Job(
+                "configured render endpoint is not a background render worker".into(),
+            ));
+        }
+        self.inner.worker_verified.store(true, Ordering::SeqCst);
+        let workspace = Arc::clone(&self.inner.workspace);
+        let model = model.to_owned();
+        let suffix = std::path::Path::new(&model)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .ok_or_else(|| ToolError::Validation("model has no file extension".into()))?
+            .to_ascii_lowercase();
+        let work = format!(
+            "{}/work-{}",
+            crate::projects::pictures::directory(project_id),
+            random_hex_id()?
+        );
+        let input = format!("{work}.{suffix}");
+        let output = format!("{work}.png");
+        let source = input.clone();
+        let (_lane, sha) = tokio::task::spawn_blocking(move || {
+            let limit = crate::projects::pictures::MAX_PREVIEW_MODEL_BYTES;
+            let snapshot = workspace.snapshot_artifact_bounded(&model, limit)?;
+            let mut file = File::open(snapshot.path())?;
+            let mut digest = Sha256::new();
+            let mut chunk = [0_u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&chunk[..read]);
+            }
+            workspace.commit_reserved_generated_artifact_bounded(
+                &source,
+                snapshot.path(),
+                false,
+                limit,
+            )?;
+            Ok::<_, ToolError>((
+                lane,
+                digest
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            ))
+        })
+        .await
+        .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+        let result = async {
+            if self.inner.state.lock().await.jobs.values().any(|job| !job.state.terminal()) { return Ok(None); }
+            transaction.send_value_with_work_budget("job_import_model", serde_json::from_value(json!({"path": input, "expected_sha256": sha}))?, Duration::from_secs(60)).await?;
+            let rendered = transaction.send_value_with_work_budget("job_render_product", serde_json::from_value(json!({
+                "path": output, "presentation": {"profile": "studio_neutral"},
+                "width": 512, "height": 512, "samples": 32, "engine": "CYCLES",
+                "timeout_seconds": 60, "max_output_bytes": crate::projects::cover::MAX_COVER_BYTES
+            }))?, Duration::from_secs(60)).await?;
+            verify_product_png_artifact(Arc::clone(&self.inner.workspace), output.clone(), &rendered, 512, 512).await.map(Some)
+        }.await;
+        for path in [&input, &output] {
+            if let Err(error) = self.inner.workspace.remove_reserved_artifact(path) {
+                tracing::warn!(
+                    code = error.code(),
+                    "could not remove project picture staging file"
+                );
+            }
+        }
+        result
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         workspace: Arc<Workspace>,
@@ -777,6 +905,7 @@ impl JobRegistry {
             persistence: Arc::new(Mutex::new(())),
             cancellations: Mutex::new(cancellations),
             queue: Arc::clone(&queue),
+            render_lane: Arc::new(Mutex::new(())),
             recovery_integrity,
             encoder_health: OnceCell::new(),
             worker_verified: AtomicBool::new(false),
@@ -1661,6 +1790,7 @@ async fn job_worker(inner: Weak<JobRegistryInner>, queue: Arc<JobQueue>) {
         let Some(inner) = inner.upgrade() else {
             return;
         };
+        let _lane = inner.render_lane.lock().await;
         match inner.start_job(&job_id).await {
             Ok(true) => {}
             Ok(false) => {
@@ -4848,6 +4978,7 @@ mod tests {
             persistence: Arc::new(Mutex::new(())),
             cancellations: Mutex::new(HashMap::new()),
             queue: Arc::new(JobQueue::new([])),
+            render_lane: Arc::new(Mutex::new(())),
             recovery_integrity: RecoveryIntegrity::default(),
             encoder_health: OnceCell::new(),
             worker_verified: AtomicBool::new(false),
@@ -4885,6 +5016,116 @@ mod tests {
         })
         .await
         .expect("job reaches expected state")
+    }
+
+    #[tokio::test]
+    async fn project_pictures_use_only_the_idle_background_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(temp.path()), None).unwrap());
+        workspace
+            .write_artifact("projects/part/model.stl", b"model snapshot", false)
+            .unwrap();
+        let live =
+            FakeAddon::spawn(|_, _| panic!("project pictures must not touch the live scene")).await;
+        let files = Arc::clone(&workspace);
+        let png = crate::slicing::package::fixture::png(512, 512);
+        let expected = png.clone();
+        let rendering = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let started = Arc::clone(&rendering);
+        let released = Arc::clone(&release);
+        let worker = FakeAddon::spawn(move |command, params| {
+            let result = match command.as_str() {
+                "bridge_status" => json!({"role": "render_worker", "background": true}),
+                "job_import_model" => {
+                    let (_, bytes) = files
+                        .read_artifact(params["path"].as_str().unwrap())
+                        .unwrap();
+                    assert_eq!(bytes, b"model snapshot");
+                    assert_eq!(params["expected_sha256"], crate::provenance::digest(&bytes));
+                    json!({"objects": ["Body"]})
+                }
+                "job_render_product" => {
+                    assert_eq!(params["presentation"]["profile"], "studio_neutral");
+                    files
+                        .write_reserved_artifact(params["path"].as_str().unwrap(), &png, false)
+                        .unwrap();
+                    return ResponseSpec::SuccessWhenReleased {
+                        result: json!({"size_bytes": png.len(), "sha256": crate::provenance::digest(&png)}),
+                        addon_version: None,
+                        started: Arc::clone(&started), release: Arc::clone(&released),
+                    };
+                }
+                other => panic!("unexpected picture command {other}"),
+            };
+            ResponseSpec::Success {
+                result,
+                addon_version: None,
+            }
+        })
+        .await;
+        let registry = JobRegistry::new_with_render_worker(
+            Arc::clone(&workspace),
+            Arc::new(BlenderClient::new(
+                live.host(),
+                live.port(),
+                ClientOptions::default(),
+            )),
+            PathBuf::from("unused-ffmpeg"),
+            1,
+            None,
+            DEFAULT_GEOMETRY_WORKER_MEMORY_BYTES,
+            Some(Arc::new(BlenderClient::new(
+                worker.host(),
+                worker.port(),
+                ClientOptions::default(),
+            ))),
+        );
+        let lane = registry.inner.render_lane.lock().await;
+        assert!(
+            registry
+                .project_picture("part", "projects/part/model.stl")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(lane);
+        registry
+            .inner
+            .state
+            .lock()
+            .await
+            .jobs
+            .insert("queued".into(), test_job_record("queued", JobState::Queued));
+        assert!(
+            registry
+                .project_picture("part", "projects/part/model.stl")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        registry.inner.state.lock().await.jobs.clear();
+        let picture_registry = registry.clone();
+        let picture = tokio::spawn(async move {
+            picture_registry
+                .project_picture("part", "projects/part/model.stl")
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), rendering.notified())
+            .await
+            .unwrap();
+        let health = registry.worker_health().await;
+        assert_eq!(health["status"], "busy");
+        assert_eq!(
+            health["available"], true,
+            "verified picture rendering remains ready"
+        );
+        release.notify_one();
+        assert_eq!(picture.await.unwrap().unwrap(), Some(expected));
+        assert!(
+            registry.inner.state.lock().await.jobs.is_empty(),
+            "pictures do not enter user job history"
+        );
     }
 
     #[tokio::test]
@@ -6578,6 +6819,7 @@ printf '%s' '{"report":{"fixed":{"vertices":8,"triangles":12,"bounds":{"minimum_
                     CancellationToken::new(),
                 )])),
                 queue: Arc::clone(&queue),
+                render_lane: Arc::new(Mutex::new(())),
                 recovery_integrity: RecoveryIntegrity::default(),
                 encoder_health: OnceCell::new(),
                 worker_verified: AtomicBool::new(false),
