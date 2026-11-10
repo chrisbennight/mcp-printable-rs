@@ -764,6 +764,19 @@ async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
     assert!(selection.contains("Short two-hole bracket"));
     assert!(selection.contains("sha256="));
     assert!(!selection.contains("Long four-hole bracket"));
+    let pattern = selection
+        .split("name=\"a_pattern\"")
+        .nth(1)
+        .unwrap()
+        .split("</select>")
+        .next()
+        .unwrap();
+    assert!(!pattern.contains(" selected"));
+    let changed = library
+        .page("/projects/parts/families/brackets?a_length=40&a_pattern=")
+        .await;
+    assert!(changed.contains("Long four-hole bracket"));
+    assert!(!changed.contains("This combination is unavailable"));
     let unavailable = library
         .page("/projects/parts/families/brackets?a_length=20&a_pattern=%22four-hole%22")
         .await;

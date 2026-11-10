@@ -156,11 +156,7 @@ pub(super) async fn selection(
 fn render(paths: &Paths, params: &SelectParams, selection: &Selection) -> Markup {
     let project = &selection.project_id;
     let family = &selection.family_id;
-    let chosen = selection
-        .selected
-        .as_ref()
-        .map(|v| &v.attributes)
-        .unwrap_or(&params.attributes);
+    let chosen = &params.attributes;
     let base = paths.link(&format!("projects/{project}/families/{family}"));
     let next_url = selection.next_offset.map(|next| {
         let mut q = url::form_urlencoded::Serializer::new(String::new());
