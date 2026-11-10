@@ -283,6 +283,7 @@ pub(crate) struct Inputs {
     files: Vec<ArtifactMeta>,
     prints: Vec<ArtifactMeta>,
     pictures: Option<pictures::Record>,
+    pub(crate) families: Vec<super::families::Response>,
 }
 
 fn listing(workspace: &Workspace, directory: &str) -> Result<Vec<ArtifactMeta>, ToolError> {
@@ -299,11 +300,13 @@ impl Inputs {
         let files = listing(workspace, &project.root)?;
         let prints = listing(workspace, &ledger::project_records(project_id))?;
         let pictures = pictures::read(workspace, project_id);
+        let families = super::families::records(workspace, project_id)?;
         Ok(Self {
             project,
             files,
             prints,
             pictures,
+            families,
         })
     }
 
@@ -315,6 +318,7 @@ impl Inputs {
         let record = serde_json::to_vec(&self.project).expect("a project record serializes");
         hasher.update((record.len() as u64).to_le_bytes());
         hasher.update(&record);
+        hasher.update(serde_json::to_vec(&self.families).expect("family records serialize"));
         for files in [&self.files, &self.prints] {
             hasher.update((files.len() as u64).to_le_bytes());
             for file in files {
@@ -1026,7 +1030,11 @@ impl Card {
             tags: self.tags.join(" "),
             description: self.description.clone(),
             source,
-            files,
+            files: format!(
+                "{} {}",
+                files,
+                super::families::search_text(&inputs.families)
+            ),
         }
     }
 }

@@ -76,3 +76,5 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .address { max-width: 320px; }
 .plain { list-style: none; margin: 0; padding: 0; }
 .plain li { display: flex; align-items: center; gap: 6px; }
+
+.family-preview { max-width: 100%; max-height: 400px; object-fit: contain; }

@@ -664,7 +664,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "project",
-        description: "Manage durable projects: create, get, list, resolve shared paths and list files; update descriptions and tags, set the cover and reindex the library search; keep design requirements and immutable source revisions; export selected files or a native Blender bundle. Edits need the expected record or revision. Use catalog to search the user's projects or read a project's card.",
+        description: "Manage projects and part families: create, get, list, resolve shared paths and list files; family_put retains explicit variants, family reads a revision, families searches and counts parts, family_select narrows supported choices; update descriptions and tags, set the cover and reindex the library search; keep design requirements and immutable source revisions; export selected files or a native Blender bundle. Edits need the expected record or revision. Use catalog to search the user's projects or read a project's card.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
         annotations: write_annotations,
     },

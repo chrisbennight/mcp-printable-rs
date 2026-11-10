@@ -8,6 +8,7 @@
 //! records, model sites and file names is untrusted and reaches pages only
 //! through templates that escape it.
 
+mod families;
 mod pages;
 
 use std::{
@@ -251,6 +252,11 @@ pub fn router(
     Router::new()
         .route("/", get(library))
         .route("/projects/{project_id}", get(project))
+        .route("/projects/{project_id}/families", get(families::listing))
+        .route(
+            "/projects/{project_id}/families/{family_id}",
+            get(families::selection),
+        )
         .route("/projects/{project_id}/cover", get(cover_picture))
         .route("/projects/{project_id}/pictures/plate", get(plate_picture))
         .route(
@@ -632,6 +638,8 @@ struct FileEntry {
 struct ProjectView {
     card: Card,
     files: Vec<FileEntry>,
+    families: Vec<projects::families::Summary>,
+    family_counts: projects::families::Counts,
 }
 
 impl ProjectView {
@@ -640,8 +648,19 @@ impl ProjectView {
     fn gather(workspace: &Workspace, project_id: &str) -> Result<Self, ToolError> {
         let inputs = card::Inputs::gather(workspace, project_id)?;
         let card = card::build(workspace, &inputs, card::Summaries::Recorded);
+        let paths = inputs
+            .project_files()
+            .map(|(path, _)| path.to_owned())
+            .collect();
+        let family_counts = projects::families::counts(&inputs.families, &paths);
+        let family_summaries = projects::families::summaries(&inputs.families)
+            .into_iter()
+            .take(PAGE_SIZE)
+            .collect();
+        let classified = projects::families::classified_paths(&inputs.families);
         let files = inputs
             .project_files()
+            .filter(|(path, _)| !classified.contains(*path))
             .take(MAX_LISTED_FILES)
             .map(|(path, meta)| FileEntry {
                 path: path.to_owned(),
@@ -649,7 +668,12 @@ impl ProjectView {
                 modified_unix_ms: u64::try_from(meta.modified_ns / 1_000_000).unwrap_or(0),
             })
             .collect();
-        Ok(Self { card, files })
+        Ok(Self {
+            card,
+            files,
+            families: family_summaries,
+            family_counts,
+        })
     }
 }
 
@@ -904,6 +928,33 @@ async fn file(
             "The address is not a project file address.",
         );
     };
+    let mut expected_hash = None;
+    let mut inline_picture = false;
+    let mut query_fields = HashSet::new();
+    for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if !query_fields.insert(key.to_string()) {
+            return page(
+                &paths,
+                StatusCode::BAD_REQUEST,
+                "Cannot download this",
+                "Download options cannot be repeated.",
+            );
+        }
+        match key.as_ref() {
+            "sha256" if projects::families::is_digest(&value) => {
+                expected_hash = Some(value.into_owned())
+            }
+            "preview" if value == "1" => inline_picture = true,
+            _ => {
+                return page(
+                    &paths,
+                    StatusCode::BAD_REQUEST,
+                    "Cannot download this",
+                    "Invalid download option.",
+                );
+            }
+        }
+    }
     let head = method == Method::HEAD;
     // A download keeps its slot until its copy has been sent or abandoned.
     let slot = if head {
@@ -925,11 +976,30 @@ async fn file(
     let outcome = web
         .blocking(move || -> Result<_, ToolError> {
             let resolved = projects::resolve(&workspace, &project_id, &path)?;
-            if head {
+            if head && expected_hash.is_none() && !inline_picture {
                 return Ok((workspace.stat_artifact(&resolved)?, None));
             }
             let snapshot = workspace.snapshot_artifact(&resolved)?;
             let meta = snapshot.meta().clone();
+            if let Some(expected) = expected_hash {
+                let actual =
+                    projects::families::reader_hash(&mut std::fs::File::open(snapshot.path())?)?;
+                if actual != expected {
+                    return Err(ToolError::Validation(
+                        "The selected file changed; reopen the family before downloading.".into(),
+                    ));
+                }
+            }
+            if inline_picture
+                && !matches!(meta.media_type, "image/png" | "image/jpeg" | "image/webp")
+            {
+                return Err(ToolError::Validation(
+                    "Only PNG, JPEG and WebP previews can be displayed.".into(),
+                ));
+            }
+            if head {
+                return Ok((meta, None));
+            }
             Ok((meta, Some(file_transfer::snapshot_stream(snapshot, slot)?)))
         })
         .await;
@@ -943,10 +1013,16 @@ async fn file(
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static(if inline_picture {
+            meta.media_type
+        } else {
+            "application/octet-stream"
+        }),
     );
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.size_bytes));
-    headers.insert(header::CONTENT_DISPOSITION, attachment(name));
+    if !inline_picture {
+        headers.insert(header::CONTENT_DISPOSITION, attachment(name));
+    }
     response
 }
 

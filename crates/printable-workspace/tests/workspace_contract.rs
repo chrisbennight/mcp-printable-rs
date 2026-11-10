@@ -990,3 +990,26 @@ mod escape_property {
         }
     }
 }
+
+#[test]
+fn pinned_streaming_reads_detect_in_place_changes_and_refuse_symlinks() {
+    use printable_workspace::{Workspace, WsError};
+    let root = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(Some(root.path()), None).unwrap();
+    workspace
+        .write_artifact("model.stl", b"original", false)
+        .unwrap();
+    let result = workspace.with_artifact_reader("model.stl", |reader| {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        std::fs::write(root.path().join("model.stl"), b"different-length")?;
+        Ok(bytes)
+    });
+    assert!(matches!(result, Err(WsError::ChangedWhileReading)));
+    std::os::unix::fs::symlink(root.path().join("model.stl"), root.path().join("alias.stl"))
+        .unwrap();
+    assert!(matches!(
+        workspace.with_artifact_reader("alias.stl", |_| Ok(())),
+        Err(WsError::SymlinkRefused)
+    ));
+}

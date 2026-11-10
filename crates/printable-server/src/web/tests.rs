@@ -730,3 +730,129 @@ async fn the_listener_reads_the_peer_address() {
     assert_eq!(refused.status(), 403);
     server.abort();
 }
+
+#[tokio::test]
+async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
+    use crate::projects::families::{self, PutParams};
+    let library = Library::new();
+    let mut family = families::tests::fixture(&library.workspace);
+    family.name = "Brackets <script>bad()</script>".into();
+    let revision = families::put(
+        &library.workspace,
+        PutParams {
+            project_id: "parts".into(),
+            expected_revision: None,
+            family,
+        },
+    )
+    .unwrap()
+    .revision;
+    library
+        .index
+        .pass(&library.workspace, PassKind::Retry)
+        .unwrap();
+    let project = library.page("/projects/parts").await;
+    assert!(project.contains("Browse and search part families"));
+    assert!(!project.contains("small.stl"));
+    let index = library.page("/projects/parts/families?q=40").await;
+    assert!(index.contains("1 families"));
+    assert!(index.contains("&lt;script&gt;"));
+    assert!(!index.contains("<script>bad()"));
+    let selection = library
+        .page("/projects/parts/families/brackets?a_length=20")
+        .await;
+    assert!(selection.contains("Short two-hole bracket"));
+    assert!(selection.contains("sha256="));
+    assert!(!selection.contains("Long four-hole bracket"));
+    let pattern = selection
+        .split("name=\"a_pattern\"")
+        .nth(1)
+        .unwrap()
+        .split("</select>")
+        .next()
+        .unwrap();
+    assert!(!pattern.contains(" selected"));
+    let changed = library
+        .page("/projects/parts/families/brackets?a_length=40&a_pattern=")
+        .await;
+    assert!(changed.contains("Long four-hole bracket"));
+    assert!(!changed.contains("This combination is unavailable"));
+    let unavailable = library
+        .page("/projects/parts/families/brackets?a_length=20&a_pattern=%22four-hole%22")
+        .await;
+    assert!(unavailable.contains("This combination is unavailable"));
+    let exact = format!("/projects/parts/families/brackets?revision={revision}&variant=long");
+    let exact_page = library.page(&exact).await;
+    assert!(exact_page.contains("Split print"));
+    assert!(exact_page.contains("<dt>Length (mm)</dt><dd>40</dd>"));
+    assert!(exact_page.contains("<dt>Mounting pattern</dt><dd>four-hole</dd>"));
+    let (status, _, bytes) = library
+        .get(&format!(
+            "/projects/parts/files/small.stl?sha256={}",
+            projects::revisions::digest(b"small")
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, b"small");
+    library
+        .workspace
+        .write_artifact("projects/parts/small.stl", b"other", true)
+        .unwrap();
+    let (status, _, body) = library
+        .get(&format!(
+            "/projects/parts/files/small.stl?sha256={}",
+            projects::revisions::digest(b"small")
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!body.is_empty());
+    for uri in [
+        "/projects/parts/families",
+        "/projects/parts/families/brackets",
+    ] {
+        assert_eq!(
+            library
+                .send(Method::POST, uri, Some(PROXY), &["alice"], &[])
+                .await
+                .0,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        assert_eq!(
+            library
+                .send(Method::GET, uri, None, &["alice"], &[])
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let search = library.page("/?q=two-hole").await;
+    assert!(search.contains("Parts"));
+    let mut changed = families::get(
+        &library.workspace,
+        &families::GetParams {
+            project_id: "parts".into(),
+            family_id: "brackets".into(),
+            revision: None,
+        },
+    )
+    .unwrap()
+    .record
+    .family;
+    changed.id = "changed-brackets".into();
+    changed.variants[0].representations[0].files[0].sha256 = projects::revisions::digest(b"other");
+    families::put(
+        &library.workspace,
+        PutParams {
+            project_id: "parts".into(),
+            expected_revision: None,
+            family: changed,
+        },
+    )
+    .unwrap();
+    assert!(
+        library
+            .page("/projects/parts/families")
+            .await
+            .contains("1 paths have conflicting source identities")
+    );
+}

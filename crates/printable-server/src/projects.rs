@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod cover;
 mod embeddings;
 mod export;
+pub mod families;
 pub mod index;
 pub mod pictures;
 pub mod requirements;
@@ -95,6 +96,14 @@ pub struct UpdateParams {
     deny_unknown_fields
 )]
 pub enum ProjectRequest {
+    /// Create or replace one part family, guarded by its previous revision.
+    FamilyPut(Box<families::PutParams>),
+    /// Read one current or retained part family definition.
+    Family(families::GetParams),
+    /// Browse/search part families in a project and account for its files.
+    Families(families::ListParams),
+    /// Narrow supported combinations and verify an exact selection's files.
+    FamilySelect(families::SelectParams),
     Revise(revisions::ReviseParams),
     Revision(revisions::GetParams),
     Create(CreateParams),
@@ -405,6 +414,18 @@ fn existing_project(
 
 pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value, ToolError> {
     match request {
+        ProjectRequest::FamilyPut(params) => {
+            Ok(serde_json::to_value(families::put(workspace, *params)?)?)
+        }
+        ProjectRequest::Family(params) => {
+            Ok(serde_json::to_value(families::get(workspace, &params)?)?)
+        }
+        ProjectRequest::Families(params) => {
+            Ok(serde_json::to_value(families::list(workspace, &params)?)?)
+        }
+        ProjectRequest::FamilySelect(params) => {
+            Ok(serde_json::to_value(families::select(workspace, &params)?)?)
+        }
         ProjectRequest::Revise(params) => revisions::revise(workspace, params),
         ProjectRequest::Revision(params) => revisions::read(workspace, params),
         ProjectRequest::ExportBlender(_) => Err(ToolError::Validation(

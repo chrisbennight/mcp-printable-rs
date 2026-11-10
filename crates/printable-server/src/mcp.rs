@@ -929,7 +929,7 @@ mod tests {
         ("validate_mesh", 7_000, 14_500),
         ("analyze_assembly", 2_400, 1_600),
         ("job", 9_600, 0),
-        ("project", 11_300, 0),
+        ("project", 15_100, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
         ("photo", 4_900, 0),
@@ -940,7 +940,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 176_000;
+    const CATALOG_BUDGET: usize = 177_500;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {
