@@ -16,6 +16,15 @@ for the typed requests and results.
 [model library](model-library.md) to find designs on MakerWorld, Printables or
 Thingiverse.
 
+## Part families
+
+A project can organize related model files into [part families](part-families.md).
+Families expose their own typed choices, supported variants, and alternative
+file sets. Search includes family and variant terms, while the main catalog
+continues to show project cards. The project page groups classified model files
+under their families and offers a read-only, paginated selection flow. Exact
+selections retain their definition revision and check source-file identities.
+
 ## Project records
 
 `project create` writes `.printable/projects/<project_id>.json` in format
@@ -527,7 +536,8 @@ above the grid.
 A project page shows the full card: the cover or else the generated Blender or plate
 picture, the description, tags and dates,
 the newest slice, print outcomes per printer, model-site downloads, and up to
-500 of the project's files with download links. The page builds the card from
+500 unclassified project files with download links. Classified model files are
+accessed through their part families. The page builds the card from
 recorded slice summaries only, as `catalog card` does. Download pages from model sites
 are shown as plain links, and no page loads anything from another site. Dates
 are shown in UTC.
@@ -545,6 +555,9 @@ change during the download, and then streams the copy. The copy counts against
 `PRINTABLE_WORKSPACE_BUDGET_MIB` until the download ends. At most four
 downloads run at once; another is refused with status 503 until one ends.
 Files are sent as attachments with the media type `application/octet-stream`.
+Family links include an expected SHA-256, checked against the transfer snapshot.
+A family preview is limited to PNG, JPEG or WebP and is served with its image
+media type instead of as an attachment.
 
 ### Web page settings
 

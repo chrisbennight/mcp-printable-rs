@@ -580,6 +580,9 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
         ("catalog", "status") => typed::<index::IndexStatus>(name),
         ("project", "update" | "cover") => typed::<Project>(name),
         ("project", "reindex") => typed::<index::PassReport>(name),
+        ("project", "family_put" | "family") => typed::<crate::projects::families::Response>(name),
+        ("project", "families") => typed::<crate::projects::families::Listing>(name),
+        ("project", "family_select") => typed::<crate::projects::families::Selection>(name),
         _ => return None,
     };
     compact_schema(&mut schema);
@@ -864,10 +867,13 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
             let project = generator.subschema_for::<crate::projects::Project>();
             let pass = generator.subschema_for::<crate::projects::index::PassReport>();
+            let family = generator.subschema_for::<crate::projects::families::Response>();
+            let families = generator.subschema_for::<crate::projects::families::Listing>();
+            let selection = generator.subschema_for::<crate::projects::families::Selection>();
             json!({"type":"object","anyOf":[
             revision,
             project,
-            pass,
+            pass, family, families, selection,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),

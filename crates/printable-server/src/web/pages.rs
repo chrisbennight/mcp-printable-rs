@@ -400,7 +400,7 @@ fn size(bytes: u64) -> String {
 }
 
 /// Percent-encode each segment of a project-relative path for a link.
-fn encode_path(path: &str) -> String {
+pub(super) fn encode_path(path: &str) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(path.len());
     for (position, segment) in path.split('/').enumerate() {
@@ -600,7 +600,7 @@ fn downloads(view: &ProjectView) -> Markup {
 }
 
 fn files(view: &ProjectView, project: &str) -> Markup {
-    let total = view.card.file_count;
+    let total = view.family_counts.unclassified_files;
     html! {
         section {
             h2 { "Files" }
@@ -711,6 +711,16 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                     }
                 }
             }
+            @if view.family_counts.families>0 {section {
+                h2 {"Part families"}
+                p {(view.family_counts.families) " families · " (view.family_counts.variants) " variants. Choose a family before choosing a size or style."}
+                p {a href={ (project) "/families" } {"Browse and search part families"}}
+                div.grid {@for family in &view.families {article.card {div.body {
+                    a.title href={ (project) "/families/" (family.id) } {(family.name)}
+                    p {(family.category)} p.meta {(family.variants) " variants"}
+                }}}}
+                p.note {"Classified model files are grouped here. Other project files remain listed below."}
+            }}
             (slices(view, &root))
             (prints(view))
             (downloads(view))
@@ -734,6 +744,10 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
         &LibraryForm::default(),
         content,
     )
+}
+
+pub(super) fn family_page(paths: &Paths, title: &str, content: Markup) -> Markup {
+    layout(paths, title, &LibraryForm::default(), content)
 }
 
 #[cfg(test)]

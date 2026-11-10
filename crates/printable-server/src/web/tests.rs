@@ -730,3 +730,85 @@ async fn the_listener_reads_the_peer_address() {
     assert_eq!(refused.status(), 403);
     server.abort();
 }
+
+#[tokio::test]
+async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
+    use crate::projects::families::{self, PutParams};
+    let library = Library::new();
+    let mut family = families::tests::fixture(&library.workspace);
+    family.name = "Brackets <script>bad()</script>".into();
+    let revision = families::put(
+        &library.workspace,
+        PutParams {
+            project_id: "parts".into(),
+            expected_revision: None,
+            family,
+        },
+    )
+    .unwrap()
+    .revision;
+    library
+        .index
+        .pass(&library.workspace, PassKind::Retry)
+        .unwrap();
+    let project = library.page("/projects/parts").await;
+    assert!(project.contains("Browse and search part families"));
+    assert!(!project.contains("small.stl"));
+    let index = library.page("/projects/parts/families?q=40").await;
+    assert!(index.contains("1 families"));
+    assert!(index.contains("&lt;script&gt;"));
+    assert!(!index.contains("<script>bad()"));
+    let selection = library
+        .page("/projects/parts/families/brackets?a_length=20")
+        .await;
+    assert!(selection.contains("Short two-hole bracket"));
+    assert!(selection.contains("sha256="));
+    assert!(!selection.contains("Long four-hole bracket"));
+    let unavailable = library
+        .page("/projects/parts/families/brackets?a_length=20&a_pattern=%22four-hole%22")
+        .await;
+    assert!(unavailable.contains("This combination is unavailable"));
+    let exact = format!("/projects/parts/families/brackets?revision={revision}&variant=long");
+    assert!(library.page(&exact).await.contains("Split print"));
+    let (status, _, bytes) = library
+        .get(&format!(
+            "/projects/parts/files/small.stl?sha256={}",
+            projects::revisions::digest(b"small")
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, b"small");
+    library
+        .workspace
+        .write_artifact("projects/parts/small.stl", b"other", true)
+        .unwrap();
+    let (status, _, body) = library
+        .get(&format!(
+            "/projects/parts/files/small.stl?sha256={}",
+            projects::revisions::digest(b"small")
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!body.is_empty());
+    for uri in [
+        "/projects/parts/families",
+        "/projects/parts/families/brackets",
+    ] {
+        assert_eq!(
+            library
+                .send(Method::POST, uri, Some(PROXY), &["alice"], &[])
+                .await
+                .0,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        assert_eq!(
+            library
+                .send(Method::GET, uri, None, &["alice"], &[])
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let search = library.page("/?q=two-hole").await;
+    assert!(search.contains("Parts"));
+}

@@ -107,6 +107,11 @@ a short-lived one-use HTTP grant. The MCP bearer is not the download grant.
 Clients verify streamed bytes before accepting the file. Proxy URL settings
 come from trusted configuration, not forwarded request headers.
 
+[Part families](part-families.md) retain explicit supported configurations and
+file identities independently of the derived search index. Their read-only web
+selection uses the same confined file-transfer boundary as ordinary projects;
+family choices do not execute generators or printer operations.
+
 ## Current design and historical records
 
 The [workflow interface](workflow-interface.md), [native observations](native-observation.md),

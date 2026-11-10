@@ -540,6 +540,40 @@ impl Workspace {
         self.read_bytes(path, None)
     }
 
+    /// Process an artifact through a confined, pinned descriptor without
+    /// loading the whole file or allocating a disk snapshot. The callback
+    /// must propagate read failures; a source change during reading is refused.
+    pub fn with_artifact_reader<T>(
+        &self,
+        path: &str,
+        read: impl FnOnce(&mut dyn Read) -> std::io::Result<T>,
+    ) -> Result<(ArtifactMeta, T), WsError> {
+        self.require_confined()?;
+        let comps = normalize(path)?;
+        let rel = comps.join("/");
+        let name = comps.last().ok_or(WsError::UnsupportedArtifactType)?;
+        let suffix = allowed_suffix(name).ok_or(WsError::UnsupportedArtifactType)?;
+        let parent = self.walk_to(&comps[..comps.len() - 1], &rel, Missing::Error)?;
+        let fd = openat(
+            parent.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+            &rel,
+        )?;
+        let mut file = std::fs::File::from(fd);
+        let before = rustix::fs::fstat(&file).map_err(errno_io)?;
+        if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile {
+            return Err(WsError::NotRegularFile);
+        }
+        let value = read(&mut file)?;
+        let after = rustix::fs::fstat(&file).map_err(errno_io)?;
+        if !stat_unchanged(&before, &after) {
+            return Err(WsError::ChangedWhileReading);
+        }
+        Ok((meta_from(rel, suffix, &before), value))
+    }
+
     pub fn read_artifact(&self, path: &str) -> Result<(ArtifactMeta, Vec<u8>), WsError> {
         self.read_bytes(path, Some(MAX_TRANSFER_BYTES))
     }
