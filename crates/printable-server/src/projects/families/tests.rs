@@ -205,6 +205,31 @@ fn inventory_retains_duplicate_references_and_unclassified_files() {
 }
 
 #[test]
+fn inventory_retains_conflicting_source_identities_independently_of_family_order() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(Some(root.path()), None).unwrap();
+    let mut family = fixture(&workspace);
+    let first = save(&workspace, family.clone());
+    workspace
+        .write_artifact("projects/parts/small.stl", b"large", true)
+        .unwrap();
+    family.id = "other-brackets".into();
+    family.variants[0].representations[0].files[0].sha256 = digest(b"large");
+    let second = save(&workspace, family);
+    let mut records = vec![first, second];
+    let paths = classified_paths(&records);
+    let inventory = counts(&records, &paths);
+    assert_eq!(inventory.classified_files, 4);
+    assert_eq!(inventory.classified_file_identities, 5);
+    assert_eq!(inventory.conflicting_files, 1);
+    assert_eq!(inventory.distinct_classified_contents, 4);
+    assert_eq!(inventory.repeated_contents, 1);
+    assert_eq!(inventory.unclassified_files, 0);
+    records.reverse();
+    assert_eq!(counts(&records, &paths), inventory);
+}
+
+#[test]
 fn malformed_combinations_paths_and_file_identities_are_rejected() {
     let root = tempfile::tempdir().unwrap();
     let workspace = Workspace::open(Some(root.path()), None).unwrap();

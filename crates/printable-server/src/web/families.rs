@@ -89,6 +89,9 @@ pub(super) async fn listing(
         p {a href=(paths.link(&format!("projects/{project}"))){"Back to project"}}
         h1 {"Part families"}
         p.meta {(listing.counts.families) " families · " (listing.counts.variants) " variants · " (listing.counts.classified_files) " classified files · " (listing.counts.distinct_classified_contents) " distinct file contents"}
+        @if listing.counts.conflicting_files>0 {
+            p.note {(listing.counts.conflicting_files) " paths have conflicting source identities across current families. Counts retain all declared identities; exact selections verify source bytes."}
+        }
         p {"These are library counts. Required print quantities belong to a selected assembly or build."}
         form method="get" {label {"Find a family or variant " input type="search" name="q" value=(text);} button type="submit" {"Find"}}
         div.grid {@for family in &listing.families {article.card {div.body {

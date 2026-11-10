@@ -824,4 +824,32 @@ async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
     }
     let search = library.page("/?q=two-hole").await;
     assert!(search.contains("Parts"));
+    let mut changed = families::get(
+        &library.workspace,
+        &families::GetParams {
+            project_id: "parts".into(),
+            family_id: "brackets".into(),
+            revision: None,
+        },
+    )
+    .unwrap()
+    .record
+    .family;
+    changed.id = "changed-brackets".into();
+    changed.variants[0].representations[0].files[0].sha256 = projects::revisions::digest(b"other");
+    families::put(
+        &library.workspace,
+        PutParams {
+            project_id: "parts".into(),
+            expected_revision: None,
+            family: changed,
+        },
+    )
+    .unwrap();
+    assert!(
+        library
+            .page("/projects/parts/families")
+            .await
+            .contains("1 paths have conflicting source identities")
+    );
 }

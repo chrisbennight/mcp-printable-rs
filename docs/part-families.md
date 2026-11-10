@@ -139,8 +139,13 @@ The family listing reports family and variant counts, unique classified file
 paths, distinct declared file contents and repeated contents, plus the number
 of supported workspace files outside the families. Shared references do not add
 another physical file to these counts. Byte-identical content retains its
-separate paths and provenance. Counts describe the current records; an exact
-selection checks that its bytes still match.
+separate paths and provenance. `classified_file_identities` counts unique
+path-and-hash pairs. If current families declare different hashes for one path,
+`conflicting_files` flags that path and the web browser displays a notice.
+Distinct-content counts retain all declared hashes; repeated contents count
+additional path-and-hash pairs for the same bytes. Neither count depends on
+family order. Counts describe the current records; an exact selection checks
+that its bytes still match.
 
 None of these counts is a mesh-body count or bill of materials. A build must
 record selected variants, their retained revisions, chosen file sets and required

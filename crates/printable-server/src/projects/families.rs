@@ -156,11 +156,13 @@ pub struct Summary {
     pub variants: usize,
     pub preview: Option<File>,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Counts {
     pub families: usize,
     pub variants: usize,
     pub classified_files: usize,
+    pub classified_file_identities: usize,
+    pub conflicting_files: usize,
     pub distinct_classified_contents: usize,
     pub repeated_contents: usize,
     pub workspace_files: usize,
@@ -559,21 +561,27 @@ pub(crate) fn classified_paths(records: &[Response]) -> BTreeSet<String> {
 }
 
 pub fn counts(records: &[Response], workspace_paths: &BTreeSet<String>) -> Counts {
-    let mut paths = BTreeMap::new();
+    let mut paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut variants = 0;
     for record in records {
         variants += record.record.family.variants.len();
         for file in files(&record.record.family) {
-            paths.insert(file.path.clone(), file.sha256.clone());
+            paths
+                .entry(file.path.clone())
+                .or_default()
+                .insert(file.sha256.clone());
         }
     }
-    let distinct = paths.values().collect::<BTreeSet<_>>().len();
+    let identities = paths.values().map(BTreeSet::len).sum::<usize>();
+    let distinct = paths.values().flatten().collect::<BTreeSet<_>>().len();
     Counts {
         families: records.len(),
         variants,
         classified_files: paths.len(),
+        classified_file_identities: identities,
+        conflicting_files: paths.values().filter(|hashes| hashes.len() > 1).count(),
         distinct_classified_contents: distinct,
-        repeated_contents: paths.len() - distinct,
+        repeated_contents: identities - distinct,
         workspace_files: workspace_paths.len(),
         unclassified_files: workspace_paths
             .difference(&paths.keys().cloned().collect())
