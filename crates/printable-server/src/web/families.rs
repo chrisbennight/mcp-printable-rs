@@ -191,6 +191,10 @@ fn render(paths: &Paths, params: &SelectParams, selection: &Selection) -> Markup
         p {a href=(paths.link(&address(project,family,&selection.revision,None))){"Clear choices"}}
         @if let Some(variant)=&selection.selected {
             h2 {(variant.name)} p {(variant.notes)}
+            dl {@for option in &selection.options {
+                dt {(option.axis.label) @if let Some(unit)=&option.axis.unit {" (" (unit) ")"}}
+                dd {(variant.attributes[&option.axis.id].display())}
+            }}
             @if let Some(image)=&variant.preview {
                 img src=(file_url(paths,project,image,true)) alt="Selected variant preview" class="family-preview";
                 p.meta {"Preview supplied for this exact variant."}

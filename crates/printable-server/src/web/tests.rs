@@ -782,7 +782,10 @@ async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
         .await;
     assert!(unavailable.contains("This combination is unavailable"));
     let exact = format!("/projects/parts/families/brackets?revision={revision}&variant=long");
-    assert!(library.page(&exact).await.contains("Split print"));
+    let exact_page = library.page(&exact).await;
+    assert!(exact_page.contains("Split print"));
+    assert!(exact_page.contains("<dt>Length (mm)</dt><dd>40</dd>"));
+    assert!(exact_page.contains("<dt>Mounting pattern</dt><dd>four-hole</dd>"));
     let (status, _, bytes) = library
         .get(&format!(
             "/projects/parts/files/small.stl?sha256={}",
