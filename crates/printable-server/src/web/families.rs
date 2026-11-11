@@ -115,6 +115,7 @@ pub(super) fn cards(paths: &Paths, project: &str, families: &[families::Summary]
             }
             div.body {
                 a.title href=(url) {(family.name)}
+                @if !family.description.is_empty() {p.desc {(family.description)}}
                 p.meta {(category_name(&family.category)) " · " (family.variants) " variants"}
             }
         }}

@@ -26,7 +26,7 @@ button { padding: 7px 14px; cursor: pointer; background: var(--fg); color: var(-
 .status p { margin: 0; }
 .notes { margin: 4px 0 0; padding-left: 18px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 16px; }
-main.grid { max-width: 1400px; margin: 0 auto; padding: 16px 24px 24px; }
+main.grid { max-width: 1400px; margin: 0 auto; padding: 16px 24px 24px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
 main.notice { max-width: 900px; margin: 0 auto; padding: 24px; }
 .error { color: var(--bad); }
 .pager { max-width: 1400px; margin: 0 auto; padding: 0 24px 48px; display: flex; gap: 16px; align-items: center; }
