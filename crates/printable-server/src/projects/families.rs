@@ -589,6 +589,19 @@ pub fn counts(records: &[Response], workspace_paths: &BTreeSet<String>) -> Count
     }
 }
 pub fn list(workspace: &Workspace, params: &ListParams) -> Result<Listing, ToolError> {
+    Ok(browse(workspace, params, None)?.listing)
+}
+
+pub(crate) struct Browse {
+    pub listing: Listing,
+    pub all_families: Vec<Summary>,
+}
+
+pub(crate) fn browse(
+    workspace: &Workspace,
+    params: &ListParams,
+    category: Option<&str>,
+) -> Result<Browse, ToolError> {
     if params.limit == 0 || params.limit > 100 {
         return Err(invalid("family pages require a limit from 1 to 100"));
     }
@@ -600,6 +613,7 @@ pub fn list(workspace: &Workspace, params: &ListParams) -> Result<Listing, ToolE
         .filter_map(|f| f.path.strip_prefix(&prefix).map(str::to_owned))
         .collect();
     let counts = counts(&records, &workspace_paths);
+    let all_families = summaries(&records);
     let words: Vec<_> = params
         .text
         .split_whitespace()
@@ -609,7 +623,8 @@ pub fn list(workspace: &Workspace, params: &ListParams) -> Result<Listing, ToolE
         .into_iter()
         .filter(|r| {
             let text = search_text(std::slice::from_ref(r)).to_lowercase();
-            words.iter().all(|w| text.contains(w))
+            category.is_none_or(|category| r.record.family.category == category)
+                && words.iter().all(|w| text.contains(w))
         })
         .collect();
     let total = matched.len();
@@ -618,13 +633,16 @@ pub fn list(workspace: &Workspace, params: &ListParams) -> Result<Listing, ToolE
         .skip(params.offset)
         .take(params.limit)
         .collect::<Vec<_>>();
-    Ok(Listing {
-        project_id: params.project_id.clone(),
-        next_offset: (params.offset.saturating_add(families.len()) < total)
-            .then_some(params.offset.saturating_add(families.len())),
-        families,
-        total,
-        counts,
+    Ok(Browse {
+        all_families,
+        listing: Listing {
+            project_id: params.project_id.clone(),
+            next_offset: (params.offset.saturating_add(families.len()) < total)
+                .then_some(params.offset.saturating_add(families.len())),
+            families,
+            total,
+            counts,
+        },
     })
 }
 pub fn select(workspace: &Workspace, params: &SelectParams) -> Result<Selection, ToolError> {

@@ -653,10 +653,7 @@ impl ProjectView {
             .map(|(path, _)| path.to_owned())
             .collect();
         let family_counts = projects::families::counts(&inputs.families, &paths);
-        let family_summaries = projects::families::summaries(&inputs.families)
-            .into_iter()
-            .take(PAGE_SIZE)
-            .collect();
+        let family_summaries = projects::families::summaries(&inputs.families);
         let classified = projects::families::classified_paths(&inputs.families);
         let files = inputs
             .project_files()
