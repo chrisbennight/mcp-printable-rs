@@ -712,14 +712,13 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                 }
             }
             @if view.family_counts.families>0 {section {
+                h2 {"Collections"}
+                (super::families::collections(paths,&card.project_id,&view.families))
                 h2 {"Part families"}
-                p {(view.family_counts.families) " families · " (view.family_counts.variants) " variants. Choose a family before choosing a size or style."}
+                p {(view.family_counts.families) " families · " (view.family_counts.variants) " variants"}
                 p {a href={ (project) "/families" } {"Browse and search part families"}}
-                div.grid {@for family in &view.families {article.card {div.body {
-                    a.title href={ (project) "/families/" (family.id) } {(family.name)}
-                    p {(family.category)} p.meta {(family.variants) " variants"}
-                }}}}
-                p.note {"Classified model files are grouped here. Other project files remain listed below."}
+                (super::families::cards(paths,&card.project_id,&view.families[..view.families.len().min(8)]))
+                @if view.families.len()>8 {p {a href={ (project) "/families" } {"View all families"}}}
             }}
             (slices(view, &root))
             (prints(view))

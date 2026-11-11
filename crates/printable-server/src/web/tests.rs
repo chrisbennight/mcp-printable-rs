@@ -625,6 +625,65 @@ async fn downloads_in_progress_are_limited() {
 }
 
 #[tokio::test]
+async fn previews_queue_without_competing_with_model_downloads() {
+    let library = Library::new();
+    let image = fixture::png(8, 6);
+    library
+        .workspace
+        .write_artifact("projects/desk/preview.png", &image, false)
+        .unwrap();
+    let uri = format!(
+        "/projects/desk/files/preview.png?sha256={}&preview=1",
+        projects::revisions::digest(&image)
+    );
+    let request = |uri: &str| {
+        let mut request = HttpRequest::builder()
+            .uri(uri)
+            .header(USER_HEADER, "alice")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PROXY.parse::<SocketAddr>().unwrap()));
+        request
+    };
+    let mut downloads = Vec::new();
+    for _ in 0..MAX_CONCURRENT_DOWNLOADS {
+        let response = library
+            .router
+            .clone()
+            .oneshot(request("/projects/desk/files/parts/drawer.stl"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        downloads.push(response);
+    }
+    let mut previews = Vec::new();
+    for _ in 0..MAX_CONCURRENT_PREVIEWS {
+        let response = library.router.clone().oneshot(request(&uri)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        previews.push(response);
+    }
+    let next = library.router.clone().oneshot(request(&uri));
+    tokio::pin!(next);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut next)
+            .await
+            .is_err()
+    );
+    previews.pop();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), next)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), image);
+}
+
+#[tokio::test]
 async fn downloads_stream_project_files_and_nothing_else() {
     let library = Library::new();
     let expected = library
@@ -855,4 +914,68 @@ async fn families_collapse_variants_and_preserve_read_only_exact_downloads() {
             .await
             .contains("1 paths have conflicting source identities")
     );
+}
+
+#[tokio::test]
+async fn collection_navigation_preserves_images_search_and_pagination() {
+    use crate::projects::families::{self, File, PutParams};
+    let library = Library::new();
+    let template = families::tests::fixture(&library.workspace);
+    let png = fixture::png(8, 6);
+    library
+        .workspace
+        .write_artifact("projects/parts/preview.png", &png, false)
+        .unwrap();
+    for n in 0..26 {
+        let mut family = template.clone();
+        family.id = format!("brackets-{n:02}");
+        family.name = format!("Mounting bracket {n:02}");
+        family.category = if n == 25 { "Other" } else { "Mounts & clips" }.into();
+        family.preview = Some(File {
+            path: "preview.png".into(),
+            sha256: projects::revisions::digest(&png),
+        });
+        families::put(
+            &library.workspace,
+            PutParams {
+                project_id: "parts".into(),
+                expected_revision: None,
+                family,
+            },
+        )
+        .unwrap();
+    }
+    let project = library.page("/projects/parts").await;
+    assert!(project.contains("collection-card"));
+    assert!(project.contains("Mounts &amp; clips"));
+    assert!(project.contains("Other"));
+    assert_eq!(project.matches("class=\"card family-card\"").count(), 8);
+    let listing = library
+        .page("/projects/parts/families?category=Mounts+%26+clips&q=Mounting")
+        .await;
+    assert!(listing.contains("25 families in this view"));
+    assert!(listing.contains("category=Mounts+%26+clips&amp;q=Mounting&amp;offset=24"));
+    assert!(!listing.contains("brackets-25?revision="));
+    assert_eq!(listing.matches("class=\"card family-card\"").count(), 24);
+    let next = library
+        .page("/projects/parts/families?category=Mounts+%26+clips&q=Mounting&offset=24")
+        .await;
+    assert!(next.contains("Previous page"));
+    assert_eq!(next.matches("class=\"card family-card\"").count(), 1);
+    let detail = library.page("/projects/parts/families/brackets-00").await;
+    assert!(detail.contains("Representative family illustration"));
+    assert!(detail.contains("preview.png?sha256="));
+    assert!(detail.contains("<th>Length (mm)</th>"));
+    assert!(detail.contains("<th>Mounting pattern</th>"));
+    assert!(detail.contains("<td>two-hole</td>"));
+    let image = format!(
+        "/projects/parts/files/preview.png?sha256={}&preview=1",
+        projects::revisions::digest(&png)
+    );
+    let (status, headers, body) = library.get(&image).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(body, png);
+    assert_self_contained(&listing);
+    assert_self_contained(&detail);
 }

@@ -61,6 +61,8 @@ const MAX_LISTED_FILES: usize = 500;
 const MAX_CONCURRENT_READS: usize = 4;
 /// Downloads in progress at once. Each keeps a copy of its file until it ends.
 const MAX_CONCURRENT_DOWNLOADS: usize = 4;
+/// Preview streams queue independently of large model downloads.
+const MAX_CONCURRENT_PREVIEWS: usize = 4;
 /// Text filters in the order the search form shows them.
 const TEXT_FILTERS: [(&str, &str); 7] = [
     ("printer", "Printer"),
@@ -223,6 +225,7 @@ struct Web {
     settings: Arc<WebSettings>,
     reads: Arc<Semaphore>,
     downloads: Arc<Semaphore>,
+    previews: Arc<Semaphore>,
 }
 
 impl Web {
@@ -248,6 +251,7 @@ pub fn router(
         settings: Arc::new(settings),
         reads: Arc::new(Semaphore::new(MAX_CONCURRENT_READS)),
         downloads: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
+        previews: Arc::new(Semaphore::new(MAX_CONCURRENT_PREVIEWS)),
     };
     Router::new()
         .route("/", get(library))
@@ -653,10 +657,7 @@ impl ProjectView {
             .map(|(path, _)| path.to_owned())
             .collect();
         let family_counts = projects::families::counts(&inputs.families, &paths);
-        let family_summaries = projects::families::summaries(&inputs.families)
-            .into_iter()
-            .take(PAGE_SIZE)
-            .collect();
+        let family_summaries = projects::families::summaries(&inputs.families);
         let classified = projects::families::classified_paths(&inputs.families);
         let files = inputs
             .project_files()
@@ -956,9 +957,16 @@ async fn file(
         }
     }
     let head = method == Method::HEAD;
-    // A download keeps its slot until its copy has been sent or abandoned.
+    // A stream keeps its slot until its copy has been sent or abandoned.
+    // Browsers request thumbnail grids concurrently, so previews wait for
+    // their own capacity without competing with long model transfers.
     let slot = if head {
         None
+    } else if inline_picture {
+        match Arc::clone(&web.previews).acquire_owned().await {
+            Ok(slot) => Some(slot),
+            Err(_) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down."),
+        }
     } else {
         match Arc::clone(&web.downloads).try_acquire_owned() {
             Ok(slot) => Some(slot),

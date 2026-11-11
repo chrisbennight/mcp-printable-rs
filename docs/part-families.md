@@ -123,9 +123,20 @@ catalog keeps its existing project cards. On the project page, families appear
 before the ordinary files, and classified model files are kept within their
 family rather than repeated as a flat list. Unclassified files remain accessible.
 
+The project page presents family categories as collections with representative
+pictures. Collection links open a filtered thumbnail grid; search and pagination
+retain the selected collection. Family cards use the supplied family preview,
+and families without one remain accessible with a labeled placeholder. Prepare
+previews explicitly during authoring or ingestion; page visits never render a
+model or modify records.
+Thumbnail grids remain usable while model files download.
+
 The read-only family browser has search and pagination. Open a family, choose
 attribute values and submit the form to narrow the supported variants. No script
-or additional external service is needed. Exact-variant links retain the family
+or additional external service is needed. A representative family picture stays
+visible while choosing specifications, and a selected variant's own preview
+takes precedence. Comparison columns show attribute labels and units.
+Exact-variant links retain the family
 revision; their downloads also check the selected file's SHA-256 against an
 immutable transfer snapshot. Changing a file therefore cannot silently change
 the bytes an old selection downloads.
