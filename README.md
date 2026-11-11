@@ -126,3 +126,4 @@ authorization and current physical setup information.
 
 First-party source uses the [MIT license](LICENSE). Bundled software, models,
 and fonts retain their own licenses; see [component notices](THIRD_PARTY_NOTICES.md).
+See [image sources](docs/images/README.md) for the examples used in these guides.
