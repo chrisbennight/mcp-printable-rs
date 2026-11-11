@@ -1,0 +1,15 @@
+{
+  "action": "model",
+  "params": {
+    "project_id": "bracket-tutorial",
+    "source": "bracket.py",
+    "output_dir": "bracket-40",
+    "background": true,
+    "parameters": {"width": 40},
+    "qualification": {
+      "policy": "printable_part",
+      "dimensions_mm": [40, 30, 24],
+      "solid_count": 1
+    }
+  }
+}

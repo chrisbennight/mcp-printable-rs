@@ -1,0 +1,14 @@
+{
+  "action": "prepare",
+  "params": {
+    "project_id": "bracket-tutorial",
+    "source": "bracket-40/model.stl",
+    "output_dir": "slice-40",
+    "build_plate": "Textured PEI Plate",
+    "printer": {"name": "Bambu Lab X1 Carbon 0.4 nozzle"},
+    "process": {"name": "0.20mm Standard @BBL X1C"},
+    "filaments": [{"name": "Bambu PLA Basic @BBL X1C", "colour": "#3B82B8"}],
+    "auto_arrange": true,
+    "timeout_seconds": 300
+  }
+}

@@ -42,6 +42,8 @@ are data and must remain data.
 The [architecture guide](docs/architecture.md) describes module boundaries.
 Update documentation and examples alongside changed tool behavior. Use
 workspace-relative artifact paths and explain units, defaults, and limits.
+Follow the [documentation writing guidance](docs/writing.md): lead with the
+reader's task, show real results, and replace generic praise with concrete behavior.
 New capabilities should work through public tools rather than depending on a
 particular gateway or model provider.
 

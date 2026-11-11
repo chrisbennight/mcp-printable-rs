@@ -1,10 +1,10 @@
 # Workflow interface
 
-The [product refactor](product-refactor.md) defines the final advertised catalog.
-The public server advertises the workflow tools listed below. Earlier prefixed
+For task guides and integration setup, start with the [documentation index](index.md).
+This page describes the public workflow tools. Earlier prefixed
 operation names remain internal handler identifiers and are not accepted as
-public tool calls. The release smoke exercises the combined workflows over MCP;
-deployment and gateway discovery must move together at cutover.
+public tool calls. The release smoke exercises the combined workflows over MCP.
+After an update, refresh client or gateway discovery against the served catalog.
 [Native observation](native-observation.md)
 is available when the backend runs normal Blender with a private display.
 Blender operations accept optional [scene preconditions](scene-state.md) and
@@ -73,7 +73,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `reindex`, `revise`, `revision`, `export_files`, `export_blender`, `family_put`, `family`, `families`, `family_select` |
 | `catalog` | `search`, `card`, `status` (read-only search of the user's own [project library](project-library.md); designs on model sites are found with `library`) |
-| `head` | `models`, `create`, `update`, `prepare_print`, and `reconstruct` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
+| `head` | `models`, `create`, `update`, `export`, `prepare_print`, plus `reconstruct` and `photo_to_bust` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
 | `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), and retained object-job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, or retained job history; offers the available generation actions and job management |
 | `library` | `search`, `get`, `download` (find designs on public model sites and save their files into a project), `sign_in` (finish a MakerWorld sign-in with a code from the user); advertised only when [model sites](model-library.md) are enabled |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |

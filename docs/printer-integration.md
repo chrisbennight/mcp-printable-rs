@@ -1,5 +1,9 @@
 # Optional printer integration
 
+For the complete path through OrcaSlicer preparation to sending and starting a
+print, see [Slice, review, and send a print](workflows/model-to-printer.md).
+This page covers configuring Bambuddy and interpreting printer results.
+
 Printable exposes the `printer` and `print` workflows through the same
 authenticated MCP endpoint as modeling. Bambuddy provides device observations,
 library records, materials, queue management and physical control. It remains
@@ -41,8 +45,8 @@ from observed execution, while backend digest verification remains unverified.
 See [design and print evidence](delivery-evidence.md) for reference fields,
 historical records, and recovery after an unknown outcome.
 The workflow resource explains plate readiness, calibration, AMS mapping and
-replacement-print handling. Slicing itself is a separate capability; use a
-compatible slicer to prepare and visually review the printer-ready file.
+replacement-print handling. Printable's [native slicer](slicing.md) prepares
+and reviews the printer-ready file before these delivery operations.
 
 ## Print outcome records
 

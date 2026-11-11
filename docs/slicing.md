@@ -1,5 +1,8 @@
 # Native slicing
 
+For a worked model-to-package example followed by optional printer delivery,
+see [Slice, review, and send a print](workflows/model-to-printer.md).
+
 The `slice` workflow uses a separate, credential-free OrcaSlicer worker. It shares
 the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.

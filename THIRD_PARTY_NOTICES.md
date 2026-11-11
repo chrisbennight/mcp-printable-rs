@@ -5,6 +5,22 @@ the licenses of dependencies, fonts, or programs installed in the images.
 Preserve the existing authorship and copyright notices when distributing source
 or binaries.
 
+## Documentation images
+
+The Einstein input portrait is Ferdinand Schmutzer's 1921 photograph,
+[Einstein 1921 by F Schmutzer](https://commons.wikimedia.org/wiki/File:Einstein_1921_by_F_Schmutzer.jpg),
+identified as public domain on Wikimedia Commons. The included JPEG is its
+500-pixel thumbnail, without local edits. Reconstruction and fit images show
+output made with separately supplied FLAME/reconstruction models; model files
+are not distributed with these examples. Follow the
+[model acquisition and license instructions](docs/flame-models.md) for those models.
+
+The other documentation renders and toolpath previews are outputs of the
+first-party example sources. Their inputs and capture details are recorded in
+[documentation evidence](evidence/documentation-workflows.md).
+
+## Bundled components
+
 | Component | Distribution boundary and notice location |
 | --- | --- |
 | Rust dependencies | Versions are recorded in `Cargo.lock`; each crate retains its declared license and upstream notices. Native dependencies linked by crates are also part of the binary inventory. |

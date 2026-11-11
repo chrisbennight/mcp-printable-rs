@@ -1,5 +1,8 @@
 # An object from a photograph
 
+For choosing a photo workflow and seeing actual output, start with
+[Images, reliefs, molds, and busts](workflows/images-to-models.md).
+
 The `photo` tool's `object` action generates the 3D shape of the one object,
 figure or character in a workspace photograph and writes it as an STL.
 By default the shape comes from [Pixal3D](https://github.com/TencentARC/Pixal3D), which

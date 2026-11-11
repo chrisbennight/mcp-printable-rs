@@ -1,0 +1,8 @@
+{
+  "action": "create",
+  "params": {
+    "project_id": "bracket-tutorial",
+    "name": "Bracket tutorial",
+    "description": "A measured bracket and its width revision"
+  }
+}
