@@ -129,6 +129,7 @@ retain the selected collection. Family cards use the supplied family preview,
 and families without one remain accessible with a labeled placeholder. Prepare
 previews explicitly during authoring or ingestion; page visits never render a
 model or modify records.
+Thumbnail grids remain usable while model files download.
 
 The read-only family browser has search and pagination. Open a family, choose
 attribute values and submit the form to narrow the supported variants. No script

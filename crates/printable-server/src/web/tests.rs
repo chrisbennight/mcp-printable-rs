@@ -625,6 +625,65 @@ async fn downloads_in_progress_are_limited() {
 }
 
 #[tokio::test]
+async fn previews_queue_without_competing_with_model_downloads() {
+    let library = Library::new();
+    let image = fixture::png(8, 6);
+    library
+        .workspace
+        .write_artifact("projects/desk/preview.png", &image, false)
+        .unwrap();
+    let uri = format!(
+        "/projects/desk/files/preview.png?sha256={}&preview=1",
+        projects::revisions::digest(&image)
+    );
+    let request = |uri: &str| {
+        let mut request = HttpRequest::builder()
+            .uri(uri)
+            .header(USER_HEADER, "alice")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PROXY.parse::<SocketAddr>().unwrap()));
+        request
+    };
+    let mut downloads = Vec::new();
+    for _ in 0..MAX_CONCURRENT_DOWNLOADS {
+        let response = library
+            .router
+            .clone()
+            .oneshot(request("/projects/desk/files/parts/drawer.stl"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        downloads.push(response);
+    }
+    let mut previews = Vec::new();
+    for _ in 0..MAX_CONCURRENT_PREVIEWS {
+        let response = library.router.clone().oneshot(request(&uri)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        previews.push(response);
+    }
+    let next = library.router.clone().oneshot(request(&uri));
+    tokio::pin!(next);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut next)
+            .await
+            .is_err()
+    );
+    previews.pop();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), next)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), image);
+}
+
+#[tokio::test]
 async fn downloads_stream_project_files_and_nothing_else() {
     let library = Library::new();
     let expected = library
