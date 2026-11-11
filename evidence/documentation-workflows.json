@@ -1,0 +1,1318 @@
+{
+  "format_version": 1,
+  "scope": "software documentation example; no physical print",
+  "source": "examples/workflows/bracket.py",
+  "builds": [
+    {
+      "width_mm": 40,
+      "result": {
+        "completion": "completed",
+        "qualification": {
+          "scope": "cad_delivery",
+          "policy": "printable_part",
+          "status": "passed",
+          "requirements": {
+            "policy": "printable_part",
+            "units": "mm",
+            "dimensions_mm": [
+              40,
+              30,
+              24
+            ],
+            "dimension_tolerance_mm": 0.05,
+            "solid_count": 1
+          },
+          "criteria": {
+            "dimensions": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/bounds_mm/size"
+            },
+            "meaningful_solids": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/solid_count"
+            },
+            "physical_performance": {
+              "status": "physical_test_required",
+              "required": false,
+              "next_action": "Verify physical fit, strength, material and print-process suitability separately."
+            },
+            "solid_count": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/solid_count"
+            },
+            "units": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/units"
+            },
+            "valid_geometry": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/valid"
+            }
+          }
+        },
+        "report": {
+          "cadquery_version": "2.8.0",
+          "source": {
+            "resolved_length_unit": "mm"
+          },
+          "units": "mm",
+          "bounds_mm": {
+            "min": [
+              0,
+              0,
+              0
+            ],
+            "max": [
+              40,
+              30,
+              24
+            ],
+            "size": [
+              40,
+              30,
+              24
+            ]
+          },
+          "solid_count": 1,
+          "solid_volumes_mm3": [
+            7099.469035085127
+          ],
+          "component_count": 1,
+          "valid": true,
+          "vertical_holes": {
+            "status": "measured",
+            "holes": [
+              {
+                "center_mm": [
+                  25,
+                  8
+                ],
+                "radius_mm": 2
+              },
+              {
+                "center_mm": [
+                  25,
+                  22
+                ],
+                "radius_mm": 2
+              }
+            ]
+          },
+          "meshing": {
+            "linear_tolerance_mm": 0.05,
+            "angular_tolerance_rad": 0.1,
+            "stl_relative_tolerance": false
+          },
+          "diagnostics": [
+            "Original source is retained; STEP contains geometry, not parametric design history.",
+            "No explicit healing is requested; native reader and exporter diagnostics are retained in the build log."
+          ]
+        },
+        "artifacts": [
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-40/model.step",
+              "size_bytes": 30954,
+              "media_type": "model/step",
+              "modified_ns": 1794413311619505700
+            },
+            "sha256": "87b326fba21ca9ca8174b6c856c3618241db2df0283d3f2b822a767b5d041806"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-40/model.stl",
+              "size_bytes": 51884,
+              "media_type": "model/stl",
+              "modified_ns": 1794413311622505700
+            },
+            "sha256": "8ef4834462cb628136bdd8d706a6ba93f8feaa35571d6e2722a6d8ace5628396"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-40/model.glb",
+              "size_bytes": 35508,
+              "media_type": "model/gltf-binary",
+              "modified_ns": 1794413311625505800
+            },
+            "sha256": "7d12dced82f88f5393aa5cd67c438d1e20d962fd01707e835bd7d51aaf244e5d"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-40/components.json",
+              "size_bytes": 408,
+              "media_type": "application/json",
+              "modified_ns": 1794413311629505800
+            },
+            "sha256": "fa407eaaa6ca1aede8ce40dfe4e4bff31ec86b70ab13b452af9976dbf65a0263"
+          }
+        ],
+        "build_directory": "projects/documentation-workflows-20261111/bracket-40"
+      }
+    },
+    {
+      "width_mm": 60,
+      "result": {
+        "completion": "completed",
+        "qualification": {
+          "scope": "cad_delivery",
+          "policy": "printable_part",
+          "status": "passed",
+          "requirements": {
+            "policy": "printable_part",
+            "units": "mm",
+            "dimensions_mm": [
+              60,
+              30,
+              24
+            ],
+            "dimension_tolerance_mm": 0.05,
+            "solid_count": 1
+          },
+          "criteria": {
+            "dimensions": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/bounds_mm/size"
+            },
+            "meaningful_solids": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/solid_count"
+            },
+            "physical_performance": {
+              "status": "physical_test_required",
+              "required": false,
+              "next_action": "Verify physical fit, strength, material and print-process suitability separately."
+            },
+            "solid_count": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/solid_count"
+            },
+            "units": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/units"
+            },
+            "valid_geometry": {
+              "status": "passed",
+              "required": true,
+              "evidence": "/valid"
+            }
+          }
+        },
+        "report": {
+          "cadquery_version": "2.8.0",
+          "source": {
+            "resolved_length_unit": "mm"
+          },
+          "units": "mm",
+          "bounds_mm": {
+            "min": [
+              0,
+              0,
+              0
+            ],
+            "max": [
+              60,
+              30,
+              24
+            ],
+            "size": [
+              60,
+              30,
+              24
+            ]
+          },
+          "solid_count": 1,
+          "solid_volumes_mm3": [
+            9499.469035085129
+          ],
+          "component_count": 1,
+          "valid": true,
+          "vertical_holes": {
+            "status": "measured",
+            "holes": [
+              {
+                "center_mm": [
+                  25,
+                  8
+                ],
+                "radius_mm": 2
+              },
+              {
+                "center_mm": [
+                  25,
+                  22
+                ],
+                "radius_mm": 2
+              }
+            ]
+          },
+          "meshing": {
+            "linear_tolerance_mm": 0.05,
+            "angular_tolerance_rad": 0.1,
+            "stl_relative_tolerance": false
+          },
+          "diagnostics": [
+            "Original source is retained; STEP contains geometry, not parametric design history.",
+            "No explicit healing is requested; native reader and exporter diagnostics are retained in the build log."
+          ]
+        },
+        "artifacts": [
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-60/model.step",
+              "size_bytes": 30954,
+              "media_type": "model/step",
+              "modified_ns": 1794413504621873400
+            },
+            "sha256": "c9a8f9a24009ac5ba3db1bedd1daa08b470fc6ec51fabeccf785b1bbad053888"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-60/model.stl",
+              "size_bytes": 51884,
+              "media_type": "model/stl",
+              "modified_ns": 1794413504624873500
+            },
+            "sha256": "a6c66be64456ce15416db8a32cc1aba1934159425ad65aa34e4a3ed39c2d54cc"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-60/model.glb",
+              "size_bytes": 35508,
+              "media_type": "model/gltf-binary",
+              "modified_ns": 1794413504627873500
+            },
+            "sha256": "ce50149c46b1a058d505164d7f74e5f9f2de8f94d4e13a73c53dad6ace558e64"
+          },
+          {
+            "artifact": {
+              "path": "projects/documentation-workflows-20261111/bracket-60/components.json",
+              "size_bytes": 408,
+              "media_type": "application/json",
+              "modified_ns": 1794413504631873500
+            },
+            "sha256": "24f1f677dc7882aef3a8f0dd8ddedf7b22dcb8f85de3dfd7bd4197729f6eaaf5"
+          }
+        ],
+        "build_directory": "projects/documentation-workflows-20261111/bracket-60"
+      }
+    }
+  ],
+  "slice": {
+    "id": "97dc30e7707b3c039de351f9738892f7",
+    "slice": {
+      "project_id": "documentation-workflows-20261111",
+      "output_dir": "slice-40"
+    },
+    "status": "completed",
+    "engine": {
+      "name": "OrcaSlicer",
+      "version": "2.4.2"
+    },
+    "source_sha256": "8ef4834462cb628136bdd8d706a6ba93f8feaa35571d6e2722a6d8ace5628396",
+    "setup": {
+      "build_plate": "Textured PEI Plate",
+      "project_plate": 1,
+      "printer": {
+        "name": "Bambu Lab X1 Carbon 0.4 nozzle",
+        "printer_model": "Bambu Lab X1 Carbon",
+        "nozzle_diameter": [
+          "0.4"
+        ]
+      },
+      "process": {
+        "name": "0.20mm Standard @BBL X1C",
+        "layer_height": "0.2",
+        "initial_layer_print_height": "0.2",
+        "wall_loops": "2",
+        "sparse_infill_density": "15%",
+        "sparse_infill_pattern": "crosshatch",
+        "enable_support": "0",
+        "support_type": "tree(auto)",
+        "support_on_build_plate_only": "0"
+      },
+      "filaments": [
+        {
+          "slice_material_index": 0,
+          "colour": "#3B82B8",
+          "profile": {
+            "name": "Bambu PLA Basic @BBL X1C",
+            "filament_type": [
+              "PLA"
+            ],
+            "filament_vendor": [
+              "Bambu Lab"
+            ],
+            "nozzle_temperature": [
+              "220",
+              "220"
+            ],
+            "nozzle_temperature_initial_layer": [
+              "220",
+              "220"
+            ],
+            "fan_min_speed": [
+              "100"
+            ],
+            "fan_max_speed": [
+              "100"
+            ],
+            "close_fan_the_first_x_layers": [
+              "1"
+            ]
+          },
+          "bed_temperature": [
+            "55"
+          ],
+          "bed_temperature_initial_layer": [
+            "55"
+          ],
+          "bed_temperature_setting": "textured_plate_temp"
+        }
+      ],
+      "auto_arrange": true,
+      "auto_orient": false,
+      "settings_source": "resolved_profiles_and_explicit_selection"
+    },
+    "cancel_requested": false,
+    "progress": {
+      "message": "All done, Success",
+      "total_percent": 100,
+      "plate_percent": 100,
+      "plate_index": 0,
+      "plate_count": 1
+    },
+    "artifacts": {
+      "model.gcode.3mf": {
+        "artifact": {
+          "path": "projects/documentation-workflows-20261111/slice-40/model.gcode.3mf",
+          "size_bytes": 97337,
+          "media_type": "application/octet-stream",
+          "modified_ns": 1794413523841106400
+        },
+        "sha256": "e28a4e007a9eea8107ce3160247fc303785b846d5f206e634fbfd4d1928dbc6b"
+      },
+      "plate_1.gcode": {
+        "artifact": {
+          "path": "projects/documentation-workflows-20261111/slice-40/plate_1.gcode",
+          "size_bytes": 453489,
+          "media_type": "text/plain",
+          "modified_ns": 1794413523836106500
+        },
+        "sha256": "15eff03bbc1f92fee77b5de4a3c0fc270e2d9eae1bbabd21daf7b899967969e4"
+      },
+      "result.json": {
+        "artifact": {
+          "path": "projects/documentation-workflows-20261111/slice-40/result.json",
+          "size_bytes": 346,
+          "media_type": "application/json",
+          "modified_ns": 1794413523844106500
+        },
+        "sha256": "5a21505e4fea668e8b60255cfad15a758ae58666bc9b418c6d36825cf25aee63"
+      }
+    },
+    "provenance": {
+      "path": ".printable/evidence/slice/34ad082277e295d271ba0ebda77726b574555fc01da0a81153b567ff82c2477e.json",
+      "sha256": "34ad082277e295d271ba0ebda77726b574555fc01da0a81153b567ff82c2477e"
+    },
+    "finished_unix_ms": 1794413523852,
+    "summary": {
+      "format_version": 1,
+      "slice": {
+        "project_id": "documentation-workflows-20261111",
+        "output_dir": "slice-40"
+      },
+      "finished_unix_ms": 1794413523852,
+      "finished_estimated": false,
+      "package": "projects/documentation-workflows-20261111/slice-40/model.gcode.3mf",
+      "build_plate": "Textured PEI Plate",
+      "printer": {
+        "name": "Bambu Lab X1 Carbon 0.4 nozzle",
+        "printer_model": "Bambu Lab X1 Carbon",
+        "nozzle_diameter": [
+          "0.4"
+        ]
+      },
+      "process": "0.20mm Standard @BBL X1C",
+      "printer_profile": "Bambu Lab X1 Carbon 0.4 nozzle",
+      "process_profile": "0.20mm Standard @BBL X1C",
+      "plates": [
+        1
+      ],
+      "plate_count": 1,
+      "thumbnails": [
+        1
+      ],
+      "filaments": [
+        {
+          "slot": 0,
+          "profile": "Bambu PLA Basic @BBL X1C",
+          "filament_type": "PLA",
+          "colour": "#3B82B8"
+        }
+      ],
+      "filaments_truncated": false
+    }
+  },
+  "review": {
+    "kind": "actual_toolpath",
+    "projection": "top_xy",
+    "units": "mm",
+    "layers": 120,
+    "selected_layers": [
+      20,
+      20
+    ],
+    "segments": 310,
+    "bounds_mm": {
+      "min": [
+        108.21,
+        111.21,
+        4
+      ],
+      "max": [
+        147.79,
+        140.79,
+        4
+      ]
+    },
+    "path_length_mm_by_feature": {
+      "Inner wall": 62.84200000000001,
+      "Outer wall": 165.95162007561368,
+      "Sparse infill": 46.166420105239126,
+      "Top surface": 2702.639900527294
+    },
+    "legend_rgb": {
+      "Inner wall / material 1000": [
+        255,
+        179,
+        71
+      ],
+      "Outer wall / material 1000": [
+        61,
+        174,
+        233
+      ],
+      "Sparse infill / material 1000": [
+        215,
+        130,
+        233
+      ],
+      "Top surface / material 1000": [
+        137,
+        218,
+        132
+      ]
+    },
+    "estimates": {
+      "time": null,
+      "filament_grams": "5.37"
+    },
+    "arc_sampling_max_path_mm": 0.2,
+    "physical_result": "not_observed",
+    "source_sha256": "15eff03bbc1f92fee77b5de4a3c0fc270e2d9eae1bbabd21daf7b899967969e4",
+    "slice": {
+      "project_id": "documentation-workflows-20261111",
+      "output_dir": "slice-40"
+    },
+    "toolpath": "projects/documentation-workflows-20261111/slice-40/plate_1.gcode",
+    "image": {
+      "path": "projects/documentation-workflows-20261111/slice-40/review-afc81f1e55127a3478033d5871b47fba.png",
+      "size_bytes": 477290,
+      "media_type": "image/png",
+      "modified_ns": 1794413577699759400
+    },
+    "slice_provenance": {
+      "path": ".printable/evidence/slice/34ad082277e295d271ba0ebda77726b574555fc01da0a81153b567ff82c2477e.json",
+      "sha256": "34ad082277e295d271ba0ebda77726b574555fc01da0a81153b567ff82c2477e"
+    },
+    "provenance": {
+      "path": ".printable/evidence/toolpath_review/169fd35d9356923aa2a338c6813833af60e7f336a742fc0e18fd0de9fc8703e8.json",
+      "sha256": "169fd35d9356923aa2a338c6813833af60e7f336a742fc0e18fd0de9fc8703e8"
+    },
+    "metadata_path": "projects/documentation-workflows-20261111/slice-40/review-afc81f1e55127a3478033d5871b47fba.json"
+  },
+  "images": {
+    "bracket40": {
+      "path": ".printable/covers/documentation-workflows-20261111/d7edcebe3aed9e55c05c6f6bfc654f3bc23e833bf072fb99ed43d3ae76194560.png",
+      "sha256": "d7edcebe3aed9e55c05c6f6bfc654f3bc23e833bf072fb99ed43d3ae76194560",
+      "media_type": "image/png",
+      "width": 512,
+      "height": 512,
+      "origin": {
+        "kind": "model_view",
+        "model": "projects/documentation-workflows-20261111/bracket-40/model.stl"
+      }
+    },
+    "bracket60": {
+      "path": ".printable/covers/documentation-workflows-20261111/598a4e3f5921c47b4269575c48e772ddd5108d9d1b39b6048f836782730c876d.png",
+      "sha256": "598a4e3f5921c47b4269575c48e772ddd5108d9d1b39b6048f836782730c876d",
+      "media_type": "image/png",
+      "width": 512,
+      "height": 512,
+      "origin": {
+        "kind": "model_view",
+        "model": "projects/documentation-workflows-20261111/bracket-60/model.stl"
+      }
+    }
+  },
+  "portrait": {
+    "input": {
+      "path": "docs/images/einstein-input.jpg",
+      "sha256": "ac29d64cf735eaf6ff44059b1f17089f0696172c3cbebf8f4e12d9944f55afd1",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Einstein_1921_by_F_Schmutzer.jpg",
+      "author": "Ferdinand Schmutzer",
+      "year": 1921
+    },
+    "request": {
+      "action": "photo_to_bust",
+      "params": {
+        "reconstruct": {
+          "images": [
+            "projects/documentation-workflows-20261111/einstein.jpg"
+          ],
+          "displacement_path": "projects/documentation-workflows-20261111/einstein-detail.png",
+          "fit_path": "projects/documentation-workflows-20261111/einstein-fit.png"
+        },
+        "print": {
+          "path": "projects/documentation-workflows-20261111/einstein-bust.stl",
+          "printer": {
+            "process": "fdm"
+          }
+        },
+        "detail": {
+          "relief_mm": 0.3
+        }
+      }
+    },
+    "reconstruction": {
+      "variant": "flame2020_generic",
+      "fit": [
+        {
+          "image": "projects/documentation-workflows-20261111/einstein.jpg",
+          "head_on_person": 0.9674695286825576,
+          "face_skin_covered": 0.9991422199348088
+        }
+      ],
+      "fit_picture": {
+        "artifact": {
+          "path": "projects/documentation-workflows-20261111/einstein-fit.png",
+          "size_bytes": 127303,
+          "media_type": "image/png",
+          "modified_ns": 1794414276744233700
+        },
+        "width": 422,
+        "height": 270
+      }
+    },
+    "print": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/einstein-bust.stl",
+        "size_bytes": 20436884,
+        "media_type": "model/stl",
+        "modified_ns": 1794414288922381300
+      },
+      "units": "millimetres",
+      "variant": "flame2020_generic",
+      "bust": {
+        "triangles": 408736,
+        "size_mm": [
+          83.45508398123572,
+          98.86098188800436,
+          100
+        ],
+        "volume_mm3": 278764.02059665474,
+        "requested_edge_length_mm": 0.4,
+        "edge_length_mm": 0.3999804868409777,
+        "estimated_deviation_p999_mm": 0.042156985847198875,
+        "trimmed_at_neck": true,
+        "life_size_fraction": 0.3471259402433897,
+        "discarded_fragments": 1,
+        "plinth": {
+          "height_mm": 8,
+          "diameter_mm": 83.45508398123572,
+          "chamfer_mm": 0.5
+        },
+        "displacement": {
+          "lowest_mm": -0.5015159460681337,
+          "highest_mm": 0.4934194704874514,
+          "percentiles_mm": {
+            "p1": -0.3421653811793017,
+            "p5": -0.24344831567084588,
+            "p50": -0.011294263208358435,
+            "p95": 0.23183788889601692,
+            "p99": 0.4373216677618618
+          },
+          "depth_p95_mm": 0.3202605653008423,
+          "relief_scale": 0.476762826295517,
+          "filter": {
+            "millimetres_per_texel": 1.4924826622009275,
+            "high_pass_mm": null,
+            "clip_percentile": null,
+            "clipped_at_mm": null,
+            "gain": 1,
+            "relief_mm": 0.3
+          }
+        },
+        "overhang": {
+          "area_mm2": 455.2852412595672,
+          "regions": [
+            {
+              "area_mm2": 258.98469150074425,
+              "centre_mm": [
+                2.0927363764375513,
+                -25.053853837150115,
+                17.10058635951144
+              ],
+              "region": "neck"
+            },
+            {
+              "area_mm2": 34.92460213348913,
+              "centre_mm": [
+                -0.027250245516099295,
+                -37.45250527036338,
+                47.27817826409281
+              ],
+              "region": "nose"
+            },
+            {
+              "area_mm2": 17.467472414699802,
+              "centre_mm": [
+                -11.574525232710236,
+                -26.302580144879872,
+                64.43456274418051
+              ],
+              "region": "right_eye_region"
+            },
+            {
+              "area_mm2": 16.427166835559213,
+              "centre_mm": [
+                12.785857371199857,
+                -26.38413278877498,
+                64.87419613288154
+              ],
+              "region": "left_eyeball"
+            },
+            {
+              "area_mm2": 16.156503477189812,
+              "centre_mm": [
+                -27.372336775576375,
+                4.365398939713949,
+                40.97735378445123
+              ],
+              "region": "right_ear"
+            }
+          ]
+        },
+        "thin": {
+          "area_mm2": 2.144452502083921,
+          "regions": [
+            {
+              "area_mm2": 0.6863613017422499,
+              "centre_mm": [
+                -26.715800603230793,
+                6.278207461039226,
+                54.82866287231445
+              ],
+              "region": "right_ear"
+            },
+            {
+              "area_mm2": 0.6554719118436437,
+              "centre_mm": [
+                -26.174638112386067,
+                7.858928521474202,
+                48.07607777913412
+              ],
+              "region": "right_ear"
+            },
+            {
+              "area_mm2": 0.2277280312101596,
+              "centre_mm": [
+                3.425112009048462,
+                -33.69519933064779,
+                50.248602549235024
+              ],
+              "region": "nose"
+            },
+            {
+              "area_mm2": 0.10519960423526745,
+              "centre_mm": [
+                12.988056818644203,
+                -26.59708531697591,
+                65.51084645589192
+              ],
+              "region": "left_eye_region"
+            },
+            {
+              "area_mm2": 0.09915211379738792,
+              "centre_mm": [
+                15.94615077972412,
+                -24.388153076171875,
+                63.65963999430338
+              ],
+              "region": "left_eyeball"
+            }
+          ]
+        }
+      },
+      "validation": {
+        "vertices": 204370,
+        "triangles": 408736,
+        "bounds": {
+          "minimum_mm": [
+            -41.68279647827149,
+            -41.330322265625,
+            0
+          ],
+          "maximum_mm": [
+            41.77228546142578,
+            57.53065872192383,
+            100
+          ],
+          "dimensions_mm": [
+            83.45508193969727,
+            98.86098098754884,
+            100
+          ]
+        },
+        "topology": {
+          "watertight": true,
+          "consistently_oriented": true,
+          "manifold": true,
+          "connected_components": 1,
+          "boundary_edges": 0,
+          "degenerate_triangles": 0,
+          "duplicate_triangles": 0,
+          "self_intersections": 0,
+          "shell_intersections": 0
+        },
+        "surface_area_mm2": 30159.812369278043,
+        "signed_volume_mm3": 278764.02042256045,
+        "solid_properties": {
+          "volume_mm3": 278764.02042256325,
+          "surface_area_mm2": 30159.812369278345,
+          "center_of_mass_mm": [
+            0.529261028108454,
+            6.04729089502775,
+            45.02972597444639
+          ]
+        },
+        "overhang": {
+          "build_direction": [
+            0,
+            0,
+            1
+          ],
+          "threshold_degrees": 45,
+          "bed_contact": {
+            "faces": 142,
+            "area_mm2": 5338.1028996231635
+          },
+          "supported": {
+            "faces": 397999,
+            "area_mm2": 29704.53960254803
+          },
+          "warning": {
+            "faces": 9423,
+            "area_mm2": 401.3907970341209
+          },
+          "severe": {
+            "faces": 1314,
+            "area_mm2": 53.88196969587534
+          },
+          "requires_support": true
+        },
+        "solid_geometry": true,
+        "printable": true,
+        "assessment": {
+          "scope": "mesh_geometry",
+          "status": "failed",
+          "criteria": {
+            "build_envelope": {
+              "status": "unmeasured"
+            },
+            "dimensional_requirements": {
+              "status": "unmeasured"
+            },
+            "finite_dimensions": {
+              "status": "passed",
+              "evidence": "/bounds"
+            },
+            "material_process": {
+              "status": "unmeasured"
+            },
+            "physical_performance": {
+              "status": "physical_test_required"
+            },
+            "solid_topology": {
+              "status": "passed",
+              "evidence": "/topology"
+            },
+            "support_free_orientation": {
+              "status": "failed",
+              "evidence": "/overhang"
+            },
+            "wall_thickness": {
+              "status": "unmeasured"
+            }
+          }
+        },
+        "issues": [
+          {
+            "severity": "warning",
+            "code": "support_recommended",
+            "message": "9423 warning and 1314 severe faces may require support",
+            "recommendation": "Review the heatmap, reorient the part, add support, or redesign the overhangs."
+          }
+        ]
+      },
+      "warnings": [
+        "2.1 mm\u00b2 of the surface is on parts thinner than 0.4 mm, mostly near right_ear, nose, left_eye_region, left_eyeball; they may not print"
+      ],
+      "printer": {
+        "process": "fdm",
+        "nozzle_diameter_mm": 0.4,
+        "layer_height_mm": 0.2,
+        "maximum_overhang_degrees": 45,
+        "minimum_wall_mm": 0.4
+      }
+    }
+  },
+  "unsuccessful_portrait": {
+    "source_url": "https://commons.wikimedia.org/wiki/File:Charles_Darwin_photograph_by_Julia_Margaret_Cameron,_1868.jpg",
+    "author": "Julia Margaret Cameron",
+    "year": 1868,
+    "input_sha256": "ea07f8db2fd3dc4c5d0be3afd2c78fe13f9b23eca615490dd9f5efd88f312575",
+    "error": {
+      "code": "no_face",
+      "message": "reconstruction failed: darwin.jpg: no face was found"
+    }
+  },
+  "object": {
+    "request": {
+      "action": "object",
+      "params": {
+        "image": "projects/documentation-workflows-20261111/bracket-input.png",
+        "mesh_path": "projects/documentation-workflows-20261111/estimated-bracket.stl",
+        "model": "pixal3d",
+        "size_mm": 40,
+        "resolution": 512,
+        "target_triangles": 100000,
+        "background": true
+      }
+    },
+    "result": {
+      "triangles": 99999,
+      "generated_triangles": 1256554,
+      "size_mm": [
+        40,
+        32.657,
+        36.68
+      ],
+      "resolution": 512,
+      "tokens": {
+        "structure": 2362,
+        "shape": 2362
+      },
+      "steps": {
+        "structure": 12,
+        "shape": 12
+      },
+      "seed": 42,
+      "fov_degrees": 20,
+      "fov_source": "assumed",
+      "background": "removed",
+      "device": "cuda",
+      "seconds": 67.152,
+      "stages": [
+        {
+          "stage": "background",
+          "peak_gpu_memory_bytes": 3343810048,
+          "seconds": 9.919
+        },
+        {
+          "stage": "image features",
+          "peak_gpu_memory_bytes": 1274225152,
+          "seconds": 4.269
+        },
+        {
+          "stage": "structure",
+          "peak_gpu_memory_bytes": 2946933760,
+          "seconds": 26.522
+        },
+        {
+          "stage": "shape at 512",
+          "peak_gpu_memory_bytes": 2975645696,
+          "seconds": 20.853
+        },
+        {
+          "stage": "surface",
+          "peak_gpu_memory_bytes": 1573648384,
+          "seconds": 3.272
+        },
+        {
+          "stage": "simplification",
+          "peak_gpu_memory_bytes": 205370368,
+          "seconds": 2.273
+        }
+      ],
+      "peak_gpu_memory_bytes": 3343810048,
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/estimated-bracket.stl",
+        "size_bytes": 5000034,
+        "media_type": "model/stl",
+        "modified_ns": 1794414396943691500
+      },
+      "image_sha256": "d7edcebe3aed9e55c05c6f6bfc654f3bc23e833bf072fb99ed43d3ae76194560"
+    }
+  },
+  "relief": {
+    "source": "examples/workflows/flower-mold.scad",
+    "master": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/flower-master.stl",
+        "size_bytes": 306909,
+        "media_type": "model/stl",
+        "modified_ns": 1794414764709309400
+      },
+      "validation": {
+        "vertices": 936,
+        "triangles": 1868,
+        "bounds": {
+          "minimum_mm": [
+            -23,
+            -23,
+            0
+          ],
+          "maximum_mm": [
+            23,
+            23,
+            5
+          ],
+          "dimensions_mm": [
+            46,
+            46,
+            5
+          ]
+        },
+        "topology": {
+          "watertight": true,
+          "consistently_oriented": true,
+          "manifold": true,
+          "connected_components": 1,
+          "boundary_edges": 0,
+          "degenerate_triangles": 0,
+          "duplicate_triangles": 0,
+          "self_intersections": 0,
+          "shell_intersections": 0
+        },
+        "surface_area_mm2": 3984.416027881215,
+        "signed_volume_mm3": 5957.136642861573,
+        "solid_properties": {
+          "volume_mm3": 5957.136642861583,
+          "surface_area_mm2": 3984.416027881212,
+          "center_of_mass_mm": [
+            -1.160703440578465e-15,
+            4.2581490382685893e-16,
+            1.9063698500929296
+          ]
+        },
+        "overhang": {
+          "build_direction": [
+            0,
+            0,
+            1
+          ],
+          "threshold_degrees": 45,
+          "bed_contact": {
+            "faces": 94,
+            "area_mm2": 1660.7170828094822
+          },
+          "supported": {
+            "faces": 1868,
+            "area_mm2": 3984.416027881215
+          },
+          "warning": {
+            "faces": 0,
+            "area_mm2": 0
+          },
+          "severe": {
+            "faces": 0,
+            "area_mm2": 0
+          },
+          "requires_support": false
+        },
+        "solid_geometry": true,
+        "printable": true,
+        "assessment": {
+          "scope": "mesh_geometry",
+          "status": "incomplete",
+          "criteria": {
+            "build_envelope": {
+              "status": "unmeasured"
+            },
+            "dimensional_requirements": {
+              "status": "unmeasured"
+            },
+            "finite_dimensions": {
+              "status": "passed",
+              "evidence": "/bounds"
+            },
+            "material_process": {
+              "status": "unmeasured"
+            },
+            "physical_performance": {
+              "status": "physical_test_required"
+            },
+            "solid_topology": {
+              "status": "passed",
+              "evidence": "/topology"
+            },
+            "support_free_orientation": {
+              "status": "passed",
+              "evidence": "/overhang"
+            },
+            "wall_thickness": {
+              "status": "unmeasured"
+            }
+          }
+        },
+        "issues": []
+      },
+      "definitions": {
+        "count": 1,
+        "names": [
+          "pbl_variant"
+        ],
+        "variant_applied": true
+      },
+      "diagnostics": {
+        "stdout": "",
+        "stderr": "Geometries in cache: 15\nGeometry cache size in bytes: 257384\nCGAL Polyhedrons in cache: 1\nCGAL cache size in bytes: 1663184\nTotal rendering time: 0:00:02.147\n   Top level object is a 3D object:\n   Simple:        yes\n   Vertices:      936\n   Halfedges:    3536\n   Edges:        1768\n   Halffacets:   1670\n   Facets:        835\n   Volumes:         2\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      }
+    },
+    "tray": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/flower-tray.stl",
+        "size_bytes": 430795,
+        "media_type": "model/stl",
+        "modified_ns": 1794414772656409000
+      },
+      "validation": {
+        "vertices": 1320,
+        "triangles": 2636,
+        "bounds": {
+          "minimum_mm": [
+            -29,
+            -29,
+            0
+          ],
+          "maximum_mm": [
+            29,
+            29,
+            14
+          ],
+          "dimensions_mm": [
+            58,
+            58,
+            14
+          ]
+        },
+        "topology": {
+          "watertight": true,
+          "consistently_oriented": true,
+          "manifold": true,
+          "connected_components": 1,
+          "boundary_edges": 0,
+          "degenerate_triangles": 0,
+          "duplicate_triangles": 0,
+          "self_intersections": 0,
+          "shell_intersections": 0
+        },
+        "surface_area_mm2": 10453.887895861211,
+        "signed_volume_mm3": 17453.404314826956,
+        "solid_properties": {
+          "volume_mm3": 17453.404314826934,
+          "surface_area_mm2": 10453.88789586128,
+          "center_of_mass_mm": [
+            -2.5765890100909293e-15,
+            -7.256707079297017e-17,
+            4.48498349559714
+          ]
+        },
+        "overhang": {
+          "build_direction": [
+            0,
+            0,
+            1
+          ],
+          "threshold_degrees": 45,
+          "bed_contact": {
+            "faces": 94,
+            "area_mm2": 2640.192146878444
+          },
+          "supported": {
+            "faces": 2636,
+            "area_mm2": 10453.887895861211
+          },
+          "warning": {
+            "faces": 0,
+            "area_mm2": 0
+          },
+          "severe": {
+            "faces": 0,
+            "area_mm2": 0
+          },
+          "requires_support": false
+        },
+        "solid_geometry": true,
+        "printable": true,
+        "assessment": {
+          "scope": "mesh_geometry",
+          "status": "incomplete",
+          "criteria": {
+            "build_envelope": {
+              "status": "unmeasured"
+            },
+            "dimensional_requirements": {
+              "status": "unmeasured"
+            },
+            "finite_dimensions": {
+              "status": "passed",
+              "evidence": "/bounds"
+            },
+            "material_process": {
+              "status": "unmeasured"
+            },
+            "physical_performance": {
+              "status": "physical_test_required"
+            },
+            "solid_topology": {
+              "status": "passed",
+              "evidence": "/topology"
+            },
+            "support_free_orientation": {
+              "status": "passed",
+              "evidence": "/overhang"
+            },
+            "wall_thickness": {
+              "status": "unmeasured"
+            }
+          }
+        },
+        "issues": []
+      },
+      "definitions": {
+        "count": 1,
+        "names": [
+          "pbl_variant"
+        ],
+        "variant_applied": true
+      },
+      "diagnostics": {
+        "stdout": "",
+        "stderr": "Geometries in cache: 18\nGeometry cache size in bytes: 299312\nCGAL Polyhedrons in cache: 4\nCGAL cache size in bytes: 6096832\nTotal rendering time: 0:00:03.239\n   Top level object is a 3D object:\n   Simple:        yes\n   Vertices:     1320\n   Halfedges:    4688\n   Edges:        2344\n   Halffacets:   2058\n   Facets:       1029\n   Volumes:         2\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      }
+    },
+    "master_image": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/flower-master.png",
+        "size_bytes": 17314,
+        "media_type": "image/png",
+        "modified_ns": 1794414767181340400
+      },
+      "view": "iso",
+      "size": 700,
+      "preview": true,
+      "inline": {
+        "requested": false,
+        "included": false,
+        "max_bytes": 1048576,
+        "reason": "disabled by caller"
+      },
+      "definitions": {
+        "count": 1,
+        "names": [
+          "pbl_variant"
+        ],
+        "variant_applied": true
+      },
+      "diagnostics": {
+        "stdout": "",
+        "stderr": "Compiling design (CSG Products normalization)...\nNormalized CSG tree has 2 elements\nGeometries in cache: 14\nGeometry cache size in bytes: 150384\nCGAL Polyhedrons in cache: 0\nCGAL cache size in bytes: 0\nTotal rendering time: 0:00:00.155\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      }
+    },
+    "tray_image": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/flower-tray.png",
+        "size_bytes": 24274,
+        "media_type": "image/png",
+        "modified_ns": 1794414775042439200
+      },
+      "view": "iso",
+      "size": 700,
+      "preview": true,
+      "inline": {
+        "requested": false,
+        "included": false,
+        "max_bytes": 1048576,
+        "reason": "disabled by caller"
+      },
+      "definitions": {
+        "count": 1,
+        "names": [
+          "pbl_variant"
+        ],
+        "variant_applied": true
+      },
+      "diagnostics": {
+        "stdout": "",
+        "stderr": "Compiling design (CSG Products normalization)...\nNormalized CSG tree has 4 elements\nGeometries in cache: 16\nGeometry cache size in bytes: 178336\nCGAL Polyhedrons in cache: 0\nCGAL cache size in bytes: 0\nTotal rendering time: 0:00:00.263\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      }
+    },
+    "section": {
+      "artifact": {
+        "path": "projects/documentation-workflows-20261111/flower-artwork.svg",
+        "size_bytes": 14421,
+        "media_type": "image/svg+xml",
+        "modified_ns": 1794414782358530800
+      },
+      "z_mm": 4,
+      "definitions": {
+        "count": 1,
+        "names": [
+          "pbl_variant"
+        ],
+        "variant_applied": true
+      },
+      "diagnostics": {
+        "stdout": "",
+        "stderr": "Geometries in cache: 15\nGeometry cache size in bytes: 257384\nCGAL Polyhedrons in cache: 1\nCGAL cache size in bytes: 1663184\nTotal rendering time: 0:00:01.345\n   Top level object is a 3D object:\n   Simple:        yes\n   Vertices:      936\n   Halfedges:    3536\n   Edges:        1768\n   Halffacets:   1670\n   Facets:        835\n   Volumes:         2\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      },
+      "projection_diagnostics": {
+        "stdout": "",
+        "stderr": "Geometries in cache: 3\nGeometry cache size in bytes: 281280\nCGAL Polyhedrons in cache: 0\nCGAL cache size in bytes: 0\nTotal rendering time: 0:00:03.078\n   Top level object is a 2D object:\n   Contours:        1\n",
+        "stdout_truncated": false,
+        "stderr_truncated": false
+      }
+    }
+  }
+}

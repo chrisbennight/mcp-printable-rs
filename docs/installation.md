@@ -1,5 +1,9 @@
 # Install on a Linux NVIDIA host
 
+For the first tutorial, client connection, and file retrieval, see
+[Make your first model](getting-started.md). The [documentation index](index.md)
+lists workflows and their optional integrations.
+
 Printable runs an authenticated HTTP MCP server, a live Blender process with a
 private display, a separate Blender render worker, and native CAD and slicer
 workers. This installation is for

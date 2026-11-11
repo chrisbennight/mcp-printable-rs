@@ -1,5 +1,8 @@
 # Image to mold skill
 
+For choosing physical scale, reviewing a relief, and continuing to a print,
+start with [the image workflow guide](workflows/images-to-models.md#artwork-to-a-relief-or-mold).
+
 Printable bundles [image-to-mold](../skills/image-to-mold/SKILL.md) for an MCP
 client to run with its modeling and image-analysis capabilities. It guides the
 conversion of artwork into a calibrated relief depth map, a positive master or

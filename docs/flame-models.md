@@ -1,5 +1,9 @@
 # FLAME head models
 
+For an illustrated portrait example and the combined photo-to-bust route, see
+[the image workflow guide](workflows/images-to-models.md#portraits-to-a-bust).
+This page contains model preparation and the detailed head/bust options.
+
 [FLAME](https://flame.is.tue.mpg.de/) is a statistical 3D head model from the
 Max Planck Institute for Intelligent Systems. It combines a linear identity
 shape space with an articulated neck, jaw and eyes, pose-dependent corrective
