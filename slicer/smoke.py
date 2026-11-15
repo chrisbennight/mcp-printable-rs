@@ -183,6 +183,24 @@ with tempfile.TemporaryDirectory() as directory:
         replay = request("capture", {**capture_params, "camera": overview["camera"]})
         assert replay["camera"] == overview["camera"], "resolved native camera did not replay"
         assert replay["image_sha256"] == overview["image_sha256"], "camera replay changed native pixels"
+        target = list(overview["camera"]["target"])
+        target[0] += 5
+        zoom = overview["camera"]["zoom"] * 0.5
+        custom_frame = request("capture", {**capture_params, "width": 1200, "height": 800,
+            "camera": {"target": target, "zoom": zoom}})
+        verify_capture(root, custom_frame, fixture)
+        assert (custom_frame["width"], custom_frame["height"]) == (1200, 800)
+        assert custom_frame["camera"]["target"] == target
+        assert abs(custom_frame["camera"]["zoom"] - zoom) <= 1e-9 * max(1, zoom)
+        for preset, forward in {"top": [0, 0, -1], "bottom": [0, 0, 1],
+                                "front": [0, 1, 0], "rear": [0, -1, 0],
+                                "left": [1, 0, 0], "right": [-1, 0, 0]}.items():
+            result = request("capture", {**capture_params, "plates": [2], "objects": [1],
+                "camera": {"preset": preset},
+                "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}})
+            native = verify_capture(root, result, fixture, [2])
+            assert all(abs(-actual - expected) < 1e-9 for actual, expected in
+                       zip(native["view_matrix"][2][:3], forward)), "native axis preset looks in the wrong direction"
         for controls in [
             {"plates": [2], "camera": {"preset": "top"}},
             {"camera": {"preset": "top", "projection": "perspective"}},
