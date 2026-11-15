@@ -1,22 +1,47 @@
 //! Native Orca layout observations over immutable project or prepared inputs.
 
 use super::{
-    ProcessGroup, SliceHandle, SliceWorker, hash_file, invalid, read_log, slice_directory,
-    slice_error,
+    ProcessGroup, SliceHandle, SliceWorker, invalid, read_log, slice_directory, slice_error,
 };
 use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    io::Read,
+    io::{Read, Write},
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+struct CaptureLimit {
+    deadline: Instant,
+    cancellation: CancellationToken,
+}
+
+impl CaptureLimit {
+    fn check(&self) -> Result<(), ToolError> {
+        if self.cancellation.is_cancelled() {
+            Err(slice_error("native Orca capture cancelled"))
+        } else if Instant::now() >= self.deadline {
+            Err(slice_error(
+                "native Orca capture exceeded its processing deadline",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_io(&self) -> std::io::Result<()> {
+        self.check().map_err(std::io::Error::other)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -113,7 +138,7 @@ pub struct CaptureParams {
     pub width: u32,
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Positive processing budget, including native startup. Defaults to five minutes.
+    /// Positive budget through native validation. Retention completes once publication starts.
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
@@ -189,12 +214,32 @@ impl CaptureParams {
 impl SliceWorker {
     pub(super) async fn capture(&self, params: CaptureParams) -> Result<Value, ToolError> {
         let budget = params.validate()?;
-        tokio::time::timeout(budget, self.capture_inner(params))
+        let limit = CaptureLimit {
+            deadline: Instant::now()
+                .checked_add(budget)
+                .ok_or_else(|| invalid("capture processing budget is not representable"))?,
+            cancellation: CancellationToken::new(),
+        };
+        let _cancel_on_drop = limit.cancellation.clone().drop_guard();
+        let observation = tokio::time::timeout(budget, self.capture_inner(params, limit.clone()))
             .await
-            .map_err(|_| slice_error("native Orca capture exceeded its processing deadline"))?
+            .map_err(|_| slice_error("native Orca capture exceeded its processing deadline"))??;
+        limit.check()?;
+        // Publication is a completion boundary. Once started, finish retention
+        // and return its references rather than reporting a processing timeout
+        // after observation files have already been committed.
+        let workspace = Arc::clone(&self.workspace);
+        tokio::task::spawn_blocking(move || observation.publish(&workspace))
+            .await
+            .map_err(|_| slice_error("native capture artifact task failed"))?
     }
 
-    async fn capture_inner(&self, params: CaptureParams) -> Result<Value, ToolError> {
+    async fn capture_inner(
+        &self,
+        params: CaptureParams,
+        limit: CaptureLimit,
+    ) -> Result<CapturedLayout, ToolError> {
+        limit.check()?;
         let (source, expected_hash, slice_provenance) = match &params.source {
             CaptureSource::Project { path } => {
                 if !path.ends_with(".3mf") {
@@ -260,15 +305,15 @@ impl SliceWorker {
                 (path, Some(hash), reference)
             }
         };
+        let admission = Arc::new(
+            self.admit("slicer is busy; retry capture after active work completes")
+                .await?,
+        );
         if self.probe_engine().await.native_capture != Some(true) {
             return Err(ToolError::NativeCaptureUnavailable(
                 "the installed engine does not provide native workspace capture".into(),
             ));
         }
-        let admission = Arc::new(
-            self.admit("slicer is busy; retry capture after active work completes")
-                .await?,
-        );
         let staging = Arc::new(self.workspace.scratch(
             self.workspace.stat_artifact(&source)?.size_bytes,
             "orca-capture",
@@ -276,20 +321,26 @@ impl SliceWorker {
         let workspace = Arc::clone(&self.workspace);
         let copy_from = source.clone();
         let owners = (Arc::clone(&admission), Arc::clone(&staging));
+        let copy_limit = limit.clone();
         let source_hash = tokio::task::spawn_blocking(move || -> Result<String, ToolError> {
             let (_admission, staging) = owners;
-            let snapshot = workspace.snapshot_artifact(&copy_from)?;
-            let hash = hash_file(snapshot.path())?;
+            copy_limit.check()?;
+            let mut destination = std::fs::File::create(staging.path().join("source.3mf"))?;
+            let copied = workspace.with_artifact_reader(&copy_from, |reader| {
+                copy_and_hash(reader, &mut destination, &copy_limit)
+            });
+            copy_limit.check()?;
+            let (_, hash) = copied?;
             if expected_hash.is_some_and(|expected| expected != hash) {
                 return Err(slice_error(
                     "prepared package changed since slicing; prepare a new revision",
                 ));
             }
-            std::fs::copy(snapshot.path(), staging.path().join("source.3mf"))?;
             Ok(hash)
         })
         .await
         .map_err(|_| slice_error("capture input snapshot task failed"))??;
+        limit.check()?;
         let native_request = params.native_request();
         let request_path = staging.path().join("view-request.json");
         std::fs::write(&request_path, serde_json::to_vec(&native_request)?)?;
@@ -342,58 +393,185 @@ impl SliceWorker {
                 "native Orca capture failed ({status}); inspect {diagnostics_path}"
             )));
         }
-        let workspace = Arc::clone(&self.workspace);
-        tokio::task::spawn_blocking(move || -> Result<Value, ToolError> {
-            let _admission = admission;
-            if hash_file(&staging.path().join("source.3mf"))? != source_hash {
+        tokio::task::spawn_blocking(move || -> Result<CapturedLayout, ToolError> {
+            limit.check()?;
+            let mut input = open_regular(&staging.path().join("source.3mf"))?;
+            if copy_and_hash(&mut input, &mut std::io::sink(), &limit)? != source_hash {
                 return Err(slice_error("native capture changed its input snapshot"));
             }
-            let bytes = read_regular(&staging.path().join("capture.png"))?;
-            crate::tools::validate_png(&bytes, u64::from(params.width), u64::from(params.height))?;
-            let native: Value = serde_json::from_slice(&read_regular(&staging.path().join("capture.json"))?)?;
+            let bytes = read_regular(&staging.path().join("capture.png"), &limit)?;
+            let validated = crate::tools::validate_png_reader(
+                &bytes,
+                u64::from(params.width),
+                u64::from(params.height),
+                std::io::BufReader::new(CheckedImageReader {
+                    inner: std::io::Cursor::new(bytes.as_slice()),
+                    limit: &limit,
+                }),
+            );
+            limit.check()?;
+            validated?;
+            let native: Value = serde_json::from_slice(&read_regular(
+                &staging.path().join("capture.json"),
+                &limit,
+            )?)?;
             validate_native(&native, &params)?;
-            let capture_id = random_hex_id()?;
-            let image_path = projects::resolve(&workspace, &params.project_id,
-                &format!("observations/orca-{capture_id}.png"))?;
-            let stem = image_path.strip_suffix(".png").expect("generated capture PNG suffix");
-            let image = workspace.write_generated_bytes(&image_path, &bytes, false)?;
-            let image_sha256 = provenance::digest(&bytes);
-            let native_metadata_path = format!("{stem}-native.json");
-            let native_bytes = serde_json::to_vec(&native)?;
-            workspace.write_generated_bytes(&native_metadata_path, &native_bytes, false)?;
-            let retained_path = format!(".printable/evidence/observation_media/orca-{capture_id}.png");
-            let retained_image = workspace.write_reserved_artifact(&retained_path, &bytes, false)?;
-            let evidence = json!({"kind":"native_orca_layout","representation":native["representation"],
+            let image_sha256 = copy_and_hash(
+                &mut std::io::Cursor::new(&bytes),
+                &mut std::io::sink(),
+                &limit,
+            )?;
+            limit.check()?;
+            Ok(CapturedLayout {
+                params,
+                source,
+                source_hash,
+                slice_provenance,
+                native,
+                bytes,
+                image_sha256,
+                _admission: admission,
+            })
+        })
+        .await
+        .map_err(|_| slice_error("native capture validation task failed"))?
+    }
+}
+
+struct CapturedLayout {
+    params: CaptureParams,
+    source: String,
+    source_hash: String,
+    slice_provenance: Option<Value>,
+    native: Value,
+    bytes: Vec<u8>,
+    image_sha256: String,
+    _admission: Arc<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl CapturedLayout {
+    fn publish(self, workspace: &printable_workspace::Workspace) -> Result<Value, ToolError> {
+        let Self {
+            params,
+            source,
+            source_hash,
+            slice_provenance,
+            native,
+            bytes,
+            image_sha256,
+            _admission,
+        } = self;
+        let capture_id = random_hex_id()?;
+        let image_path = projects::resolve(
+            workspace,
+            &params.project_id,
+            &format!("observations/orca-{capture_id}.png"),
+        )?;
+        let stem = image_path
+            .strip_suffix(".png")
+            .expect("generated capture PNG suffix");
+        let image = workspace.write_generated_bytes(&image_path, &bytes, false)?;
+        let native_metadata_path = format!("{stem}-native.json");
+        let native_bytes = serde_json::to_vec(&native)?;
+        workspace.write_generated_bytes(&native_metadata_path, &native_bytes, false)?;
+        let retained_path = format!(".printable/evidence/observation_media/orca-{capture_id}.png");
+        let retained_image = workspace.write_reserved_artifact(&retained_path, &bytes, false)?;
+        let evidence = json!({"kind":"native_orca_layout","representation":native["representation"],
                 "prime_towers":native["prime_towers"],"source":params.source,"source_path":source,"source_sha256":source_hash,
                 "engine":native["engine"],"plates":native["plates"],"objects":native["objects"],
                 "camera":native["camera"],"visibility":native["visibility"],"width":params.width,"height":params.height,
                 "graphics_renderer":native["graphics_renderer"],"slice_provenance":slice_provenance,
                 "image":{"artifact":retained_image,"sha256":image_sha256},
                 "native_metadata":{"path":native_metadata_path,"sha256":provenance::digest(&native_bytes)}});
-            let reference = provenance::store(&workspace, provenance::Kind::Observation, &params.project_id, evidence.clone())?;
-            let mut response = evidence;
-            response["image"] = json!(image);
-            response["image_sha256"] = json!(image_sha256);
-            response["provenance"] = json!(reference);
-            let metadata_path = format!("{stem}.json");
-            workspace.write_generated_bytes(&metadata_path, &serde_json::to_vec(&response)?, false)?;
-            response["metadata_path"] = json!(metadata_path);
-            Ok(response)
-        }).await.map_err(|_| slice_error("native capture artifact task failed"))?
+        let reference = provenance::store(
+            workspace,
+            provenance::Kind::Observation,
+            &params.project_id,
+            evidence.clone(),
+        )?;
+        let mut response = evidence;
+        response["image"] = json!(image);
+        response["image_sha256"] = json!(image_sha256);
+        response["provenance"] = json!(reference);
+        let metadata_path = format!("{stem}.json");
+        workspace.write_generated_bytes(&metadata_path, &serde_json::to_vec(&response)?, false)?;
+        response["metadata_path"] = json!(metadata_path);
+        Ok(response)
     }
 }
 
-fn read_regular(path: &Path) -> Result<Vec<u8>, ToolError> {
-    let mut file = std::fs::OpenOptions::new()
+fn open_regular(path: &Path) -> Result<std::fs::File, ToolError> {
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     if !file.metadata()?.is_file() {
         return Err(slice_error("native capture output must be a regular file"));
     }
+    Ok(file)
+}
+
+fn read_regular(path: &Path, limit: &CaptureLimit) -> Result<Vec<u8>, ToolError> {
+    let mut file = open_regular(path)?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let mut buffer = [0; 65536];
+    loop {
+        limit.check()?;
+        let count = file.read(&mut buffer)?;
+        limit.check()?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
     Ok(bytes)
+}
+
+fn copy_and_hash(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    limit: &CaptureLimit,
+) -> std::io::Result<String> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        limit.check_io()?;
+        let count = reader.read(&mut buffer)?;
+        limit.check_io()?;
+        if count == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..count])?;
+        limit.check_io()?;
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+struct CheckedImageReader<'a> {
+    inner: std::io::Cursor<&'a [u8]>,
+    limit: &'a CaptureLimit,
+}
+
+impl Read for CheckedImageReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.limit.check_io()?;
+        let length = buffer.len().min(65536);
+        let count = self.inner.read(&mut buffer[..length])?;
+        self.limit.check_io()?;
+        Ok(count)
+    }
+}
+
+impl std::io::Seek for CheckedImageReader<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.limit.check_io()?;
+        std::io::Seek::seek(&mut self.inner, position)
+    }
 }
 
 fn validate_native(native: &Value, params: &CaptureParams) -> Result<(), ToolError> {
@@ -470,10 +648,11 @@ mod tests {
             .encode(super::super::package::fixture::png(16, 12));
         let script = r#"#!/usr/bin/python3
 import base64,json,pathlib,sys,time
+root=pathlib.Path(__ROOT__)
 if '--help' in sys.argv:
+ root.joinpath('capability-probed').touch()
  print('OrcaSlicer-2.4.2: --slice --export-3mf --capture-workspace')
  sys.exit(0)
-root=pathlib.Path(__ROOT__)
 behavior=__BEHAVIOR__
 root.joinpath('capture-argv.json').write_text(json.dumps(sys.argv))
 request=json.loads(pathlib.Path(sys.argv[2]).read_text())
@@ -534,6 +713,65 @@ pathlib.Path('capture.png').write_bytes(b'incomplete PNG' if behavior == 'bad-pn
         assert!(params.validate().is_err());
         let unknown = json!({"project_id":"part","source":{"kind":"project","path":"layout.3mf"},"shell":"command"});
         assert!(serde_json::from_value::<CaptureParams>(unknown).is_err());
+    }
+
+    #[test]
+    fn blocking_processing_stops_before_writing_a_cancelled_chunk() {
+        struct CancellingReader(CancellationToken);
+        impl Read for CancellingReader {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                bytes[0] = 42;
+                self.0.cancel();
+                Ok(1)
+            }
+        }
+        let token = CancellationToken::new();
+        let limit = CaptureLimit {
+            deadline: Instant::now() + Duration::from_secs(30),
+            cancellation: token.clone(),
+        };
+        let mut destination = Vec::new();
+        assert!(copy_and_hash(&mut CancellingReader(token), &mut destination, &limit).is_err());
+        assert!(destination.is_empty());
+        let expired = CaptureLimit {
+            deadline: Instant::now(),
+            cancellation: CancellationToken::new(),
+        };
+        assert!(
+            copy_and_hash(
+                &mut std::io::Cursor::new(b"source"),
+                &mut destination,
+                &expired
+            )
+            .is_err()
+        );
+        assert!(destination.is_empty());
+        let bytes = super::super::package::fixture::png(16, 12);
+        assert!(
+            crate::tools::validate_png_reader(
+                &bytes,
+                16,
+                12,
+                std::io::BufReader::new(CheckedImageReader {
+                    inner: std::io::Cursor::new(bytes.as_slice()),
+                    limit: &expired
+                })
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_capture_does_not_spawn_a_capability_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = fixture(root.path(), "normal");
+        let permit = Arc::clone(&worker.admission).acquire_owned().await.unwrap();
+        let failure = worker.capture(request()).await.unwrap_err();
+        assert!(failure.to_string().contains("busy"));
+        assert!(!root.path().join("capability-probed").exists());
+        drop(permit);
+        worker.capture(request()).await.unwrap();
+        assert!(root.path().join("capability-probed").exists());
     }
 
     #[tokio::test]
@@ -678,6 +916,87 @@ pathlib.Path('capture.png').write_bytes(b'incomplete PNG' if behavior == 'bad-pn
         .expect("the native process must be killed and reaped");
         assert_eq!(worker.admission.available_permits(), 1);
         assert!(!root.path().join("projects/part/observations").exists());
+    }
+
+    #[tokio::test]
+    async fn processing_deadline_stops_native_work_without_publishing() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = fixture(root.path(), "slow");
+        let mut params = request();
+        params.timeout_seconds = 1;
+        let error = worker.capture(params).await.unwrap_err();
+        assert!(error.to_string().contains("processing deadline"));
+        let pid: i32 = std::fs::read_to_string(root.path().join("capture-started"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the expired native process must be killed and reaped");
+        assert_eq!(worker.admission.available_permits(), 1);
+        assert!(!root.path().join("projects/part/observations").exists());
+    }
+
+    #[tokio::test]
+    async fn public_request_cancellation_stops_capture_over_http() {
+        use axum::{Json, Router, routing::post};
+        use tokio_util::sync::CancellationToken;
+        let root = tempfile::tempdir().unwrap();
+        let worker = fixture(root.path(), "slow");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let routed_worker = Arc::clone(&worker);
+        let app = Router::new().route(
+            "/slice",
+            post(move |Json(request): Json<super::super::SliceRequest>| {
+                let worker = Arc::clone(&routed_worker);
+                async move { Json(worker.dispatch(request).await.unwrap()) }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let cancellation = CancellationToken::new();
+        let token = cancellation.clone();
+        let mut params = request();
+        params.timeout_seconds = 10;
+        let call = tokio::spawn(crate::tools::REQUEST_CANCELLATION.scope(token, async move {
+            super::super::forward(Some(&endpoint), super::super::SliceRequest::Capture(params))
+                .await
+        }));
+        let started = root.path().join("capture-started");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("capture must reach native execution over HTTP");
+        let pid: i32 = std::fs::read_to_string(started).unwrap().parse().unwrap();
+        cancellation.cancel();
+        assert!(
+            call.await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("public cancellation must stop the worker's native process promptly");
+        assert_eq!(worker.admission.available_permits(), 1);
+        assert!(!root.path().join("projects/part/observations").exists());
+        server.abort();
     }
 
     #[tokio::test]

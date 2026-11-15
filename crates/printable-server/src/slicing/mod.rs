@@ -34,6 +34,21 @@ const MAX_LOG: usize = 1024 * 1024;
 pub const ENGINE_VERSION: &str = "2.4.2";
 
 pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
+    if matches!(request, SliceRequest::Capture(_)) {
+        let cancellation = crate::tools::REQUEST_CANCELLATION
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(slice_error("native Orca capture cancelled")),
+            result = forward_inner(endpoint, request) => result,
+        }
+    } else {
+        forward_inner(endpoint, request).await
+    }
+}
+
+async fn forward_inner(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
     let endpoint = endpoint.ok_or_else(|| slice_error("slicer worker is not configured"))?;
     let client = reqwest::Client::builder()
         .no_proxy()

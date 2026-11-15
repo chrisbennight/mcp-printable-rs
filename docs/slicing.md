@@ -168,6 +168,14 @@ relative positions. `visibility.beds`, `visibility.plate_identifiers` and
 budget must be positive and representable by the runtime. Graphics limits,
 container resources and the caller's request deadline still apply.
 
+The processing budget covers admission, native startup, rendering and image
+validation. Cancellation stops this processing, including through public MCP.
+Storage publication begins only for a validated observation before its budget
+expires. Once publication begins, retention completes and returns its artifact
+references; a processing timeout cannot turn a published observation into an
+unreported result. Artifacts already being retained may remain after a caller
+cancels the request.
+
 The result identifies `kind: native_orca_layout`,
 `representation: model_placement` and `prime_towers: native_estimated`.
 These are Orca's native model and estimated prime-tower volumes, including when
