@@ -73,6 +73,66 @@ orientation, estimates, native warnings, review references and selection reasons
 Calibration coupons are useful when their physical result could change a
 consequential choice; preparing them does not authorize printing them.
 
+## Orientation goals and plate review
+
+The skill distinguishes minimum total material/support, strength under the
+intended loads, and finish of named faces. Orca's
+[automatic orientation](https://github.com/OrcaSlicer/OrcaSlicer/wiki/prepare_auto_orient)
+uses overhangs, bottom contact, support interface and contour complexity. It does
+not know the user's loads or which face is visible. A candidate with less
+overhang area can still consume more total filament after supports, priming and
+flushing; compare native consumption estimates where available.
+
+A bracket needs both service and screw-installation loads considered. A relief
+can trade shallow-slope stepping against support marks and a smaller bed contact.
+A casting tray must retain its opening, fitting geometry and suitable base;
+changing its geometry to make a tilted print easier requires design scope.
+The existing source, modeling/export and slice operations support deliberate
+candidate artifacts. The server has no objective-driven orientation optimizer.
+
+For a multicolor plate, inspect generated support, brim and tower footprints as
+well as object placement. Native arrangement is a useful candidate, while a
+model-only plate preview omits the generated footprints. The public preparation
+action currently exposes arrangement/orientation switches, not object locks,
+requested spacing or tower XY placement. Preserve an authored layout where
+needed and report controls or measurements that remain unavailable.
+
+[Orca's tower documentation](https://github.com/OrcaSlicer/OrcaSlicer/wiki/multimaterial_settings_prime_tower)
+distinguishes Type 1 and Type 2 controls. Bambu uses Type 1; cone stabilization
+and rotation are not universal Bambu fixes. Tower bed attachment, structural
+bonding and toolhead contact are separate concerns. A wider brim need not solve
+the latter two. Priming extrusion and color flushing also serve different
+purposes, so flushing savings alone do not justify removing a tower.
+
+[Extruder clearance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/printer_basic_information_extruder_clearance)
+and print order matter for sequential printing and descent to a tower that skips
+sparse layers. Collision identification belongs to the preparing agent and
+backend service. The agent must use available geometry, toolpaths, printer
+envelopes and native diagnostics to flag collisions and correct or reject an
+unsafe recommendation. An older slicer leaving clearance to its operator does
+not transfer that analysis to Printable's user.
+
+The current XY review is not a swept-toolhead check. When a required check is
+unavailable, the agent retains the files, states the missing analysis and
+withholds a print-ready recommendation. This does not claim that backend
+collision preflight is already implemented. Backend follow-up must identify
+collisions in supported cases, rather than only report which checks are missing.
+Physical bed readiness remains a separate question. Motion advice also depends
+on whether the bed moves in XY; see
+[Orca's arrangement guidance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/prepare_auto_arrange).
+
+Public reports of a
+[tower breaking above an attached brim](https://www.reddit.com/r/FlashForge/comments/1vdoq9e/prime_tower_being_knocked_over/)
+and [failure despite strong bed attachment](https://www.reddit.com/r/BambuLab/comments/1gfp10k/prime_tower_getting_knocked_off_and_camera_is_too/)
+motivate distinct diagnostic branches. They are anecdotes, not verified causes
+or universal remedies. The guidance does not claim physical validation.
+
+Upstream documentation changes independently of the packaged engine. The shipped
+setting catalog is the authority for exposed names; verify native behavior before
+advertising a control or a clearance check. For example,
+[later upstream collision-volume features](https://github.com/OrcaSlicer/OrcaSlicer/wiki/release_2_5_0_beta)
+are not established capabilities of the packaged Orca 2.4.2 worker.
+
 The worker retains request and resolved profile settings, source/output hashes
 and provenance; completed slices may also have a compact summary. The client
 saves the additional purpose and decision rationale through existing project
@@ -124,6 +184,7 @@ the existing workflow's typed actions to adding an unrelated tool for each setti
 | --- | --- | --- |
 | High | Read-only source-model and 3MF preparation inspection | Report source identity, units, object transforms, plates, material indices, effective settings and preservation limitations. Exercise uploaded STL, model-only 3MF, multi-material projects and sliced packages without executing imported scripts or changing the live scene. Reuse the existing package reader where appropriate; it currently supports completed-slice summaries, not a public source inspection action. |
 | High | Rich native setting definitions and compatibility diagnostics | Generate setting types, units, allowed values/ranges and defaults from the pinned engine. Preserve profile overrides and native rejection details; check combinations only where authoritative rules exist. A syntactically valid value is not proof of physical suitability. |
+| High | Explicit plate layout and collision identification | Control supported object/tower placement and flag detected collisions using final transforms, generated footprints, material indices and applicable toolhead envelopes. Test actual material changes, crowded/edge layouts and re-slicing; distinguish identified collisions, checked clearance and unsupported checks. Successful slicing alone does not establish physical tower stability. |
 | Medium | Retained preparation decisions and candidate comparison | Bind the user's objective, critical faces, assumptions and changes to exact source/settings/output identities. Compare available time/material estimates and unresolved warnings while keeping physical measurements separate. Reuse current slice handles and provenance rather than duplicate job lifecycles. |
 | Medium | Native adaptive profiles and local modifiers | Author and inspect per-object layer profiles, seam/texture masks and support regions. Prove preservation through upload, reslicing and export with actual toolpath regressions. Printer minimum/maximum layer settings alone do not provide this. |
 | Optional | Reusable physical-texture workflow or convenience action | Reuse Blender's geometry capability, retain scale/amplitude/masks and editable source, and verify output topology, dimensions and printability. Do not require a new texture service solely to copy a browser workflow. |
