@@ -186,6 +186,8 @@ with tempfile.TemporaryDirectory() as directory:
         for controls in [
             {"plates": [2], "camera": {"preset": "top"}},
             {"camera": {"preset": "top", "projection": "perspective"}},
+            {"plates": [2], "camera": {"preset": "top", "projection": "perspective"},
+             "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}},
         ]:
             result = request("capture", {**capture_params, **controls})
             verify_capture(root, result, fixture, controls.get("plates"))

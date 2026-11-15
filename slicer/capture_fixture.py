@@ -110,10 +110,11 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
             for slot, object_id in enumerate([original_id, second_id]):
                 angle = math.radians([0, 35, 80][index] + slot * 15)
                 cosine, sine = math.cos(angle), math.sin(angle)
-                values = [1.8 * cosine, 1.8 * sine, 0, -sine, cosine, 0, 0, 0, 2,
+                z_scale = 2 if slot == 0 else 250 / (max(point[2] for point in points) - floor)
+                values = [1.8 * cosine, 1.8 * sine, 0, -sine, cosine, 0, 0, 0, z_scale,
                           origin_x + width * (0.27 + slot * 0.28) - (1.8 * cosine * center_x - sine * center_y),
                           origin_y + depth * (0.35 + slot * 0.14) - (1.8 * sine * center_x + cosine * center_y),
-                          -floor * 2]
+                          -floor * z_scale]
                 item = deepcopy(original_item)
                 item.set("objectid", object_id)
                 item.set("transform", " ".join(map(str, values)))
