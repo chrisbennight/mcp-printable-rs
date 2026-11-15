@@ -8,9 +8,10 @@ the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
-The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-b08db1a)
-supports headless package thumbnails by fixing the CLI OpenGL context request and
-model initialization without a wx application. It also carries three upstream
+The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-63c97a1)
+supports native workspace capture and headless package thumbnails. Its thumbnail
+path fixes the CLI OpenGL context request and model initialization without a wx
+application. It also carries three upstream
 fixes from the 2.4.4 backports: bounds checks for per-filament settings lists
 shorter than the filament count, which crashed H2D slices with two or more
 filaments; bounds checks for tool-change lookups; and two buffer overflow fixes
