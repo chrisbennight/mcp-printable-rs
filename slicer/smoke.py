@@ -215,6 +215,12 @@ with tempfile.TemporaryDirectory() as directory:
         prepared_state = request("status", {"project_id": "native-slice", "output_dir": "x1c-reslice"})
         assert prepared["source_sha256"] == prepared_state["artifacts"]["model.gcode.3mf"]["sha256"]
         assert prepared["slice_provenance"] == prepared_state["provenance"]
+        prepared_native = json.loads((root / prepared["native_metadata"]["path"]).read_text())
+        prepared_models = [volume for volume in prepared_native["volumes"] if not volume["prime_tower"]]
+        assert len(prepared_models) == 1, "prepared capture omitted or duplicated its source model"
+        bounds = prepared_models[0]["bounds_mm"]
+        assert all(abs(high - low - expected) < 0.005 for low, high, expected in
+                   zip(bounds["min"], bounds["max"], [10, 10, 3])), "prepared capture changed its source geometry"
         assert hashlib.sha256(fixture_path.read_bytes()).hexdigest() == source_hash, "capture changed source bytes"
         print("Native three-plate layout capture, source transforms, colors, towers, camera controls and replay passed")
         # Two-nozzle printers group the loaded filaments between their nozzles.
