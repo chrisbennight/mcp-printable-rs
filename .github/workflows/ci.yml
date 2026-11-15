@@ -213,8 +213,8 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
             --tmpfs /tmp:rw,size=2g,uid=10001,gid=10001,mode=1770 \
-            --entrypoint /usr/bin/python3 printable-slicer-smoke:ci \
-            /opt/printable/slicer-smoke.py
+            --entrypoint /usr/bin/tini printable-slicer-smoke:ci \
+            -- /usr/bin/python3 /opt/printable/slicer-smoke.py
       - name: Verify photo reconstruction
         if: steps.scope.outputs.images == 'true'
         run: |
