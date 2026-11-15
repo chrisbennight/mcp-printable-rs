@@ -106,8 +106,18 @@ purposes, so flushing savings alone do not justify removing a tower.
 
 [Extruder clearance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/printer_basic_information_extruder_clearance)
 and print order matter for sequential printing and descent to a tower that skips
-sparse layers. The current XY review is not a swept-toolhead check. Read native
-warnings and state which clearances remain unmeasured. Motion advice also depends
+sparse layers. Collision identification belongs to the preparing agent and
+backend service. The agent must use available geometry, toolpaths, printer
+envelopes and native diagnostics to flag collisions and correct or reject an
+unsafe recommendation. An older slicer leaving clearance to its operator does
+not transfer that analysis to Printable's user.
+
+The current XY review is not a swept-toolhead check. When a required check is
+unavailable, the agent retains the files, states the missing analysis and
+withholds a print-ready recommendation. This does not claim that backend
+collision preflight is already implemented. Backend follow-up must identify
+collisions in supported cases, rather than only report which checks are missing.
+Physical bed readiness remains a separate question. Motion advice also depends
 on whether the bed moves in XY; see
 [Orca's arrangement guidance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/prepare_auto_arrange).
 
@@ -174,7 +184,7 @@ the existing workflow's typed actions to adding an unrelated tool for each setti
 | --- | --- | --- |
 | High | Read-only source-model and 3MF preparation inspection | Report source identity, units, object transforms, plates, material indices, effective settings and preservation limitations. Exercise uploaded STL, model-only 3MF, multi-material projects and sliced packages without executing imported scripts or changing the live scene. Reuse the existing package reader where appropriate; it currently supports completed-slice summaries, not a public source inspection action. |
 | High | Rich native setting definitions and compatibility diagnostics | Generate setting types, units, allowed values/ranges and defaults from the pinned engine. Preserve profile overrides and native rejection details; check combinations only where authoritative rules exist. A syntactically valid value is not proof of physical suitability. |
-| High | Explicit plate layout and prime-tower evidence | Control supported object/tower placement and retain final transforms, generated footprints, material indices and scoped clearance results. Test actual material changes, crowded/edge layouts and re-slicing; successful slicing alone does not establish physical tower stability. |
+| High | Explicit plate layout and collision identification | Control supported object/tower placement and flag detected collisions using final transforms, generated footprints, material indices and applicable toolhead envelopes. Test actual material changes, crowded/edge layouts and re-slicing; distinguish identified collisions, checked clearance and unsupported checks. Successful slicing alone does not establish physical tower stability. |
 | Medium | Retained preparation decisions and candidate comparison | Bind the user's objective, critical faces, assumptions and changes to exact source/settings/output identities. Compare available time/material estimates and unresolved warnings while keeping physical measurements separate. Reuse current slice handles and provenance rather than duplicate job lifecycles. |
 | Medium | Native adaptive profiles and local modifiers | Author and inspect per-object layer profiles, seam/texture masks and support regions. Prove preservation through upload, reslicing and export with actual toolpath regressions. Printer minimum/maximum layer settings alone do not provide this. |
 | Optional | Reusable physical-texture workflow or convenience action | Reuse Blender's geometry capability, retain scale/amplitude/masks and editable source, and verify output topology, dimensions and printability. Do not require a new texture service solely to copy a browser workflow. |

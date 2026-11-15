@@ -129,13 +129,31 @@ and verify their preservation in the output; report a missing control rather tha
 inventing a parameter. A model-only plate picture cannot show the final generated
 support, brim and tower footprint.
 
-For a plate with a tower, review the first-layer footprints and relevant
-material-change layers, including generated brims/supports and bed exclusions.
-Consider toolhead and gantry clearance as well as deposited material. Sequential
-`print_sequence` and `wipe_tower_no_sparse_layers` need particular care: the
-latter can require the head to descend beside taller printed geometry. Retain
-native warnings and distinguish checks performed by Orca from clearance that
-remains unmeasured. Neither auto-arrangement nor an XY preview certifies clearance.
+The preparing agent owns collision identification and clearance review, using
+backend checks and the available geometry and toolpath observations. Before
+recommending a slice for printing, inspect generated part, support, brim and tower
+footprints against each other and the bed exclusions. Check applicable travel,
+toolhead and gantry clearance using the selected printer's geometry and print
+order. Distinguish intended support contacts, merged brims and material boundaries
+from unintended interference. Sequential `print_sequence` and
+`wipe_tower_no_sparse_layers` need particular
+care: the latter can require the head to descend beside taller printed geometry.
+
+Flag a detected collision with its location, affected objects or paths, evidence
+and consequence. Correct the layout through supported operations, then re-slice
+and re-check; otherwise withhold a print-ready recommendation. Read native
+diagnostics, but do not assume that a successful slice, auto-arrangement or an XY
+preview identifies every collision. The agent must not hand geometric collision
+analysis back to the user because an older native implementation leaves it to
+the operator.
+
+Obtain needed geometry and clearance inputs through available profiles, source
+inspection and public tools. Ask the user only for consequential physical facts
+that cannot be discovered. When a required clearance check cannot be performed,
+retain the prepared files but report the specific unresolved check and withhold
+a print-ready recommendation pending that analysis. Never convert missing inputs
+or an unsupported check into a clearance pass. Keep physical bed-readiness
+questions separate from this responsibility to analyze the prepared job.
 
 Discover the printer's tower implementation before choosing its controls.
 Orca's Bambu profiles use Type 1; cone stabilization, tower rotation and several
