@@ -80,12 +80,11 @@ def request(action, params):
         timeout = params.get("timeout_seconds", 300) + 30 if action == "capture" else 120
         with urllib.request.urlopen(req, timeout=timeout) as response:
             result = json.load(response)
-    except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError:
         if action == "capture":
             for path in (project / "observations").glob("orca-failed-*.json"):
                 print("NATIVE_CAPTURE_FAILURE", path.read_text(), flush=True)
-        raise RuntimeError(f"Native worker {action} returned HTTP {error.code}: {details}") from error
+        raise
     finally:
         if diagnostic is not None:
             diagnostic.cancel()
