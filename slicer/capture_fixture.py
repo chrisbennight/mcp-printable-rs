@@ -164,6 +164,19 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
         "plates": [1,2,3]}
 
 
+def verify_camera_replay(actual, expected):
+    """Allow floating-point roundoff when native matrices resolve the camera."""
+    assert actual.keys() == expected.keys()
+    for key in ("preset", "projection"):
+        assert actual[key] == expected[key], "resolved native camera did not replay"
+    for key in ("margin", "zoom"):
+        assert math.isclose(actual[key], expected[key], rel_tol=1e-12, abs_tol=1e-9), "resolved native camera did not replay"
+    for key in ("orientation", "target"):
+        assert len(actual[key]) == len(expected[key])
+        assert all(math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9)
+                   for a, b in zip(actual[key], expected[key])), "resolved native camera did not replay"
+
+
 def verify_bed_surface(workspace, response, points_mm):
     """Require filled native bed regions rather than grid lines over the background."""
     from pathlib import Path

@@ -2,6 +2,7 @@
 import io
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from PIL import Image
-from capture_fixture import COLORS, create_fixture, verify_bed_surface, verify_capture
+from capture_fixture import COLORS, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
 
 
 def verify_package(path):
@@ -181,7 +182,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert overview["source_sha256"] == source_hash
         verify_capture(root, overview, fixture)
         replay = request("capture", {**capture_params, "camera": overview["camera"]})
-        assert replay["camera"] == overview["camera"], "resolved native camera did not replay"
+        verify_camera_replay(replay["camera"], overview["camera"])
         assert replay["image_sha256"] == overview["image_sha256"], "camera replay changed native pixels"
         target = list(overview["camera"]["target"])
         target[0] += 5
@@ -190,7 +191,8 @@ with tempfile.TemporaryDirectory() as directory:
             "camera": {"target": target, "zoom": zoom}})
         verify_capture(root, custom_frame, fixture)
         assert (custom_frame["width"], custom_frame["height"]) == (1200, 800)
-        assert custom_frame["camera"]["target"] == target
+        assert all(math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9)
+                   for a, b in zip(custom_frame["camera"]["target"], target))
         assert abs(custom_frame["camera"]["zoom"] - zoom) <= 1e-9 * max(1, zoom)
         for preset, forward in {"top": [0, 0, -1], "bottom": [0, 0, 1],
                                 "front": [0, 1, 0], "rear": [0, -1, 0],
