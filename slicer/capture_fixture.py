@@ -164,6 +164,32 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
         "plates": [1,2,3]}
 
 
+def verify_bed_surface(workspace, response, points_mm):
+    """Require filled native bed regions rather than grid lines over the background."""
+    from pathlib import Path
+    from PIL import Image
+
+    workspace = Path(workspace).resolve()
+    image_path = (workspace / response["image"]["path"]).resolve(strict=True)
+    metadata_path = (workspace / response["native_metadata"]["path"]).resolve(strict=True)
+    assert image_path.is_relative_to(workspace) and metadata_path.is_relative_to(workspace)
+    native = json.loads(metadata_path.read_bytes())
+    with Image.open(image_path) as decoded:
+        image = decoded.convert("RGB")
+    background = image.getpixel((0, 0))
+    for point in points_mm:
+        vector = [*point, 1]
+        view = [sum(row[i] * vector[i] for i in range(4)) for row in native["view_matrix"]]
+        clip = [sum(row[i] * view[i] for i in range(4)) for row in native["projection_matrix"]]
+        assert clip[3] > 0
+        x = round((clip[0] / clip[3] + 1) * image.width / 2)
+        y = round((1 - clip[1] / clip[3]) * image.height / 2)
+        assert 8 <= x < image.width - 8 and 8 <= y < image.height - 8
+        pixels = list(image.crop((x - 8, y - 8, x + 9, y + 9)).getdata())
+        filled = sum(max(abs(a - b) for a, b in zip(pixel, background)) > 5 for pixel in pixels)
+        assert filled >= len(pixels) * 0.9, "native current-plate bed surface is missing"
+
+
 def verify_capture(workspace, response, fixture, plates=None):
     """Check geometry identity and actual colored pixels in a native observation."""
     import hashlib

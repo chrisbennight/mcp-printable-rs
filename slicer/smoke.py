@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from PIL import Image
-from capture_fixture import COLORS, create_fixture, verify_capture
+from capture_fixture import COLORS, create_fixture, verify_bed_surface, verify_capture
 
 
 def verify_package(path):
@@ -217,6 +217,7 @@ with tempfile.TemporaryDirectory() as directory:
         prepared_state = request("status", {"project_id": "native-slice", "output_dir": "x1c-reslice"})
         assert prepared["source_sha256"] == prepared_state["artifacts"]["model.gcode.3mf"]["sha256"]
         assert prepared["slice_provenance"] == prepared_state["provenance"]
+        verify_bed_surface(root, prepared, [(x, y, 0) for x in (64, 192) for y in (64, 192)])
         prepared_native = json.loads((root / prepared["native_metadata"]["path"]).read_text())
         prepared_models = [volume for volume in prepared_native["volumes"] if not volume["prime_tower"]]
         assert len(prepared_models) == 1, "prepared capture omitted or duplicated its source model"
