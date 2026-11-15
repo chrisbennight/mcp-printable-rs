@@ -1,15 +1,17 @@
 use super::{SliceHandle, invalid, slice_error};
 use crate::error::ToolError;
 use image::{Rgb, RgbImage};
+use printable_geom::print_collision::MAX_PRINT_COORDINATE_MM;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader},
     path::Path,
     time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +63,28 @@ struct Parser {
     lengths: BTreeMap<String, f64>,
     estimated_time: Option<String>,
     estimated_filament: Option<String>,
+    preflight: Option<PreflightCapture>,
+}
+
+#[derive(Default)]
+struct PreflightCapture {
+    moves: Vec<printable_geom::print_collision::PlannedMove>,
+    unresolved: BTreeSet<String>,
+    width: Option<f64>,
+    height: Option<f64>,
+    source_line: u64,
+    object: Option<String>,
+    known_position: [bool; 3],
+    unknown_origin: [bool; 3],
+    segment_known: bool,
+    retracted_mm: BTreeMap<usize, f64>,
+    conditional_depth: usize,
+}
+
+pub(super) struct ParsedPaths {
+    pub moves: Vec<printable_geom::print_collision::PlannedMove>,
+    pub unresolved: BTreeSet<String>,
+    pub complete: bool,
 }
 
 impl Parser {
@@ -79,10 +103,43 @@ impl Parser {
             lengths: BTreeMap::new(),
             estimated_time: None,
             estimated_filament: None,
+            preflight: None,
         }
     }
     fn line(&mut self, text: &str, request: &ReviewParams) -> Result<(), ToolError> {
         let trimmed = text.trim();
+        if let Some(capture) = &mut self.preflight {
+            capture.source_line += 1;
+            for (markers, target) in [
+                (["; LINE_WIDTH:", ";WIDTH:"], &mut capture.width),
+                (["; LAYER_HEIGHT:", ";HEIGHT:"], &mut capture.height),
+            ] {
+                for marker in markers {
+                    if let Some(value) = trimmed.strip_prefix(marker) {
+                        *target =
+                            value.trim().parse::<f64>().ok().filter(|v| {
+                                v.is_finite() && *v > 0. && *v <= MAX_PRINT_COORDINATE_MM
+                            });
+                    }
+                }
+            }
+            if let Some(id) = trimmed.strip_prefix("; start printing object, unique label id: ") {
+                capture.object = id.parse::<u64>().ok().map(|id| format!("label:{id}"));
+            } else if trimmed.starts_with("; printing object ") {
+                capture.object = trimmed.rsplit_once(" id:").and_then(|(_, suffix)| {
+                    let (id, copy) = suffix.split_once(" copy ")?;
+                    Some(format!(
+                        "id:{}:copy:{}",
+                        id.parse::<u64>().ok()?,
+                        copy.parse::<u64>().ok()?
+                    ))
+                });
+            } else if trimmed.starts_with("; stop printing object ")
+                || trimmed == "; WIPE_TOWER_START"
+            {
+                capture.object = None;
+            }
+        }
         if trimmed == "; CHANGE_LAYER" || trimmed == ";LAYER_CHANGE" {
             self.layer += 1;
             self.layer_count = self.layer;
@@ -108,6 +165,48 @@ impl Parser {
             "G91" => self.relative = true,
             "M82" => self.relative_e = false,
             "M83" => self.relative_e = true,
+            "M622" if self.preflight.is_some() => {
+                let capture = self.preflight.as_mut().expect("preflight parser");
+                capture.conditional_depth += 1;
+                capture.known_position = [false; 3];
+                if self.layer > 0 {
+                    capture
+                        .unresolved
+                        .insert("unsupported_conditional_firmware_motion".into());
+                }
+            }
+            "M623" if self.preflight.is_some() => {
+                let capture = self.preflight.as_mut().expect("preflight parser");
+                capture.conditional_depth = capture.conditional_depth.saturating_sub(1);
+                capture.known_position = [false; 3];
+            }
+            "M620" | "M621" | "M600" | "M701" | "M702" if self.preflight.is_some() => {
+                let capture = self.preflight.as_mut().expect("preflight parser");
+                capture.known_position = [false; 3];
+                if self.layer > 0 {
+                    capture
+                        .unresolved
+                        .insert("unsupported_firmware_toolchange_motion".into());
+                }
+            }
+            "G28" if self.preflight.is_some() => {
+                let axes = words
+                    .filter_map(|word| word.as_bytes().first().copied())
+                    .collect::<Vec<_>>();
+                let capture = self.preflight.as_mut().expect("preflight parser");
+                for (i, axis) in b"XYZ".iter().enumerate() {
+                    if axes.is_empty() || axes.contains(axis) {
+                        capture.known_position[i] = false;
+                        capture.unknown_origin[i] = false;
+                        self.coordinate_offset[i] = 0.;
+                    }
+                }
+                if self.layer > 0 {
+                    capture
+                        .unresolved
+                        .insert("homing_motion_not_simulated".into());
+                }
+            }
             "G20" => {
                 return Err(slice_error(
                     "inch G-code is unsupported for toolpath review",
@@ -136,7 +235,7 @@ impl Parser {
                     let value = word[1..]
                         .parse::<f64>()
                         .map_err(|_| slice_error("invalid numeric toolpath coordinate"))?;
-                    if !value.is_finite() || value.abs() > 1e7 {
+                    if !value.is_finite() || value.abs() > MAX_PRINT_COORDINATE_MM {
                         return Err(slice_error(
                             "toolpath coordinate is outside the review range",
                         ));
@@ -144,8 +243,26 @@ impl Parser {
                     values.insert(axis, value);
                 }
                 let before = self.position;
+                let before_known = self
+                    .preflight
+                    .as_ref()
+                    .is_some_and(|c| c.known_position.iter().all(|v| *v));
                 for (index, axis) in b"XYZE".iter().enumerate() {
                     if let Some(value) = values.get(axis) {
+                        if let Some(capture) = &mut self.preflight
+                            && index < 3
+                        {
+                            if command == "G92" {
+                                if !capture.known_position[index] {
+                                    capture.unknown_origin[index] = true;
+                                    capture.unresolved.insert(
+                                        "coordinate_reset_without_known_physical_origin".into(),
+                                    );
+                                }
+                            } else if !self.relative {
+                                capture.known_position[index] = !capture.unknown_origin[index];
+                            }
+                        }
                         if command == "G92" {
                             if index == 3 {
                                 self.position[index] = *value;
@@ -168,10 +285,31 @@ impl Parser {
                 if command == "G92" {
                     return Ok(());
                 }
-                let travel = self.position[3] <= before[3];
+                let mut travel = self.position[3] <= before[3];
+                if let Some(capture) = &mut self.preflight {
+                    let delta = self.position[3] - before[3];
+                    let debt = capture.retracted_mm.entry(self.material).or_default();
+                    if delta < 0. {
+                        *debt -= delta;
+                    } else {
+                        let restored = delta.min(*debt);
+                        *debt -= restored;
+                        travel = delta - restored <= 0.;
+                    }
+                }
                 let from = [before[0], before[1], before[2]];
                 let to = [self.position[0], self.position[1], self.position[2]];
                 let arc = matches!(command, "G2" | "G02" | "G3" | "G03");
+                if let Some(capture) = &mut self.preflight {
+                    capture.segment_known =
+                        before_known && capture.known_position.iter().all(|v| *v);
+                    if arc && self.layer > 0 {
+                        capture
+                            .unresolved
+                            .insert("arc_clearance_not_checked".into());
+                        return Ok(());
+                    }
+                }
                 if arc {
                     if values.contains_key(&b'R')
                         || (!values.contains_key(&b'I') && !values.contains_key(&b'J'))
@@ -231,7 +369,36 @@ impl Parser {
                     self.segment(from, to, travel, request)?;
                 }
             }
-            _ => {}
+            _ => {
+                if let Some(capture) = &mut self.preflight
+                    && command.starts_with('G')
+                    && !matches!(command, "G4" | "G04" | "G17" | "G21")
+                {
+                    capture.known_position = [false; 3];
+                    let coordinate_change = matches!(
+                        command,
+                        "G10"
+                            | "G50"
+                            | "G51"
+                            | "G52"
+                            | "G54"
+                            | "G55"
+                            | "G56"
+                            | "G57"
+                            | "G58"
+                            | "G59"
+                            | "G68"
+                            | "G69"
+                            | "G92.1"
+                    );
+                    if self.layer > 0 || coordinate_change {
+                        capture.unknown_origin = [true; 3];
+                        capture.unresolved.insert(format!(
+                            "unsupported_coordinate_or_motion_command:{command}"
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -259,6 +426,61 @@ impl Parser {
         if from == to {
             return Ok(());
         }
+        if let Some(capture) = &mut self.preflight {
+            use printable_geom::print_collision::{PathRole, PlannedMove};
+            if capture.conditional_depth > 0 {
+                capture
+                    .unresolved
+                    .insert("unsupported_conditional_firmware_motion".into());
+                return Ok(());
+            }
+            if !capture.segment_known {
+                capture
+                    .unresolved
+                    .insert("motion_without_known_xyz_origin".into());
+                return Ok(());
+            }
+            let role = match self.feature.as_str() {
+                "Prime tower" | "Wipe tower" => PathRole::PrimeTower,
+                "Support" | "Support interface" | "Support transition" => PathRole::Support,
+                "Skirt" | "Skirt/Brim" | "Brim" => PathRole::Brim,
+                "Inner wall"
+                | "Outer wall"
+                | "Overhang wall"
+                | "Sparse infill"
+                | "Internal solid infill"
+                | "Top surface"
+                | "Bottom surface"
+                | "Ironing"
+                | "Bridge"
+                | "Internal Bridge"
+                | "Gap infill" => PathRole::Part,
+                _ => PathRole::Other,
+            };
+            if role == PathRole::Other {
+                capture
+                    .unresolved
+                    .insert("custom_or_unclassified_motion_not_checked".into());
+                return Ok(());
+            }
+            capture.moves.push(PlannedMove {
+                from_mm: from,
+                to_mm: to,
+                source_line: capture.source_line,
+                layer: self.layer,
+                object: if role == PathRole::PrimeTower {
+                    None
+                } else {
+                    capture.object.clone()
+                },
+                role,
+                material: self.material,
+                travel,
+                width_mm: capture.width,
+                height_mm: capture.height,
+            });
+            return Ok(());
+        }
         let length = (0..3)
             .map(|i| (to[i] - from[i]).powi(2))
             .sum::<f64>()
@@ -280,6 +502,85 @@ impl Parser {
         });
         Ok(())
     }
+}
+
+/// Parse the same explicit coordinate modes as the preview, retaining a valid
+/// prefix and an unresolved reason when later motion cannot be interpreted.
+pub(super) fn parse_for_preflight(
+    source: &Path,
+    deadline: Instant,
+    cancel: &CancellationToken,
+) -> Result<ParsedPaths, ToolError> {
+    let request = ReviewParams {
+        slice: SliceHandle {
+            project_id: String::new(),
+            output_dir: String::new(),
+        },
+        toolpath: String::new(),
+        first_layer: 1,
+        last_layer: u32::MAX,
+        features: Vec::new(),
+        material: None,
+        include_travel: true,
+        size: 1,
+        timeout_seconds: 1,
+    };
+    let mut parser = Parser::new();
+    parser.preflight = Some(PreflightCapture::default());
+    parser.deadline = Some(deadline);
+    let mut reader = BufReader::new(std::fs::File::open(source)?);
+    let mut line = String::new();
+    let mut complete = true;
+    loop {
+        if Instant::now() >= deadline || cancel.is_cancelled() {
+            parser
+                .preflight
+                .as_mut()
+                .expect("preflight parser")
+                .unresolved
+                .insert(
+                    if cancel.is_cancelled() {
+                        "analysis_cancelled"
+                    } else {
+                        "processing_deadline"
+                    }
+                    .into(),
+                );
+            complete = false;
+            break;
+        }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) => {
+                parser
+                    .preflight
+                    .as_mut()
+                    .expect("preflight parser")
+                    .unresolved
+                    .insert(format!("toolpath_read_error:{error}"));
+                complete = false;
+                break;
+            }
+        }
+        if let Err(error) = parser.line(&line, &request) {
+            parser
+                .preflight
+                .as_mut()
+                .expect("preflight parser")
+                .unresolved
+                .insert(error.to_string());
+            complete = false;
+            break;
+        }
+    }
+    let capture = parser.preflight.expect("preflight parser");
+    Ok(ParsedPaths {
+        moves: capture.moves,
+        unresolved: capture.unresolved,
+        complete,
+    })
 }
 
 pub fn render(source: &Path, request: &ReviewParams) -> Result<(Vec<u8>, Value), ToolError> {

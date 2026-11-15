@@ -110,6 +110,58 @@ after it runs. Full-file layer counts and estimates remain available when
 processing completes within that budget.
 It does not establish adhesion, strength, clearance or a successful physical print.
 
+## Collision findings
+
+Preparation checks the generated G-code even when Orca exits successfully. The
+completed state returns `preflight`, and `preflight.json` retains the same report
+as a hashed artifact. A completed slice can have `preflight.status: "blocked"`:
+the native files exist, but the checks found modeled interference.
+
+The report checks generated line envelopes against the final package's bed
+boundary and exclusion polygon, detects tower/part and tower/support interference,
+and checks explicit linear machine motion against geometry already deposited at
+that point in the job. Execution order matters for sequential printing and descent
+to a lower tower. An intermediate obstruction is detected even when the travel's
+endpoints are clear. Generated width and height annotations supply the deposited
+envelopes; missing dimensions do not become zero-width geometry.
+
+`prepare.clearance.machine_envelopes` accepts occupied component boxes relative
+to the active nozzle's G-code reference point. Supply each component's name,
+`minimum_mm`, `maximum_mm` and the `source` of those dimensions. Include the gantry
+where relevant. Use actual manufacturer or measured geometry; the worker does
+not guess a machine envelope from a generic radius. An empty envelope list leaves
+toolhead clearance unmeasured. The positive `clearance.timeout_seconds` budget
+applies to analysis after native slicing and defaults to thirty seconds.
+
+Each plate reports checks as `passed`, `failed`, `unmeasured` or `unsupported`.
+Findings identify the source G-code line, layer, material, available object
+identity, affected component or earlier deposited path, and position in
+millimetres. The report retains the first finding per kind/object pair/component.
+`blocked` takes precedence over incomplete analysis, so a later unsupported
+command does not erase an earlier finding. `unresolved` means required evidence
+is missing; `modeled_checks_passed` applies only to the stated model and coverage.
+Inspect `processing_complete`, `coverage_complete` and unresolved reasons.
+
+Bed geometry comes from `Metadata/project_settings.config` in the final native
+package. Invalid or unavailable settings leave that check unmeasured. The report
+records G-code hashes and the supplied machine geometry, and slice provenance
+binds it to the source, resolved settings and generated artifacts. Re-slice and
+recheck after a layout, material, settings, machine-envelope or output change.
+
+These checks use conservative rectangular line envelopes and translating
+component boxes. Intended support/brim contact and material interfaces are not
+tower collisions. Source-object solid intersections, rounded bead shape, arc
+clearance and firmware macro motion are outside this implementation's established
+coverage. Unsupported motion remains explicit; the preview's sampled arcs do not
+certify clearance. Warping, loose components and nozzle buildup can cause physical
+contact outside the model. No collision report establishes adhesion, strength or
+successful physical printing.
+
+Keep prepared artifacts when checks are blocked or unresolved. The preparing
+agent must flag findings, correct supported layout/settings problems and recheck,
+or withhold a print-ready recommendation. Physical printer control retains its
+existing authorization requirements.
+
 Completed slices and reviews return retained provenance references. Optional
 `design_record` links a CAD measurement to the exact source bytes. Pass slice and
 review references to printer import to check their applicability before upload;
