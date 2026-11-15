@@ -68,6 +68,7 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
         center_x, center_y = [(min(point[axis] for point in points)
                               + max(point[axis] for point in points)) / 2 for axis in range(2)]
         floor = min(point[2] for point in points)
+        center_z = (floor + max(point[2] for point in points)) / 2
         second_id = str(max(int(obj.get("id")) for obj in resources.findall(f"{{{CORE}}}object")) + 1)
         second_object = deepcopy(original_object)
         second_object.set("id", second_id)
@@ -110,11 +111,17 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
             for slot, object_id in enumerate([original_id, second_id]):
                 angle = math.radians([0, 35, 80][index] + slot * 15)
                 cosine, sine = math.cos(angle), math.sin(angle)
-                z_scale = 2 if slot == 0 else 250 / (max(point[2] for point in points) - floor)
-                values = [1.8 * cosine, 1.8 * sine, 0, -sine, cosine, 0, 0, 0, z_scale,
-                          origin_x + width * (0.27 + slot * 0.28) - (1.8 * cosine * center_x - sine * center_y),
-                          origin_y + depth * (0.35 + slot * 0.14) - (1.8 * sine * center_x + cosine * center_y),
-                          -floor * z_scale]
+                z_scale = 2 if slot == 0 else [250, 250, 160][index] / (max(point[2] for point in points) - floor)
+                flat = slot == 1 and index == 1
+                pitch_cosine, pitch_sine = (0, 1) if flat else (1, 0)
+                values = [1.8 * cosine, 1.8 * sine, 0,
+                          -sine * pitch_cosine, cosine * pitch_cosine, pitch_sine,
+                          sine * pitch_sine * z_scale, -cosine * pitch_sine * z_scale, pitch_cosine * z_scale,
+                          0, 0, 0]
+                center = [center_x, center_y, center_z]
+                values[9] = origin_x + width * (0.27 + slot * 0.28) - sum(values[column * 3] * center[column] for column in range(3))
+                values[10] = origin_y + depth * (0.35 + slot * 0.14) - sum(values[column * 3 + 1] * center[column] for column in range(3))
+                values[11] = -min(transform(point, values)[2] for point in points)
                 item = deepcopy(original_item)
                 item.set("objectid", object_id)
                 item.set("transform", " ".join(map(str, values)))
@@ -161,6 +168,8 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
                 output.writestr(name, data)
     return {"objects": expected, "tower_positions_mm": [
         [origin[0] + x, origin[1] + y] for origin, x, y in zip(origins, tower_x, tower_y)],
+        "tower_heights_mm": [max(obj["bounds_mm"]["max"][2] - obj["bounds_mm"]["min"][2]
+                                 for obj in expected if obj["plate"] == plate) for plate in (1, 2, 3)],
         "plates": [1,2,3]}
 
 
@@ -289,5 +298,7 @@ def verify_capture(workspace, response, fixture, plates=None):
         actual = [tower["world_matrix"][axis][3] for axis in range(2)]
         expected = fixture["tower_positions_mm"][plate - 1]
         assert all(abs(left - right) < 0.005 for left, right in zip(actual, expected)), "native prime tower position differs from source"
+        height = tower["bounds_mm"]["max"][2] - tower["bounds_mm"]["min"][2]
+        assert abs(height - fixture["tower_heights_mm"][plate - 1]) < 0.005, "native prime tower height includes instances on another plate"
         colored_pixels(tower["bounds_mm"])
     return native
