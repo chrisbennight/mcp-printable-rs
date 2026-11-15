@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -55,8 +56,43 @@ def request(action, params):
     body = json.dumps({"action": action, "params": params}).encode()
     req = urllib.request.Request("http://127.0.0.1:8003/slice", body,
                                  {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as response:
-        return json.load(response)
+    started = time.monotonic()
+    diagnostic = None
+    if action == "capture":
+        print("NATIVE_CAPTURE_START", json.dumps({key: params[key] for key in
+              ("plates", "objects", "camera") if key in params}), flush=True)
+
+        def report_capture_progress():
+            scratch = root / ".printable/storage/scratch"
+            for path in scratch.glob("*/orca-runtime.*/orca-capture-*/log/*.log.*"):
+                try:
+                    print("NATIVE_CAPTURE_PROGRESS", path.read_text()[-12000:], flush=True)
+                except FileNotFoundError:
+                    pass
+            for name in ("memory.current", "memory.events", "pids.current", "pids.events"):
+                path = Path("/sys/fs/cgroup") / name
+                if path.is_file():
+                    print("NATIVE_CAPTURE_RESOURCE", name, path.read_text().strip(), flush=True)
+
+        diagnostic = threading.Timer(30, report_capture_progress)
+        diagnostic.start()
+    try:
+        timeout = params.get("timeout_seconds", 300) + 30 if action == "capture" else 120
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        if action == "capture":
+            for path in (project / "observations").glob("orca-failed-*.json"):
+                print("NATIVE_CAPTURE_FAILURE", path.read_text(), flush=True)
+        raise RuntimeError(f"Native worker {action} returned HTTP {error.code}: {details}") from error
+    finally:
+        if diagnostic is not None:
+            diagnostic.cancel()
+            diagnostic.join()
+    if action == "capture":
+        print("NATIVE_CAPTURE_DONE", round(time.monotonic() - started, 2), flush=True)
+    return result
 
 
 def cube():
