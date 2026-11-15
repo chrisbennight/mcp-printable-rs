@@ -3,10 +3,24 @@
 import base64
 import hashlib
 import json
+import math
 import struct
 import time
 import uuid
 import zipfile
+
+
+def verify_camera_replay(actual, expected):
+    """Allow native matrix roundoff while preserving the resolved view."""
+    if (actual.keys() != expected.keys()
+            or any(actual[key] != expected[key] for key in ("preset", "projection"))
+            or any(not math.isclose(actual[key], expected[key], rel_tol=1e-12, abs_tol=1e-9)
+                   for key in ("margin", "zoom"))
+            or any(len(actual[key]) != len(expected[key])
+                   or any(not math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9)
+                          for a, b in zip(actual[key], expected[key]))
+                   for key in ("orientation", "target"))):
+        raise ValueError("Resolved Orca camera does not replay through public MCP")
 
 
 def run(client, output):
@@ -121,7 +135,8 @@ def run(client, output):
     if (output / "retained-orca-layout.png").read_bytes() != data:
         raise ValueError("Immutable native layout image differs from the returned image")
     replay = call("slice", "capture", {**capture_params, "camera": capture["camera"]})
-    if replay["camera"] != capture["camera"] or replay["image_sha256"] != capture["image_sha256"]:
+    verify_camera_replay(replay["camera"], capture["camera"])
+    if replay["image_sha256"] != capture["image_sha256"]:
         raise ValueError("Resolved Orca camera does not replay through public MCP")
     current = call("slice", "status", handle)
     if current["artifacts"] != state["artifacts"] or current["provenance"] != state["provenance"]:
