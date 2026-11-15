@@ -53,6 +53,17 @@ when they answer an actual requirement. Mark unsupported or inconclusive checks
 as unmeasured. Inspect 3MF geometry and assignments through available native
 tools; no direct source-3MF inspection action is currently exposed by `slice`.
 
+Choose the orientation against the requested objective:
+
+| Objective | Compare | Keep visible |
+| --- | --- | --- |
+| Minimum material/support | Total sliced material, including supports, tower and flushing where reported; use overhang area only to screen candidates. | A smaller overhang area need not mean less total filament. Report missing consumption breakdowns instead of treating them as zero. |
+| Strength in use | Layer direction at loaded sections, fasteners and installation loads, with suitable physical shell thickness. | More bed contact or less support can put layer boundaries across the weakest section. Geometry and slice estimates do not establish a load rating. |
+| Finish of important faces | Bed-facing texture, top fill, vertical walls, shallow slopes, seams and support contact on the named faces. | A clean flat bottom, smooth top and fine relief can require different orientations. Preserve fitting surfaces and required geometry. |
+
+When objectives conflict, explain the tradeoff and select against the stated
+priority. Compare motivated alternatives only when their result could change the
+choice; retain a compatible standard baseline for an ordinary unspecified task.
 Orient functional parts to avoid pulling apart layers at highly loaded sections,
 including screw tightening and installation loads. Compare this with support
 removal, warping, bed contact and visible surfaces. A 45-degree tilt is one
@@ -107,6 +118,61 @@ Reported strength gains from added flow also change dimensions and material use;
 do not enable arbitrary post-processing scripts to imitate an experimental fork.
 Chemical coatings, solvent smoothing and heat treatment are optional manual
 finishing decisions, not slicer settings or actions authorized by slicing.
+
+## Arrange the plate and assess the prime tower
+
+Preserve an authored 3MF layout when its placement matters. `auto_arrange` asks
+Orca to arrange the plate; it does not expose object locks, requested spacing or
+tower XY coordinates. Those tower coordinates are not profile overrides in the
+packaged catalog. Use supported native/modeling operations for deliberate changes
+and verify their preservation in the output; report a missing control rather than
+inventing a parameter. A model-only plate picture cannot show the final generated
+support, brim and tower footprint.
+
+The preparing agent owns collision identification and clearance review, using
+backend checks and the available geometry and toolpath observations. Before
+recommending a slice for printing, inspect generated part, support, brim and tower
+footprints against each other and the bed exclusions. Check applicable travel,
+toolhead and gantry clearance using the selected printer's geometry and print
+order. Distinguish intended support contacts, merged brims and material boundaries
+from unintended interference. Sequential `print_sequence` and
+`wipe_tower_no_sparse_layers` need particular
+care: the latter can require the head to descend beside taller printed geometry.
+
+Flag a detected collision with its location, affected objects or paths, evidence
+and consequence. Correct the layout through supported operations, then re-slice
+and re-check; otherwise withhold a print-ready recommendation. Read native
+diagnostics, but do not assume that a successful slice, auto-arrangement or an XY
+preview identifies every collision. The agent must not hand geometric collision
+analysis back to the user because an older native implementation leaves it to
+the operator.
+
+Obtain needed geometry and clearance inputs through available profiles, source
+inspection and public tools. Ask the user only for consequential physical facts
+that cannot be discovered. When a required clearance check cannot be performed,
+retain the prepared files but report the specific unresolved check and withhold
+a print-ready recommendation pending that analysis. Never convert missing inputs
+or an unsupported check into a clearance pass. Keep physical bed-readiness
+questions separate from this responsibility to analyze the prepared job.
+
+Discover the printer's tower implementation before choosing its controls.
+Orca's Bambu profiles use Type 1; cone stabilization, tower rotation and several
+purge controls belong to Type 2. Setting-name presence alone does not establish
+that a control affects the selected tower. Inspect applicable `prime_tower_width`,
+`prime_tower_brim_width` and `prime_tower_enable_framework` values and the generated
+result. Do not assume a globally best tower location, brim width or Z-hop height.
+Bed-moving printers and fixed-bed machines have different motion considerations.
+Priming restores extrusion after a tool change; reducing color-flushing waste
+does not by itself establish that priming can be omitted.
+
+When a tower fails, separate bed detachment, body breakage above an attached brim,
+splitting between materials, and possible buildup or toolhead contact. Use actual
+observations and relevant toolpaths before choosing a change. A larger brim
+addresses bed attachment; it need not fix weak tower layers or contact. Z-hop
+addresses some travel clearance, not contact during extrusion or an unmodeled
+toolhead obstruction. Treat reports of contact as uncertain unless the evidence
+shows it. Preparing a revised slice does not authorize physical recovery or a
+printer control action.
 
 ## Prepare and review the actual result
 
