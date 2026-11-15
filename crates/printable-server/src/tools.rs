@@ -4826,7 +4826,11 @@ pub(crate) async fn prepare_inline_png_content(
     Ok((value, Some(data_base64)))
 }
 
-fn validate_png(bytes: &[u8], expected_width: u64, expected_height: u64) -> Result<(), ToolError> {
+pub(crate) fn validate_png(
+    bytes: &[u8],
+    expected_width: u64,
+    expected_height: u64,
+) -> Result<(), ToolError> {
     validate_complete_png_container(bytes)?;
     let expected_width = u32::try_from(expected_width).map_err(|_| {
         ToolError::Validation("render artifact dimensions are unsupported".to_string())

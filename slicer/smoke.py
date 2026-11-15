@@ -1,5 +1,6 @@
 """Exercise packaged Orca slicing, toolpath previews, and restart recovery."""
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from PIL import Image
+from capture_fixture import COLORS, create_fixture, verify_capture
 
 
 def verify_package(path):
@@ -101,6 +103,7 @@ with tempfile.TemporaryDirectory() as directory:
             readiness = json.load(response)
         assert readiness["state"] == "ready"
         assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.4.2"
+        assert readiness["native_capture"] is True
         assert all(count > 0 for count in readiness["profile_counts"].values())
         vendor = request("profiles", {"category": "filament", "query": "Polymaker",
                                       "printer": "Bambu Lab X1 Carbon 0.4 nozzle"})
@@ -115,7 +118,8 @@ with tempfile.TemporaryDirectory() as directory:
         colours = {"a1": "#0A2CE3", "x1c-reslice": "#C12E1F"}
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
-                                        ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
+                                        ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
+                                        ("capture-template", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
             profiles = request("profiles", {"category": "process", "printer": printer, "query": "0.20mm Standard"})
             assert profiles["total"] > 0
             inspected = request("settings", {"category": "filament", "profile": {"name": f"Bambu PLA Basic @BBL {suffix}"}, "query": "plate_temp"})
@@ -132,7 +136,8 @@ with tempfile.TemporaryDirectory() as directory:
                 "build_plate": "High Temp Plate" if model == "x1c" else "Textured PEI Plate",
                 "printer": {"name": printer},
                 "process": process,
-                "filaments": [filament],
+                "filaments": ([{**filament, "colour": color} for color in COLORS]
+                              if model == "capture-template" else [filament]),
                 "auto_arrange": True, "timeout_seconds": 300})
             deadline = time.monotonic() + 360
             while state["status"] == "running" and time.monotonic() < deadline:
@@ -165,6 +170,33 @@ with tempfile.TemporaryDirectory() as directory:
             assert settings["printer"]["machine_start_gcode"]
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
+        fixture_path = project / "capture-layout.3mf"
+        fixture = create_fixture(project / "capture-template/model.gcode.3mf", fixture_path)
+        source_hash = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        capture_params = {"project_id": "native-slice",
+                          "source": {"kind": "project", "path": fixture_path.name},
+                          "width": 1600, "height": 1000}
+        overview = request("capture", capture_params)
+        assert overview["source_sha256"] == source_hash
+        verify_capture(root, overview, fixture)
+        replay = request("capture", {**capture_params, "camera": overview["camera"]})
+        assert replay["camera"] == overview["camera"], "resolved native camera did not replay"
+        assert replay["image_sha256"] == overview["image_sha256"], "camera replay changed native pixels"
+        for controls in [
+            {"plates": [2], "camera": {"preset": "top"}},
+            {"camera": {"preset": "top", "projection": "perspective"}},
+            {"objects": [1], "camera": {"orientation": [0.9238795, 0, 0, 0.3826834]},
+             "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}},
+        ]:
+            result = request("capture", {**capture_params, **controls})
+            verify_capture(root, result, fixture, controls.get("plates"))
+        prepared = request("capture", {"project_id": "native-slice",
+            "source": {"kind": "prepared", "output_dir": "x1c-reslice"}})
+        prepared_state = request("status", {"project_id": "native-slice", "output_dir": "x1c-reslice"})
+        assert prepared["source_sha256"] == prepared_state["artifacts"]["model.gcode.3mf"]["sha256"]
+        assert prepared["slice_provenance"] == prepared_state["provenance"]
+        assert hashlib.sha256(fixture_path.read_bytes()).hexdigest() == source_hash, "capture changed source bytes"
+        print("Native three-plate layout capture, source transforms, colors, towers, camera controls and replay passed")
         # Two-nozzle printers group the loaded filaments between their nozzles.
         # The bundled profiles set no filament colours, so this slice also checks
         # that a colour list shorter than the filament count is handled.

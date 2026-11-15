@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import struct
 import time
 import uuid
 import zipfile
@@ -90,7 +91,42 @@ def run(client, output):
     if (hashlib.sha256(retained_image.read_bytes()).hexdigest() != reviewed["image"]["sha256"]
             or retained_image.read_bytes() != image.read_bytes()):
         raise ValueError("Retained toolpath preview does not match the reviewed image")
-    print("SLICER_CLIENT_OK: native preparation, hashed downloads, toolpath review", flush=True)
+    capture_params = {"project_id": project_id,
+        "source": {"kind": "prepared", "output_dir": handle["output_dir"]},
+        "camera": {"preset": "isometric"}, "width": 1200, "height": 800}
+    capture = call("slice", "capture", capture_params)
+    if (capture["kind"] != "native_orca_layout" or capture["representation"] != "model_placement"
+            or capture["prime_towers"] != "native_estimated"
+            or capture["source_sha256"] != state["artifacts"]["model.gcode.3mf"]["sha256"]
+            or capture["slice_provenance"] != state["provenance"]):
+        raise ValueError("Native layout observation does not identify its prepared source")
+    capture_image = output / "orca-layout.png"
+    client.download(capture["image"]["path"], capture_image)
+    data = capture_image.read_bytes()
+    if (not data.startswith(b"\x89PNG\r\n\x1a\n")
+            or struct.unpack(">II", data[16:24]) != (1200, 800)
+            or hashlib.sha256(data).hexdigest() != capture["image_sha256"]):
+        raise ValueError("Native layout image does not match its public response")
+    client.download(capture["metadata_path"], output / "orca-layout.json")
+    if json.loads((output / "orca-layout.json").read_text()) != {
+            key: value for key, value in capture.items() if key != "metadata_path"}:
+        raise ValueError("Retained native layout metadata differs from the public response")
+    native = load_retained(capture["native_metadata"], "orca-layout-native.json")
+    observed = load_retained(capture["provenance"], "orca-layout-provenance.json")["data"]
+    if (native["camera"] != capture["camera"] or native["plates"] != capture["plates"]
+            or observed["source_sha256"] != capture["source_sha256"]
+            or observed["image"]["sha256"] != capture["image_sha256"]):
+        raise ValueError("Native layout provenance lost its source, view or image identity")
+    client.download(observed["image"]["artifact"]["path"], output / "retained-orca-layout.png")
+    if (output / "retained-orca-layout.png").read_bytes() != data:
+        raise ValueError("Immutable native layout image differs from the returned image")
+    replay = call("slice", "capture", {**capture_params, "camera": capture["camera"]})
+    if replay["camera"] != capture["camera"] or replay["image_sha256"] != capture["image_sha256"]:
+        raise ValueError("Resolved Orca camera does not replay through public MCP")
+    current = call("slice", "status", handle)
+    if current["artifacts"] != state["artifacts"] or current["provenance"] != state["provenance"]:
+        raise ValueError("Layout capture changed completed preparation artifacts")
+    print("SLICER_CLIENT_OK: native preparation, hashed downloads, toolpath review, layout capture and replay", flush=True)
 
 
 def verify_restored(client, output, phase="restored"):

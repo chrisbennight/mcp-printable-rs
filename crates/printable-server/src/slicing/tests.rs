@@ -2,7 +2,7 @@ use super::*;
 use crate::projects::{CreateParams, ProjectRequest};
 use std::os::unix::fs::PermissionsExt;
 
-fn fixture(root: &Path, delay: bool) -> Arc<SliceWorker> {
+pub(super) fn fixture(root: &Path, delay: bool) -> Arc<SliceWorker> {
     let workspace = Arc::new(Workspace::open(Some(root), None).unwrap());
     projects::dispatch(
         &workspace,
