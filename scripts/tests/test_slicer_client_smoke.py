@@ -9,7 +9,7 @@ from slicer_client_smoke import verify_camera_replay
 class CameraReplayTests(unittest.TestCase):
     def setUp(self):
         self.camera = {"preset": "isometric", "projection": "orthographic",
-                       "margin": 0.08, "zoom": 1.25,
+                       "margin": 1.1, "zoom": 1.25,
                        "orientation": [0.8, 0.2, 0.4, 0.4],
                        "target": [128.0, -75.0, 125.0]}
 
