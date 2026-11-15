@@ -21,6 +21,9 @@ The container's `orca-headless` wrapper provides Xvfb and Mesa software renderin
 without GPU passthrough. It creates a private runtime directory inside
 each slice's temporary staging directory. The worker's existing process-group
 cancellation and staging cleanup also cover the display process and runtime files.
+The image includes the English locale needed by Orca's GUI initialization. The
+wrapper supplies the installed system certificate bundle to prevent an
+interactive certificate-selection prompt.
 The native smoke checks A1/X1C slices and package re-slicing, including decodable,
 nonblank thumbnail relationships, retained geometry, G-code, and build-plate settings.
 It also slices for the two-nozzle H2D with two filaments loaded, and checks
