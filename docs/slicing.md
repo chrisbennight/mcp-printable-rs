@@ -155,7 +155,8 @@ The presets are `isometric`, `top`, `front`, `rear`, `left`, `right` and `bottom
 Each uses the same native camera implementation. `camera.orientation` accepts a
 quaternion in `[w,x,y,z]` order and overrides the preset orientation.
 `camera.target` sets a workspace point in millimeters; `camera.zoom` sets native
-zoom. Orthographic and perspective projections are supported. Automatic framing
+zoom. An explicit zoom outside the layout's native camera range is rejected.
+Orthographic and perspective projections are supported. Automatic framing
 uses a margin of `1.1` by default; the margin must be at least one. Explicit
 target or zoom controls can crop the view. The returned `camera` contains the
 resolved controls and can be passed back unchanged to repeat that view over the

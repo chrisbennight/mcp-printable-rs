@@ -51,7 +51,7 @@ def object_vertices(package, model_path, object_id):
     return points
 
 
-def create_fixture(base_package, destination):
+def create_fixture(base_package, destination, print_sequence="by layer"):
     """Keep the packaged printer/material definitions and replace the simple layout."""
     ET.register_namespace("", CORE)
     with zipfile.ZipFile(base_package) as package:
@@ -103,6 +103,8 @@ def create_fixture(base_package, destination):
             plate = ET.SubElement(settings, "plate")
             metadata(plate, "plater_id", index + 1)
             metadata(plate, "plater_name", f"Fixture plate {index + 1}")
+            if index == 1:
+                metadata(plate, "plater_name", "Fixture plate 2 - rotated red and blue parts and a native prime tower, with a deliberately long plate name that must remain fully visible when automatic framing fits the capture")
             metadata(plate, "locked", "false")
             metadata(plate, "bed_type", "Textured PEI Plate")
             for slot, object_id in enumerate([original_id, second_id]):
@@ -131,6 +133,7 @@ def create_fixture(base_package, destination):
         assert len(config["filament_colour"]) >= 2, "fixture template must retain two native material slots"
         # A single-nozzle, two-material template makes each plate need a tower.
         config["filament_colour"] = COLORS
+        config["print_sequence"] = print_sequence
         config["enable_prime_tower"] = "1"
         config["prime_tower_width"] = "35"
         tower_x = [width * fraction for fraction in (0.75, 0.73, 0.71)]
@@ -190,6 +193,10 @@ def verify_capture(workspace, response, fixture, plates=None):
         assert decoded.format == "PNG"
         assert decoded.size == (response["width"], response["height"])
         image = decoded.convert("RGB")
+    background = image.getpixel((0, 0))
+    for edge in [(0, 0, 1, image.height), (image.width - 1, 0, image.width, image.height),
+                 (0, 0, image.width, 1), (0, image.height - 1, image.width, image.height)]:
+        assert all(pixel == background for pixel in image.crop(edge).getdata()), "automatic framing clips native geometry or plate identifiers at the image edge"
 
     def projected(point):
         vector = [*point, 1]

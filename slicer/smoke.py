@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -185,11 +186,30 @@ with tempfile.TemporaryDirectory() as directory:
         for controls in [
             {"plates": [2], "camera": {"preset": "top"}},
             {"camera": {"preset": "top", "projection": "perspective"}},
-            {"objects": [1], "camera": {"orientation": [0.9238795, 0, 0, 0.3826834]},
-             "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}},
         ]:
             result = request("capture", {**capture_params, **controls})
             verify_capture(root, result, fixture, controls.get("plates"))
+        object_controls = {"objects": [1], "camera": {"orientation": [0.9238795, 0, 0, 0.3826834]},
+            "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}}
+        object_capture = request("capture", {**capture_params, **object_controls})
+        verify_capture(root, object_capture, fixture)
+        by_object_path = project / "capture-by-object.3mf"
+        by_object_fixture = create_fixture(project / "capture-template/model.gcode.3mf",
+                                          by_object_path, print_sequence="by object")
+        by_object = request("capture", {**capture_params, **object_controls,
+            "source": {"kind": "project", "path": by_object_path.name}})
+        verify_capture(root, by_object, by_object_fixture)
+        assert by_object["image_sha256"] == object_capture["image_sha256"], "hidden plates leaked sequential-print clearance overlays"
+        diagnostics_before = set((project / "observations").glob("orca-failed-*.json"))
+        try:
+            request("capture", {**capture_params, "camera": {"zoom": 500}})
+        except urllib.error.HTTPError as error:
+            failure = json.load(error)
+            assert error.code == 422 and failure["code"] == "slice", failure
+        else:
+            raise AssertionError("native capture silently clamped an unsupported explicit zoom")
+        diagnostics = set((project / "observations").glob("orca-failed-*.json")) - diagnostics_before
+        assert len(diagnostics) == 1, "native camera rejection did not retain diagnostics"
         prepared = request("capture", {"project_id": "native-slice",
             "source": {"kind": "prepared", "output_dir": "x1c-reslice"}})
         prepared_state = request("status", {"project_id": "native-slice", "output_dir": "x1c-reslice"})
