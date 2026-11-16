@@ -603,6 +603,7 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
     use crate::projects::{Project, card::Card, catalog::SearchView, index};
     let mut schema = match (name, action) {
         ("slice", "inspect_layout") => with_errors(name, source_layout()),
+        ("slice", "compare") => typed::<crate::slicing::comparison::CompareResult>(name),
         ("printer" | "print", _) => crate::printers::action_output_schema(name, action)?,
         ("cad_build", _) => cad_action_schema(action)?,
         ("catalog", "search") => typed::<SearchView>(name),
@@ -662,17 +663,32 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             schema["type"] = json!("object");
             schema
         }
-        "slice" => json!({"type":"object","anyOf":[
-            source_layout(),
-            {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
-            {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
-            {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
-            {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
-            {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
-                "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
-                "source_layout":{"type":"object"},"final_layout":{"type":"object"},
-                "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
-        ]}),
+        "slice" => {
+            let mut comparison = serde_json::to_value(schemars::schema_for!(
+                crate::slicing::comparison::CompareResult
+            ))
+            .expect("comparison output schema serializes");
+            let definitions = comparison
+                .as_object_mut()
+                .expect("schema object")
+                .remove("$defs");
+            let mut result = json!({"type":"object","anyOf":[
+                comparison,
+                source_layout(),
+                {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
+                {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
+                {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
+                {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
+                {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
+                    "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
+                    "source_layout":{"type":"object"},"final_layout":{"type":"object"},
+                    "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
+            ]});
+            if let Some(definitions) = definitions {
+                result["$defs"] = definitions;
+            }
+            result
+        }
         "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(
             json!({
