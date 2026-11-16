@@ -324,11 +324,14 @@ jobs:
       - name: Install the pinned SBOM generator
         if: steps.scope.outputs.images == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
+          GH_TOKEN: ${{ github.token }}
           SYFT_ASSET_URL: https://api.github.com/repos/anchore/syft/releases/assets/615916330 # Syft 1.54.1
           SYFT_CHECKSUM: c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
+            --proto-redir '=https' \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --variable %GH_TOKEN --expand-oauth2-bearer '{{GH_TOKEN}}' \
             --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/syft.tar.gz" \
             "$SYFT_ASSET_URL"
@@ -386,12 +389,15 @@ jobs:
       - uses: ./.github/actions/setup-release-scanner
       - name: Install the pinned attestation verifier
         env:
+          GH_TOKEN: ${{ github.token }}
           GH_VERSION: "2.102.0"
           GH_ASSET_URL: https://api.github.com/repos/cli/cli/releases/assets/599854672
           GH_CHECKSUM: bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
+            --proto-redir '=https' \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --variable %GH_TOKEN --expand-oauth2-bearer '{{GH_TOKEN}}' \
             --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/gh.tar.gz" \
             "$GH_ASSET_URL"
