@@ -115,14 +115,25 @@ fn preserves_shape(original: &Transform3mf, changed: &Transform3mf) -> bool {
     };
     let old = determinant(original);
     let new = determinant(changed);
-    if !old.is_finite() || !new.is_finite() || old.abs() < 1e-12 || old.signum() != new.signum() {
+    if !old.is_finite()
+        || !new.is_finite()
+        || old == 0.
+        || new == 0.
+        || old.signum() != new.signum()
+    {
         return false;
     }
     (0..3).all(|i| {
         (0..3).all(|j| {
             let dot = |m: &Transform3mf| (0..3).map(|k| m[i * 3 + k] * m[j * 3 + k]).sum::<f64>();
             let (a, b) = (dot(original), dot(changed));
-            (a - b).abs() <= 1e-8 * a.abs().max(b.abs()).max(1.)
+            let norm = |column: usize| {
+                (0..3)
+                    .map(|k| original[column * 3 + k].powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            };
+            (a - b).abs() <= 1e-8 * norm(i) * norm(j)
         })
     })
 }
@@ -440,6 +451,28 @@ mod tests {
         let mut mirrored = rigid;
         mirrored[1] = -2.;
         assert!(!preserves_shape(&original, &mirrored));
+        let small = [0.0002, 0., 0., 0., 0.0002, 0., 0., 0., 0.0002, 0., 0., 0.];
+        let mut resized = small;
+        for index in [0, 4, 8] {
+            resized[index] *= 1.1;
+        }
+        assert!(!preserves_shape(&small, &resized));
+        let mut rotated = small;
+        rotated[0] = 0.;
+        rotated[1] = 0.0002;
+        rotated[3] = -0.0002;
+        rotated[4] = 0.;
+        assert!(preserves_shape(&small, &rotated));
+        rotated[3] += 0.00000001;
+        assert!(!preserves_shape(&small, &rotated));
+        let tiny = [
+            0.00001, 0., 0., 0., 0.00001, 0., 0., 0., 0.00001, 0., 0., 0.,
+        ];
+        let mut translated = tiny;
+        translated[9] = 5.;
+        assert!(preserves_shape(&tiny, &translated));
+        translated[8] = 0.;
+        assert!(!preserves_shape(&tiny, &translated));
         let source = package();
         let archive = model::read_archive(source.path(), 1024 * 1024, || true).unwrap();
         let directory = tempfile::tempdir().unwrap();

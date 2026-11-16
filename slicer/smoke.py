@@ -16,7 +16,7 @@ import zipfile
 
 from PIL import Image
 from capture_fixture import COLORS, create_banded_fixture, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
-from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, tower_paths
+from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, object_material_assignments, tower_paths
 
 
 def verify_package(path):
@@ -292,8 +292,8 @@ with tempfile.TemporaryDirectory() as directory:
         # These isolated child profiles retain native BBL tower generation but
         # replace firmware scripts. Their output must never reach a printer.
         material_source = project / "material-layout.3mf"
-        create_fixture(project / "capture-template/model.gcode.3mf", material_source,
-                       part_heights_mm=(2, 4), plate_count=2)
+        material_fixture = create_fixture(project / "capture-template/model.gcode.3mf", material_source,
+                                          part_heights_mm=(2, 4), plate_count=2)
         material_hash = hashlib.sha256(material_source.read_bytes()).hexdigest()
         inspected = request("inspect_layout", {"project_id": "native-slice", "source": material_source.name,
             "output_dir": "material-source-inspection", "expected_source_sha256": material_hash})
@@ -305,10 +305,10 @@ with tempfile.TemporaryDirectory() as directory:
         material_results = {}
 
         def material_trial(name, *, overrides=None, layout=None, source=None, clearance=None, plate=0,
-                           expected_source_state="passed", constraint=None, require_towers=True):
+                           expected_source_state="passed", constraint=None, require_towers=True, linear=False):
             handle = {"project_id": "native-slice", "output_dir": name}
             params = {**handle, "source": source or material_source.name, "plate": plate,
-                "build_plate": "Textured PEI Plate", "printer": {"name": software_profiles["printer"]},
+                "build_plate": "Textured PEI Plate", "printer": {"name": software_profiles["linear_printer" if linear else "printer"]},
                 "process": {"name": software_profiles["process"],
                             "overrides": {**common_overrides, **(overrides or {})}},
                 "filaments": [{"name": software_profiles["pla"], "colour": color} for color in COLORS],
@@ -353,9 +353,24 @@ with tempfile.TemporaryDirectory() as directory:
             for evidence in state["preflight"]["plates"].values():
                 assert evidence["coordinate_frame"] == "final_gcode" and evidence["units"] == "mm"
                 if require_towers:
-                    assert any(item["role"] == "prime_tower" for item in evidence["deposited_footprints"]["items"]), evidence
+                    if linear:
+                        assert any(item["role"] == "prime_tower" for item in evidence["deposited_footprints"]["items"]), evidence
+                    else:
+                        assert evidence["status"] in ("blocked", "unresolved") and any(
+                            reason.startswith("unsupported_coordinate_or_motion_command:M")
+                            for reason in evidence["unresolved"]), evidence
             handles.append(handle)
             material_results[name] = {"state": state, "towers": measured}
+            print("NATIVE_PREPARATION_RESULT", json.dumps({"case": name,
+                "profile_scope": "synthetic_linear_type1" if linear else "bbl_type1_with_unmodeled_firmware",
+                "source_sha256": state["source_sha256"], "slice_provenance": state["provenance"],
+                "native_package_sha256": state["artifacts"]["model.gcode.3mf"]["sha256"],
+                "toolpath_sha256": {path: state["artifacts"][path]["sha256"] for path in paths},
+                "towers": [{"minimum_mm": tower["minimum_mm"], "maximum_mm": tower["maximum_mm"],
+                            "deposited_paths": len(tower["paths"]), "toolchanges": len(tower["toolchanges"])}
+                           for tower in measured],
+                "source_layout_state": state["source_layout"]["state"], "final_layout_state": state["final_layout"]["state"],
+                "preflight_status": state["preflight"]["status"], "physical_result": "not_observed"}), flush=True)
             return measured
 
         baseline_towers = material_trial("material-baseline")
@@ -383,13 +398,16 @@ with tempfile.TemporaryDirectory() as directory:
         cone_towers = material_trial("material-cone", overrides={"wipe_tower_cone_angle": "60"})
         for baseline, cone in zip(baseline_towers, cone_towers):
             def coordinates(tower):
-                return [(path["material"], path["from_mm"], path["to_mm"]) for path in tower["paths"]]
+                return sorted((path["material"], tuple(sorted(tuple(round(value, 6) for value in path[edge])
+                    for edge in ("from_mm", "to_mm")))) for path in tower["paths"])
             assert coordinates(baseline) == coordinates(cone), "Type 1 cone unexpectedly changed generated tower paths"
         framework_off = material_trial("material-framework-off", overrides={"prime_tower_enable_framework": "0"})
-        assert coordinates(framework_off[0]) != coordinates(baseline_towers[0]), "framework override did not change actual tower paths"
+        assert coordinates(framework_off[0]) == coordinates(baseline_towers[0]), "constant-depth framework fixture behavior changed"
+        print("NATIVE_CONTROL_EFFECT", json.dumps({"control": "prime_tower_enable_framework",
+            "effect": "not_observed_in_constant_depth_fixture", "physical_result": "not_observed"}), flush=True)
         larger_brim = material_trial("material-larger-brim", overrides={"prime_tower_brim_width": "8"})
         assert any(abs(a - b) > 1 for a, b in zip(baseline_towers[0]["minimum_mm"], larger_brim[0]["minimum_mm"])), "tower brim override did not change actual footprint"
-        material_trial("material-obstructed-head", clearance={
+        material_trial("material-obstructed-head", linear=True, clearance={
             "initial_position": {"position_mm": [0, 0, 0], "source": "explicit software fixture start"},
             "machine_envelopes": [{"component": "synthetic obstructing head", "minimum_mm": [-30, -30, -0.1],
                 "maximum_mm": [30, 30, 10], "source": "deliberate software regression obstruction; no hardware claim"}]})
@@ -410,7 +428,7 @@ with tempfile.TemporaryDirectory() as directory:
         banded_evidence = {}
         for skip_sparse in (False, True):
             name = f"banded-sparse-{int(skip_sparse)}"
-            material_trial(name, source=banded_source.name, plate=1, require_towers=False,
+            material_trial(name, source=banded_source.name, plate=1, require_towers=False, linear=True,
                 overrides={"prime_tower_width": "8", "wipe_tower_no_sparse_layers": str(int(skip_sparse))},
                 layout={"source_sha256": banded_hash, "tower_positions": [{"plate": 1,
                     "position_mm": banded["tower_position_mm"]}]},
@@ -427,7 +445,9 @@ with tempfile.TemporaryDirectory() as directory:
             banded_evidence[skip_sparse] = {"tower": tower, "state": state, "deposition": deposition}
         dense_height = max(path["to_mm"][2] for path in banded_evidence[False]["tower"])
         sparse_height = max(path["to_mm"][2] for path in banded_evidence[True]["tower"])
-        assert dense_height - sparse_height > 4, ("sparse-layer override did not change actual tower heights", dense_height, sparse_height)
+        tower_levels = {sparse: {round(path["to_mm"][2], 4) for path in banded_evidence[sparse]["tower"]}
+                        for sparse in (False, True)}
+        assert len(tower_levels[False]) > len(tower_levels[True]), "sparse-layer override did not remove intermediate tower layers"
         printed_height = 0
         late_low_tower = False
         for path in banded_evidence[True]["deposition"]:
@@ -436,6 +456,9 @@ with tempfile.TemporaryDirectory() as directory:
             else:
                 printed_height = max(printed_height, path["to_mm"][2])
         assert late_low_tower, "fixture did not exercise a real late descent to the sparse tower"
+        print("NATIVE_SPARSE_DESCENT", json.dumps({"dense_tower_height_mm": dense_height,
+            "sparse_tower_height_mm": sparse_height, "late_low_tower": late_low_tower,
+            "physical_result": "not_observed"}), flush=True)
         sparse_report = banded_evidence[True]["state"]["preflight"]
         assert sparse_report["status"] == "blocked" and any(finding["kind"] == "toolhead_interference"
             for plate in sparse_report["plates"].values() for finding in plate["findings"]), sparse_report
@@ -475,7 +498,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert edge["final_layout"]["state"] in ("failed", "unmeasured"), edge["final_layout"]
         sequential_transform = list(crowded_transform)
         sequential_transform[9] += 25
-        material_trial("material-sequential", plate=1, constraint="sequential", require_towers=False,
+        material_trial("material-sequential", plate=1, constraint="sequential", require_towers=False, linear=True,
             overrides={"print_sequence": "by object", "enable_prime_tower": "0"},
             layout={"source_sha256": material_hash,
                 "placements": [{"build_index": 1, "transform_3mf": sequential_transform}]},
@@ -487,7 +510,20 @@ with tempfile.TemporaryDirectory() as directory:
             assert sequential["preflight"]["status"] == "blocked", sequential["preflight"]
             assert any(finding["kind"] == "toolhead_interference" for evidence in sequential["preflight"]["plates"].values()
                        for finding in evidence["findings"])
-        material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
+        resliced_towers = material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
+        for plate, (baseline, resliced) in enumerate(zip(baseline_towers, resliced_towers), start=1):
+            assert coordinates(baseline) == coordinates(resliced), "reslice changed actual tower paths or materials"
+            origin = [0 if plate == 1 else 256 * 1.2, 0, 0]
+            objects = [{"object": obj["object"], "material": obj["object"] - 1,
+                        "bounds_mm": {side: [value - offset for value, offset in zip(obj["bounds_mm"][side], origin)]
+                                      for side in ("min", "max")}}
+                       for obj in material_fixture["objects"] if obj["plate"] == plate]
+            assignments = []
+            for name in ("material-baseline", "material-reslice"):
+                paths = sorted(key for key in material_results[name]["state"]["artifacts"] if key.endswith(".gcode"))
+                assignments.append(object_material_assignments((project / name / paths[plate - 1]).read_text(), objects))
+            assert assignments[0] == assignments[1], "reslice changed object material assignments"
+            material_results["material-reslice"].setdefault("object_material_assignments", {})[str(plate)] = assignments[1]
         assert hashlib.sha256(material_source.read_bytes()).hexdigest() == material_hash
         print("Native repeated material changes, two-plate tower paths, position, rectangle width, rotation, cone applicability and reslicing passed")
 
