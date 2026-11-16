@@ -5308,7 +5308,10 @@ fn run_geometry_worker_process(
     parse_geometry_worker_output(status.success(), &output)
 }
 
-fn parse_geometry_worker_output(status_success: bool, stdout: &[u8]) -> Result<Value, ToolError> {
+pub(crate) fn parse_geometry_worker_output(
+    status_success: bool,
+    stdout: &[u8],
+) -> Result<Value, ToolError> {
     let envelope = serde_json::from_slice::<Value>(stdout).map_err(|_| {
         if status_success {
             geometry_worker_error(
@@ -5350,7 +5353,10 @@ fn parse_geometry_worker_output(status_success: bool, stdout: &[u8]) -> Result<V
 }
 
 #[cfg(target_os = "linux")]
-fn set_worker_memory_limit(command: &mut Command, memory_bytes: u64) -> Result<(), ToolError> {
+pub(crate) fn set_worker_memory_limit(
+    command: &mut Command,
+    memory_bytes: u64,
+) -> Result<(), ToolError> {
     let limit = libc::rlim_t::try_from(memory_bytes).map_err(|_| {
         geometry_worker_error(
             "geometry_resource_limit",
@@ -5376,7 +5382,10 @@ fn set_worker_memory_limit(command: &mut Command, memory_bytes: u64) -> Result<(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn set_worker_memory_limit(_command: &mut Command, _memory_bytes: u64) -> Result<(), ToolError> {
+pub(crate) fn set_worker_memory_limit(
+    _command: &mut Command,
+    _memory_bytes: u64,
+) -> Result<(), ToolError> {
     Ok(())
 }
 

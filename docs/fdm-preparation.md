@@ -92,14 +92,20 @@ candidate artifacts. The server has no objective-driven orientation optimizer.
 
 For a multicolor plate, inspect generated support, brim and tower footprints as
 well as object placement. Native arrangement is a useful candidate, while a
-model-only plate preview omits the generated footprints. The public preparation
-action currently exposes arrangement/orientation switches, not object locks,
-requested spacing or tower XY placement. Preserve an authored layout where
-needed and report controls or measurements that remain unavailable.
+model-only plate preview omits the generated footprints. Use `inspect_layout`
+to identify authored 3MF instances, plates, transforms, native material settings
+and solid conflicts. Source-bound `prepare.layout` controls change selected
+rigid instance transforms or a plate's tower XY while preserving the private
+source snapshot. Automatic arrangement and orientation must be disabled when
+those controls are present. The final native package is inspected separately;
+unknown identity or normalization cannot establish placement preservation.
 
 [Orca's tower documentation](https://github.com/OrcaSlicer/OrcaSlicer/wiki/multimaterial_settings_prime_tower)
-distinguishes Type 1 and Type 2 controls. Bambu uses Type 1; cone stabilization
-and rotation are not universal Bambu fixes. Tower bed attachment, structural
+distinguishes Type 1 and Type 2 controls. Bambu uses Type 1. The packaged fork's
+[shared integration](https://github.com/chrisbennight/OrcaSlicer/blob/63c97a10eab70d6f4af73c29807dddbcab889273/src/libslic3r/GCode.hpp)
+also consumes tower rotation; verify its generated paths instead of treating
+upstream type labels as complete applicability evidence. Cone stabilization
+and rotation are not universal stability fixes. Tower bed attachment, structural
 bonding and toolhead contact are separate concerns. A wider brim need not solve
 the latter two. Priming extrusion and color flushing also serve different
 purposes, so flushing savings alone do not justify removing a tower.
@@ -118,8 +124,11 @@ withholds a print-ready recommendation. The backend now retains
 [collision findings](slicing.md#collision-findings) from final native toolpaths:
 bed exclusions, tower interference and explicit linear travel checked against
 supplied machine-component envelopes. Missing inputs and unsupported motion
-remain unresolved. Source-object solid intersections and complete machine
-simulation remain outside that check's coverage.
+remain unresolved. Source-object solid intersections are a separate check in
+the isolated geometry worker. Final deposition footprints include known line
+width, height and end margins, grouped by native object label, material and role.
+Distances between their conservative XY bounds are lower bounds; overlapping
+bounds do not prove contact. Complete machine simulation remains unavailable.
 Physical bed readiness remains a separate question. Motion advice also depends
 on whether the bed moves in XY; see
 [Orca's arrangement guidance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/prepare_auto_arrange).
@@ -220,9 +229,8 @@ the existing workflow's typed actions to adding an unrelated tool for each setti
 
 | Priority | Capability | Evidence needed before advertising it |
 | --- | --- | --- |
-| High | Read-only source-model and 3MF preparation inspection | Report source identity, units, object transforms, plates, material indices, effective settings and preservation limitations. Exercise uploaded STL, model-only 3MF, multi-material projects and sliced packages without executing imported scripts or changing the live scene. Reuse the existing package reader where appropriate; it currently supports completed-slice summaries, not a public source inspection action. |
-| High | Rich native setting definitions and compatibility diagnostics | Generate setting types, units, allowed values/ranges and defaults from the pinned engine. Preserve profile overrides and native rejection details; check combinations only where authoritative rules exist. A syntactically valid value is not proof of physical suitability. |
-| High | Explicit plate layout and collision identification | Control supported object/tower placement and flag detected collisions using final transforms, generated footprints, material indices and applicable toolhead envelopes. Test actual material changes, crowded/edge layouts and re-slicing; distinguish identified collisions, checked clearance and unsupported checks. Successful slicing alone does not establish physical tower stability. |
+| High | Additional verified machine and coordinate-frame coverage | Extend the established source-solid and linear-path checks only with authoritative frame, firmware and hardware evidence. Preserve positive findings and explicit unresolved scope; source-model bounds and a native success code cannot establish every machine's clearance. |
+| High | Broader combination diagnostics | Extend existing literal definitions and tower-generator applicability when authoritative rules are available. Preserve native rejection details. A syntactically valid value is not proof of physical suitability or compatibility across every material/hardware combination. |
 | Medium | Retained preparation decisions and candidate comparison | Bind the user's objective, critical faces, assumptions and changes to exact source/settings/output identities. Compare available time/material estimates and unresolved warnings while keeping physical measurements separate. Reuse current slice handles and provenance rather than duplicate job lifecycles. |
 | Medium | Native adaptive profiles and local modifiers | Author and inspect per-object layer profiles, seam/texture masks and support regions. Prove preservation through upload, reslicing and export with actual toolpath regressions. Printer minimum/maximum layer settings alone do not provide this. |
 | Optional | Reusable physical-texture workflow or convenience action | Reuse Blender's geometry capability, retain scale/amplitude/masks and editable source, and verify output topology, dimensions and printability. Do not require a new texture service solely to copy a browser workflow. |

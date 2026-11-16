@@ -4,7 +4,7 @@
 //! conservative rectangular prisms, including an end margin of half a line
 //! width. They describe planned occupancy, not a measured physical print.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use parry3d_f64::{bounding_volume::Aabb, math::Vector, partitioning::Bvh};
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,78 @@ pub struct CollisionReport {
     /// One finding per kind/object pair/component. Unlabeled moves retain their
     /// source-line identity so different obstacles are not silently combined.
     pub findings: Vec<CollisionFinding>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DepositedFootprint {
+    pub object: Option<String>,
+    pub role: PathRole,
+    pub material: usize,
+    pub minimum_mm: [f64; 3],
+    pub maximum_mm: [f64; 3],
+    pub paths: usize,
+    pub first_source_line: u64,
+    pub last_source_line: u64,
+}
+
+/// Bounding footprints include planned line width, height and end margins.
+/// They conservatively include empty space and never establish a collision.
+pub fn deposited_footprints(
+    paths: &[PlannedMove],
+    mut continue_work: impl FnMut() -> bool,
+) -> Result<(Vec<DepositedFootprint>, bool), GeometryError> {
+    if !validate(paths, None, &[], &mut continue_work)? {
+        return Ok((Vec::new(), false));
+    }
+    let mut groups = BTreeMap::<(Option<String>, PathRole, usize), DepositedFootprint>::new();
+    let mut complete = true;
+    for path in paths {
+        if !continue_work() {
+            complete = false;
+            break;
+        }
+        if path.travel {
+            continue;
+        }
+        let Some(prism) = Prism::deposition(path) else {
+            complete = false;
+            continue;
+        };
+        let key = (path.object.clone(), path.role, path.material);
+        if groups.len() >= 1024 && !groups.contains_key(&key) {
+            complete = false;
+            continue;
+        }
+        let bounds = prism.bounds();
+        let value = groups.entry(key).or_insert_with(|| DepositedFootprint {
+            object: path.object.clone(),
+            role: path.role,
+            material: path.material,
+            minimum_mm: [f64::INFINITY; 3],
+            maximum_mm: [f64::NEG_INFINITY; 3],
+            paths: 0,
+            first_source_line: path.source_line,
+            last_source_line: path.source_line,
+        });
+        for axis in 0..3 {
+            value.minimum_mm[axis] = value.minimum_mm[axis].min(bounds.mins[axis]);
+            value.maximum_mm[axis] = value.maximum_mm[axis].max(bounds.maxs[axis]);
+        }
+        value.paths += 1;
+        value.last_source_line = path.source_line;
+    }
+    Ok((groups.into_values().collect(), complete))
+}
+
+/// Distance between conservative XY bounds is a lower bound on separation.
+/// Zero means the bounds overlap or touch; it does not establish contact.
+pub fn footprint_gap_lower_bound(a: &DepositedFootprint, b: &DepositedFootprint) -> f64 {
+    let gap = |axis: usize| {
+        (a.minimum_mm[axis] - b.maximum_mm[axis])
+            .max(b.minimum_mm[axis] - a.maximum_mm[axis])
+            .max(0.)
+    };
+    gap(0).hypot(gap(1))
 }
 
 struct Prism {
@@ -741,6 +813,24 @@ mod tests {
         assert_eq!(report.toolhead, CheckState::Failed);
         assert_eq!(report.bed, CheckState::Unmeasured);
         assert_eq!(report.findings[0].source_line, 0);
+    }
+
+    #[test]
+    fn footprints_include_generated_width_height_and_margins_without_claiming_contact() {
+        let paths = [
+            line([10., 10., 0.2], [20., 10., 0.2], PathRole::Part, 1),
+            line([10., 13., 0.2], [20., 13., 0.2], PathRole::Brim, 2),
+        ];
+        let (footprints, complete) = deposited_footprints(&paths, || true).unwrap();
+        assert!(complete);
+        assert_eq!(footprints.len(), 2);
+        assert_eq!(footprints[0].minimum_mm, [9.8, 9.8, 0.]);
+        assert_eq!(footprints[0].maximum_mm, [20.2, 10.2, 0.2]);
+        assert!((footprint_gap_lower_bound(&footprints[0], &footprints[1]) - 2.6).abs() < 1e-9);
+        assert!(!deposited_footprints(&paths, || false).unwrap().1);
+        let mut invalid = paths;
+        invalid[0].width_mm = Some(f64::NAN);
+        assert!(deposited_footprints(&invalid, || true).is_err());
     }
 
     #[test]

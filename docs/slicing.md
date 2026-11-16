@@ -63,6 +63,16 @@ these overrides:
 - names that Orca 2.4.2 does not define for the category, including Bambu Studio
   names such as `wall_infill_order`, which Orca would ignore
 
+For process discovery, the optional `printer` selection supplies tower context.
+`tower_context` and each relevant row's `applicability` distinguish supported,
+inapplicable and unknown generator controls, with pinned source links. BBL selects
+Type 1 regardless of configured `wipe_tower_type`. Both implementations consume
+rotation through shared integration. Type 1 does not generate a stabilization
+cone; Type 2 needs cone walls for that control. Rib planning derives tower width,
+so configured width is distinct from measured geometry. Missing process context
+cannot establish a Type 2 cone setting's applicability. These are generator facts,
+not physical hardware compatibility or proof that a job used a parameter.
+
 Override values are Orca strings or nonempty string arrays. The worker checks
 literal numeric bounds and closed enum choices before admitting a slice. Open
 suggestions do not restrict numeric values. Complex serialization, unresolved
@@ -94,6 +104,81 @@ do not submit the same operation again after a connection timeout. The worker
 admits one preparation or review at a time. `cancel` requests cancellation of
 active work. A restarted worker retains completed results and reports unfinished
 work as interrupted; it never silently resumes or replays it.
+
+### Source and final layout evidence
+
+`inspect_layout` accepts an authored project-relative 3MF, a new output directory
+and optional expected source SHA-256. It resolves core/production model resources
+without extracting archive members, and reports build indices, native instance
+and plate identities, build/component transforms, bounds, material settings and
+solid interference. The complete report is a retained artifact with a SHA-256;
+the response includes at most 32 instances and findings with total counts.
+Millimetre mesh projects are supported. Unknown required extensions, modifier
+semantics, units or resource paths remain explicit limitations.
+The complete report retains declared object-level `pid`/`pindex` defaults and
+referenced property groups/indices. These core 3MF references are not inferred
+printer filament slots.
+
+Source copying runs off the async executor and checks cancellation between chunks.
+The inspection deadline covers copying and geometry work. Cancelling the public
+call before publication stops the geometry child and releases its admission;
+once report publication begins, retention finishes as a completion boundary.
+
+`prepare.layout` binds edits to `source_sha256`. `placements` contains zero-based
+`build_index` and absolute `transform_3mf` values from inspection. The 12 values
+are the three linear columns followed by XYZ translation. Edits must preserve
+the source transform's intrinsic scale and handedness. Unlisted instances stay
+unchanged. `tower_positions` contains one-based native `plate` and bed-local
+`position_mm: [x,y]`. It edits existing native coordinate vectors; it cannot
+invent plate identities. `minimum_gap_mm` requests source-solid separation,
+independently of generated support/brim expansion. Explicit layout controls
+require `auto_arrange: false` and `auto_orient: false`.
+`intended_interfaces` can carry distinct authored `build_indices: [a,b]` and a
+design `reason` under the same source hash. Their actual measured interference
+and stated intent remain in the report. Final inspection maps them through
+stable native identities; an uncertain mapping stays unverified and cannot remove
+a measured conflict finding. They do not suppress tower, bed or
+machine checks. Do not declare an unintended overlap to be a design interface
+merely to clear a finding.
+
+Preparation retains `source-layout.json`, an edited `prepared.3mf` when requested,
+and `final-layout.json` with source/package/report hashes. Final verification
+requires stable nonzero native instance identities, compatible coordinate frames,
+oriented geometry signatures on a declared 0.0001 mm grid, transforms and plates.
+Bounds alone do not establish preservation. A changed known placement is a
+finding; an ambiguous mapping or native geometry normalization is unmeasured.
+Requested tower positions also compare final native coordinate settings. A
+changed coordinate is a finding; matching settings alone leave the geometric
+effect unmeasured. Inspect the generated tower paths and retained footprints.
+Requested automatic moves of known unlocked instances are retained as observed
+changes. Locked placements remain required; missing lock or identity evidence
+leaves changed placements unmeasured. Final exported solid conflicts and failed
+preservation block aggregate preflight even if Orca succeeds. An original source
+conflict is considered corrected by automatic layout only when stable identities,
+geometry and the final solid check verify that correction. Unknown checks
+preserve the files and unresolved result.
+
+The private edit copies unrelated ZIP members raw and changes only selected build
+transforms and tower coordinate values. Modified known entries retain file
+options but may not retain every ZIP extra field. Unknown native metadata remains
+in the original/private source; its preservation through Orca's export, painted
+masks and stable face identity are explicitly unverified. Allowlisted local
+extruder and support-interface assignments appear in both source/final reports
+for inspection; resolved global profiles do not replace that evidence.
+`material_assignment_preservation` explicitly remains unverified after native
+export; inspect corresponding assignments and actual material/interface paths.
+
+Exact source operations run in a disposable geometry process. The slicer worker
+honors `PRINTABLE_GEOMETRY_WORKER_BIN` and
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`; inspection budgets also bound XML bytes,
+expanded instances, pairs and time. A timed-out child is killed. Generated
+deposition, toolhead sweeps and bed exclusions remain separate final-G-code
+checks with their own coverage and assumptions.
+Inline preflight state is bounded to 32 plates and 32 findings, footprints and
+separations per plate. Counts and `*_inline_truncated` identify omitted inline
+evidence; read the complete report artifact and verify its SHA-256. These flags
+are separate from `findings_truncated`, which means analysis itself stopped at
+its finding budget and coverage remains incomplete.
 
 Terminal states record `finished_unix_ms`. When a slice completes, the worker
 also writes `summary.json` next to the outputs, and `status` returns it as

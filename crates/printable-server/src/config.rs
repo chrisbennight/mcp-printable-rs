@@ -428,7 +428,8 @@ fn workspace_budget_bytes(
         .transpose()
 }
 
-fn geometry_worker_memory_bytes(
+/// Shared by the server and standalone slicer worker's isolated geometry child.
+pub fn geometry_worker_memory_bytes(
     get: &impl Fn(&str) -> Option<String>,
 ) -> Result<u64, SettingsError> {
     const KEY: &str = "PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB";

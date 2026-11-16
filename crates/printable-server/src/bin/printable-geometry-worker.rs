@@ -48,6 +48,67 @@ fn main() -> ExitCode {
 
 fn run() -> Result<Value, WorkerFailure> {
     let [first, second, third] = exact_args()?;
+    if first == "--inspect-layout" {
+        let bytes = read_input(&second, "layout request")?;
+        let request: printable_server::slicing::layout::WorkerRequest =
+            serde_json::from_slice(&bytes).map_err(|_| WorkerFailure {
+                code: "validation",
+                message: "invalid layout worker request".into(),
+            })?;
+        request.options.validate().map_err(|error| WorkerFailure {
+            code: error.code(),
+            message: error.to_string(),
+        })?;
+        if let Some(placement) = &request.placement {
+            let limit = printable_geom::limit::WorkLimit::new(
+                std::time::Duration::from_secs(request.options.timeout_seconds),
+                || false,
+            );
+            limit
+                .apply(|| {
+                    let archive = printable_server::slicing::model::read_archive(
+                        &request.source,
+                        request.options.max_xml_bytes,
+                        || limit.check().is_ok(),
+                    )?;
+                    printable_server::slicing::placement::write_snapshot(
+                        &request.source,
+                        &placement.destination,
+                        &archive,
+                        &placement.controls,
+                    )
+                })
+                .map_err(|error: printable_server::error::ToolError| WorkerFailure {
+                    code: error.code(),
+                    message: error.to_string(),
+                })?;
+        }
+        let inspected = request
+            .placement
+            .as_ref()
+            .map_or(request.source.as_path(), |placement| {
+                placement.destination.as_path()
+            });
+        let mut report =
+            printable_server::slicing::layout::inspect_source(inspected, &request.options)
+                .map_err(|error| WorkerFailure {
+                    code: error.code(),
+                    message: error.to_string(),
+                })?;
+        if let Some(placement) = &request.placement {
+            report["layout_edit"] = json!({"source_sha256":placement.controls.source_sha256,
+                "controls":placement.controls});
+        }
+        let mut file = fs::File::create(&third).map_err(|_| WorkerFailure {
+            code: "geometry_worker_io",
+            message: "cannot create layout report".into(),
+        })?;
+        serde_json::to_writer(&mut file, &report).map_err(|_| WorkerFailure {
+            code: "geometry_worker_io",
+            message: "cannot write layout report".into(),
+        })?;
+        return Ok(json!({"report_written":true}));
+    }
     if first == BUST_FLAG {
         return run_bust(&second, &third);
     }

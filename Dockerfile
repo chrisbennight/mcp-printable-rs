@@ -102,6 +102,7 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
  && chmod -R u=rwX,go=rX /opt/orca \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
+COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY release/notices/orca /opt/orca/licenses
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
 ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
