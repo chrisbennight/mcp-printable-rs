@@ -79,7 +79,7 @@ struct PreflightCapture {
     segment_known: bool,
     known_extrusion: bool,
     retracted_mm: BTreeMap<usize, f64>,
-    conditional_depth: usize,
+    conditional_state_unknown: bool,
 }
 
 pub(super) struct ParsedPaths {
@@ -168,7 +168,7 @@ impl Parser {
             "M83" => self.relative_e = true,
             "M622" if self.preflight.is_some() => {
                 let capture = self.preflight.as_mut().expect("preflight parser");
-                capture.conditional_depth += 1;
+                capture.conditional_state_unknown = true;
                 capture.known_position = [false; 3];
                 capture
                     .unresolved
@@ -176,8 +176,11 @@ impl Parser {
             }
             "M623" if self.preflight.is_some() => {
                 let capture = self.preflight.as_mut().expect("preflight parser");
-                capture.conditional_depth = capture.conditional_depth.saturating_sub(1);
+                capture.conditional_state_unknown = true;
                 capture.known_position = [false; 3];
+                capture
+                    .unresolved
+                    .insert("unsupported_conditional_firmware_motion".into());
             }
             "M620" | "M621" | "M600" | "M701" | "M702" if self.preflight.is_some() => {
                 let capture = self.preflight.as_mut().expect("preflight parser");
@@ -485,7 +488,9 @@ impl Parser {
         }
         if let Some(capture) = &mut self.preflight {
             use printable_geom::print_collision::{PathRole, PlannedMove};
-            if capture.conditional_depth > 0 {
+            // A firmware branch may change motion, tool or extrusion state.
+            // Later explicit XYZ alone cannot restore its deposition history.
+            if capture.conditional_state_unknown {
                 capture
                     .unresolved
                     .insert("unsupported_conditional_firmware_motion".into());

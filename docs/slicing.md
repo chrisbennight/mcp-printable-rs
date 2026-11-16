@@ -182,8 +182,11 @@ These checks use conservative rectangular line envelopes and translating
 component boxes. Intended support/brim contact and material interfaces are not
 tower collisions. Source-object solid intersections, rounded bead shape, arc
 clearance and firmware macro motion are outside this implementation's established
-coverage. Unsupported motion remains explicit; the preview's sampled arcs do not
-certify clearance. Warping, loose components and nozzle buildup can cause physical
+coverage. Firmware conditionals leave subsequent motion/tool/extrusion state
+unverified: later explicit XYZ alone does not restore that history. Preflight
+retains earlier findings and marks the affected remainder unsupported.
+Unsupported motion remains explicit; the preview's sampled arcs do not certify
+clearance. Warping, loose components and nozzle buildup can cause physical
 contact outside the model. No collision report establishes adhesion, strength or
 successful physical printing.
 

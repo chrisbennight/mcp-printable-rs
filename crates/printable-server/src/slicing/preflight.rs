@@ -525,6 +525,31 @@ mod tests {
     }
 
     #[test]
+    fn conditional_extrusion_cannot_fabricate_deposition_after_xyz_reanchoring() {
+        let body = "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 E-1\nM622 J1\nG1 E1\nM623\nG1 X10 Y10 Z0.2\nG1 X20 E1\n; FEATURE: Prime tower\nG1 X15 Y5 Z0.2\nG1 Y15 E1\n";
+        let gcode = source(body);
+        let options = known_start();
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["status"], "unresolved");
+        assert_eq!(report["checks"]["tower_interference"], "unsupported");
+        assert!(report["findings"].as_array().unwrap().is_empty());
+
+        let earlier_collision = "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n; FEATURE: Prime tower\nG1 X15 Y5\nG1 Y15 E1\n";
+        let gcode = source(&format!("{earlier_collision}{body}"));
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["status"], "blocked");
+        assert_eq!(report["coverage_complete"], false);
+        assert!(
+            report["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["kind"] == "tower_interference"
+                    && finding["source_line"].as_u64().unwrap() < 13)
+        );
+    }
+
+    #[test]
     fn canceled_or_expired_analysis_does_not_clear_empty_coverage() {
         let gcode = source("G90\nM83\nG1 X10 Y10 Z0.2\n");
         let options = PreflightOptions::default();
