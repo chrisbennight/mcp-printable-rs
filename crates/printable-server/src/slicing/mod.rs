@@ -1,5 +1,6 @@
 //! Durable, explicitly configured Orca preparation in an isolated native worker.
 
+mod definitions;
 pub mod package;
 pub mod profiles;
 pub mod review;
@@ -31,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_LOG: usize = 1024 * 1024;
 pub const ENGINE_VERSION: &str = "2.4.2";
+pub const ENGINE_SOURCE_REVISION: &str = "b08db1a4efc79abfbcfc05bcbd12005868f3b98f";
 
 pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
     let endpoint = endpoint.ok_or_else(|| slice_error("slicer worker is not configured"))?;
