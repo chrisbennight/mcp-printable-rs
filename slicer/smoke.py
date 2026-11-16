@@ -1,16 +1,21 @@
 """Exercise packaged Orca slicing, toolpath previews, and restart recovery."""
 import io
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 
 from PIL import Image
+from capture_fixture import COLORS, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
 
 
 def verify_package(path):
@@ -51,8 +56,42 @@ def request(action, params):
     body = json.dumps({"action": action, "params": params}).encode()
     req = urllib.request.Request("http://127.0.0.1:8003/slice", body,
                                  {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as response:
-        return json.load(response)
+    started = time.monotonic()
+    diagnostic = None
+    if action == "capture":
+        print("NATIVE_CAPTURE_START", json.dumps({key: params[key] for key in
+              ("plates", "objects", "camera") if key in params}), flush=True)
+
+        def report_capture_progress():
+            scratch = root / ".printable/storage/scratch"
+            for path in scratch.glob("*/orca-runtime.*/orca-capture-*/log/*.log.*"):
+                try:
+                    print("NATIVE_CAPTURE_PROGRESS", path.read_text()[-12000:], flush=True)
+                except FileNotFoundError:
+                    pass
+            for name in ("memory.current", "memory.events", "pids.current", "pids.events"):
+                path = Path("/sys/fs/cgroup") / name
+                if path.is_file():
+                    print("NATIVE_CAPTURE_RESOURCE", name, path.read_text().strip(), flush=True)
+
+        diagnostic = threading.Timer(30, report_capture_progress)
+        diagnostic.start()
+    try:
+        timeout = params.get("timeout_seconds", 300) + 30 if action == "capture" else 120
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError:
+        if action == "capture":
+            for path in (project / "observations").glob("orca-failed-*.json"):
+                print("NATIVE_CAPTURE_FAILURE", path.read_text(), flush=True)
+        raise
+    finally:
+        if diagnostic is not None:
+            diagnostic.cancel()
+            diagnostic.join()
+    if action == "capture":
+        print("NATIVE_CAPTURE_DONE", round(time.monotonic() - started, 2), flush=True)
+    return result
 
 
 def cube():
@@ -101,6 +140,7 @@ with tempfile.TemporaryDirectory() as directory:
             readiness = json.load(response)
         assert readiness["state"] == "ready"
         assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.4.2"
+        assert readiness["native_capture"] is True
         assert all(count > 0 for count in readiness["profile_counts"].values())
         vendor = request("profiles", {"category": "filament", "query": "Polymaker",
                                       "printer": "Bambu Lab X1 Carbon 0.4 nozzle"})
@@ -115,7 +155,8 @@ with tempfile.TemporaryDirectory() as directory:
         colours = {"a1": "#0A2CE3", "x1c-reslice": "#C12E1F"}
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
-                                        ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
+                                        ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
+                                        ("capture-template", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
             profiles = request("profiles", {"category": "process", "printer": printer, "query": "0.20mm Standard"})
             assert profiles["total"] > 0
             inspected = request("settings", {"category": "filament", "profile": {"name": f"Bambu PLA Basic @BBL {suffix}"}, "query": "plate_temp"})
@@ -132,7 +173,8 @@ with tempfile.TemporaryDirectory() as directory:
                 "build_plate": "High Temp Plate" if model == "x1c" else "Textured PEI Plate",
                 "printer": {"name": printer},
                 "process": process,
-                "filaments": [filament],
+                "filaments": ([{**filament, "colour": color} for color in COLORS]
+                              if model == "capture-template" else [filament]),
                 "auto_arrange": True, "timeout_seconds": 300})
             deadline = time.monotonic() + 360
             while state["status"] == "running" and time.monotonic() < deadline:
@@ -165,6 +207,80 @@ with tempfile.TemporaryDirectory() as directory:
             assert settings["printer"]["machine_start_gcode"]
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
+        fixture_path = project / "capture-layout.3mf"
+        fixture = create_fixture(project / "capture-template/model.gcode.3mf", fixture_path)
+        source_hash = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        capture_params = {"project_id": "native-slice",
+                          "source": {"kind": "project", "path": fixture_path.name},
+                          "width": 1600, "height": 1000}
+        overview = request("capture", capture_params)
+        assert overview["source_sha256"] == source_hash
+        verify_capture(root, overview, fixture)
+        replay = request("capture", {**capture_params, "camera": overview["camera"]})
+        verify_camera_replay(replay["camera"], overview["camera"])
+        assert replay["image_sha256"] == overview["image_sha256"], "camera replay changed native pixels"
+        target = list(overview["camera"]["target"])
+        target[0] += 5
+        zoom = overview["camera"]["zoom"] * 0.5
+        custom_frame = request("capture", {**capture_params, "width": 1200, "height": 800,
+            "camera": {"target": target, "zoom": zoom}})
+        verify_capture(root, custom_frame, fixture)
+        assert (custom_frame["width"], custom_frame["height"]) == (1200, 800)
+        assert all(math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9)
+                   for a, b in zip(custom_frame["camera"]["target"], target))
+        assert abs(custom_frame["camera"]["zoom"] - zoom) <= 1e-9 * max(1, zoom)
+        for preset, forward in {"top": [0, 0, -1], "bottom": [0, 0, 1],
+                                "front": [0, 1, 0], "rear": [0, -1, 0],
+                                "left": [1, 0, 0], "right": [-1, 0, 0]}.items():
+            result = request("capture", {**capture_params, "plates": [2], "objects": [1],
+                "camera": {"preset": preset},
+                "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}})
+            native = verify_capture(root, result, fixture, [2])
+            assert all(abs(-actual - expected) < 1e-9 for actual, expected in
+                       zip(native["view_matrix"][2][:3], forward)), "native axis preset looks in the wrong direction"
+        for controls in [
+            {"plates": [2], "camera": {"preset": "top"}},
+            {"camera": {"preset": "top", "projection": "perspective"}},
+            {"plates": [2], "camera": {"preset": "top", "projection": "perspective"},
+             "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}},
+        ]:
+            result = request("capture", {**capture_params, **controls})
+            verify_capture(root, result, fixture, controls.get("plates"))
+        object_controls = {"objects": [1], "camera": {"orientation": [0.9238795, 0, 0, 0.3826834]},
+            "visibility": {"beds": False, "plate_identifiers": False, "prime_towers": False}}
+        object_capture = request("capture", {**capture_params, **object_controls})
+        verify_capture(root, object_capture, fixture)
+        by_object_path = project / "capture-by-object.3mf"
+        by_object_fixture = create_fixture(project / "capture-template/model.gcode.3mf",
+                                          by_object_path, print_sequence="by object")
+        by_object = request("capture", {**capture_params, **object_controls,
+            "source": {"kind": "project", "path": by_object_path.name}})
+        verify_capture(root, by_object, by_object_fixture)
+        assert by_object["image_sha256"] == object_capture["image_sha256"], "hidden plates leaked sequential-print clearance overlays"
+        diagnostics_before = set((project / "observations").glob("orca-failed-*.json"))
+        try:
+            request("capture", {**capture_params, "camera": {"zoom": 500}})
+        except urllib.error.HTTPError as error:
+            failure = json.load(error)
+            assert error.code == 422 and failure["code"] == "slice", failure
+        else:
+            raise AssertionError("native capture silently clamped an unsupported explicit zoom")
+        diagnostics = set((project / "observations").glob("orca-failed-*.json")) - diagnostics_before
+        assert len(diagnostics) == 1, "native camera rejection did not retain diagnostics"
+        prepared = request("capture", {"project_id": "native-slice",
+            "source": {"kind": "prepared", "output_dir": "x1c-reslice"}})
+        prepared_state = request("status", {"project_id": "native-slice", "output_dir": "x1c-reslice"})
+        assert prepared["source_sha256"] == prepared_state["artifacts"]["model.gcode.3mf"]["sha256"]
+        assert prepared["slice_provenance"] == prepared_state["provenance"]
+        verify_bed_surface(root, prepared, [(x, y, 0) for x in (64, 192) for y in (64, 192)])
+        prepared_native = json.loads((root / prepared["native_metadata"]["path"]).read_text())
+        prepared_models = [volume for volume in prepared_native["volumes"] if not volume["prime_tower"]]
+        assert len(prepared_models) == 1, "prepared capture omitted or duplicated its source model"
+        bounds = prepared_models[0]["bounds_mm"]
+        assert all(abs(high - low - expected) < 0.005 for low, high, expected in
+                   zip(bounds["min"], bounds["max"], [10, 10, 3])), "prepared capture changed its source geometry"
+        assert hashlib.sha256(fixture_path.read_bytes()).hexdigest() == source_hash, "capture changed source bytes"
+        print("Native three-plate layout capture, source transforms, colors, towers, camera controls and replay passed")
         # Two-nozzle printers group the loaded filaments between their nozzles.
         # The bundled profiles set no filament colours, so this slice also checks
         # that a colour list shorter than the filament count is handled.

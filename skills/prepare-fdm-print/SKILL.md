@@ -50,8 +50,14 @@ resources, or `tools/list` when resources are unavailable. Validate STL geometry
 with `validate_mesh`: inspect bounds, topology, bed contact and overhangs in the
 intended build direction. Use its wall-thickness, dimensional or draft checks
 when they answer an actual requirement. Mark unsupported or inconclusive checks
-as unmeasured. Inspect 3MF geometry and assignments through available native
-tools; no direct source-3MF inspection action is currently exposed by `slice`.
+as unmeasured. Use `slice.capture` to inspect an existing project 3MF or the exact
+output package of a completed preparation. Select common views or custom camera,
+plate, object and visibility controls; retain its source, view and image evidence.
+Read `printable://contracts/slice/capture` for the source selectors and controls.
+Capture shows native model placement and estimated prime towers. It does not show
+generated supports, brims or actual toolpaths, or establish collision clearance.
+Use `slice.review` for actual toolpaths and combine the available observations
+with geometry and printer information for the clearance assessment below.
 
 Choose the orientation against the requested objective:
 
@@ -84,14 +90,18 @@ or material assignments matter.
 Use `slice.profiles` for printer, process and filament discovery. Filter process
 and filament choices by the exact printer profile. Select the matching nozzle
 profile rather than overriding its identity or compatibility. Use `slice.settings`
-to inspect inherited values and overrideable names in the appropriate category;
-follow pagination for the settings needed. A null value means the native default
-applies, not that the setting is disabled or calibrated.
+to inspect resolved values, their profile or override origin, and native definitions
+in the appropriate category; follow pagination for the settings needed. A null
+profile value is unspecified. A separately reported native default does not prove
+the final value after job normalization. Read definition limits and unknown fields;
+setting presence does not establish hardware applicability or calibration.
 
 Keep a compatible baseline and change only settings that address the objective.
-Override values are Orca strings or nonempty string arrays. Orca checks allowed
-values during slicing; accepting a setting name is not complete value validation.
-Use current setting names, not a recipe copied from another slicer or release.
+Override values are Orca strings or nonempty string arrays. The worker checks
+authoritative literal bounds and closed choices before native work; complex or
+unresolved combinations still need native validation. Open numeric suggestions
+are not closed choices. Use definitions for the packaged engine/source, then
+verify effective output instead of copying another slicer or release's recipe.
 
 | Decision | Guidance and settings to discover |
 | --- | --- |
