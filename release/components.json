@@ -33,16 +33,16 @@
     },
     {
       "name": "OrcaSlicer",
-      "version": "local-2.4.2-b08db1a",
+      "version": "local-2.4.2-63c97a1",
       "roles": [
         "slicer"
       ],
       "license": "AGPL-3.0-only",
-      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/b08db1a4efc79abfbcfc05bcbd12005868f3b98f.tar.gz",
-      "source_commit": "b08db1a4efc79abfbcfc05bcbd12005868f3b98f",
-      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-b08db1a/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-b08db1a.AppImage",
-      "binary_sha256": "27cedb3f138e13cddf542e24657961ded693b53f2c4cbadacb0cfe820dd19f26",
-      "source_sha256": "c1dcfc0c2d604cef5ad0eeb674a28295ca102b9894baf15d9b587efbc842a4b8",
+      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/63c97a10eab70d6f4af73c29807dddbcab889273.tar.gz",
+      "source_commit": "63c97a10eab70d6f4af73c29807dddbcab889273",
+      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-63c97a1/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-63c97a1.AppImage",
+      "binary_sha256": "00e1875000f8bd97f2e4395b592cb8fba6454726be0da15d64f7f20cc5d6ca77",
+      "source_sha256": "8f2afba7d45c511ad472332b0b9635531c15bd4419b9341de75f4fd924494439",
       "recipe_paths": [
         "Dockerfile"
       ],

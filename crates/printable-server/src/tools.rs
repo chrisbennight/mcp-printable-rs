@@ -4826,7 +4826,20 @@ pub(crate) async fn prepare_inline_png_content(
     Ok((value, Some(data_base64)))
 }
 
-fn validate_png(bytes: &[u8], expected_width: u64, expected_height: u64) -> Result<(), ToolError> {
+pub(crate) fn validate_png(
+    bytes: &[u8],
+    expected_width: u64,
+    expected_height: u64,
+) -> Result<(), ToolError> {
+    validate_png_reader(bytes, expected_width, expected_height, Cursor::new(bytes))
+}
+
+pub(crate) fn validate_png_reader<R: std::io::BufRead + std::io::Seek>(
+    bytes: &[u8],
+    expected_width: u64,
+    expected_height: u64,
+    input: R,
+) -> Result<(), ToolError> {
     validate_complete_png_container(bytes)?;
     let expected_width = u32::try_from(expected_width).map_err(|_| {
         ToolError::Validation("render artifact dimensions are unsupported".to_string())
@@ -4840,7 +4853,7 @@ fn validate_png(bytes: &[u8], expected_width: u64, expected_height: u64) -> Resu
         ));
     }
     let limits = Limits::no_limits();
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
+    let mut reader = ImageReader::with_format(input, ImageFormat::Png);
     reader.limits(limits);
     let image = reader.decode().map_err(|_| {
         ToolError::Validation("render artifact is not a complete PNG image".to_string())

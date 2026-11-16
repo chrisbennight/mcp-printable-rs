@@ -37,6 +37,8 @@ pub struct WorkerReadiness {
     pub engine: NativeEngine,
     pub version: Option<String>,
     pub profile_counts: Option<ProfileCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_capture: Option<bool>,
 }
 
 impl WorkerReadiness {
@@ -54,6 +56,7 @@ impl WorkerReadiness {
             engine,
             version,
             profile_counts: None,
+            native_capture: None,
         }
     }
 
