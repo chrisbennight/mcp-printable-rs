@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use printable_workspace::{ALLOWED_ARTIFACT_SUFFIXES, ArtifactMeta, Workspace};
+use printable_workspace::{ALLOWED_ARTIFACT_SUFFIXES, ArtifactMeta, Workspace, WsError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write as _;
@@ -561,11 +561,24 @@ impl IncomingFiles {
                 params.overwrite,
                 max_bytes,
             ).map_err(|error| {
-                // Workspace quota admission precedes destination publication.
-                // Other filesystem errors can follow publication or directory sync.
+                // These typed validation, admission and destination rejections
+                // precede publication. Generic I/O can follow publication or sync.
                 let publication_attempted = !matches!(
                     error,
-                    printable_workspace::WsError::StorageBudgetExceeded
+                    WsError::Unconfined
+                        | WsError::PathEscapes
+                        | WsError::ReservedPath
+                        | WsError::SymlinkRefused
+                        | WsError::RefusingSymlinkReplace
+                        | WsError::UnsupportedArtifactType
+                        | WsError::NotRegularFile
+                        | WsError::AlreadyExists(_)
+                        | WsError::NotFound(_)
+                        | WsError::WriteTooLarge
+                        | WsError::ChangedWhileReading
+                        | WsError::StorageBudgetExceeded
+                        | WsError::StorageAccountingIncomplete
+                        | WsError::InvalidScratchId
                 );
                 if !publication_attempted {
                     *state = TransferState::Failed;
@@ -1058,6 +1071,69 @@ mod tests {
         );
         assert_eq!(files.status(uri).await.unwrap()["state"], "committed");
         assert_eq!(files.capacity.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn destination_conflicts_do_not_exhaust_receipts_or_replace_existing_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
+        std::fs::write(root.path().join("existing.3mf"), b"existing").unwrap();
+        for _ in 0..=MAX_RECEIPTS {
+            let authorization = authorize(&files, "source.3mf");
+            let uri = authorization["file"]["uri"].as_str().unwrap();
+            assert_eq!(
+                receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                    .await
+                    .status(),
+                StatusCode::CREATED
+            );
+            let error = files
+                .ingest(IngestParams {
+                    file: uri.into(),
+                    path: "existing.3mf".into(),
+                    overwrite: false,
+                })
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.code(), "already_exists");
+            assert!(matches!(
+                error,
+                ToolError::FileIngest {
+                    publication_attempted: Some(false),
+                    ..
+                }
+            ));
+            assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
+            assert_eq!(files.capacity.available_permits(), 1);
+            assert_eq!(
+                std::fs::read(root.path().join("existing.3mf")).unwrap(),
+                b"existing"
+            );
+        }
+        assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+        let authorization = authorize(&files, "replacement.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap();
+        assert_eq!(
+            receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+        files
+            .ingest(IngestParams {
+                file: uri.into(),
+                path: "replacement.3mf".into(),
+                overwrite: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("replacement.3mf")).unwrap(),
+            b"abc"
+        );
+        assert_eq!(files.status(uri).await.unwrap()["state"], "committed");
     }
 
     #[tokio::test]
