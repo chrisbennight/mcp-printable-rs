@@ -206,6 +206,14 @@ def tower_paths(gcode):
         "fixture did not generate prime-tower paths for both materials", len(paths),
         sorted({str(path["material"]) for path in paths}), changes)
     points = [point for path in paths for point in (path["from_mm"], path["to_mm"])]
+    models = {}
+    for material in (0, 1):
+        walls = [point for path in deposition if path["feature"] == "Outer wall" and path["material"] == material
+                 for point in (path["from_mm"], path["to_mm"])]
+        assert walls, ("fixture material has no actual model outer-wall paths", material)
+        models[str(material)] = {"minimum_mm": [min(point[axis] for point in walls) for axis in range(3)],
+                                 "maximum_mm": [max(point[axis] for point in walls) for axis in range(3)]}
     return {"paths": paths, "toolchanges": changes,
             "minimum_mm": [min(point[axis] for point in points) for axis in range(3)],
-            "maximum_mm": [max(point[axis] for point in points) for axis in range(3)]}
+            "maximum_mm": [max(point[axis] for point in points) for axis in range(3)],
+            "model_outer_wall_centerline_bounds_mm": models}
