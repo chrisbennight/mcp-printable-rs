@@ -37,6 +37,13 @@ pub enum ToolError {
     /// The concurrent-upload cap is reached; commit or abandon an upload first.
     #[error("too many concurrent uploads (max {0})")]
     TooManyUploads(usize),
+    #[error("{message}")]
+    FileUpload { code: &'static str, message: String },
+    #[error("{source}")]
+    FileIngest {
+        source: Box<ToolError>,
+        publication_attempted: Option<bool>,
+    },
     /// A filesystem error staging or committing an upload.
     #[error("upload io error: {0}")]
     Io(#[from] std::io::Error),
@@ -106,6 +113,8 @@ impl ToolError {
             ToolError::PayloadTooLarge(_) => "payload_too_large",
             ToolError::UploadNotFound => "upload_not_found",
             ToolError::TooManyUploads(_) => "too_many_uploads",
+            ToolError::FileUpload { code, .. } => code,
+            ToolError::FileIngest { source, .. } => source.code(),
             ToolError::Io(_) => "io",
             ToolError::Serde(_) => "serde",
             ToolError::Workspace(e) => e.code(),

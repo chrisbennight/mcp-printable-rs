@@ -700,7 +700,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "artifact",
-        description: "Work with workspace files: stat, list, read and write small files, upload larger ones in chunks, ingest uploaded file URIs and check transfers, publish immutable files for transfer, and report or clean up storage. Writes and chunks accept at most 1 MiB decoded; publish video for delivery.",
+        description: "Work with workspace files: stat, list, read and write small files, ingest an original uploaded file URI, inspect transfers, publish immutable files, and report or clean up storage. For gateway uploads use ingest without splitting or repackaging the file; status reports incoming-file limits separately from inline limits. Writes and chunks accept at most 1 MiB decoded; publish video for delivery.",
         schema: workflow_schema_of::<ArtifactRequest>,
         annotations: write_annotations,
     },

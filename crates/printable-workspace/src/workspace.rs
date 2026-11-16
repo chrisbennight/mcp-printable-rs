@@ -719,7 +719,7 @@ impl Workspace {
 
     /// Copy an artifact into a private immutable snapshot using a positive
     /// caller-selected byte budget. This streams large server-internal inputs
-    /// without relaxing the fixed MCP read/upload limit.
+    /// without relaxing the inline workspace artifact I/O limit.
     pub fn snapshot_artifact_bounded(
         &self,
         path: &str,

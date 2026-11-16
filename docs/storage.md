@@ -40,6 +40,25 @@ sources still exist. The
 filesystem is already full. Native upload HTTP requests return 507 when their
 reservation cannot be admitted.
 
+Incoming-file staging also has a configurable count limit:
+`PRINTABLE_FILE_UPLOAD_MAX_STAGED` defaults to 20. Each upload streams to managed
+disk storage and reserves its declared size, or its configured maximum when
+the size is unknown. A count limit does not reserve disk by itself; configure
+`PRINTABLE_WORKSPACE_BUDGET_MIB` for the workspace's shared byte budget. Final
+publication can temporarily require both the staged source and retained copy.
+Read `status.workspace.file_upload` for the native incoming-file limit,
+available staging slots and current receivers. The legacy
+`workspace.max_transfer_bytes` value applies to inline artifact I/O.
+
+Cancel an abandoned incoming delivery through the gateway's delivery lifecycle.
+Completed cancellation releases its staging; cancelling a receive waits until
+its admitted write has ended. Successful native ingest receipts are retained
+separately from staged file bytes; their bounded registry can refuse new
+authorization until a retained receipt expires. Gateway storage, gateway active transfers,
+and Printable staging have separate lifetimes and limits; a gateway upload
+being ready does not mean its destination has been ingested. See
+[incoming-file recovery](workflow-interface.md#recover-or-cancel-a-gateway-delivery).
+
 After a crash, a directory without a live ownership lock no longer reserves
 unused capacity. Its actual bytes remain charged until removed. Every managed
 temporary directory is disposable when unowned; it never serves as a retained
