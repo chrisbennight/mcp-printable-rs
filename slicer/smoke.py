@@ -348,6 +348,12 @@ with tempfile.TemporaryDirectory() as directory:
             assert hashlib.sha256(final_bytes).hexdigest() == state["final_layout"]["report_sha256"]
             final = json.loads(final_bytes)
             assert final["native_package_sha256"] == state["artifacts"]["model.gcode.3mf"]["sha256"]
+            preflight_bytes = (project / name / "preflight.json").read_bytes()
+            assert hashlib.sha256(preflight_bytes).hexdigest() == state["preflight"]["report_sha256"]
+            retained_preflight = json.loads(preflight_bytes)
+            assert (retained_preflight["source_layout"]["final_layout_preservation"]
+                    == state["source_layout"]["final_layout_preservation"]
+                    == state["final_layout"]["state"]), "retained and inline placement preservation disagree"
             assert state["final_layout"]["state"] in (("passed", "unmeasured", "failed") if constraint else ("passed", "unmeasured")), state["final_layout"]
             assert state["final_layout"]["authored_feature_preservation"] == "unverified_after_native_export"
             assert state["final_layout"]["material_assignment_preservation"] == "unverified_after_native_export"

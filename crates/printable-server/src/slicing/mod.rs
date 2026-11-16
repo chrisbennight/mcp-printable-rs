@@ -972,7 +972,7 @@ impl SliceWorker {
         let findings = source_report["findings"]
             .as_array()
             .ok_or_else(|| slice_error("source layout report omitted findings"))?;
-        let source_layout = json!({"state":source_report["state"],
+        let mut source_layout = json!({"state":source_report["state"],
                 "scope":"authored_source_solids_before_native_transforms",
                 "findings":findings.iter().take(32).collect::<Vec<_>>(),"findings_count":findings.len(),"findings_truncated":findings.len()>32,
                 "unresolved":source_report["unresolved"],"error":source_report["error"],"report_sha256":report_sha256,
@@ -1146,10 +1146,10 @@ impl SliceWorker {
             && source_layout["state"] == "failed"
             && exported["state"] == "passed"
             && preservation["state"] == "passed";
+        source_layout["final_layout_preservation"] = preservation["state"].clone();
         if let Some(active) = self.active.lock().await.as_mut() {
             active.state["final_layout"] = final_layout.clone();
-            active.state["source_layout"]["final_layout_preservation"] =
-                preservation["state"].clone();
+            active.state["source_layout"] = source_layout.clone();
         }
         let workspace = Arc::clone(&self.workspace);
         let clearance = params.clearance.clone();
