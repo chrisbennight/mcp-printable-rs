@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 
 import orca_settings
@@ -36,6 +37,14 @@ def checkout(directory, preset=PRESET, config=CONFIG):
     return root
 
 
+def commit_source(root):
+    for arguments in [["init", "--quiet"], ["add", "src"],
+                      ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                       "commit", "--quiet", "-m", "Source fixture"]]:
+        subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
+    return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+
+
 class OrcaSettingsTests(unittest.TestCase):
     def test_extracts_each_category_without_commented_names(self):
         config = CONFIG.replace('"url // not a comment"', '"max_layer_height"')
@@ -62,7 +71,7 @@ class OrcaSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = checkout(directory, config=config)
             output = Path(directory) / "settings.json"
-            revision = "a" * 40
+            revision = commit_source(root)
             self.assertEqual(orca_settings.main([str(root), "--engine-version", "2.4.2",
                                                  "--source-revision", revision, "--output", str(output)]), 0)
             document = json.loads(output.read_text(encoding="utf-8"))
@@ -70,6 +79,17 @@ class OrcaSettingsTests(unittest.TestCase):
         self.assertEqual(document["engine_version"], "2.4.2")
         self.assertEqual(document["source_revision"], revision)
         self.assertIn("brim_type", document["process"])
+
+    def test_source_identity_rejects_wrong_revision_and_changed_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = checkout(directory)
+            revision = commit_source(root)
+            orca_settings.verify_source(root, revision)
+            with self.assertRaisesRegex(ValueError, "HEAD"):
+                orca_settings.verify_source(root, "0" * 40)
+            (root / "src/libslic3r/PrintConfig.cpp").write_text("changed")
+            with self.assertRaisesRegex(ValueError, "differ"):
+                orca_settings.verify_source(root, revision)
 
     def test_main_rejects_ambiguous_identity_and_reports_extraction_errors(self):
         with tempfile.TemporaryDirectory() as directory:
