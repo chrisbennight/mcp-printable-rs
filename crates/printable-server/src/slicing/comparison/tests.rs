@@ -95,6 +95,36 @@ fn params(ws: &Workspace) -> CompareParams {
 }
 
 #[test]
+fn native_bambu_estimates_keep_normal_total_and_reject_ambiguous_headers() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let budget = Budget {
+        remaining: 1024,
+        deadline: Instant::now() + Duration::from_secs(30),
+        cancellation: CancellationToken::new(),
+    };
+    let normal = "; model printing time: 1m 46s; total estimated time: 2m 16s\n";
+    let additional = "; model printing time: 3m; total estimated time: 3m 30s\n";
+    std::fs::write(
+        file.path(),
+        format!("{normal}{additional}; filament used [g] = 0.45, 0.00\n"),
+    )
+    .unwrap();
+    let result = estimates(file.path(), &budget).unwrap();
+    assert_eq!(result["time_native"], "2m 16s");
+    assert_eq!(result["filament_grams_by_slot_native"], "0.45, 0.00");
+    for headers in [
+        format!("{normal}; estimated printing time (normal mode) = 1m\n"),
+        format!("; estimated printing time (normal mode) = 1m\n{normal}"),
+        format!("{normal}{additional}{additional}"),
+        "; model printing time: ; total estimated time: 1m\n".to_owned(),
+        "; estimated printing time (normal mode) = 1m\n; estimated printing time (normal mode) = 2m\n".to_owned(),
+    ] {
+        std::fs::write(file.path(), headers).unwrap();
+        assert!(estimates(file.path(), &budget).is_err());
+    }
+}
+
+#[test]
 fn comparison_retains_baseline_transforms_reviews_unknowns_and_restart_readback() {
     let root = tempfile::tempdir().unwrap();
     let ws = workspace(root.path());

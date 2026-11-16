@@ -199,6 +199,7 @@ fn estimates(path: &std::path::Path, budget: &Budget) -> Result<Value, ToolError
     let mut reader = BufReader::new(File::open(path)?);
     let mut line = Vec::new();
     let (mut time, mut grams) = (None, None);
+    let mut bambu_time_headers = 0;
     loop {
         budget.check()?;
         line.clear();
@@ -210,6 +211,28 @@ fn estimates(path: &std::path::Path, budget: &Budget) -> Result<Value, ToolError
             return Err(invalid(
                 "comparison toolpath line exceeds its processing bound",
             ));
+        }
+        if line.starts_with(b"; model printing time:") {
+            if (time.is_some() && bambu_time_headers == 0) || bambu_time_headers == 2 {
+                return Err(invalid("ambiguous native time estimate headers"));
+            }
+            let text =
+                std::str::from_utf8(&line).map_err(|_| invalid("native estimate is not UTF-8"))?;
+            let value = super::review::native_bambu_total_time(text)
+                .ok_or_else(|| invalid("malformed native Bambu time estimate"))?;
+            if value.len() > 256 {
+                return Err(invalid("native estimate exceeds its text bound"));
+            }
+            if bambu_time_headers == 0 {
+                // The pinned writer emits normal before its optional additional mode.
+                time = Some(value.to_owned());
+            }
+            bambu_time_headers += 1;
+            continue;
+        }
+        if bambu_time_headers > 0 && line.starts_with(b"; estimated printing time (normal mode) =")
+        {
+            return Err(invalid("ambiguous native time estimate headers"));
         }
         for (marker, target) in [
             (

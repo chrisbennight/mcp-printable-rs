@@ -612,6 +612,10 @@ with tempfile.TemporaryDirectory() as directory:
                 and estimate["filament_grams_by_slot_native"] is not None
                 and estimate["support_grams"] is None and estimate["tower_grams"] is None
                 and estimate["flushing_grams"] is None for estimate in candidate["estimates"].values())
+        for candidate, sliced in zip((comparison["baseline"], comparison["candidates"][0]),
+                                     (flat_baseline, flat_finish)):
+            assert candidate["estimates"][sliced["toolpath"]]["time_native"] == sliced["review"]["estimates"]["time"], (
+                "comparison and review disagree on the native total-time estimate")
         relief = surface_trial("relief-detail", "relief", {"ironing_type": "no ironing"})
         x_origin = relief["bounds"]["minimum_mm"][0]
         ridges = [path for path in relief["paths"] if 1.05 < path["to_mm"][2] < 1.65
