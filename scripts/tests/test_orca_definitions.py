@@ -74,6 +74,25 @@ class OrcaDefinitionsTests(unittest.TestCase):
                 self.assertNotIn("minimum", definition)
                 self.assertIn("minimum", definition["unknown_fields"])
 
+    def test_vector_constructor_lists_keep_their_native_shape(self):
+        source = '''void PrintConfigDef::init() {
+            def = this->add("numbers", coFloats);
+            def->set_default_value(new ConfigOptionFloats({0}));
+            def = this->add("points", coPoints);
+            def->set_default_value(new ConfigOptionPoints({Vec2d(1., 2.)}));
+            def = this->add("overload", coFloats);
+            def->set_default_value(new ConfigOptionFloats(3, 0.));
+            def = this->add("gui", coFloat);
+            def->gui_type = other->gui_type;
+        }'''
+        values = orca_definitions.extract(source, {"numbers", "points", "overload", "gui"})
+        self.assertEqual(values["numbers"]["default"]["value"], [0])
+        self.assertEqual(values["points"]["default"]["value"], [[1, 2]])
+        self.assertNotIn("default", values["overload"])
+        self.assertIn("default", values["overload"]["unknown_fields"])
+        self.assertNotIn("gui_type", values["gui"])
+        self.assertIn("gui_type", values["gui"]["unknown_fields"])
+
 
 if __name__ == "__main__":
     unittest.main()

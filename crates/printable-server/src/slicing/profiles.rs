@@ -719,6 +719,17 @@ mod tests {
                 .settings(query("prime_tower_width", json!({"prime_tower_width":"1"})))
                 .is_err()
         );
+        for key in ["max_travel_detour_distance", "outer_wall_line_width"] {
+            let overrides = serde_json::to_value(BTreeMap::from([(key, "-1")])).unwrap();
+            let error = profiles
+                .settings(query(key, overrides))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("violates the packaged Orca setting definition"),
+                "{error}"
+            );
+        }
         assert_eq!(
             profiles
                 .settings(query("unknown_newer_feature", json!({})))

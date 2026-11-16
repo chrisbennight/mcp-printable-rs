@@ -124,7 +124,11 @@ def default_value(node, mapping):
         return values[0]
     if name in {"ConfigOptionFloats", "ConfigOptionInts", "ConfigOptionBools",
                 "ConfigOptionStrings", "ConfigOptionPercents", "ConfigOptionPoints"}:
-        return values
+        if arguments.type == "initializer_list":
+            return values
+        if len(children) == 1 and children[0].type == "initializer_list":
+            return literal(children[0])
+        return UNKNOWN
     return UNKNOWN
 
 
@@ -197,7 +201,8 @@ def extract(source, keys):
                     if field in FIELDS:
                         resolved = literal(value)
                         if field == "gui_type":
-                            resolved = text(value).split("::")[-1]
+                            match = re.fullmatch(r"ConfigOptionDef::GUIType::(undefined|i_enum_open|f_enum_open|color|select_open|slider|legend|one_string)", text(value))
+                            resolved = match[1] if match else UNKNOWN
                         operator = item.child_by_field_name("operator")
                         if item.id != getattr(direct, "id", None) or resolved is UNKNOWN or text(operator) != "=":
                             unknown.add(FIELDS[field])

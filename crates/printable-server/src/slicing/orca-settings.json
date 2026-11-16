@@ -4154,9 +4154,7 @@
    "minimum": 0,
    "default": {
     "value": [
-     [
-      0
-     ]
+     0
     ],
     "source": "native_definition"
    }
@@ -4372,11 +4370,11 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
+    "gui_type",
     "nullable",
     "ratio_over",
     "unit"
    ],
-   "gui_type": "def_infill_anchor_min->gui_type",
    "default": {
     "value": {
      "value": 20,

@@ -67,7 +67,10 @@ impl Definition {
                     .choices
                     .as_ref()
                     .is_none_or(|choices| choices.iter().any(|choice| choice == value)),
-                Some("number" | "integer" | "percent") => {
+                Some("number" | "integer" | "percent" | "number_or_percent") => {
+                    if kind == Some("number_or_percent") && value.ends_with('%') {
+                        continue;
+                    }
                     let numeric = if kind == Some("percent") {
                         value.strip_suffix('%').unwrap_or(value).trim()
                     } else {
@@ -125,5 +128,21 @@ mod tests {
         assert!(definition.validate("override", &json!(["11"])).is_err());
         definition.status = "unknown".into();
         definition.validate("override", &json!(["11"])).unwrap();
+    }
+
+    #[test]
+    fn absolute_number_or_percent_values_use_literal_bounds() {
+        let definition: Definition = serde_json::from_value(json!({
+            "status":"source_literal","applicability":"unknown","type":"number_or_percent",
+            "minimum":0,"maximum":10
+        }))
+        .unwrap();
+        for value in ["0", "0.4", "10"] {
+            definition.validate("width", &json!(value)).unwrap();
+        }
+        for value in ["-1", "11", "NaN"] {
+            assert!(definition.validate("width", &json!(value)).is_err());
+        }
+        definition.validate("width", &json!("200%")).unwrap();
     }
 }
