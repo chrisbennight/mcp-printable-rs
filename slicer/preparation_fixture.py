@@ -7,6 +7,7 @@ import shutil
 
 
 PRINTER = "Printable software fixture (no physical printer)"
+LINEAR_PRINTER = "Printable linear Type 1 fixture (no physical printer)"
 PROCESS = "Printable software fixture process"
 PLA = "Printable software fixture PLA"
 PETG = "Printable software fixture PETG"
@@ -85,25 +86,32 @@ def create_software_profiles(packaged_root, destination):
                 **settings}
         (destination / category / f"{name}.json").write_text(json.dumps(data))
 
-    write("machine", PRINTER, "Bambu Lab X1 Carbon 0.4 nozzle", {
+    machine = {
         "machine_start_gcode": "; software fixture, never print\nG90\nM83\nT[initial_extruder]\nG92 E0\nG1 X0 Y0 Z0 F1200\n",
         "machine_end_gcode": "; software fixture end\nM400\n",
-        "change_filament_gcode": "T[next_extruder]\nG92 E0\n",
+        "change_filament_gcode": "T[next_extruder]\nG92 E0\nG1 X[x_after_toolchange] Y[y_after_toolchange] Z[z_after_toolchange] F1200\n",
         "before_layer_change_gcode": "", "layer_change_gcode": "", "time_lapse_gcode": "",
         "change_extrusion_role_gcode": "", "printing_by_object_gcode": "",
         "wrapping_detection_gcode": "", "file_start_gcode": "",
         "use_relative_e_distances": "1",
+        "z_hop_types": ["Normal Lift"],
+    }
+    write("machine", PRINTER, "Bambu Lab X1 Carbon 0.4 nozzle", machine)
+    write("machine", LINEAR_PRINTER, "Bambu Lab X1 Carbon 0.4 nozzle", {
+        **machine, "printer_model": "Printable synthetic Type 1",
     })
     write("process", PROCESS, "0.20mm Standard @BBL X1C", {
-        "compatible_printers": [PRINTER], "process_change_extrusion_role_gcode": "",
+        "compatible_printers": [PRINTER, LINEAR_PRINTER], "process_change_extrusion_role_gcode": "",
+        "wipe_tower_type": "type1", "enable_arc_fitting": "0", "scan_first_layer": "0",
     })
     for name, parent in [(PLA, "Bambu PLA Basic @BBL X1C"),
                          (PETG, "Bambu PETG HF @BBL X1C")]:
         write("filament", name, parent, {
-            "compatible_printers": [PRINTER], "filament_start_gcode": ["; software fixture material"],
+            "compatible_printers": [PRINTER, LINEAR_PRINTER], "filament_start_gcode": ["; software fixture material"],
             "filament_end_gcode": [""], "filament_change_extrusion_role_gcode": [""],
+            "filament_z_hop_types": ["Normal Lift"],
         })
-    return {"printer": PRINTER, "process": PROCESS, "pla": PLA, "petg": PETG}
+    return {"printer": PRINTER, "linear_printer": LINEAR_PRINTER, "process": PROCESS, "pla": PLA, "petg": PETG}
 
 
 def linear_deposition_paths(gcode):

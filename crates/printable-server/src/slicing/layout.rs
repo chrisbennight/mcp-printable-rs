@@ -623,9 +623,8 @@ pub(super) fn apply_final_interfaces(
                 pair["state"] = json!("passed");
                 accepted.insert(index);
             }
-        } else if source_mapping_incomplete || pair_ids.is_none() {
-            pair["state"] = json!("unmeasured");
-            pair["reason"] = json!("intended_interface_native_mapping_not_verified");
+        } else if pair_ids.is_none() {
+            pair["intended_interface_status"] = json!("native_mapping_not_verified");
             unverified.insert(index);
         }
     }
@@ -634,7 +633,7 @@ pub(super) fn apply_final_interfaces(
             finding["evidence"]["pair_index"]
                 .as_u64()
                 .and_then(|i| usize::try_from(i).ok())
-                .is_none_or(|i| !accepted.contains(&i) && !unverified.contains(&i))
+                .is_none_or(|i| !accepted.contains(&i))
         });
     }
     if source_mapping_incomplete || !unverified.is_empty() {
@@ -1035,8 +1034,75 @@ mod tests {
         unknown["instances"][0]["native_identify_id"] = Value::Null;
         let mut after = before.clone();
         apply_final_interfaces(&unknown, &mut after, Some(&controls));
-        assert_eq!(after["state"], "unmeasured");
-        assert!(after["findings"].as_array().unwrap().is_empty());
+        assert_eq!(after["state"], "failed");
+        assert_eq!(after["findings"].as_array().unwrap().len(), 3);
+        assert!(
+            after["unresolved"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("intended_interface_native_mapping_not_verified"))
+        );
+    }
+
+    #[test]
+    fn unmapped_interface_does_not_hide_unrelated_known_final_collision() {
+        let source = cubes(&[0., 10., 20., 20.5], false);
+        let mut before = inspect_source(source.path(), &InspectOptions::default()).unwrap();
+        for (index, instance) in before["instances"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            instance["native_identify_id"] = json!(100 + index);
+        }
+        let mut after = before.clone();
+        before["instances"][0]["native_identify_id"] = Value::Null;
+        let controls = super::super::placement::LayoutControls {
+            source_sha256: "a".repeat(64),
+            placements: vec![],
+            tower_positions: vec![],
+            minimum_gap_mm: None,
+            intended_interfaces: vec![IntendedInterface {
+                build_indices: [0, 1],
+                reason: "Declared design interface".into(),
+            }],
+        };
+        apply_final_interfaces(&before, &mut after, Some(&controls));
+        assert_eq!(after["state"], "failed");
+        assert!(
+            after["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["build_indices"] == json!([2, 3]))
+        );
+        assert!(
+            after["pairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|pair| pair["build_indices"] == json!([2, 3]) && pair["state"] == "failed")
+        );
+        assert!(!after["unresolved"].as_array().unwrap().is_empty());
+        after["instances"][2]["native_identify_id"] = Value::Null;
+        apply_final_interfaces(&before, &mut after, Some(&controls));
+        assert_eq!(after["state"], "failed");
+        assert!(
+            after["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["build_indices"] == json!([2, 3]))
+        );
+        assert!(
+            after["pairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|pair| pair["build_indices"] == json!([2, 3])
+                    && pair["intended_interface_status"] == "native_mapping_not_verified")
+        );
     }
 
     #[test]

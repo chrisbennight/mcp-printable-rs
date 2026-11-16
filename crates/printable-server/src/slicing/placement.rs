@@ -115,7 +115,12 @@ fn preserves_shape(original: &Transform3mf, changed: &Transform3mf) -> bool {
     };
     let old = determinant(original);
     let new = determinant(changed);
-    if !old.is_finite() || !new.is_finite() || old.abs() < 1e-12 || old.signum() != new.signum() {
+    if !old.is_finite()
+        || !new.is_finite()
+        || old == 0.
+        || new == 0.
+        || old.signum() != new.signum()
+    {
         return false;
     }
     (0..3).all(|i| {
@@ -460,6 +465,14 @@ mod tests {
         assert!(preserves_shape(&small, &rotated));
         rotated[3] += 0.00000001;
         assert!(!preserves_shape(&small, &rotated));
+        let tiny = [
+            0.00001, 0., 0., 0., 0.00001, 0., 0., 0., 0.00001, 0., 0., 0.,
+        ];
+        let mut translated = tiny;
+        translated[9] = 5.;
+        assert!(preserves_shape(&tiny, &translated));
+        translated[8] = 0.;
+        assert!(!preserves_shape(&tiny, &translated));
         let source = package();
         let archive = model::read_archive(source.path(), 1024 * 1024, || true).unwrap();
         let directory = tempfile::tempdir().unwrap();
