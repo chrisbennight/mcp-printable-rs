@@ -306,6 +306,20 @@ Read native warnings and failures; an unknown outcome is not permission to repla
 Use the completed summary for package, plate and material identity, and retained
 `settings.json` for full resolved profile settings.
 
+Read the completed state's `preflight` and retained `preflight.json`. A completed
+native slice can still be blocked by collision findings. Use source-line, layer,
+position and object/component evidence to flag the problem, correct it and
+recheck. Supply known machine-component bounds and their source through
+`clearance.machine_envelopes` when available; never invent dimensions to obtain
+a passing check. Missing envelopes, dimensions or effective bed metadata remain
+unmeasured. Supply `clearance.initial_position` only with evidence for the starting
+nozzle coordinates in the input G-code frame; never infer them from zeroes.
+Read coverage and unresolved reasons: conservative line envelopes and
+explicit linear motion do not establish source-solid intersections, arc
+clearance, firmware macro motion or physical resistance to warping and buildup.
+Any required unmeasured or unsupported check still prevents a print-ready
+recommendation.
+
 Use `slice.review` on the exact returned G-code artifact. Choose layers and
 features that answer this model's risks: bed contact, first supported underside,
 thin walls or text, top fill/ironing, relief peaks and material transitions.

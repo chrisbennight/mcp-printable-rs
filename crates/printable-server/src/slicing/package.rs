@@ -138,6 +138,19 @@ pub fn facts(path: &Path) -> Result<PackageFacts, ToolError> {
     Ok(facts)
 }
 
+/// Only the effective native bed fields needed by collision analysis. Other
+/// imported configuration, including printer connection data, stays internal.
+pub(super) fn collision_settings(path: &Path) -> Result<Value, ToolError> {
+    let mut archive = open(path)?;
+    let bytes = read_entry(&mut archive, SETTINGS_ENTRY, MAX_SETTINGS_BYTES)?;
+    let settings: Value =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("has unreadable project settings"))?;
+    Ok(serde_json::json!({
+        "printable_area":settings["printable_area"],
+        "bed_exclude_area":settings["bed_exclude_area"],
+    }))
+}
+
 /// The full-size thumbnail of one plate, as stored PNG bytes.
 pub fn plate_thumbnail(path: &Path, plate: u32) -> Result<Vec<u8>, ToolError> {
     let mut archive = open(path)?;

@@ -79,6 +79,90 @@ fn params() -> PrepareParams {
 }
 
 #[tokio::test]
+async fn successful_native_exit_retains_collision_findings_and_output_identities() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    let gcode = b"G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n; FEATURE: Prime tower\nG1 X15 Y5\nG1 Y15 E1\n";
+    std::fs::write(directory.path().join("fixture.gcode"), gcode).unwrap();
+    let settings =
+        json!({"printable_area":["0x0","100x0","100x100","0x100"],"bed_exclude_area":[]});
+    let package = package::fixture::package(&[
+        (
+            "Metadata/project_settings.config",
+            settings.to_string().as_bytes(),
+        ),
+        ("Metadata/plate_1.gcode", gcode),
+    ]);
+    std::fs::write(directory.path().join("fixture.3mf"), package).unwrap();
+    std::fs::write(
+        &worker.binary,
+        r#"#!/usr/bin/python3
+import pathlib,shutil,sys
+root=pathlib.Path(__file__).parent
+output=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])
+shutil.copyfile(root/'fixture.3mf',output/'model.gcode.3mf')
+shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
+"#,
+    )
+    .unwrap();
+    let mut request = params();
+    request.clearance.initial_position = Some(preflight::InitialPosition {
+        position_mm: [0.; 3],
+        source: "synthetic program start".into(),
+    });
+    worker.prepare(request).await.unwrap();
+    let state = terminal(&worker).await;
+    assert_eq!(state["status"], "completed", "{state}");
+    assert_eq!(state["preflight"]["status"], "blocked");
+    let plate = &state["preflight"]["plates"]["plate_1.gcode"];
+    assert_eq!(plate["checks"]["tower_interference"], "failed");
+    assert_eq!(plate["checks"]["bed"], "passed");
+    assert_eq!(plate["checks"]["toolhead"], "unmeasured");
+    assert_eq!(plate["toolpath_sha256"], provenance::digest(gcode));
+    let (_, bytes) = worker
+        .workspace
+        .read_generated_bytes("projects/part/slice/preflight.json")
+        .unwrap();
+    assert_eq!(
+        state["artifacts"]["preflight.json"]["sha256"],
+        provenance::digest(&bytes)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        state["preflight"]
+    );
+    let reference = serde_json::from_value(state["provenance"].clone()).unwrap();
+    let retained = provenance::read(
+        &worker.workspace,
+        &reference,
+        provenance::Kind::Slice,
+        "part",
+    )
+    .unwrap();
+    assert_eq!(retained.data["preflight"], state["preflight"]);
+    assert_eq!(
+        worker.status(handle(), false).await.unwrap()["preflight"],
+        state["preflight"]
+    );
+}
+
+#[tokio::test]
+async fn invalid_clearance_input_does_not_admit_native_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = fixture(directory.path(), false);
+    let mut request = params();
+    request.clearance.timeout_seconds = 0;
+    assert!(worker.prepare(request).await.is_err());
+    assert!(!directory.path().join("slicer-argv.json").exists());
+    assert!(
+        worker
+            .workspace
+            .read_generated_bytes("projects/part/slice/state.json")
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn readiness_verifies_the_native_interface_profiles_and_busy_state() {
     use crate::worker_health::CapabilityState;
     let directory = tempfile::tempdir().unwrap();

@@ -31,6 +31,7 @@ mod intersect;
 mod isosurface;
 pub mod limit;
 mod print_check;
+pub mod print_collision;
 mod remesh;
 mod thickness;
 mod volume;
