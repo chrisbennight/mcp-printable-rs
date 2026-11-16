@@ -90,7 +90,7 @@ def create_software_profiles(packaged_root, destination):
         "machine_start_gcode": "; software fixture, never print\nG90\nM83\nT[initial_extruder]\nG92 E0\nG1 X0 Y0 Z0 F1200\n",
         "machine_end_gcode": "; software fixture end\nM400\n",
         "change_filament_gcode": "T[next_extruder]\nG92 E0\nG1 X[x_after_toolchange] Y[y_after_toolchange] Z[z_after_toolchange] F1200\n",
-        "before_layer_change_gcode": "", "layer_change_gcode": "", "time_lapse_gcode": "",
+        "before_layer_change_gcode": "", "layer_change_gcode": "G92 E0\n", "time_lapse_gcode": "",
         "change_extrusion_role_gcode": "", "printing_by_object_gcode": "",
         "wrapping_detection_gcode": "", "file_start_gcode": "",
         "use_relative_e_distances": "1",
