@@ -16,6 +16,8 @@ pub enum ToolError {
     /// Native slice preparation, lifecycle or toolpath review failed.
     #[error("{0}")]
     Slice(String),
+    #[error("native Orca capture is unavailable: {0}")]
+    NativeCaptureUnavailable(String),
     /// A typed printer service failure; mutation uncertainty must not be retried blindly.
     #[error(transparent)]
     Printer(#[from] bambuddy_api::ApiError),
@@ -94,6 +96,7 @@ impl ToolError {
             ToolError::Cad(_) => "cad_build",
             ToolError::Validation(_) => "validation",
             ToolError::Slice(_) => "slice",
+            ToolError::NativeCaptureUnavailable(_) => "native_capture_unavailable",
             ToolError::Printer(bambuddy_api::ApiError::AmbiguousOutcome) => {
                 "printer_outcome_unknown"
             }

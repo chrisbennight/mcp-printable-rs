@@ -8,9 +8,10 @@ the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
-The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-b08db1a)
-supports headless package thumbnails by fixing the CLI OpenGL context request and
-model initialization without a wx application. It also carries three upstream
+The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-63c97a1)
+supports native workspace capture and headless package thumbnails. Its thumbnail
+path fixes the CLI OpenGL context request and model initialization without a wx
+application. It also carries three upstream
 fixes from the 2.4.4 backports: bounds checks for per-filament settings lists
 shorter than the filament count, which crashed H2D slices with two or more
 filaments; bounds checks for tool-change lookups; and two buffer overflow fixes
@@ -21,6 +22,9 @@ The container's `orca-headless` wrapper provides Xvfb and Mesa software renderin
 without GPU passthrough. It creates a private runtime directory inside
 each slice's temporary staging directory. The worker's existing process-group
 cancellation and staging cleanup also cover the display process and runtime files.
+The image includes the English locale needed by Orca's GUI initialization. The
+wrapper supplies the installed system certificate bundle to prevent an
+interactive certificate-selection prompt.
 The native smoke checks A1/X1C slices and package re-slicing, including decodable,
 nonblank thumbnail relationships, retained geometry, G-code, and build-plate settings.
 It also slices for the two-nozzle H2D with two filaments loaded, and checks
@@ -124,6 +128,9 @@ that point in the job. Execution order matters for sequential printing and desce
 to a lower tower. An intermediate obstruction is detected even when the travel's
 endpoints are clear. Generated width and height annotations supply the deposited
 envelopes; missing dimensions do not become zero-width geometry.
+This includes supported startup deposition before the first layer marker.
+Unclassified priming, stationary extrusion and unsupported startup firmware motion
+remain unresolved rather than disappearing from the coverage report.
 
 `prepare.clearance.machine_envelopes` accepts occupied component boxes relative
 to the active nozzle's G-code reference point. Supply each component's name,
@@ -133,10 +140,16 @@ not guess a machine envelope from a generic radius. An empty envelope list leave
 toolhead clearance unmeasured. The positive `clearance.timeout_seconds` budget
 applies to analysis after native slicing and defaults to thirty seconds.
 
+When known, `clearance.initial_position` supplies `position_mm` and its `source`
+for the nozzle before the first command, in the input G-code frame. Omit it when
+that position is unknown. The parser does not infer a starting position from
+zero coordinates, and a homing command's physical motion is not simulated.
+
 Each plate reports checks as `passed`, `failed`, `unmeasured` or `unsupported`.
 Findings identify the source G-code line, layer, material, available object
 identity, affected component or earlier deposited path, and position in
-millimetres. The report retains the first finding per kind/object pair/component.
+millimetres. The report retains a finding per kind/object pair/component, including
+each affected pair when one move crosses several objects.
 `blocked` takes precedence over incomplete analysis, so a later unsupported
 command does not erase an earlier finding. `unresolved` means required evidence
 is missing; `modeled_checks_passed` applies only to the stated model and coverage.
@@ -174,6 +187,80 @@ positive image dimensions without fixed count ceilings; their caller-selected
 `timeout_seconds` defaults to thirty seconds. Container memory, CPU and temporary
 storage controls remain separate runtime boundaries. Neither preparation nor review uploads a
 job to a printer or starts physical work.
+
+## Native layout capture
+
+`slice.capture` observes an existing Orca project or the exact package produced by
+a completed preparation. It renders the native model layout without arranging,
+slicing, uploading or starting a print. The input package and completed
+preparation remain unchanged.
+
+For example, call the `slice` tool with:
+
+```json
+{
+  "action": "capture",
+  "params": {
+    "project_id": "enclosure",
+    "source": {"kind": "prepared", "output_dir": "slice"},
+    "camera": {"preset": "isometric", "projection": "orthographic"},
+    "width": 1600,
+    "height": 1000,
+    "timeout_seconds": 300
+  }
+}
+```
+
+Use `{"kind":"project","path":"layout.3mf"}` for a project-relative source.
+Prepared capture verifies the recorded digest of `model.gcode.3mf` and retains
+the preparation's provenance. It does not reopen the original model before
+Orca arranged it.
+
+The presets are `isometric`, `top`, `front`, `rear`, `left`, `right` and `bottom`.
+Each uses the same native camera implementation. `camera.orientation` accepts a
+quaternion in `[w,x,y,z]` order and overrides the preset orientation.
+`camera.target` sets a workspace point in millimeters; `camera.zoom` sets native
+zoom. An explicit zoom outside the layout's native camera range is rejected.
+Orthographic and perspective projections are supported. Automatic framing
+uses a margin of `1.1` by default; the margin must be at least one. Explicit
+target or zoom controls can crop the view. The returned `camera` contains the
+resolved controls and can be passed back unchanged to repeat that view over the
+same source and selection.
+
+`plates` and `objects` contain one-based source indices. Empty lists select all;
+object selection applies within the selected plates. Plates keep their native
+relative positions. `visibility.beds`, `visibility.plate_identifiers` and
+`visibility.prime_towers` default to true. Image dimensions and the processing
+budget must be positive and representable by the runtime. Graphics limits,
+container resources and the caller's request deadline still apply.
+
+The processing budget covers admission, native startup, rendering and image
+validation. Cancellation stops this processing, including through public MCP.
+Storage publication begins only for a validated observation before its budget
+expires. Once publication begins, retention completes and returns its artifact
+references; a processing timeout cannot turn a published observation into an
+unreported result. Artifacts already being retained may remain after a caller
+cancels the request.
+
+The result identifies `kind: native_orca_layout`,
+`representation: model_placement` and `prime_towers: native_estimated`.
+These are Orca's native model and estimated prime-tower volumes, including when
+the source package contains sliced output. Use `slice.review` to inspect actual
+toolpaths. A layout capture does not establish print safety or clearance.
+
+The PNG, native metadata and observation metadata are retained under the
+project's `observations/` directory. The response includes the source digest,
+engine identity, selected plates and objects, resolved camera, visibility,
+image dimensions, artifact digests and an immutable observation provenance
+reference. Download artifacts with the `artifact` workflow. The provenance also
+retains an immutable copy of the image.
+
+Capture requires an Orca build that advertises `--capture-workspace`.
+Worker readiness reports this as `native_capture`; a compatible engine can
+still lack a usable graphics context. Both missing native support and unsupported
+graphics return `native_capture_unavailable`. Other native failures retain a
+diagnostic artifact. Capture never substitutes a stored thumbnail or a composite
+of plate images for the requested native view.
 
 ## Plate previews
 

@@ -77,6 +77,7 @@ struct PreflightCapture {
     known_position: [bool; 3],
     unknown_origin: [bool; 3],
     segment_known: bool,
+    known_extrusion: bool,
     retracted_mm: BTreeMap<usize, f64>,
     conditional_depth: usize,
 }
@@ -169,11 +170,9 @@ impl Parser {
                 let capture = self.preflight.as_mut().expect("preflight parser");
                 capture.conditional_depth += 1;
                 capture.known_position = [false; 3];
-                if self.layer > 0 {
-                    capture
-                        .unresolved
-                        .insert("unsupported_conditional_firmware_motion".into());
-                }
+                capture
+                    .unresolved
+                    .insert("unsupported_conditional_firmware_motion".into());
             }
             "M623" if self.preflight.is_some() => {
                 let capture = self.preflight.as_mut().expect("preflight parser");
@@ -183,11 +182,9 @@ impl Parser {
             "M620" | "M621" | "M600" | "M701" | "M702" if self.preflight.is_some() => {
                 let capture = self.preflight.as_mut().expect("preflight parser");
                 capture.known_position = [false; 3];
-                if self.layer > 0 {
-                    capture
-                        .unresolved
-                        .insert("unsupported_firmware_toolchange_motion".into());
-                }
+                capture
+                    .unresolved
+                    .insert("unsupported_firmware_toolchange_motion".into());
             }
             "G28" if self.preflight.is_some() => {
                 let axes = words
@@ -201,11 +198,9 @@ impl Parser {
                         self.coordinate_offset[i] = 0.;
                     }
                 }
-                if self.layer > 0 {
-                    capture
-                        .unresolved
-                        .insert("homing_motion_not_simulated".into());
-                }
+                capture
+                    .unresolved
+                    .insert("homing_motion_not_simulated".into());
             }
             "G20" => {
                 return Err(slice_error(
@@ -221,6 +216,13 @@ impl Parser {
                 self.material = command[1..]
                     .parse::<usize>()
                     .map_err(|_| slice_error("tool index exceeds the supported integer range"))?;
+                if let Some(capture) = &mut self.preflight {
+                    capture.known_extrusion = false;
+                    capture.known_position = [false; 3];
+                    capture
+                        .unresolved
+                        .insert("unsupported_firmware_toolchange_motion".into());
+                }
             }
             "G0" | "G00" | "G1" | "G01" | "G2" | "G02" | "G3" | "G03" | "G92" => {
                 let mut values = BTreeMap::new();
@@ -266,6 +268,9 @@ impl Parser {
                         if command == "G92" {
                             if index == 3 {
                                 self.position[index] = *value;
+                                if let Some(capture) = &mut self.preflight {
+                                    capture.known_extrusion = true;
+                                }
                             } else {
                                 self.coordinate_offset[index] = before[index] - value;
                             }
@@ -289,12 +294,20 @@ impl Parser {
                 if let Some(capture) = &mut self.preflight {
                     let delta = self.position[3] - before[3];
                     let debt = capture.retracted_mm.entry(self.material).or_default();
-                    if delta < 0. {
+                    if !self.relative_e && values.contains_key(&b'E') && !capture.known_extrusion {
+                        capture
+                            .unresolved
+                            .insert("absolute_extrusion_origin_unknown".into());
+                        travel = true;
+                    } else if delta < 0. {
                         *debt -= delta;
                     } else {
                         let restored = delta.min(*debt);
                         *debt -= restored;
                         travel = delta - restored <= 0.;
+                    }
+                    if !self.relative_e && values.contains_key(&b'E') {
+                        capture.known_extrusion = true;
                     }
                 }
                 let from = [before[0], before[1], before[2]];
@@ -303,7 +316,7 @@ impl Parser {
                 if let Some(capture) = &mut self.preflight {
                     capture.segment_known =
                         before_known && capture.known_position.iter().all(|v| *v);
-                    if arc && self.layer > 0 {
+                    if arc {
                         capture
                             .unresolved
                             .insert("arc_clearance_not_checked".into());
@@ -439,10 +452,10 @@ impl Parser {
                             || named_firmware_command
                         {
                             capture.unknown_origin = [true; 3];
-                            capture.unresolved.insert(format!(
-                                "unsupported_coordinate_or_motion_command:{command}"
-                            ));
                         }
+                        capture.unresolved.insert(format!(
+                            "unsupported_coordinate_or_motion_command:{command}"
+                        ));
                     }
                 }
             }
@@ -467,10 +480,7 @@ impl Parser {
         travel: bool,
         request: &ReviewParams,
     ) -> Result<(), ToolError> {
-        if !self.selected(travel, request) {
-            return Ok(());
-        }
-        if from == to {
+        if self.preflight.is_none() && !self.selected(travel, request) {
             return Ok(());
         }
         if let Some(capture) = &mut self.preflight {
@@ -485,6 +495,14 @@ impl Parser {
                 capture
                     .unresolved
                     .insert("motion_without_known_xyz_origin".into());
+                return Ok(());
+            }
+            if from == to {
+                if !travel {
+                    capture
+                        .unresolved
+                        .insert("stationary_extrusion_not_checked".into());
+                }
                 return Ok(());
             }
             let role = match self.feature.as_str() {
@@ -504,7 +522,7 @@ impl Parser {
                 | "Gap infill" => PathRole::Part,
                 _ => PathRole::Other,
             };
-            if role == PathRole::Other {
+            if role == PathRole::Other && !travel {
                 capture
                     .unresolved
                     .insert("custom_or_unclassified_motion_not_checked".into());
@@ -526,6 +544,9 @@ impl Parser {
                 width_mm: capture.width,
                 height_mm: capture.height,
             });
+            return Ok(());
+        }
+        if from == to {
             return Ok(());
         }
         let length = (0..3)
@@ -557,6 +578,7 @@ pub(super) fn parse_for_preflight(
     source: &Path,
     deadline: Instant,
     cancel: &CancellationToken,
+    initial_position: Option<[f64; 3]>,
 ) -> Result<ParsedPaths, ToolError> {
     let request = ReviewParams {
         slice: SliceHandle {
@@ -564,7 +586,7 @@ pub(super) fn parse_for_preflight(
             output_dir: String::new(),
         },
         toolpath: String::new(),
-        first_layer: 1,
+        first_layer: 0,
         last_layer: u32::MAX,
         features: Vec::new(),
         material: None,
@@ -574,6 +596,14 @@ pub(super) fn parse_for_preflight(
     };
     let mut parser = Parser::new();
     parser.preflight = Some(PreflightCapture::default());
+    if let Some(position) = initial_position {
+        parser.position[..3].copy_from_slice(&position);
+        parser
+            .preflight
+            .as_mut()
+            .expect("preflight parser")
+            .known_position = [true; 3];
+    }
     parser.deadline = Some(deadline);
     let mut reader = BufReader::new(std::fs::File::open(source)?);
     let mut line = String::new();

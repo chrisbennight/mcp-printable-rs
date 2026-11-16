@@ -1,5 +1,6 @@
 //! Durable, explicitly configured Orca preparation in an isolated native worker.
 
+pub mod capture;
 pub mod package;
 pub mod preflight;
 pub mod profiles;
@@ -34,6 +35,21 @@ const MAX_LOG: usize = 1024 * 1024;
 pub const ENGINE_VERSION: &str = "2.4.2";
 
 pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
+    if matches!(request, SliceRequest::Capture(_)) {
+        let cancellation = crate::tools::REQUEST_CANCELLATION
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(slice_error("native Orca capture cancelled")),
+            result = forward_inner(endpoint, request) => result,
+        }
+    } else {
+        forward_inner(endpoint, request).await
+    }
+}
+
+async fn forward_inner(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
     let endpoint = endpoint.ok_or_else(|| slice_error("slicer worker is not configured"))?;
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -53,6 +69,17 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
     }
     let value: Value = serde_json::from_slice(&bytes)?;
     if !status.is_success() {
+        if value["code"] == "native_capture_unavailable" {
+            let message = value["error"]
+                .as_str()
+                .unwrap_or("the configured worker does not provide native workspace capture");
+            return Err(ToolError::NativeCaptureUnavailable(
+                message
+                    .strip_prefix("native Orca capture is unavailable: ")
+                    .unwrap_or(message)
+                    .into(),
+            ));
+        }
         return Err(slice_error(
             value["error"]
                 .as_str()
@@ -200,6 +227,7 @@ pub enum SliceRequest {
     Status(SliceHandle),
     Cancel(SliceHandle),
     Review(review::ReviewParams),
+    Capture(capture::CaptureParams),
 }
 
 struct Active {
@@ -279,6 +307,12 @@ impl SliceWorker {
             readiness.state = CapabilityState::Incompatible;
         }
         readiness.profile_counts = Some(self.profiles.counts());
+        readiness.native_capture = Some(
+            compatible
+                && output
+                    .as_ref()
+                    .is_some_and(|text| text.contains("--capture-workspace")),
+        );
         readiness
     }
 
@@ -448,6 +482,7 @@ impl SliceWorker {
             SliceRequest::Status(handle) => self.status(handle, false).await,
             SliceRequest::Cancel(handle) => self.status(handle, true).await,
             SliceRequest::Review(params) => self.review(params).await,
+            SliceRequest::Capture(params) => self.capture(params).await,
         }
     }
 

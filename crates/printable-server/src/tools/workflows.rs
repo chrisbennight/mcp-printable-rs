@@ -568,7 +568,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "slice",
-        description: "Slice a project STL or 3MF: discover printer, process and filament profiles/settings, prepare on an explicit build surface, inspect or cancel, and review actual toolpaths. Read completed preflight collision findings; native success alone does not establish clearance. Before choosing settings for an uploaded or generated model, load prepare-fdm-print with skill.get for orientation, strength, fit, surface finish and calibration guidance. Preparing never starts a print. Inspect retained state before retrying an uncertain preparation.",
+        description: "Prepare and inspect prints: discover profiles/settings, prepare STL/3MF jobs, inspect or cancel, review actual toolpaths and collision findings, or capture a native Orca layout with preset/custom cameras. Capture estimates towers; native slicing success and pictures do not establish clearance. Load prepare-fdm-print with skill.get before choosing orientation, strength, fit, surface finish or calibration settings. Actions never start a print. Inspect retained state before retrying uncertain preparation.",
         schema: workflow_schema_of::<crate::slicing::SliceRequest>,
         annotations: write_annotations,
     },

@@ -29,7 +29,17 @@ pub struct MachineEnvelope {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct InitialPosition {
+    /// Known nozzle position in the input G-code frame before its first command.
+    pub position_mm: [f64; 3],
+    /// Evidence establishing that starting position; never infer it from zeroes.
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PreflightOptions {
+    pub initial_position: Option<InitialPosition>,
     /// Machine components, including the gantry where applicable. Empty is unmeasured.
     #[serde(default)]
     pub machine_envelopes: Vec<MachineEnvelope>,
@@ -45,6 +55,7 @@ fn default_timeout() -> u64 {
 impl Default for PreflightOptions {
     fn default() -> Self {
         Self {
+            initial_position: None,
             machine_envelopes: Vec::new(),
             timeout_seconds: default_timeout(),
         }
@@ -60,6 +71,17 @@ impl PreflightOptions {
         {
             return Err(invalid(
                 "collision processing budget must be positive and runtime-representable",
+            ));
+        }
+        if self.initial_position.as_ref().is_some_and(|position| {
+            position.source.trim().is_empty()
+                || position
+                    .position_mm
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > MAX_PRINT_COORDINATE_MM)
+        }) {
+            return Err(invalid(
+                "initial nozzle position requires a source and finite coordinates",
             ));
         }
         for envelope in &self.machine_envelopes {
@@ -147,7 +169,15 @@ fn analyze_inner(
     deadline: Instant,
     cancel: &CancellationToken,
 ) -> Result<Value, ToolError> {
-    let parsed = review::parse_for_preflight(source, deadline, cancel)?;
+    let parsed = review::parse_for_preflight(
+        source,
+        deadline,
+        cancel,
+        options
+            .initial_position
+            .as_ref()
+            .map(|position| position.position_mm),
+    )?;
     let boxes = options
         .machine_envelopes
         .iter()
@@ -205,6 +235,7 @@ fn analyze_inner(
         "findings":report.findings, "unresolved":parsed.unresolved,
         "missing_deposition_dimensions":report.missing_deposition_dimensions,
         "machine_envelopes":options.machine_envelopes,
+        "initial_position":options.initial_position,
         "bed_geometry":plate,
         "scope":"explicit linear motion and conservative rectangular line envelopes in native execution order",
         "limits":["firmware macro motion, deformation, buildup and post-slice modifications are not simulated",
@@ -237,6 +268,118 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(text.as_bytes()).unwrap();
         file
+    }
+
+    fn known_start() -> PreflightOptions {
+        PreflightOptions {
+            initial_position: Some(InitialPosition {
+                position_mm: [0.; 3],
+                source: "synthetic program start".into(),
+            }),
+            ..PreflightOptions::default()
+        }
+    }
+
+    #[test]
+    fn startup_deposition_is_an_obstacle_for_later_layer_motion() {
+        let gcode = source(
+            "G90\nM83\nG1 X10 Y10 Z1.2\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n; CHANGE_LAYER\nG1 X15 Y5 Z0.2\nG1 Y15\n",
+        );
+        let mut options = known_start();
+        options.machine_envelopes.push(MachineEnvelope {
+            component: "shroud".into(),
+            minimum_mm: [-0.1, -0.1, 0.5],
+            maximum_mm: [0.1, 0.1, 1.5],
+            source: "synthetic component".into(),
+        });
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["status"], "blocked");
+        assert_eq!(report["checks"]["toolhead"], "failed");
+        assert!(
+            report["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["kind"] == "toolhead_interference"
+                    && finding["other_source_line"] == 7)
+        );
+    }
+
+    #[test]
+    fn unclassified_startup_priming_and_stationary_extrusion_remain_unresolved() {
+        let options = known_start();
+        for (text, reason) in [
+            (
+                "G90\nM83\nG1 X10 Y10 Z0.2\nG1 X20 E1\n; CHANGE_LAYER\n",
+                "custom_or_unclassified_motion_not_checked",
+            ),
+            (
+                "M83\nG1 E1\n; CHANGE_LAYER\n",
+                "stationary_extrusion_not_checked",
+            ),
+        ] {
+            let gcode = source(text);
+            let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+            assert_eq!(report["coverage_complete"], false);
+            assert!(
+                report["unresolved"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == reason)
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_initial_position_is_not_inferred_from_zero_coordinates() {
+        let gcode = source(
+            "G90\nM83\nG1 X0 Y0 Z0\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n",
+        );
+        let options = PreflightOptions::default();
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["coverage_complete"], false);
+        assert!(
+            report["unresolved"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "motion_without_known_xyz_origin")
+        );
+        let mut options = known_start();
+        options.initial_position.as_mut().unwrap().source.clear();
+        assert!(options.validate().is_err());
+        options.initial_position.as_mut().unwrap().source = "synthetic".into();
+        options.initial_position.as_mut().unwrap().position_mm[0] = f64::NAN;
+        assert!(options.validate().is_err());
+    }
+
+    #[test]
+    fn absolute_extrusion_and_tool_selection_do_not_invent_machine_state() {
+        let options = known_start();
+        let body = "G90\nM82\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n";
+        let gcode = source(body);
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert!(
+            report["unresolved"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "absolute_extrusion_origin_unknown")
+        );
+        let gcode = source(&format!("G92 E0\n{body}"));
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["unresolved"], json!([]));
+        let gcode = source(&format!("G92 E0\n{body}T1\nG1 X10 Y10 Z0.2 E0\n"));
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["coverage_complete"], false);
+        assert!(
+            report["unresolved"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "unsupported_firmware_toolchange_motion")
+        );
     }
 
     #[test]
@@ -350,7 +493,7 @@ mod tests {
         let gcode = source(
             "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 E-1\nG1 X20 E1\n; FEATURE: Prime tower\nG1 X15 Y5\nG1 Y15 E1\n",
         );
-        let options = PreflightOptions::default();
+        let options = known_start();
         let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
         assert_eq!(report["checks"]["tower_interference"], "passed");
         assert!(report["findings"].as_array().unwrap().is_empty());
@@ -360,7 +503,7 @@ mod tests {
     fn unsupported_firmware_commands_cannot_leave_a_false_clearance_pass() {
         let baseline = "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n";
         let printer = json!({"printable_area":["0x0","50x0","50x50","0x50"],"bed_exclude_area":[]});
-        let mut options = PreflightOptions::default();
+        let mut options = known_start();
         options.machine_envelopes.push(MachineEnvelope {
             component: "shroud".into(),
             minimum_mm: [-1., -1., 1.],
@@ -399,7 +542,7 @@ mod tests {
         let gcode = source(
             "M104 S200\nG90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nM109 S200\nM106 S255\nG1 X20 E1\nM107\n",
         );
-        let options = PreflightOptions::default();
+        let options = known_start();
         let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
         assert_eq!(report["checks"]["tower_interference"], "passed");
         assert_eq!(report["unresolved"], json!([]));

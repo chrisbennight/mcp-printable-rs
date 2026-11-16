@@ -2,7 +2,7 @@ use super::*;
 use crate::projects::{CreateParams, ProjectRequest};
 use std::os::unix::fs::PermissionsExt;
 
-fn fixture(root: &Path, delay: bool) -> Arc<SliceWorker> {
+pub(super) fn fixture(root: &Path, delay: bool) -> Arc<SliceWorker> {
     let workspace = Arc::new(Workspace::open(Some(root), None).unwrap());
     projects::dispatch(
         &workspace,
@@ -105,7 +105,12 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
 "#,
     )
     .unwrap();
-    worker.prepare(params()).await.unwrap();
+    let mut request = params();
+    request.clearance.initial_position = Some(preflight::InitialPosition {
+        position_mm: [0.; 3],
+        source: "synthetic program start".into(),
+    });
+    worker.prepare(request).await.unwrap();
     let state = terminal(&worker).await;
     assert_eq!(state["status"], "completed", "{state}");
     assert_eq!(state["preflight"]["status"], "blocked");

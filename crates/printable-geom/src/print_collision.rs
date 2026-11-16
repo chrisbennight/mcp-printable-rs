@@ -95,7 +95,7 @@ pub struct CollisionReport {
     pub toolhead: CheckState,
     pub complete: bool,
     pub missing_deposition_dimensions: bool,
-    /// First finding for each kind/object pair/component, in execution order.
+    /// One finding per kind/object pair/component, ordered by the identifying move.
     pub findings: Vec<CollisionFinding>,
 }
 
@@ -413,10 +413,20 @@ pub fn check_print_paths(
             // prefix grows monotonically backwards. Its final occupancy therefore
             // detects every self-interference during this move without treating
             // future material as an obstacle earlier in the sweep.
-            let mut earliest: Option<(f64, usize)> = current
+            if current
                 .as_ref()
-                .filter(|current| first_interference(&end, [0.; 3], current).is_some())
-                .map(|_| (1., index));
+                .is_some_and(|current| first_interference(&end, [0.; 3], current).is_some())
+            {
+                add_finding(
+                    &mut report,
+                    &mut seen,
+                    path,
+                    Some(path),
+                    Some(&envelope.component),
+                    CollisionKind::ToolheadInterference,
+                    path.to_mm,
+                );
+            }
             for candidate in tree.intersect_aabb(&swept) {
                 if !continue_work() {
                     report.complete = false;
@@ -427,22 +437,19 @@ pub fn check_print_paths(
                     &machine,
                     velocity,
                     deposits[other_index].as_ref().expect("indexed deposition"),
-                ) && earliest.is_none_or(|previous| (fraction, other_index) < previous)
-                {
-                    earliest = Some((fraction, other_index));
+                ) {
+                    let position =
+                        std::array::from_fn(|i| path.from_mm[i] + velocity[i] * fraction);
+                    add_finding(
+                        &mut report,
+                        &mut seen,
+                        path,
+                        Some(&paths[other_index]),
+                        Some(&envelope.component),
+                        CollisionKind::ToolheadInterference,
+                        position,
+                    );
                 }
-            }
-            if let Some((fraction, other_index)) = earliest {
-                let position = std::array::from_fn(|i| path.from_mm[i] + velocity[i] * fraction);
-                add_finding(
-                    &mut report,
-                    &mut seen,
-                    path,
-                    Some(&paths[other_index]),
-                    Some(&envelope.component),
-                    CollisionKind::ToolheadInterference,
-                    position,
-                );
             }
         }
         if !continue_work() {
@@ -780,6 +787,34 @@ mod tests {
             assert_eq!(report.toolhead, CheckState::Passed);
             assert!(report.findings.is_empty());
         }
+    }
+
+    #[test]
+    fn one_move_reports_each_intersected_object_pair() {
+        let mut first = line([10., 0., 0.2], [10., 5., 0.2], PathRole::Part, 1);
+        first.object = Some("part-a".into());
+        let mut second = line([20., 0., 0.2], [20., 5., 0.2], PathRole::Part, 2);
+        second.object = Some("part-b".into());
+        let mut moving = line([0., 2., 0.1], [30., 2., 0.1], PathRole::Part, 3);
+        moving.object = Some("moving".into());
+        moving.travel = true;
+        let envelope = ClearanceBox {
+            component: "shroud".into(),
+            minimum_mm: [-0.1, -0.1, 0.05],
+            maximum_mm: [0.1, 0.1, 0.2],
+        };
+        let report =
+            check_print_paths(&[first, second, moving], None, &[envelope], || true).unwrap();
+        let affected: BTreeSet<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.source_line == 3)
+            .map(|finding| (finding.other_object.as_deref(), finding.other_source_line))
+            .collect();
+        assert_eq!(
+            affected,
+            BTreeSet::from([(Some("part-a"), Some(1)), (Some("part-b"), Some(2))])
+        );
     }
 
     #[test]

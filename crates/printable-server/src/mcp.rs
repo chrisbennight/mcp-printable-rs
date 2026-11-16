@@ -913,7 +913,7 @@ mod tests {
     /// choice.
     const CONTRACT_BUDGETS: &[(&str, usize, usize)] = &[
         ("skill", 700, 0),
-        ("slice", 7_500, 0),
+        ("slice", 11_500, 0),
         ("printer", 4_300, 0),
         ("print", 13_700, 0),
         ("status", 300, 2_700),
@@ -940,7 +940,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 179_000;
+    const CATALOG_BUDGET: usize = 182_500;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {
