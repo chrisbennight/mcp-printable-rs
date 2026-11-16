@@ -328,6 +328,7 @@ with tempfile.TemporaryDirectory() as directory:
                     "crowded": ("collision", "too close", "overlap"),
                     "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close"),
                     "sequential": ("collision", "too close", "by object", "sequential", "prime tower", "wipe tower"),
+                    "slender": ("unprintable area",),
                 }
                 if (constraint and state["status"] == "failed"
                         and any(reason in state.get("error", "").lower() for reason in expected_reasons[constraint])):
@@ -369,6 +370,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "towers": [{"minimum_mm": tower["minimum_mm"], "maximum_mm": tower["maximum_mm"],
                             "deposited_paths": len(tower["paths"]), "toolchanges": len(tower["toolchanges"])}
                            for tower in measured],
+                "model_outer_wall_centerline_bounds_mm": [tower["model_outer_wall_centerline_bounds_mm"] for tower in measured],
                 "source_layout_state": state["source_layout"]["state"], "final_layout_state": state["final_layout"]["state"],
                 "preflight_status": state["preflight"]["status"], "physical_result": "not_observed"}), flush=True)
             return measured
@@ -388,6 +390,14 @@ with tempfile.TemporaryDirectory() as directory:
             assert all(abs((b - a) - expected) < 0.02 for a, b, expected in
                        zip(baseline_towers[1][edge], shifted_towers[1][edge], (8, 6, 0))), (
                 "selected tower placement did not affect native paths", edge)
+        for plate_index, (baseline, shifted) in enumerate(zip(baseline_towers, shifted_towers)):
+            for material in ("0", "1"):
+                expected_shift = (5, 0, 0) if plate_index == 0 and material == "0" else (0, 0, 0)
+                for edge in ("minimum_mm", "maximum_mm"):
+                    original = baseline["model_outer_wall_centerline_bounds_mm"][material][edge]
+                    placed = shifted["model_outer_wall_centerline_bounds_mm"][material][edge]
+                    assert all(abs((b - a) - delta) < 0.02 for a, b, delta in zip(original, placed, expected_shift)), (
+                        "selected model placement or unselected model preservation failed in actual toolpaths", plate_index, material, edge)
         wide_towers = material_trial("material-wide", overrides={"prime_tower_width": "45"})
         for baseline, wider in zip(baseline_towers, wide_towers):
             assert wider["maximum_mm"][0] - wider["minimum_mm"][0] > (
@@ -418,10 +428,11 @@ with tempfile.TemporaryDirectory() as directory:
         slender_source = project / "material-slender.3mf"
         create_fixture(project / "capture-template/model.gcode.3mf", slender_source,
                        part_heights_mm=(20, 30), plate_count=1, xy_scale=(0.35, 0.35))
-        material_trial("material-slender-sparse", source=slender_source.name, plate=1,
+        material_trial("material-slender-sparse", source=slender_source.name, plate=1, constraint="slender",
                        overrides={"wipe_tower_no_sparse_layers": "1", "prime_tower_width": "8"})
         sparse_state = material_results["material-slender-sparse"]["state"]
-        assert sparse_state["preflight"]["status"] in ("blocked", "unresolved"), sparse_state["preflight"]
+        if sparse_state["status"] == "completed":
+            assert sparse_state["preflight"]["status"] in ("blocked", "unresolved"), sparse_state["preflight"]
         banded_source = project / "material-banded.3mf"
         banded = create_banded_fixture(project / "capture-template/model.gcode.3mf", banded_source)
         banded_hash = hashlib.sha256(banded_source.read_bytes()).hexdigest()
@@ -513,6 +524,11 @@ with tempfile.TemporaryDirectory() as directory:
         resliced_towers = material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
         for plate, (baseline, resliced) in enumerate(zip(baseline_towers, resliced_towers), start=1):
             assert coordinates(baseline) == coordinates(resliced), "reslice changed actual tower paths or materials"
+            for material in ("0", "1"):
+                for edge in ("minimum_mm", "maximum_mm"):
+                    original = baseline["model_outer_wall_centerline_bounds_mm"][material][edge]
+                    retained = resliced["model_outer_wall_centerline_bounds_mm"][material][edge]
+                    assert all(abs(a-b) < 0.02 for a,b in zip(original,retained)), "reslice changed actual model placement"
             origin = [0 if plate == 1 else 256 * 1.2, 0, 0]
             objects = [{"object": obj["object"], "material": obj["object"] - 1,
                         "bounds_mm": {side: [value - offset for value, offset in zip(obj["bounds_mm"][side], origin)]

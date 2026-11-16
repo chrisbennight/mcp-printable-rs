@@ -438,23 +438,31 @@ pub fn inspect_source(path: &Path, options: &InspectOptions) -> Result<Value, To
 /// cannot establish preservation. Unknown normalization remains unmeasured.
 pub(super) fn compare_final(source: &Value, exported: &Value, automatic_transforms: bool) -> Value {
     use std::collections::BTreeMap;
-    fn roots(report: &Value) -> Option<BTreeMap<u64, Vec<&Value>>> {
-        let mut roots = BTreeMap::<u64, Vec<&Value>>::new();
-        let mut owners = BTreeMap::new();
-        for instance in report["instances"].as_array()? {
-            let identity = instance["native_identify_id"]
+    fn roots(report: &Value) -> (BTreeMap<u64, Vec<&Value>>, bool) {
+        let Some(instances) = report["instances"].as_array() else {
+            return (BTreeMap::new(), false);
+        };
+        let mut complete = !instances.is_empty();
+        let mut builds = BTreeMap::<usize, Vec<&Value>>::new();
+        for instance in instances {
+            if let Some(build) = instance["build_index"]
                 .as_u64()
-                .filter(|id| *id > 0)?;
-            let owner = instance["build_index"].as_u64()?;
-            if owners
-                .insert(identity, owner)
-                .is_some_and(|prior| prior != owner)
+                .and_then(|v| usize::try_from(v).ok())
             {
-                return None;
+                builds.entry(build).or_default().push(instance);
+            } else {
+                complete = false;
             }
-            roots.entry(identity).or_default().push(instance);
         }
-        (!roots.is_empty()).then_some(roots)
+        let mut roots = BTreeMap::new();
+        for (build, instances) in builds {
+            if let Some(identity) = root_identity(report, build) {
+                roots.insert(identity, instances);
+            } else {
+                complete = false;
+            }
+        }
+        (roots, complete)
     }
     fn signatures(instances: &[&Value], field: &str) -> Option<Vec<String>> {
         let mut result = instances
@@ -490,8 +498,13 @@ pub(super) fn compare_final(source: &Value, exported: &Value, automatic_transfor
     let mut findings = Vec::new();
     let mut instances = Vec::new();
     let mut requested_changes = Vec::new();
-    match (compatible_frame, roots(source), roots(exported)) {
-        (true, Some(before), Some(after)) => {
+    let (before, before_complete) = roots(source);
+    let (after, after_complete) = roots(exported);
+    if !before_complete || !after_complete {
+        unresolved.insert("native_identity_or_coordinate_mapping_not_verified".into());
+    }
+    match compatible_frame {
+        true => {
             if before.keys().ne(after.keys()) {
                 unresolved.insert("exported_instance_set_changed_or_missing".into());
             }
@@ -503,10 +516,19 @@ pub(super) fn compare_final(source: &Value, exported: &Value, automatic_transfor
                 let local_matches =
                     local.is_some() && local == signatures(actual, "local_geometry_sha256");
                 let world = signatures(expected, "world_geometry_sha256");
-                let world_matches =
-                    world.is_some() && world == signatures(actual, "world_geometry_sha256");
+                let actual_world = signatures(actual, "world_geometry_sha256");
+                let world_matches = world.is_some() && world == actual_world;
+                let world_changed = world
+                    .as_ref()
+                    .zip(actual_world.as_ref())
+                    .is_some_and(|(a, b)| a != b);
                 let pose = transforms(expected);
-                let pose_matches = pose.is_some() && pose == transforms(actual);
+                let actual_pose = transforms(actual);
+                let pose_matches = pose.is_some() && pose == actual_pose;
+                let pose_changed = pose
+                    .as_ref()
+                    .zip(actual_pose.as_ref())
+                    .is_some_and(|(a, b)| a != b);
                 let plates = |instances: &[&Value]| -> Option<BTreeSet<u64>> {
                     instances
                         .iter()
@@ -528,7 +550,7 @@ pub(super) fn compare_final(source: &Value, exported: &Value, automatic_transfor
                     .and_then(|p| p["locked"].as_bool());
                 let preserve_transform = !automatic_transforms || lock == Some(true);
                 let state = if local_matches
-                    && (!pose_matches || !world_matches || (plates_known && !plate_matches))
+                    && (pose_changed || world_changed || (plates_known && !plate_matches))
                     && preserve_transform
                 {
                     findings.push(json!({"kind":"native_instance_placement_changed","native_identify_id":identity,
@@ -562,7 +584,7 @@ pub(super) fn compare_final(source: &Value, exported: &Value, automatic_transfor
                     "transform_matches":pose_matches,"plate_matches":plate_matches}));
             }
         }
-        _ => {
+        false => {
             unresolved.insert("native_identity_or_coordinate_mapping_not_verified".into());
         }
     }
@@ -987,6 +1009,44 @@ mod tests {
         after = before.clone();
         after["instances"][0]["native_plate"] = Value::Null;
         assert_eq!(compare_final(&before, &after, false)["state"], "unmeasured");
+        after = before.clone();
+        after["instances"][0]["resource_transform_3mf"] = Value::Null;
+        after["instances"][0]["world_geometry_sha256"] = Value::Null;
+        assert_eq!(compare_final(&before, &after, false)["state"], "unmeasured");
+    }
+
+    #[test]
+    fn incomplete_identity_mapping_retains_known_locked_placement_violations() {
+        let source = cubes(&[0., 8., 16.], false);
+        let mut before = inspect_source(source.path(), &InspectOptions::default()).unwrap();
+        for (index, instance) in before["instances"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            instance["native_identify_id"] = json!(100 + index);
+            instance["native_plate"] = json!(1);
+        }
+        before["native_metadata"]["plates"] = json!([{"plate":1,"locked":true}]);
+        for ambiguous in [false, true] {
+            let mut after = before.clone();
+            after["instances"][0]["resource_transform_3mf"][9] = json!(5.);
+            if ambiguous {
+                after["instances"][1]["native_identify_id"] = json!(102);
+            } else {
+                after["instances"][1]["native_identify_id"] = Value::Null;
+            }
+            let comparison = compare_final(&before, &after, true);
+            assert_eq!(comparison["state"], "failed");
+            assert_eq!(comparison["findings"][0]["native_identify_id"], 100);
+            assert!(
+                comparison["unresolved"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("native_identity_or_coordinate_mapping_not_verified"))
+            );
+        }
     }
 
     #[test]
