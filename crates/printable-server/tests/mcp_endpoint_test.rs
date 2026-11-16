@@ -489,6 +489,34 @@ async fn exercise_incoming_files(transfer_base: Option<&str>) {
             .status(),
         409
     );
+    for (index, invalid_params) in [
+        json!({"file": uri}),
+        json!({"file": uri, "path": "board.step", "overwrite": "yes"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = rpc_result(
+            post(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc":"2.0", "id":6+index, "method":"tools/call", "params":{
+                        "name":"artifact", "arguments":{"action":"ingest","params":invalid_params}
+                    }
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(rejected["isError"], true);
+        assert_eq!(rejected["structuredContent"]["error"]["stage"], "ingest");
+        assert_eq!(
+            rejected["structuredContent"]["error"]["publication_attempted"],
+            false
+        );
+    }
     let committed = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
     assert_ne!(committed["isError"], true, "{committed}");
     assert_eq!(committed["structuredContent"]["sha256"], digest);

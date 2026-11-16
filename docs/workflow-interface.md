@@ -235,8 +235,12 @@ dispatching the artifact request. A successful upload into gateway storage
 alone does not establish that Printable has ingested the file.
 
 Read `status.workspace.file_upload` for the configured native incoming-file
-limit, staging capacity, current occupancy, and supported suffixes. Each file
-is bounded by `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). Staging
+limit, staging capacity, current occupancy, and supported suffixes.
+Occupancy fields `active_receivers` and `staged_files` are null while state is
+busy; status does not wait for an in-progress publication. The available slot
+count remains reported independently.
+
+Each file is bounded by `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). Staging
 capacity is configured with `PRINTABLE_FILE_UPLOAD_MAX_STAGED` (default 20).
 The shared [workspace storage budget](storage.md) also applies. Gateway file
 storage and active-transfer limits are separate and may be smaller.
@@ -313,6 +317,10 @@ Printable extensions, not standard MCP methods. `artifact.transfer_status`
 continues to accept `params.uri` for the same private URI. Consumer clients
 should use their gateway's delivery handles rather than construct or retain
 Printable-private references.
+
+Transfer status reports `unknown` if publication currently holds its state lock,
+so a slow filesystem operation does not hold up status. This does not confirm
+success or failure; inspect the destination or check status again.
 
 A cancellation can report `cancelling` while an admitted write finishes; only
 `cancelled` confirms release. A successful native ingest retains a receipt for

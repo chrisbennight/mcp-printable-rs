@@ -244,8 +244,16 @@ impl PrintableServer {
             .map(Value::Object)
             .unwrap_or(Value::Object(Map::new()));
 
+        let ingest_requested = params.name == "artifact"
+            && args.get("action").and_then(Value::as_str) == Some("ingest");
         let (operation, args, projection) = match tools::workflows::resolve(&params.name, args) {
             Ok(call) => (call.name, call.arguments, call.response),
+            Err(error) if ingest_requested => {
+                return Ok(error_result(
+                    &params.name,
+                    &crate::file_ingest::ingest_error(error, Some(false)),
+                ));
+            }
             Err(error) => return Ok(error_result(&params.name, &error)),
         };
 
@@ -467,7 +475,7 @@ impl PrintableServer {
                 };
                 let mut value = value;
                 if operation == "printable_status" {
-                    value["workspace"]["file_upload"] = self.incoming_files.capabilities().await;
+                    value["workspace"]["file_upload"] = self.incoming_files.capabilities();
                 }
                 let value = projection.apply(value);
                 let mut content = vec![ContentBlock::text(value.to_string())];

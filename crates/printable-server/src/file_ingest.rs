@@ -1,7 +1,7 @@
 //! Native raw-byte uploads consumed by workspace artifact operations.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -295,7 +295,9 @@ impl IncomingFiles {
 
     pub async fn status(&self, uri: &str) -> Result<serde_json::Value, ToolError> {
         let transfer = self.get(uri)?;
-        let state = transfer.state.lock().await;
+        let Ok(state) = transfer.state.try_lock() else {
+            return Ok(serde_json::json!({"state": "unknown"}));
+        };
         Ok(match &*state {
             TransferState::Prepared => serde_json::json!({"state": "prepared"}),
             TransferState::Receiving => serde_json::json!({"state": "receiving"}),
@@ -315,30 +317,30 @@ impl IncomingFiles {
         })
     }
 
-    pub async fn capabilities(&self) -> serde_json::Value {
-        self.prune();
-        let transfers = self
-            .transfers
-            .lock()
-            .expect("incoming file registry poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut active_receivers = 0;
-        let mut staged_files = 0;
-        for transfer in transfers {
-            match &*transfer.state.lock().await {
-                TransferState::Receiving | TransferState::Cancelling => active_receivers += 1,
-                TransferState::Ready(_) => staged_files += 1,
-                _ => {}
-            }
-        }
+    pub fn capabilities(&self) -> serde_json::Value {
+        // Global status must not wait behind publication or delay cancellation.
+        let transfers = match self.transfers.try_lock() {
+            Ok(transfers) => Some(transfers.values().cloned().collect::<Vec<_>>()),
+            Err(TryLockError::WouldBlock) => None,
+            Err(TryLockError::Poisoned(_)) => panic!("incoming file registry poisoned"),
+        };
+        let counts = transfers.and_then(|transfers| {
+            transfers.iter().try_fold((0, 0), |mut counts, transfer| {
+                let state = transfer.state.try_lock().ok()?;
+                match &*state {
+                    TransferState::Receiving | TransferState::Cancelling => counts.0 += 1,
+                    TransferState::Ready(_) => counts.1 += 1,
+                    _ => {}
+                }
+                Some(counts)
+            })
+        });
         serde_json::json!({
             "max_bytes": self.max_bytes,
             "max_staged": self.max_staged,
             "available_staging_slots": self.capacity.available_permits(),
-            "active_receivers": active_receivers,
-            "staged_files": staged_files,
+            "active_receivers": counts.map(|counts| counts.0),
+            "staged_files": counts.map(|counts| counts.1),
             "lifetime_seconds": RETENTION.as_secs(),
             "max_receipts": MAX_RECEIPTS.max(self.max_staged),
             "supported_suffixes": ALLOWED_ARTIFACT_SUFFIXES,
@@ -756,9 +758,56 @@ mod tests {
         let uri = authorizations[0]["file"]["uri"].as_str().unwrap();
         assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
         assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
-        assert_eq!(files.status(uri).await.unwrap()["state"], "cancelled");
+        let status = files.status(uri).await.unwrap();
+        assert_eq!(status["state"], "cancelled");
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/artifact/transfer_status",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+        assert!(validator.is_valid(&status));
         authorize(&files, "replacement.3mf");
-        assert_eq!(files.capabilities().await["available_staging_slots"], 0);
+        assert_eq!(files.capabilities()["available_staging_slots"], 0);
+    }
+
+    #[tokio::test]
+    async fn capacity_snapshot_does_not_wait_for_publication_or_registry_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = IncomingFiles::with_capacity(workspace, 1024, 3);
+        let authorization = authorize(&files, "source.3mf");
+        let transfer = files
+            .get(authorization["file"]["uri"].as_str().unwrap())
+            .unwrap();
+        let state = transfer.state.lock().await;
+        let snapshot = files.capabilities();
+        assert_eq!(snapshot["available_staging_slots"], 2);
+        assert!(snapshot["active_receivers"].is_null());
+        assert!(snapshot["staged_files"].is_null());
+        let status = tokio::time::timeout(
+            Duration::from_secs(5),
+            files.status(authorization["file"]["uri"].as_str().unwrap()),
+        )
+        .await
+        .expect("status does not wait for publication")
+        .unwrap();
+        assert_eq!(status["state"], "unknown");
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/artifact/transfer_status",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+        assert!(validator.is_valid(&status));
+        drop(state);
+        assert_eq!(files.capabilities()["staged_files"], 0);
+        let registry = files.transfers.lock().unwrap();
+        let snapshot = files.capabilities();
+        assert_eq!(snapshot["available_staging_slots"], 2);
+        assert!(snapshot["active_receivers"].is_null());
+        assert!(snapshot["staged_files"].is_null());
+        drop(registry);
     }
 
     #[tokio::test]
@@ -796,7 +845,7 @@ mod tests {
                 .status(),
             StatusCode::CREATED
         );
-        assert_eq!(files.capabilities().await["staged_files"], 1);
+        assert_eq!(files.capabilities()["staged_files"], 1);
         let error = files
             .ingest(IngestParams {
                 file: uri.into(),
@@ -839,7 +888,15 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), started.notified())
             .await
             .expect("receiver starts polling the body");
-        assert_eq!(files.cancel(&uri).await.unwrap()["state"], "cancelling");
+        let cancellation = files.cancel(&uri).await.unwrap();
+        assert_eq!(cancellation["state"], "cancelling");
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/artifact/transfer_status",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+        assert!(validator.is_valid(&serde_json::json!({"state": cancellation["state"]})));
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), receiver)
                 .await
