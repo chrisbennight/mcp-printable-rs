@@ -280,7 +280,7 @@ fn interrupted_report() -> CollisionReport {
     }
 }
 
-/// Analyze explicit machine motion against previously deposited line envelopes.
+/// Analyze explicit machine motion against material deposited by that time.
 /// The caller supplies a cancellation/deadline predicate. An interrupted check
 /// retains established findings and marks unfinished checks unmeasured.
 pub fn check_print_paths(
@@ -409,7 +409,14 @@ pub fn check_print_paths(
             let last = end.bounds();
             let swept = Aabb::new(first.mins.min(last.mins), first.maxs.max(last.maxs));
             let velocity = std::array::from_fn(|i| path.to_mm[i] - path.from_mm[i]);
-            let mut earliest: Option<(f64, usize)> = None;
+            // In the translating nozzle frame, a straight extrusion's deposited
+            // prefix grows monotonically backwards. Its final occupancy therefore
+            // detects every self-interference during this move without treating
+            // future material as an obstacle earlier in the sweep.
+            let mut earliest: Option<(f64, usize)> = current
+                .as_ref()
+                .filter(|current| first_interference(&end, [0.; 3], current).is_some())
+                .map(|_| (1., index));
             for candidate in tree.intersect_aabb(&swept) {
                 if !continue_work() {
                     report.complete = false;
@@ -705,6 +712,73 @@ mod tests {
                     .findings
                     .is_empty()
             );
+        }
+    }
+
+    #[test]
+    fn head_interference_with_current_extrusion_does_not_depend_on_segmentation() {
+        for (end, middle, min, max) in [
+            (
+                [20., 10., 0.2],
+                [15., 10., 0.2],
+                [-2., -0.1, -0.1],
+                [-1., 0.1, 1.],
+            ),
+            (
+                [0., 10., 0.2],
+                [5., 10., 0.2],
+                [1., -0.1, -0.1],
+                [2., 0.1, 1.],
+            ),
+            (
+                [20., 20., 0.2],
+                [15., 15., 0.2],
+                [-2., -2., -0.1],
+                [-1., -1., 1.],
+            ),
+        ] {
+            let start = [10., 10., 0.2];
+            let envelope = ClearanceBox {
+                component: "trailing component".into(),
+                minimum_mm: min,
+                maximum_mm: max,
+            };
+            for paths in [
+                vec![line(start, end, PathRole::Part, 1)],
+                vec![
+                    line(start, middle, PathRole::Part, 1),
+                    line(middle, end, PathRole::Part, 2),
+                ],
+            ] {
+                let report =
+                    check_print_paths(&paths, None, std::slice::from_ref(&envelope), || true)
+                        .unwrap();
+                assert_eq!(report.toolhead, CheckState::Failed);
+                assert!(
+                    report
+                        .findings
+                        .iter()
+                        .any(|finding| finding.kind == CollisionKind::ToolheadInterference)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn current_extrusion_does_not_collide_with_ahead_or_touching_components() {
+        let paths = [line([10., 10., 0.2], [20., 10., 0.2], PathRole::Part, 1)];
+        for (min, max) in [
+            ([1., -0.1, -0.1], [2., 0.1, 1.]),
+            ([-2., -0.1, 0.], [-1., 0.1, 1.]),
+        ] {
+            let envelope = ClearanceBox {
+                component: "component".into(),
+                minimum_mm: min,
+                maximum_mm: max,
+            };
+            let report = check_print_paths(&paths, None, &[envelope], || true).unwrap();
+            assert_eq!(report.toolhead, CheckState::Passed);
+            assert!(report.findings.is_empty());
         }
     }
 

@@ -377,6 +377,9 @@ mod tests {
             "VENDOR_POSITION_MACRO",
             "M206 X100",
             "M218 X100",
+            "M98 P\"motion.g\"",
+            "M99",
+            "M9999 P1",
         ] {
             for text in [
                 format!("{command}\n{baseline}"),
@@ -389,6 +392,17 @@ mod tests {
                 assert!(!report["unresolved"].as_array().unwrap().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn standard_temperature_and_fan_commands_preserve_explicit_linear_motion() {
+        let gcode = source(
+            "M104 S200\nG90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nM109 S200\nM106 S255\nG1 X20 E1\nM107\n",
+        );
+        let options = PreflightOptions::default();
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["checks"]["tower_interference"], "passed");
+        assert_eq!(report["unresolved"], json!([]));
     }
 
     #[test]

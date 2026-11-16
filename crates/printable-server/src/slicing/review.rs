@@ -380,6 +380,31 @@ impl Parser {
                             !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
                         });
                     let named_firmware_command = !numeric_opcode;
+                    let unsupported_m = command.starts_with('M')
+                        && !matches!(
+                            command,
+                            "M73"
+                                | "M104"
+                                | "M105"
+                                | "M106"
+                                | "M107"
+                                | "M109"
+                                | "M114"
+                                | "M117"
+                                | "M118"
+                                | "M140"
+                                | "M141"
+                                | "M190"
+                                | "M191"
+                                | "M201"
+                                | "M203"
+                                | "M204"
+                                | "M205"
+                                | "M220"
+                                | "M221"
+                                | "M400"
+                                | "M900"
+                        );
                     let unsupported_g = command.starts_with('G')
                         && !matches!(command, "G4" | "G04" | "G17" | "G21");
                     let coordinate_change = matches!(
@@ -405,9 +430,14 @@ impl Parser {
                             | "M666"
                             | "M851"
                     );
-                    if unsupported_g || coordinate_change || named_firmware_command {
+                    if unsupported_g || unsupported_m || coordinate_change || named_firmware_command
+                    {
                         capture.known_position = [false; 3];
-                        if self.layer > 0 || coordinate_change || named_firmware_command {
+                        if self.layer > 0
+                            || unsupported_m
+                            || coordinate_change
+                            || named_firmware_command
+                        {
                             capture.unknown_origin = [true; 3];
                             capture.unresolved.insert(format!(
                                 "unsupported_coordinate_or_motion_command:{command}"
