@@ -560,7 +560,18 @@ impl IncomingFiles {
                 received.file.path(),
                 params.overwrite,
                 max_bytes,
-            ).map_err(|error| ingest_error(error.into(), Some(true)))?;
+            ).map_err(|error| {
+                // Workspace quota admission precedes destination publication.
+                // Other filesystem errors can follow publication or directory sync.
+                let publication_attempted = !matches!(
+                    error,
+                    printable_workspace::WsError::StorageBudgetExceeded
+                );
+                if !publication_attempted {
+                    *state = TransferState::Failed;
+                }
+                ingest_error(error.into(), Some(publication_attempted))
+            })?;
             let result = IngestResult {
                 artifact,
                 sha256: received.sha256.clone(),
@@ -980,6 +991,73 @@ mod tests {
         }
         assert_eq!(files.capacity.available_permits(), 1);
         assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+    }
+
+    #[tokio::test]
+    async fn quota_refusals_do_not_exhaust_receipts_and_recover_after_budget_is_freed() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = Arc::new(IncomingFiles::with_capacity(
+            Arc::clone(&workspace),
+            1024,
+            1,
+        ));
+        for _ in 0..=MAX_RECEIPTS {
+            workspace.configure_storage_budget(None).unwrap();
+            let authorization = authorize(&files, "source.3mf");
+            let uri = authorization["file"]["uri"].as_str().unwrap();
+            assert_eq!(
+                receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                    .await
+                    .status(),
+                StatusCode::CREATED
+            );
+            workspace.configure_storage_budget(Some(0)).unwrap();
+            let error = files
+                .ingest(IngestParams {
+                    file: uri.into(),
+                    path: "model.3mf".into(),
+                    overwrite: false,
+                })
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.code(), "storage_budget_exceeded");
+            assert!(matches!(
+                error,
+                ToolError::FileIngest {
+                    publication_attempted: Some(false),
+                    ..
+                }
+            ));
+            assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
+            assert_eq!(files.capacity.available_permits(), 1);
+            assert!(!root.path().join("model.3mf").exists());
+        }
+        assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+        workspace.configure_storage_budget(None).unwrap();
+        let authorization = authorize(&files, "replacement.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap();
+        assert_eq!(
+            receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+        files
+            .ingest(IngestParams {
+                file: uri.into(),
+                path: "model.3mf".into(),
+                overwrite: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("model.3mf")).unwrap(),
+            b"abc"
+        );
+        assert_eq!(files.status(uri).await.unwrap()["state"], "committed");
+        assert_eq!(files.capacity.available_permits(), 1);
     }
 
     #[tokio::test]
