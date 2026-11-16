@@ -114,9 +114,12 @@ not transfer that analysis to Printable's user.
 
 The current XY review is not a swept-toolhead check. When a required check is
 unavailable, the agent retains the files, states the missing analysis and
-withholds a print-ready recommendation. This does not claim that backend
-collision preflight is already implemented. Backend follow-up must identify
-collisions in supported cases, rather than only report which checks are missing.
+withholds a print-ready recommendation. The backend now retains
+[collision findings](slicing.md#collision-findings) from final native toolpaths:
+bed exclusions, tower interference and explicit linear travel checked against
+supplied machine-component envelopes. Missing inputs and unsupported motion
+remain unresolved. Source-object solid intersections and complete machine
+simulation remain outside that check's coverage.
 Physical bed readiness remains a separate question. Motion advice also depends
 on whether the bed moves in XY; see
 [Orca's arrangement guidance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/prepare_auto_arrange).

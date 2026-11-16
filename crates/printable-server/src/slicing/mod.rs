@@ -3,6 +3,7 @@
 pub mod capture;
 mod definitions;
 pub mod package;
+pub mod preflight;
 pub mod profiles;
 pub mod review;
 pub mod setup;
@@ -193,6 +194,10 @@ pub struct PrepareParams {
     pub auto_orient: bool,
     #[serde(default)]
     pub auto_arrange: bool,
+    /// Collision checks on the final native output. Missing machine geometry
+    /// remains unmeasured; supplied component envelopes are relative to the nozzle.
+    #[serde(default)]
+    pub clearance: preflight::PreflightOptions,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
@@ -231,6 +236,11 @@ struct Active {
     output: String,
     state: Value,
     cancel: CancellationToken,
+}
+
+struct SliceOutputs {
+    artifacts: Value,
+    preflight: Value,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -611,6 +621,7 @@ impl SliceWorker {
     }
 
     async fn prepare(self: &Arc<Self>, params: PrepareParams) -> Result<Value, ToolError> {
+        params.clearance.validate()?;
         if params.timeout_seconds == 0
             || params.filaments.is_empty()
             || std::time::Instant::now()
@@ -754,11 +765,13 @@ impl SliceWorker {
                 .state
                 .clone();
             match result {
-                Ok(artifacts) => {
+                Ok(outputs) => {
+                    let artifacts = outputs.artifacts;
+                    let preflight = outputs.preflight;
                     let data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
                         "settings":settings,"settings_sha256":provenance::digest(&serde_json::to_vec(&settings).expect("JSON value serializes")),
                         "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
-                        "design_evidence":design_evidence,"artifacts":artifacts});
+                        "design_evidence":design_evidence,"artifacts":artifacts,"preflight":preflight});
                     match provenance::store(
                         &worker.workspace,
                         provenance::Kind::Slice,
@@ -768,6 +781,7 @@ impl SliceWorker {
                         Ok(reference) => {
                             terminal["status"] = json!("completed");
                             terminal["artifacts"] = artifacts;
+                            terminal["preflight"] = preflight;
                             terminal["provenance"] = json!(reference);
                         }
                         Err(error) => {
@@ -785,6 +799,7 @@ impl SliceWorker {
                     terminal["error"] = json!(error.to_string());
                 }
             }
+            terminal["cancel_requested"] = json!(cancel.is_cancelled());
             terminal["finished_unix_ms"] = json!(projects::unix_ms());
             let completed = terminal["status"] == "completed";
             let persisted = serde_json::to_vec(&terminal)
@@ -838,7 +853,7 @@ impl SliceWorker {
         params: &PrepareParams,
         colours: &[Option<String>],
         cancel: &CancellationToken,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<SliceOutputs, ToolError> {
         use std::os::unix::process::CommandExt;
         let staging = staging_owner.path();
         let output = staging.join("output");
@@ -952,10 +967,16 @@ impl SliceWorker {
         )?;
         result?;
         let workspace = Arc::clone(&self.workspace);
+        let clearance = params.clearance.clone();
+        let deadline = clearance.deadline();
+        let cancellation = cancel.clone();
         tokio::task::spawn_blocking(move || {
             let mut artifacts = BTreeMap::new();
-            for entry in std::fs::read_dir(&output)? {
-                let entry = entry?;
+            let native_settings = package::collision_settings(&output.join("model.gcode.3mf"));
+            let mut entries = std::fs::read_dir(&output)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            let mut plates = BTreeMap::new();
+            for entry in entries {
                 let name = entry
                     .file_name()
                     .into_string()
@@ -966,6 +987,23 @@ impl SliceWorker {
                     continue;
                 }
                 let hash = hash_file(&entry.path())?;
+                if name.ends_with(".gcode") {
+                    let mut report = preflight::analyze(
+                        &entry.path(),
+                        native_settings.as_ref().unwrap_or(&Value::Null),
+                        &clearance,
+                        deadline,
+                        &cancellation,
+                    );
+                    report["toolpath_sha256"] = json!(hash);
+                    report["bed_settings_source"] =
+                        json!("model.gcode.3mf:Metadata/project_settings.config");
+                    if let Err(error) = &native_settings {
+                        report["native_settings_error"] =
+                            json!({"code":error.code(),"message":error.to_string()});
+                    }
+                    plates.insert(name.clone(), report);
+                }
                 let artifact = workspace.commit_generated_artifact_bounded(
                     &format!("{destination}/{name}"),
                     &entry.path(),
@@ -981,7 +1019,33 @@ impl SliceWorker {
                     "native slice omitted its 3MF or toolpath; retained outputs require inspection",
                 ));
             }
-            Ok(json!(artifacts))
+            let status = if plates.values().any(|p| p["status"] == "blocked") {
+                "blocked"
+            } else if plates
+                .values()
+                .all(|p| p["status"] == "modeled_checks_passed")
+            {
+                "modeled_checks_passed"
+            } else {
+                "unresolved"
+            };
+            let preflight = json!({"format_version":1,"status":status,
+                "engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
+                "plates":plates,"physical_result":"not_observed"});
+            let bytes = serde_json::to_vec(&preflight)?;
+            let artifact = workspace.write_generated_bytes(
+                &format!("{destination}/preflight.json"),
+                &bytes,
+                false,
+            )?;
+            artifacts.insert(
+                "preflight.json".into(),
+                json!({"artifact":artifact,"sha256":provenance::digest(&bytes)}),
+            );
+            Ok(SliceOutputs {
+                artifacts: json!(artifacts),
+                preflight,
+            })
         })
         .await
         .map_err(|_| slice_error("slice publication task failed"))?
