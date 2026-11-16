@@ -16,7 +16,7 @@ import zipfile
 
 from PIL import Image
 from capture_fixture import COLORS, create_banded_fixture, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
-from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, tower_paths
+from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, object_material_assignments, tower_paths
 
 
 def verify_package(path):
@@ -292,8 +292,8 @@ with tempfile.TemporaryDirectory() as directory:
         # These isolated child profiles retain native BBL tower generation but
         # replace firmware scripts. Their output must never reach a printer.
         material_source = project / "material-layout.3mf"
-        create_fixture(project / "capture-template/model.gcode.3mf", material_source,
-                       part_heights_mm=(2, 4), plate_count=2)
+        material_fixture = create_fixture(project / "capture-template/model.gcode.3mf", material_source,
+                                          part_heights_mm=(2, 4), plate_count=2)
         material_hash = hashlib.sha256(material_source.read_bytes()).hexdigest()
         inspected = request("inspect_layout", {"project_id": "native-slice", "source": material_source.name,
             "output_dir": "material-source-inspection", "expected_source_sha256": material_hash})
@@ -487,7 +487,20 @@ with tempfile.TemporaryDirectory() as directory:
             assert sequential["preflight"]["status"] == "blocked", sequential["preflight"]
             assert any(finding["kind"] == "toolhead_interference" for evidence in sequential["preflight"]["plates"].values()
                        for finding in evidence["findings"])
-        material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
+        resliced_towers = material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
+        for plate, (baseline, resliced) in enumerate(zip(baseline_towers, resliced_towers), start=1):
+            assert coordinates(baseline) == coordinates(resliced), "reslice changed actual tower paths or materials"
+            origin = [0 if plate == 1 else 256 * 1.2, 0, 0]
+            objects = [{"object": obj["object"], "material": obj["object"] - 1,
+                        "bounds_mm": {side: [value - offset for value, offset in zip(obj["bounds_mm"][side], origin)]
+                                      for side in ("min", "max")}}
+                       for obj in material_fixture["objects"] if obj["plate"] == plate]
+            assignments = []
+            for name in ("material-baseline", "material-reslice"):
+                paths = sorted(key for key in material_results[name]["state"]["artifacts"] if key.endswith(".gcode"))
+                assignments.append(object_material_assignments((project / name / paths[plate - 1]).read_text(), objects))
+            assert assignments[0] == assignments[1], "reslice changed object material assignments"
+            material_results["material-reslice"].setdefault("object_material_assignments", {})[str(plate)] = assignments[1]
         assert hashlib.sha256(material_source.read_bytes()).hexdigest() == material_hash
         print("Native repeated material changes, two-plate tower paths, position, rectangle width, rotation, cone applicability and reslicing passed")
 

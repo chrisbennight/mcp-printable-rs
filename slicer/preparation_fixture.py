@@ -86,7 +86,7 @@ def create_software_profiles(packaged_root, destination):
         (destination / category / f"{name}.json").write_text(json.dumps(data))
 
     write("machine", PRINTER, "Bambu Lab X1 Carbon 0.4 nozzle", {
-        "machine_start_gcode": "; software fixture, never print\nG90\nM83\nG92 E0\nG1 X0 Y0 Z0 F1200\n",
+        "machine_start_gcode": "; software fixture, never print\nG90\nM83\nT[initial_extruder]\nG92 E0\nG1 X0 Y0 Z0 F1200\n",
         "machine_end_gcode": "; software fixture end\nM400\n",
         "change_filament_gcode": "T[next_extruder]\nG92 E0\n",
         "before_layer_change_gcode": "", "layer_change_gcode": "", "time_lapse_gcode": "",
@@ -171,6 +171,23 @@ def linear_deposition_paths(gcode):
     return paths, changes
 
 
+def object_material_assignments(gcode, objects):
+    """Bind deposition to disjoint, known fixture boxes and expected material slots."""
+    paths, _ = linear_deposition_paths(gcode)
+    assignments = {}
+    for obj in objects:
+        bounds = obj["bounds_mm"]
+        selected = [path for path in paths
+                    if path["feature"] not in ("Prime tower", "Wipe tower")
+                    and all(bounds["min"][axis] - 0.03 <= point[axis] <= bounds["max"][axis] + 0.03
+                            for point in (path["from_mm"], path["to_mm"]) for axis in range(3))]
+        assert len(selected) >= 4, ("fixture object has no measured model deposition", obj)
+        materials = {path["material"] for path in selected}
+        assert materials == {obj["material"]}, ("native object material assignment changed", obj, materials)
+        assignments[str(obj["object"])] = sorted(materials)
+    return assignments
+
+
 def tower_paths(gcode):
     """Require real repeated changes and measure native prime-tower centerlines."""
     deposition, changes = linear_deposition_paths(gcode)
@@ -178,7 +195,8 @@ def tower_paths(gcode):
     assert len(changes) >= 8 and {material for _, material in changes} == {0, 1}, (
         "fixture did not generate repeated actual material changes", changes)
     assert len(paths) >= 8 and {path["material"] for path in paths} == {0, 1}, (
-        "fixture did not generate prime-tower paths for both materials", len(paths))
+        "fixture did not generate prime-tower paths for both materials", len(paths),
+        sorted({str(path["material"]) for path in paths}), changes)
     points = [point for path in paths for point in (path["from_mm"], path["to_mm"])]
     return {"paths": paths, "toolchanges": changes,
             "minimum_mm": [min(point[axis] for point in points) for axis in range(3)],

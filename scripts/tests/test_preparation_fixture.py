@@ -40,3 +40,11 @@ class PreparationFixtureTests(unittest.TestCase):
         self.assertEqual(paths[0]["from_mm"], [10, 0, 0.2])
         with self.assertRaises(AssertionError):
             fixture.tower_paths("T0\nT1\n; two loaded materials do not prove repeated paths")
+
+    def test_object_material_oracle_rejects_exchanged_slots(self):
+        source = "G90\nM83\nG92 E0\nG1 X0 Y0 Z0.2\nT0\n; FEATURE: Outer wall\n" + (
+            "G1 X1 E1\nG1 Y1 E1\nG1 X0 E1\nG1 Y0 E1\n")
+        objects = [{"object": 1, "material": 0, "bounds_mm": {"min": [0, 0, 0], "max": [1, 1, 1]}}]
+        self.assertEqual(fixture.object_material_assignments(source, objects), {"1": [0]})
+        with self.assertRaises(AssertionError):
+            fixture.object_material_assignments(source.replace("T0", "T1"), objects)
