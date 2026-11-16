@@ -194,6 +194,113 @@ toolhead obstruction. Treat reports of contact as uncertain unless the evidence
 shows it. Preparing a revised slice does not authorize physical recovery or a
 printer control action.
 
+Use this tower-failure decision sequence, retaining the observed height/time and
+the relevant tower-entry, material-change and late-print paths:
+
+| Observation | Investigate before selecting a trial |
+| --- | --- |
+| Tower and brim detached together | Check visible bed contact, actual build-surface/profile match and first-layer paths. A brim change may help attachment; higher bed temperature is not an automatic remedy. |
+| Brim attached, body broken above it | Inspect reinforcement, unsupported spans, transition bonding and possible contact. More brim alone does not address a body break. |
+| Split follows a material transition | Identify actual slots, interface paths, temperatures and bonding evidence. Neither color nor polymer family establishes compatibility. |
+| Raised deposits, dragging or a growing blob | Separate observed buildup from a suspected extrusion problem. Inspect flow, material condition, retraction and wipe/entry paths. |
+| Displacement or repeated motion consistent with contact | Correlate observations with tower entry, tool changes and sparse-layer descent. Use backend geometry and envelopes to locate modeled conflicts. Hidden contact remains uncertain. |
+
+An attached brim and fallen body establish body failure, not its cause. Retain
+bonding/extrusion and contact hypotheses until evidence distinguishes them. A
+report that the head “knocked it” without visible motion does not establish
+contact or justify a universal Z-hop or front/rear tower position.
+
+## Match changes to the named face and load
+
+| Face | Compare and verify |
+| --- | --- |
+| Bed-facing | Selected surface texture and first-layer pattern; preserve fitting dimensions, contact area and removal access. Reorientation changes support and strength assumptions. |
+| Horizontal top | Supporting shell coverage and sound extrusion first, then top pattern or material-calibrated ironing. Ironing cannot repair unsupported or underfilled top layers. |
+| Vertical wall | Seam placement, outer-wall paths, speed and applicable wall order. Outer-first behavior can trade overhang support and seam consistency for finish or dimensional accuracy. Ironing does not smooth sidewalls. |
+| Shallow relief or lettering | Stepping and support contact against the smallest intended feature. Inspect successive actual layers for missing strokes, merged gaps and filled counters; a render can conceal losses. |
+
+For a flat-top cover, retain the baseline and a candidate changing only motivated
+top-finish settings. Review top solid layers and actual ironing paths; record
+both native time and total material estimates, their deltas and unavailable
+support/tower/flushing breakdowns. Weigh that cost against the named face.
+Keep a fitting rim's dimensions and shell coverage unchanged, and identify any
+fit measurement still needed. Reject a finish candidate that removes embossed
+lettering even if its flat top appears cleaner. Do not silently simplify geometry.
+Toolpaths predict coverage; they do not establish measured surface finish.
+
+For a bending bracket, establish service and screw-installation loads, fastener
+direction, loaded outer sections and possible layer-separation planes. Retain a
+baseline, then compare load-aware orientation and a motivated shell change with
+a core-infill alternative. Outer shells can carry much of a bending load while
+extra core infill adds mass; treat this as a hypothesis, not a load rating.
+Keep geometry, material conditioning and physical top/bottom shell thickness
+comparable. When layer height changes, check actual thickness and native layer
+rounding rather than retaining shell counts alone. Check fastener splitting
+before recommending an orientation favorable only to service loads. Distinguish
+stiffness, failure strength, sustained-load creep and temperature behavior.
+Tie physical claims to tested geometry, material, direction and conditions.
+
+The [wall-order guide](https://github.com/OrcaSlicer/OrcaSlicer/wiki/quality_settings_wall_and_surfaces),
+[ironing guide](https://github.com/OrcaSlicer/OrcaSlicer/wiki/quality_settings_ironing)
+and CNC Kitchen's [shell/infill](https://www.youtube.com/watch?v=AmEaNAwFSfI)
+and [orientation tests](https://www.youtube.com/watch?v=7aJ4dDyyf20)
+explain these tradeoffs. Translate them through packaged setting definitions;
+upstream features and particular experiments are not universal presets.
+
+## Reuse calibration evidence deliberately
+
+A compatible standard baseline remains useful without a new calibration campaign.
+Import existing observations before deciding whether a coupon could change a
+consequential choice. Retain a record with `artifact.write` at a resolved project
+path, linking immutable slice/profile/settings identities. Include machine and
+nozzle/hotend identity; filament product, variant and conditioning; test method
+and relevant temperature, flow, speed, cooling and ambient conditions; firmware
+and automatic-calibration behavior; observed result and measurement/image
+references; selected value and units; applicability limits and rejected or
+inconclusive trials. Label each value measured, estimated or inherited.
+An inherited profile value is not a physical measurement.
+
+The current [Orca calibration guide](https://github.com/OrcaSlicer/OrcaSlicer/wiki/calibration_guide)
+puts temperature and melt-flow limits before pressure advance and flow ratio,
+then retraction; pressure advance and flow ratio may need an iterative recheck.
+Use that dependency logic without requiring every test. A hotter flow test does
+not establish the production limit at a lower temperature. Changed filament,
+nozzle, hotend or substantially different process can invalidate earlier values.
+Read automatic calibration behavior before applying a manual value that could
+be replaced or applied twice. Prefer supported automatic hardware calibration
+where appropriate; do not change firmware calibration automatically. GUI menus
+do not establish a packaged CLI action. Generate a candidate only through
+verified native behavior or deliberate modeling; preparation never starts it.
+
+## Troubleshoot with retained evidence
+
+Keep the original slice and an observation–hypothesis–intervention–result record.
+Change one motivated group, use a new output directory and retain failed or
+inconclusive trials. State the observation that would distinguish explanations.
+
+| Symptom | Conditional comparison |
+| --- | --- |
+| Infill scraping | Correlate layer and crossing paths. Consider crossing infill, excess extrusion/buildup and travel/retraction behavior. A Grid-to-Gyroid trial changes crossings, support and time; it does not prove the cause or clear a head collision. |
+| Stringing | Separate thin travel strands from a large displaced tangle. Check material condition, temperature and actual travel/retraction before a targeted trial; Z-hop is not a universal cure. |
+| Rough top | Inspect supporting shell coverage, extrusion and small features before ironing. Compare a motivated top-fill change; a preview does not establish a physically smooth top. |
+| Support/tower failure | Use failure location and observed mechanism. Compare normal/tree supports by contact surface, removal access, stability and time/material cost, rather than always selecting trees. |
+| Unexpected time/material growth | Compare source, transforms, effective paths and slots. Check supports, brims, tower, flushing, shells/widths and speed changes. Missing breakdowns are unknown, not zero or a guessed cause. |
+
+Preserve authored local support assignments and interface filament indices;
+inspect final paths or report preservation limits. Review supported undersides,
+interface layers and actual material transitions. Flushing into infill can show
+mixed colors through thin walls; dissimilar mixed-material structural suitability
+remains unverified without applicable tests. Expose a purge matrix only with
+verified native semantics, ordered slot identity and matching dimensions.
+
+Reports of [tower failure above a retained brim](https://www.reddit.com/r/FlashForge/comments/1vdoq9e/prime_tower_being_knocked_over/),
+[a Grid-infill recommendation](https://www.reddit.com/r/BambuLab/comments/1q3any0/psa_for_new_users_avoid_using_the_stock_infill/)
+and [an alternative retraction explanation](https://www.reddit.com/r/BambuLab/comments/1cj0en2/psa_grid_infill_is_not_the_problem/)
+motivate these branches. They are anecdotes, not verified causes or remedies.
+Use [native support](https://github.com/OrcaSlicer/OrcaSlicer/wiki/support_settings_advanced)
+and [flushing semantics](https://github.com/OrcaSlicer/OrcaSlicer/wiki/multimaterial_settings_flush_options)
+for setting meanings and verify applicability to the packaged engine.
+
 ## Prepare and review the actual result
 
 Call `slice.prepare` with the existing project, exact STL/3MF source, a new output

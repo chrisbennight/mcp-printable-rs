@@ -150,6 +150,17 @@ or overlapping it in a two-dimensional view does not establish a collision.
 Report an evident obstruction as a collision risk; claim actual contact only
 when the images or reliable telemetry support it.
 
+For a prime tower, distinguish attachment from body integrity where visible:
+an attached brim with a fallen upper section indicates body failure, while a
+displaced brim and tower suggest detachment. Note a split near a known material
+transition without assuming incompatible materials caused it. Raised deposits
+can support a buildup concern; a hidden nozzle leaves its cause unassessed.
+Use retained toolpaths and time/layer context to inspect tower entry, material
+changes and late-print or sparse-layer descent when those regions are visible.
+Do not infer contact from a still frame with overlapping head/tower silhouettes.
+Keep the existing decision and control rules: these observations do not create
+authority to change placement, temperatures, Z-hop, pause policy or firmware.
+
 Obtain an additional frame only when a specific concerning feature or an unusually
 poor view could change the decision. Ordinary toolhead occlusion alone does not
 require another capture or a user warning. When useful and authorized, obtain at
