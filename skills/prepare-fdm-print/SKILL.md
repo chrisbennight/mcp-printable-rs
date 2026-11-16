@@ -60,8 +60,14 @@ resources, or `tools/list` when resources are unavailable. Validate STL geometry
 with `validate_mesh`: inspect bounds, topology, bed contact and overhangs in the
 intended build direction. Use its wall-thickness, dimensional or draft checks
 when they answer an actual requirement. Mark unsupported or inconclusive checks
-as unmeasured. Inspect 3MF geometry and assignments through available native
-tools; no direct source-3MF inspection action is currently exposed by `slice`.
+as unmeasured. Use `slice.capture` to inspect an existing project 3MF or the exact
+output package of a completed preparation. Select common views or custom camera,
+plate, object and visibility controls; retain its source, view and image evidence.
+Read `printable://contracts/slice/capture` for the source selectors and controls.
+Capture shows native model placement and estimated prime towers. It does not show
+generated supports, brims or actual toolpaths, or establish collision clearance.
+Use `slice.review` for actual toolpaths and combine the available observations
+with geometry and printer information for the clearance assessment below.
 
 Choose the orientation against the requested objective:
 

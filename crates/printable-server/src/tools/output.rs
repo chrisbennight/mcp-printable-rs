@@ -173,6 +173,7 @@ fn worker_readiness() -> Value {
             "state": {"enum": ["not_configured", "ready", "busy", "unavailable", "incompatible"]},
             "engine": {"enum": ["CadQuery", "OrcaSlicer"]},
             "version": {"type": ["string", "null"]},
+            "native_capture": {"type": "boolean"},
             "profile_counts": {"anyOf": [
                 {"type": "null"},
                 object(json!({"printer": {"type":"integer", "minimum": 0}, "process": {"type":"integer", "minimum": 0}, "filament": {"type":"integer", "minimum": 0}}), &["printer", "process", "filament"])
@@ -633,6 +634,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             schema
         }
         "slice" => json!({"type":"object","anyOf":[
+            {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},

@@ -86,15 +86,16 @@ COPY --from=smoke-build /app/target/release/printable-smoke /printable-smoke
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS slicer-runtime
 RUN apt-get update && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends curl ca-certificates tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
+ && apt-get install -y --no-install-recommends curl ca-certificates locales tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
+ && localedef -i en_US -f UTF-8 en_US.UTF-8 \
  && rm -rf /var/lib/apt/lists/*
 # Extracted modes depend on the AppImage runtime embedded in each build, so the
 # bundle is made readable and traversable for the unprivileged worker explicitly.
-# OrcaSlicer local-2.4.2-b08db1a.
+# OrcaSlicer local-2.4.2-63c97a1.
 RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
       --header 'Accept: application/octet-stream' \
-      --output /tmp/orca.AppImage https://api.github.com/repos/chrisbennight/OrcaSlicer/releases/assets/677113065 \
- && echo '27cedb3f138e13cddf542e24657961ded693b53f2c4cbadacb0cfe820dd19f26  /tmp/orca.AppImage' | sha256sum --check \
+      --output /tmp/orca.AppImage https://api.github.com/repos/chrisbennight/OrcaSlicer/releases/assets/752504181 \
+ && echo '00e1875000f8bd97f2e4395b592cb8fba6454726be0da15d64f7f20cc5d6ca77  /tmp/orca.AppImage' | sha256sum --check \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
  && rm -rf /opt/orca/resources/web \
