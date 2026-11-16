@@ -323,8 +323,10 @@ Transfer status reports `unknown` if its registry or state is currently busy,
 so a slow filesystem operation does not hold up status. This does not confirm
 success or failure; inspect the destination or check status again.
 
-A cancellation can report `cancelling` while an admitted write finishes; only
-`cancelled` confirms release. A successful native ingest retains a receipt for
+A cancellation can report `cancelling` while an admitted write or staging cleanup
+finishes. A busy publication can return `unknown` without accepting cancellation;
+inspect status before trying again. Only `cancelled` confirms release.
+A successful native ingest retains a receipt for
 the authorization lifetime; repeating that native request with the same private
 URI and destination returns the receipt without writing again. It records the
 original commit, not a claim that another request has not since changed the

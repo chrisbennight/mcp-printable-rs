@@ -367,14 +367,21 @@ impl IncomingFiles {
 
     pub async fn cancel(&self, uri: &str) -> Result<serde_json::Value, ToolError> {
         let transfer = self.get(uri)?;
-        let mut state = Arc::clone(&transfer.state).lock_owned().await;
+        let Ok(mut state) = Arc::clone(&transfer.state).try_lock_owned() else {
+            let state = if transfer.cancellation.is_cancelled() {
+                "cancelling"
+            } else {
+                "unknown"
+            };
+            return Ok(serde_json::json!({"state": state, "cancelled": false}));
+        };
         let (name, cancelled) = match &*state {
             TransferState::Ready(_) => {
                 let received = std::mem::replace(&mut *state, TransferState::Cancelling);
                 transfer.cancellation.cancel();
                 // Managed scratch cleanup can wait for a publication's storage
                 // lock. Keep its state and slot owned until that cleanup exits.
-                tokio::task::spawn_blocking(move || {
+                let cleanup = tokio::task::spawn_blocking(move || {
                     drop(received);
                     transfer
                         .permit
@@ -382,13 +389,15 @@ impl IncomingFiles {
                         .expect("upload permit poisoned")
                         .take();
                     *state = TransferState::Cancelled;
-                })
-                .await
-                .map_err(|_| ToolError::FileUpload {
-                    code: "completion_unknown",
-                    message: "file cancellation outcome is unknown; inspect transfer status".into(),
-                })?;
-                return Ok(serde_json::json!({"state": "cancelled", "cancelled": true}));
+                });
+                // The control request must release admission while cleanup
+                // waits; the cleanup task still owns the state and slot.
+                tokio::spawn(async move {
+                    if cleanup.await.is_err() {
+                        tracing::error!("incoming file cancellation cleanup task failed");
+                    }
+                });
+                return Ok(serde_json::json!({"state": "cancelling", "cancelled": false}));
             }
             TransferState::Prepared => {
                 *state = TransferState::Cancelled;
@@ -926,6 +935,16 @@ mod tests {
         .expect("status does not wait for publication")
         .unwrap();
         assert_eq!(status["state"], "unknown");
+        let cancellation = tokio::time::timeout(
+            Duration::from_secs(5),
+            files.cancel(authorization["file"]["uri"].as_str().unwrap()),
+        )
+        .await
+        .expect("busy cancellation does not wait for publication")
+        .unwrap();
+        assert_eq!(cancellation["state"], "unknown");
+        assert_eq!(cancellation["cancelled"], false);
+        assert!(!transfer.cancellation.is_cancelled());
         let contract = crate::resources::contracts::read(
             "printable://contracts/artifact/transfer_status",
             crate::tools::workflows::Availability::default(),
@@ -1023,29 +1042,46 @@ mod tests {
                 .status(),
             StatusCode::CREATED
         );
-        let transfer = files.get(&uri).unwrap();
         let (release, blocker) = block_storage(root.path());
-        let cancel_files = Arc::clone(&files);
-        let cancel_uri = uri.clone();
         let started = Instant::now();
-        let cancellation = tokio::spawn(async move { cancel_files.cancel(&cancel_uri).await });
+        let cancellation = tokio::time::timeout(Duration::from_secs(5), files.cancel(&uri))
+            .await
+            .expect("cancellation releases control admission before storage cleanup")
+            .unwrap();
+        assert_eq!(cancellation["state"], "cancelling");
+        assert_eq!(cancellation["cancelled"], false);
+        let close_admission = CancellationToken::new();
+        let admission = crate::admission::Admission::new(close_admission.clone());
+        let request = serde_json::json!({"method":"files/cancelUpload"});
+        let repeated = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures_util::future::join_all((0..16).map(|_| async {
+                let _permit = admission
+                    .request(&request)
+                    .expect("cancellation leaves control admission available");
+                files.cancel(&uri).await
+            })),
+        )
+        .await
+        .expect("repeated cancellations do not occupy the control lane");
+        for response in repeated {
+            let response = response.unwrap();
+            assert_eq!(response["state"], "cancelling");
+            assert_eq!(response["cancelled"], false);
+        }
+        close_admission.cancel();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(files.capabilities()["available_staging_slots"], 0);
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "unknown");
+        release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !transfer.cancellation.is_cancelled() {
+            while files.status(&uri).await.unwrap()["state"] != "cancelled" {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("cancellation does not block the executor on storage cleanup");
-        assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(!cancellation.is_finished());
-        assert_eq!(files.capabilities()["available_staging_slots"], 0);
-        assert_eq!(files.status(&uri).await.unwrap()["state"], "unknown");
-        release.send(()).unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(5), cancellation)
-            .await
-            .expect("cancellation finishes after the storage lock is released")
-            .unwrap()
-            .unwrap();
+        .expect("cancellation finishes after the storage lock is released");
+        let result = files.cancel(&uri).await.unwrap();
         assert_eq!(result["cancelled"], true);
         assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelled");
         assert_eq!(files.capacity.available_permits(), 1);
