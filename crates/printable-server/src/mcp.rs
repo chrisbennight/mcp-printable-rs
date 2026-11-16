@@ -98,9 +98,10 @@ impl PrintableServer {
         settings.project_index.set_renderer(&jobs);
         Self {
             published_files: Arc::new(PublishedFiles::new(Arc::clone(&workspace))),
-            incoming_files: Arc::new(IncomingFiles::new(
+            incoming_files: Arc::new(IncomingFiles::with_capacity(
                 Arc::clone(&workspace),
                 settings.file_upload_max_bytes,
+                settings.file_upload_max_staged,
             )),
             workspace,
             uploads: Arc::new(UploadRegistry::new()),
@@ -266,8 +267,12 @@ impl PrintableServer {
         if operation == INGEST_TOOL || operation == "printable_workspace_transfer_status" {
             let result: Result<Value, ToolError> = async {
                 if operation == INGEST_TOOL {
-                    let request: IngestParams = serde_json::from_value(args)
-                        .map_err(|e| ToolError::Validation(e.to_string()))?;
+                    let request: IngestParams = serde_json::from_value(args).map_err(|e| {
+                        crate::file_ingest::ingest_error(
+                            ToolError::Validation(e.to_string()),
+                            Some(false),
+                        )
+                    })?;
                     Ok(
                         serde_json::to_value(self.incoming_files.ingest(request).await?)
                             .expect("artifact serializes"),
@@ -460,6 +465,10 @@ impl PrintableServer {
                 } else {
                     (output.value, output.inline_png_base64)
                 };
+                let mut value = value;
+                if operation == "printable_status" {
+                    value["workspace"]["file_upload"] = self.incoming_files.capabilities().await;
+                }
                 let value = projection.apply(value);
                 let mut content = vec![ContentBlock::text(value.to_string())];
                 if let Some(data_base64) = image {
@@ -679,7 +688,23 @@ impl ServerHandler for PrintableServer {
                 .incoming_files
                 .authorize(params, &base_url)
                 .map(CustomResult::new)
-                .map_err(|e| McpError::invalid_params(e.to_string(), None));
+                .map_err(|e| self.incoming_files.protocol_error(e, "authorize_upload"));
+        }
+        if request.method == "files/transferStatus" || request.method == "files/cancelUpload" {
+            let params = request
+                .params_as::<crate::file_ingest::LifecycleParams>()
+                .map_err(|_| McpError::invalid_params("invalid file lifecycle parameters", None))?
+                .ok_or_else(|| {
+                    McpError::invalid_params("missing file lifecycle parameters", None)
+                })?;
+            let (result, stage) = if request.method == "files/cancelUpload" {
+                (self.incoming_files.cancel(&params.uri).await, "cancel")
+            } else {
+                (self.incoming_files.status(&params.uri).await, "status")
+            };
+            return result
+                .map(CustomResult::new)
+                .map_err(|error| self.incoming_files.protocol_error(error, stage));
         }
         if request.method != "files/authorizeDownload" {
             return Err(McpError::new(
@@ -775,6 +800,16 @@ fn error_result(tool: &str, err: &ToolError) -> CallToolResult {
         "tool": tool,
         "error": { "code": err.code(), "message": err.to_string() },
     });
+    if let ToolError::FileIngest {
+        publication_attempted,
+        ..
+    } = err
+    {
+        payload["error"]["stage"] = "ingest".into();
+        if let Some(attempted) = publication_attempted {
+            payload["error"]["publication_attempted"] = (*attempted).into();
+        }
+    }
     if let ToolError::Blender(error) = err
         && let Some(state) = error.scene_state()
     {
@@ -795,6 +830,26 @@ mod tests {
     use serde_json::json;
 
     use super::aggregate_readiness;
+
+    #[test]
+    fn ingest_errors_preserve_known_publication_facts_and_omit_unknowns() {
+        for attempted in [Some(false), Some(true), None] {
+            let error = crate::file_ingest::ingest_error(
+                crate::error::ToolError::Validation("rejected".into()),
+                attempted,
+            );
+            let result = super::error_result("artifact", &error);
+            let payload = result.structured_content.unwrap();
+            assert_eq!(payload["error"]["stage"], "ingest");
+            assert_eq!(
+                payload["error"]["publication_attempted"].as_bool(),
+                attempted
+            );
+            if attempted.is_none() {
+                assert!(payload["error"].get("publication_attempted").is_none());
+            }
+        }
+    }
 
     #[test]
     fn structured_failures_match_every_advertised_and_selected_contract() {
@@ -934,13 +989,13 @@ mod tests {
         ("head", 21_800, 0),
         ("photo", 4_900, 0),
         ("library", 3_000, 0),
-        ("artifact", 6_300, 0),
+        ("artifact", 6_400, 0),
     ];
     /// Characters in one tool's description.
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 177_500;
+    const CATALOG_BUDGET: usize = 177_600;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {

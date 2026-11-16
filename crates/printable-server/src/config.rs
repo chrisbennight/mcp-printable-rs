@@ -97,6 +97,7 @@ pub struct Settings {
     /// Address-space budget for each isolated exact assembly CSG worker.
     pub geometry_worker_memory_bytes: u64,
     pub file_upload_max_bytes: u64,
+    pub file_upload_max_staged: usize,
     /// Shared bearer required on every MCP transport request.
     pub mcp_bearer: BearerSecret,
     /// Hostnames accepted in the `Host` header for `/mcp` (the transport's
@@ -134,6 +135,8 @@ pub enum SettingsError {
     ProjectSearch(&'static str),
     #[error("PRINTABLE_FILE_UPLOAD_MAX_MIB must be a positive MiB count within u64 bytes")]
     FileUploadLimitInvalid,
+    #[error("PRINTABLE_FILE_UPLOAD_MAX_STAGED must be a positive supported transfer count")]
+    FileUploadCapacityInvalid,
     #[error("PRINTABLE_MCP_BEARER is required")]
     McpBearerMissing,
     #[error("PRINTABLE_MCP_BEARER must contain exactly 64 lowercase hexadecimal characters")]
@@ -238,6 +241,7 @@ impl Settings {
             geometry_worker_bin: nonempty(&get, "PRINTABLE_GEOMETRY_WORKER_BIN").map(PathBuf::from),
             geometry_worker_memory_bytes: geometry_worker_memory_bytes(&get)?,
             file_upload_max_bytes: file_upload_max_bytes(&get)?,
+            file_upload_max_staged: file_upload_max_staged(&get)?,
             mcp_bearer: mcp_bearer(&get)?,
             allowed_hosts: allowed_hosts(nonempty(&get, "PRINTABLE_ALLOWED_HOSTS")),
             allowed_origins: allowed_origins(nonempty(&get, "PRINTABLE_ALLOWED_ORIGINS"))?,
@@ -398,6 +402,15 @@ fn file_upload_max_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<u64, S
         .filter(|value| *value > 0)
         .and_then(|value| value.checked_mul(1024 * 1024));
     value.ok_or(SettingsError::FileUploadLimitInvalid)
+}
+
+fn file_upload_max_staged(get: &impl Fn(&str) -> Option<String>) -> Result<usize, SettingsError> {
+    nonempty(get, "PRINTABLE_FILE_UPLOAD_MAX_STAGED")
+        .unwrap_or_else(|| "20".into())
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0 && *value <= tokio::sync::Semaphore::MAX_PERMITS)
+        .ok_or(SettingsError::FileUploadCapacityInvalid)
 }
 
 fn workspace_budget_bytes(
@@ -877,6 +890,18 @@ mod tests {
 #[cfg(test)]
 mod file_upload_tests {
     use super::*;
+
+    #[test]
+    fn staging_capacity_is_positive_and_configurable() {
+        assert_eq!(file_upload_max_staged(&|_| None).unwrap(), 20);
+        assert_eq!(file_upload_max_staged(&|_| Some("7".into())).unwrap(), 7);
+        for value in ["0", "-1", "invalid", "18446744073709551615"] {
+            assert_eq!(
+                file_upload_max_staged(&|_| Some(value.into())),
+                Err(SettingsError::FileUploadCapacityInvalid)
+            );
+        }
+    }
 
     #[test]
     fn incoming_file_budget_rejects_zero_invalid_and_overflow() {
