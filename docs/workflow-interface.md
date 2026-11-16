@@ -236,9 +236,10 @@ alone does not establish that Printable has ingested the file.
 
 Read `status.workspace.file_upload` for the configured native incoming-file
 limit, staging capacity, current occupancy, and supported suffixes.
-Occupancy fields `active_receivers` and `staged_files` are null while state is
-busy; status does not wait for an in-progress publication. The available slot
-count remains reported independently.
+Occupancy fields `active_receivers` and `staged_files` are null while state or
+expiry cleanup is busy; status does not wait for an in-progress publication.
+The available slot count is authoritative for admission. State counts describe
+registered transfers; expired transfers still owned by in-flight work are excluded.
 
 Each file is bounded by `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). Staging
 capacity is configured with `PRINTABLE_FILE_UPLOAD_MAX_STAGED` (default 20).
@@ -318,7 +319,7 @@ continues to accept `params.uri` for the same private URI. Consumer clients
 should use their gateway's delivery handles rather than construct or retain
 Printable-private references.
 
-Transfer status reports `unknown` if publication currently holds its state lock,
+Transfer status reports `unknown` if its registry or state is currently busy,
 so a slow filesystem operation does not hold up status. This does not confirm
 success or failure; inspect the destination or check status again.
 

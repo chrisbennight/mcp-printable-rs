@@ -1,6 +1,7 @@
 //! Native raw-byte uploads consumed by workspace artifact operations.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -140,6 +141,8 @@ pub struct IncomingFiles {
     max_staged: usize,
     transfers: Mutex<HashMap<String, Arc<Transfer>>>,
     capacity: Arc<Semaphore>,
+    // Only expiry batches are counted here; admission uses the semaphore.
+    pending_cleanup: Arc<AtomicUsize>,
 }
 
 impl IncomingFiles {
@@ -154,6 +157,7 @@ impl IncomingFiles {
             max_staged,
             transfers: Mutex::new(HashMap::new()),
             capacity: Arc::new(Semaphore::new(max_staged)),
+            pending_cleanup: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -294,7 +298,18 @@ impl IncomingFiles {
     }
 
     pub async fn status(&self, uri: &str) -> Result<serde_json::Value, ToolError> {
-        let transfer = self.get(uri)?;
+        let id = uri
+            .strip_prefix(URI_PREFIX)
+            .ok_or(ToolError::UploadNotFound)?;
+        let transfers = match self.transfers.try_lock() {
+            Ok(transfers) => transfers,
+            Err(TryLockError::WouldBlock) => return Ok(serde_json::json!({"state": "unknown"})),
+            Err(TryLockError::Poisoned(_)) => panic!("incoming file registry poisoned"),
+        };
+        let transfer = transfers
+            .get(id)
+            .filter(|transfer| transfer.expires > Instant::now())
+            .ok_or(ToolError::UploadNotFound)?;
         let Ok(state) = transfer.state.try_lock() else {
             return Ok(serde_json::json!({"state": "unknown"}));
         };
@@ -320,12 +335,15 @@ impl IncomingFiles {
     pub fn capabilities(&self) -> serde_json::Value {
         // Global status must not wait behind publication or delay cancellation.
         let transfers = match self.transfers.try_lock() {
-            Ok(transfers) => Some(transfers.values().cloned().collect::<Vec<_>>()),
+            Ok(transfers) => Some(transfers),
             Err(TryLockError::WouldBlock) => None,
             Err(TryLockError::Poisoned(_)) => panic!("incoming file registry poisoned"),
         };
         let counts = transfers.and_then(|transfers| {
-            transfers.iter().try_fold((0, 0), |mut counts, transfer| {
+            if self.pending_cleanup.load(Ordering::Acquire) != 0 {
+                return None;
+            }
+            transfers.values().try_fold((0, 0), |mut counts, transfer| {
                 let state = transfer.state.try_lock().ok()?;
                 match &*state {
                     TransferState::Receiving | TransferState::Cancelling => counts.0 += 1,
@@ -516,17 +534,18 @@ impl IncomingFiles {
             }
             // Publication can precede a fallible directory sync. Once attempted,
             // only a successful receipt permits a repeat request to return success.
+            // Declare the permit first so staging cleanup finishes before release.
+            let _permit = transfer
+                .permit
+                .lock()
+                .expect("upload permit poisoned")
+                .take();
             let TransferState::Ready(received) = std::mem::replace(
                 &mut *state,
                 TransferState::CommitUncertain { path: params.path.clone() },
             ) else {
                 unreachable!()
             };
-            let _permit = transfer
-                .permit
-                .lock()
-                .expect("upload permit poisoned")
-                .take();
             let artifact = workspace.commit_generated_artifact_bounded(
                 &params.path,
                 received.file.path(),
@@ -545,10 +564,38 @@ impl IncomingFiles {
     }
 
     fn prune(&self) {
-        self.transfers
-            .lock()
-            .expect("incoming file registry poisoned")
-            .retain(|_, transfer| transfer.expires > Instant::now());
+        let expired = {
+            let mut transfers = self
+                .transfers
+                .lock()
+                .expect("incoming file registry poisoned");
+            let now = Instant::now();
+            let expired = transfers
+                .extract_if(|_, transfer| transfer.expires <= now)
+                .map(|(_, transfer)| transfer)
+                .collect::<Vec<_>>();
+            if !expired.is_empty() {
+                self.pending_cleanup.fetch_add(1, Ordering::Release);
+            }
+            expired
+        };
+        if expired.is_empty() {
+            return;
+        }
+        let pending_cleanup = Arc::clone(&self.pending_cleanup);
+        let cleanup = move || {
+            // The retired owners retain their permits through scratch cleanup.
+            drop(expired);
+            pending_cleanup.fetch_sub(1, Ordering::Release);
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn_blocking(cleanup);
+            }
+            // Synchronous callers have no async executor to protect. The
+            // registry lock has already been released before cleanup begins.
+            Err(_) => cleanup(),
+        }
     }
 
     pub fn spawn_reaper(self: &Arc<Self>, cancel: CancellationToken) {
@@ -578,9 +625,6 @@ pub async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let Ok(transfer) = files.get(&format!("{URI_PREFIX}{id}")) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
     let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -588,41 +632,58 @@ pub async fn upload(
     else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    if !bool::from(hash.ct_eq(&transfer.token_hash)) {
+    let Ok(transfer) = files.get(&format!("{URI_PREFIX}{id}")) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    {
+    };
+    let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let rejection = if !bool::from(hash.ct_eq(&transfer.token_hash)) {
+        Some(StatusCode::UNAUTHORIZED)
+    } else {
         let mut state = transfer.state.lock().await;
         if !matches!(*state, TransferState::Prepared) {
-            return StatusCode::CONFLICT.into_response();
+            Some(StatusCode::CONFLICT)
+        } else {
+            *state = TransferState::Receiving;
+            None
         }
-        *state = TransferState::Receiving;
+    };
+    if let Some(status) = rejection {
+        // Expiry may concurrently retire the registry's owner, even for a
+        // rejected request. Release any last staging owner off the executor.
+        return tokio::task::spawn_blocking(move || {
+            drop(transfer);
+            status.into_response()
+        })
+        .await
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
     tokio::spawn(async move {
-    let result = receive(body, &transfer, files.max_bytes, Arc::clone(&files.workspace)).await;
-    let mut state = transfer.state.lock().await;
-    if transfer.cancellation.is_cancelled() {
-        *state = TransferState::Cancelled;
-        transfer.permit.lock().expect("upload permit poisoned").take();
-        return StatusCode::GONE.into_response();
-    }
-    match result {
-        Ok(received) => {
-            let receipt = serde_json::json!({"state": "ready", "size_bytes": received.size, "sha256": received.sha256});
-            *state = TransferState::Ready(received);
-            (StatusCode::CREATED, Json(receipt)).into_response()
-        }
-        Err(status) => {
-            *state = TransferState::Failed;
-            transfer
-                .permit
-                .lock()
-                .expect("upload permit poisoned")
-                .take();
-            status.into_response()
-        }
-    }
+        let result = receive(body, &transfer, files.max_bytes, Arc::clone(&files.workspace)).await;
+        let mut state = Arc::clone(&transfer.state).lock_owned().await;
+        // Finalization can own the last staging reference after cancellation
+        // or expiry. Its resource destruction belongs on the blocking pool.
+        tokio::task::spawn_blocking(move || {
+            let _files = files;
+            let cancelled = transfer.cancellation.is_cancelled();
+            if cancelled || transfer.expires <= Instant::now() {
+                drop(result);
+                *state = if cancelled { TransferState::Cancelled } else { TransferState::Failed };
+                transfer.permit.lock().expect("upload permit poisoned").take();
+                return if cancelled { StatusCode::GONE } else { StatusCode::REQUEST_TIMEOUT }.into_response();
+            }
+            match result {
+                Ok(received) => {
+                    let receipt = serde_json::json!({"state": "ready", "size_bytes": received.size, "sha256": received.sha256});
+                    *state = TransferState::Ready(received);
+                    (StatusCode::CREATED, Json(receipt)).into_response()
+                }
+                Err(status) => {
+                    *state = TransferState::Failed;
+                    transfer.permit.lock().expect("upload permit poisoned").take();
+                    status.into_response()
+                }
+            }
+        }).await.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }).await.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
@@ -633,7 +694,7 @@ async fn receive(
     workspace: Arc<Workspace>,
 ) -> Result<Received, StatusCode> {
     let reservation = transfer.expected_size.unwrap_or(max_bytes);
-    let staged = tokio::task::spawn_blocking(move || {
+    let (staged, mut writer) = tokio::task::spawn_blocking(move || {
         let scratch = workspace
             .scratch(reservation, "native_upload")
             .map_err(|error| {
@@ -645,81 +706,126 @@ async fn receive(
             })?;
         let file = tempfile::NamedTempFile::new_in(scratch.path())
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok::<_, StatusCode>(Arc::new(StagedUpload {
-            file,
-            _scratch: scratch,
-        }))
+        let writer = file
+            .reopen()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok::<_, StatusCode>((
+            Arc::new(StagedUpload {
+                file,
+                _scratch: scratch,
+            }),
+            writer,
+        ))
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
-    let mut writer = staged
-        .file
-        .reopen()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut size = 0_u64;
-    let mut digest = Sha256::new();
-    loop {
-        let deadline = transfer.expires.min(Instant::now() + IDLE_TIMEOUT);
-        let frame = tokio::select! {
-            _ = transfer.cancellation.cancelled() => return Err(StatusCode::GONE),
-            frame = tokio::time::timeout_at(
-                deadline.into(),
-                std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)),
-            ) => frame.map_err(|_| StatusCode::REQUEST_TIMEOUT)?,
-        };
-        let Some(frame) = frame else { break };
-        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
-        if let Ok(bytes) = frame.into_data() {
-            size = size
-                .checked_add(bytes.len() as u64)
-                .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
-            if size > max_bytes
-                || transfer
-                    .expected_size
-                    .is_some_and(|expected| size > expected)
-            {
-                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    let result = async {
+        let mut size = 0_u64;
+        let mut digest = Sha256::new();
+        loop {
+            let deadline = transfer.expires.min(Instant::now() + IDLE_TIMEOUT);
+            let frame = tokio::select! {
+                _ = transfer.cancellation.cancelled() => return Err(StatusCode::GONE),
+                frame = tokio::time::timeout_at(
+                    deadline.into(),
+                    std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)),
+                ) => frame.map_err(|_| StatusCode::REQUEST_TIMEOUT)?,
+            };
+            let Some(frame) = frame else { break };
+            let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+            if let Ok(bytes) = frame.into_data() {
+                size = size
+                    .checked_add(bytes.len() as u64)
+                    .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+                if size > max_bytes
+                    || transfer
+                        .expected_size
+                        .is_some_and(|expected| size > expected)
+                {
+                    return Err(StatusCode::PAYLOAD_TOO_LARGE);
+                }
+                digest.update(&bytes);
+                let owner = Arc::clone(&staged);
+                writer = tokio::task::spawn_blocking(move || {
+                    let _owner = owner;
+                    writer.write_all(&bytes)?;
+                    Ok::<_, std::io::Error>(writer)
+                })
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             }
-            digest.update(&bytes);
-            let owner = Arc::clone(&staged);
-            writer = tokio::task::spawn_blocking(move || {
-                let _owner = owner;
-                writer.write_all(&bytes)?;
-                Ok::<_, std::io::Error>(writer)
-            })
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        let hash: [u8; 32] = digest.finalize().into();
+        if transfer
+            .expected_size
+            .is_some_and(|expected| size != expected)
+            || transfer
+                .expected_digest
+                .is_some_and(|expected| expected != hash)
+        {
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        let owner = Arc::clone(&staged);
+        tokio::task::spawn_blocking(move || {
+            let _owner = owner;
+            writer.sync_all()
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok((size, hash))
+    }
+    .await;
+    match result {
+        Ok((size, hash)) => Ok(Received {
+            file: staged,
+            size,
+            sha256: URL_SAFE_NO_PAD.encode(hash),
+        }),
+        Err(status) => {
+            tokio::task::spawn_blocking(move || drop(staged))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            Err(status)
         }
     }
-    let hash: [u8; 32] = digest.finalize().into();
-    if transfer
-        .expected_size
-        .is_some_and(|expected| size != expected)
-        || transfer
-            .expected_digest
-            .is_some_and(|expected| expected != hash)
-    {
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
-    }
-    let owner = Arc::clone(&staged);
-    tokio::task::spawn_blocking(move || {
-        let _owner = owner;
-        writer.sync_all()
-    })
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Received {
-        file: staged,
-        size,
-        sha256: URL_SAFE_NO_PAD.encode(hash),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn block_storage(
+        root: &std::path::Path,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        use std::os::fd::AsRawFd;
+
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(".printable/storage/controller.lock"))
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let (release, released) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            // A separate thread releases the test lock even if an executor
+            // regression prevents the async test from making progress.
+            let _ = released.recv_timeout(Duration::from_secs(10));
+            drop(lock);
+        });
+        (release, blocker)
+    }
+
+    async fn wait_for_cleanup(files: &IncomingFiles) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while files.pending_cleanup.load(Ordering::Acquire) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expired transfer cleanup completes");
+    }
 
     fn authorize(files: &IncomingFiles, name: &str) -> serde_json::Value {
         files
@@ -834,6 +940,12 @@ mod tests {
         assert_eq!(snapshot["available_staging_slots"], 2);
         assert!(snapshot["active_receivers"].is_null());
         assert!(snapshot["staged_files"].is_null());
+        let status = futures_util::FutureExt::now_or_never(
+            files.status(authorization["file"]["uri"].as_str().unwrap()),
+        )
+        .expect("registry contention does not suspend status")
+        .unwrap();
+        assert_eq!(status["state"], "unknown");
         drop(registry);
     }
 
@@ -897,8 +1009,6 @@ mod tests {
 
     #[tokio::test]
     async fn staged_cancellation_keeps_status_responsive_while_storage_is_locked() {
-        use std::os::fd::AsRawFd;
-
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         workspace
@@ -914,19 +1024,7 @@ mod tests {
             StatusCode::CREATED
         );
         let transfer = files.get(&uri).unwrap();
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(root.path().join(".printable/storage/controller.lock"))
-            .unwrap();
-        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
-        let (release, released) = std::sync::mpsc::channel();
-        let blocker = std::thread::spawn(move || {
-            // A separate thread releases the test lock even if an executor
-            // regression prevents the async test from making progress.
-            let _ = released.recv_timeout(Duration::from_secs(10));
-            drop(lock);
-        });
+        let (release, blocker) = block_storage(root.path());
         let cancel_files = Arc::clone(&files);
         let cancel_uri = uri.clone();
         let started = Instant::now();
@@ -958,6 +1056,9 @@ mod tests {
     async fn cancelling_an_active_receive_stops_it_and_releases_capacity() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        workspace
+            .configure_storage_budget(Some(1024 * 1024))
+            .unwrap();
         let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
         let authorization = authorize(&files, "source.3mf");
         let uri = authorization["file"]["uri"].as_str().unwrap().to_owned();
@@ -974,8 +1075,15 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), started.notified())
             .await
             .expect("receiver starts polling the body");
+        let (release, blocker) = block_storage(root.path());
+        let started = Instant::now();
         let cancellation = files.cancel(&uri).await.unwrap();
         assert_eq!(cancellation["state"], "cancelling");
+        tokio::task::yield_now().await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!receiver.is_finished());
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelling");
+        assert_eq!(files.capabilities()["available_staging_slots"], 0);
         let contract = crate::resources::contracts::read(
             "printable://contracts/artifact/transfer_status",
             crate::tools::workflows::Availability::default(),
@@ -983,6 +1091,7 @@ mod tests {
         .unwrap();
         let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
         assert!(validator.is_valid(&serde_json::json!({"state": cancellation["state"]})));
+        release.send(()).unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), receiver)
                 .await
@@ -993,7 +1102,67 @@ mod tests {
         );
         assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelled");
         assert_eq!(files.capacity.available_permits(), 1);
+        blocker.join().unwrap();
         authorize(&files, "replacement.3mf");
+    }
+
+    #[tokio::test]
+    async fn expiry_retires_staging_without_blocking_status_or_freeing_its_slot_early() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        workspace
+            .configure_storage_budget(Some(1024 * 1024))
+            .unwrap();
+        let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
+        let authorization = authorize(&files, "source.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap();
+        assert_eq!(
+            receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+        {
+            let mut transfers = files.transfers.lock().unwrap();
+            let transfer = transfers
+                .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
+                .unwrap();
+            Arc::get_mut(transfer).unwrap().expires = Instant::now();
+        }
+        let (release, blocker) = block_storage(root.path());
+        let started = Instant::now();
+        files.prune();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let snapshot = files.capabilities();
+        assert_eq!(snapshot["available_staging_slots"], 0);
+        assert!(snapshot["active_receivers"].is_null());
+        assert!(snapshot["staged_files"].is_null());
+        assert!(files.status(uri).await.is_err());
+        release.send(()).unwrap();
+        wait_for_cleanup(&files).await;
+        assert_eq!(files.capabilities()["available_staging_slots"], 1);
+        assert_eq!(files.capabilities()["staged_files"], 0);
+        blocker.join().unwrap();
+        authorize(&files, "replacement.3mf");
+    }
+
+    #[test]
+    fn synchronous_authorization_can_reclaim_expired_prepared_transfers() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = IncomingFiles::with_capacity(workspace, 1024, 1);
+        let authorization = authorize(&files, "source.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap();
+        {
+            let mut transfers = files.transfers.lock().unwrap();
+            let transfer = transfers
+                .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
+                .unwrap();
+            Arc::get_mut(transfer).unwrap().expires = Instant::now();
+        }
+        authorize(&files, "replacement.3mf");
+        assert_eq!(files.transfers.lock().unwrap().len(), 1);
+        assert_eq!(files.pending_cleanup.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -1151,6 +1320,8 @@ mod tests {
             Arc::get_mut(transfer).unwrap().expires = Instant::now();
         }
         assert!(files.status(uri).await.is_err());
+        files.prune();
+        wait_for_cleanup(&files).await;
         assert_eq!(files.capacity.available_permits(), MAX_TRANSFERS);
         assert!(
             files
