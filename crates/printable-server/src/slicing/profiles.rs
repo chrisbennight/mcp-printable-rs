@@ -166,20 +166,38 @@ const ORCA_SETTINGS: &str = include_str!("orca-settings.json");
 #[derive(Deserialize)]
 struct OrcaSettings {
     engine_version: String,
+    source_revision: String,
     printer: BTreeSet<String>,
     process: BTreeSet<String>,
     filament: BTreeSet<String>,
+    definitions: BTreeMap<String, super::definitions::Definition>,
 }
 
 impl OrcaSettings {
     fn bundled() -> Result<Self, ToolError> {
         let settings: Self = serde_json::from_str(ORCA_SETTINGS)?;
-        if settings.engine_version != super::ENGINE_VERSION {
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    fn validate(&self) -> Result<(), ToolError> {
+        if self.engine_version != super::ENGINE_VERSION
+            || self.source_revision != super::ENGINE_SOURCE_REVISION
+        {
             return Err(invalid(
-                "bundled Orca setting names do not match the packaged engine version",
+                "bundled Orca definitions do not match the packaged engine identity",
             ));
         }
-        Ok(settings)
+        if self
+            .printer
+            .iter()
+            .chain(&self.process)
+            .chain(&self.filament)
+            .any(|key| !self.definitions.contains_key(key))
+        {
+            return Err(invalid("bundled Orca setting definitions are incomplete"));
+        }
+        Ok(())
     }
 }
 
@@ -188,6 +206,7 @@ pub struct Profiles {
     /// Filament parents from Orca's shared filament library, used only to resolve inheritance.
     library: BTreeMap<String, Map<String, Value>>,
     keys: BTreeMap<Category, BTreeSet<String>>,
+    definitions: BTreeMap<String, super::definitions::Definition>,
 }
 
 fn json_files(directory: &Path) -> Result<Vec<PathBuf>, ToolError> {
@@ -248,7 +267,7 @@ impl Profiles {
         if query.limit == 0 {
             return Err(invalid("settings discovery requires a positive limit"));
         }
-        let resolved = self.resolve(query.category, &query.profile)?;
+        let (resolved, sources) = self.resolve_with_sources(query.category, &query.profile)?;
         let needle = query.query.to_lowercase();
         let keys: Vec<_> = self.keys[&query.category]
             .iter()
@@ -259,13 +278,20 @@ impl Profiles {
             .into_iter()
             .skip(query.offset)
             .take(query.limit)
-            .map(|key| json!({"key":key,"value":resolved.get(key),"overrideable":refusal(key).is_none()}))
+            .map(|key| json!({"key":key,"value":resolved.get(key),
+                "value_source":if query.profile.overrides.contains_key(key) {json!({"kind":"override"})}
+                    else if let Some(profile) = sources.get(key) {json!({"kind":"profile","profile":profile,"inherited":profile != &query.profile.name})}
+                    else {json!({"kind":"unspecified"})},
+                "definition":if UNAVAILABLE.contains(&key.as_str()) {None} else {self.definitions.get(key)},
+                "overrideable":refusal(key).is_none()}))
             .collect();
         let next = query.offset.saturating_add(settings.len());
         Ok(
             json!({"profile":query.profile.name,"category":query.category,"requested_limit":query.limit,"returned":settings.len(),"settings":settings,"total":total,
                 "next_offset":(next < total).then_some(next),
                 "value_format":"Orca strings or nonempty string arrays; null means this profile does not specify a value",
+                "catalog_identity":{"engine":"OrcaSlicer","version":super::ENGINE_VERSION,"source_revision":super::ENGINE_SOURCE_REVISION,"runtime_source_verified":false},
+                "definition_limits":"Only literal source facts are reported. Absent bounds and units are undeclared; unknown_fields identifies unresolved expressions. Native defaults do not replace profile values. Applicability requires the selected hardware, material assignments and effective native output; runtime probing establishes version compatibility, not source identity.",
                 "build_plates":super::setup::BuildPlate::ALL.iter().map(|plate| json!({"name":plate,"temperature_setting":plate.temperature_key(),"initial_layer_temperature_setting":format!("{}_initial_layer",plate.temperature_key())})).collect::<Vec<_>>()
             }),
         )
@@ -300,6 +326,7 @@ impl Profiles {
             entries,
             library,
             keys,
+            definitions: settings.definitions,
         })
     }
 
@@ -308,6 +335,15 @@ impl Profiles {
         category: Category,
         selection: &ProfileSelection,
     ) -> Result<Value, ToolError> {
+        self.resolve_with_sources(category, selection)
+            .map(|(value, _)| value)
+    }
+
+    fn resolve_with_sources(
+        &self,
+        category: Category,
+        selection: &ProfileSelection,
+    ) -> Result<(Value, BTreeMap<String, String>), ToolError> {
         let entries = &self.entries[&category];
         let mut chain = Vec::new();
         let mut name = selection.name.as_str();
@@ -337,7 +373,12 @@ impl Profiles {
             }
         }
         let mut result = Map::new();
+        let mut sources = BTreeMap::new();
         for profile in chain.into_iter().rev() {
+            let source = profile.get("name").and_then(Value::as_str).unwrap_or("");
+            for key in profile.keys() {
+                sources.insert(key.clone(), source.to_owned());
+            }
             result.extend(profile.clone());
         }
         result.remove("inherits");
@@ -365,10 +406,13 @@ impl Profiles {
                     "Orca profile values must be strings or nonempty string arrays",
                 ));
             }
+            if let Some(definition) = self.definitions.get(key) {
+                definition.validate(key, value)?;
+            }
             result.insert(key.clone(), value.clone());
         }
         result.insert("from".into(), json!("system"));
-        Ok(Value::Object(result))
+        Ok((Value::Object(result), sources))
     }
 
     pub fn discover(&self, query: ProfileQuery) -> Result<Value, ToolError> {
@@ -476,6 +520,7 @@ mod tests {
                 Category::Process,
                 (0..301).map(|i| format!("setting-{i:03}")).collect(),
             )]),
+            definitions: BTreeMap::new(),
         };
         for (limit, offset, returned, next) in [
             (None, 0, 25, Some(25)),
@@ -545,6 +590,7 @@ mod tests {
             entries: BTreeMap::from([(Category::Process, entries)]),
             library: BTreeMap::new(),
             keys: BTreeMap::from([(Category::Process, BTreeSet::from(["wall_loops".into()]))]),
+            definitions: BTreeMap::new(),
         };
         let mut selection = ProfileSelection {
             name: "fine".into(),
@@ -599,6 +645,97 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn catalog_rejects_mismatched_identity_and_missing_definitions() {
+        let mut settings = OrcaSettings::bundled().unwrap();
+        let notices = include_str!("../../../../THIRD_PARTY_NOTICES.md");
+        assert!(notices.contains(&format!("/tree/{}", settings.source_revision)));
+        settings.source_revision = "0".repeat(40);
+        assert!(settings.validate().is_err());
+        settings.source_revision = super::super::ENGINE_SOURCE_REVISION.into();
+        settings.engine_version = "future".into();
+        assert!(settings.validate().is_err());
+        settings.engine_version = super::super::ENGINE_VERSION.into();
+        settings.definitions.remove("prime_tower_brim_width");
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn discovery_keeps_inherited_values_overrides_and_native_defaults_distinct() {
+        let root = tempfile::tempdir().unwrap();
+        for (directory, name) in [
+            ("machine", "printer"),
+            ("process", "base"),
+            ("filament", "filament"),
+        ] {
+            write_profile(
+                &root.path().join(directory).join("base.json"),
+                json!({"name":name,"type":directory,"prime_tower_width":"55"}),
+            );
+        }
+        write_profile(
+            &root.path().join("process/child.json"),
+            json!({"name":"child","type":"process","inherits":"base","layer_height":"0.15"}),
+        );
+        let profiles = Profiles::load(root.path()).unwrap();
+        let query = |name, overrides| {
+            serde_json::from_value(json!({
+                "category":"process","profile":{"name":"child","overrides":overrides},"query":name
+            }))
+            .unwrap()
+        };
+        let width = profiles
+            .settings(query("prime_tower_width", json!({})))
+            .unwrap();
+        assert_eq!(width["settings"][0]["value"], "55");
+        assert_eq!(
+            width["settings"][0]["value_source"],
+            json!({"kind":"profile","profile":"base","inherited":true})
+        );
+        let width = profiles
+            .settings(query(
+                "prime_tower_width",
+                json!({"prime_tower_width":"70"}),
+            ))
+            .unwrap();
+        assert_eq!(width["settings"][0]["value"], "70");
+        assert_eq!(width["settings"][0]["value_source"]["kind"], "override");
+        assert_eq!(width["settings"][0]["definition"]["default"]["value"], 60);
+        assert_eq!(width["catalog_identity"]["runtime_source_verified"], false);
+        let brim = profiles
+            .settings(query("prime_tower_brim_width", json!({})))
+            .unwrap();
+        assert!(brim["settings"][0]["value"].is_null());
+        assert_eq!(brim["settings"][0]["value_source"]["kind"], "unspecified");
+        assert_eq!(brim["settings"][0]["definition"]["default"]["value"], 3);
+        assert_eq!(
+            brim["settings"][0]["definition"]["applicability"],
+            "unknown"
+        );
+        assert!(
+            profiles
+                .settings(query("prime_tower_width", json!({"prime_tower_width":"1"})))
+                .is_err()
+        );
+        for key in ["max_travel_detour_distance", "outer_wall_line_width"] {
+            let overrides = serde_json::to_value(BTreeMap::from([(key, "-1")])).unwrap();
+            let error = profiles
+                .settings(query(key, overrides))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("violates the packaged Orca setting definition"),
+                "{error}"
+            );
+        }
+        assert_eq!(
+            profiles
+                .settings(query("unknown_newer_feature", json!({})))
+                .unwrap()["total"],
+            0
+        );
     }
 
     fn write_profile(path: &Path, profile: Value) {
@@ -689,6 +826,7 @@ mod tests {
                 (Category::Process, settings.process),
                 (Category::Filament, settings.filament),
             ]),
+            definitions: settings.definitions,
         };
         let resolve = |category, key: &str, value: Value| {
             let name = match category {

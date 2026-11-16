@@ -42,8 +42,18 @@ variants. When a BBL filament inherits from a profile the collection lacks, the
 worker reads that parent from Orca's shared `OrcaFilamentLibrary` beside it.
 
 Each selected profile may override any OrcaSlicer 2.4.2 setting in its category.
-`settings` lists those settings with the profile's value, or null when Orca's
-default applies, and marks whether each one is overrideable. The worker refuses
+`settings` lists those settings with the resolved profile value, its originating
+profile or explicit override, and whether each one is overrideable. A null profile
+value means the profile leaves it unspecified. The separate `definition.default`
+reports the native default only when the generator can resolve it from literal
+source. It does not establish the final value after job normalization.
+
+Definitions include native types, vector shape, declared units and bounds, enum
+choices, and open suggestions where available. `unknown_fields` identifies
+unresolved expressions; a definition with `status: unknown` may be generated
+dynamically by the native engine. Hardware and job applicability remain unknown
+until checked for the selected job. Setting presence does not establish that a
+tower or other feature will be generated. The worker refuses
 these overrides:
 
 - identity and compatibility settings, such as `inherits`, `printer_model`,
@@ -53,9 +63,16 @@ these overrides:
 - names that Orca 2.4.2 does not define for the category, including Bambu Studio
   names such as `wall_infill_order`, which Orca would ignore
 
-Override values are Orca strings or nonempty string arrays. The worker does not
-check them against Orca's allowed values; Orca rejects an invalid value when it
-slices, and the failed slice repeats Orca's reason.
+Override values are Orca strings or nonempty string arrays. The worker checks
+literal numeric bounds and closed enum choices before admitting a slice. Open
+suggestions do not restrict numeric values. Complex serialization, unresolved
+definitions and combinations retain native validation; a failed slice repeats
+Orca's reason. Static bounds do not establish suitable printing values.
+
+`catalog_identity` identifies the packaged engine and corresponding source.
+`runtime_source_verified: false` means the worker's version probe does not attest
+the source revision of an externally supplied executable. The bundled catalog
+must match the worker's pinned version and source before profiles load.
 
 Each filament selection may also set `colour`, such as `#0A2CE3`. An AMS tray
 value such as `0A2CE3FF` is also accepted. Colours are recorded in the sliced
@@ -280,10 +297,11 @@ instead of being refused as busy.
 
 ## Updating the packaged Orca release
 
-The overrideable setting names live in
+The setting names and generated definitions live in
 `crates/printable-server/src/slicing/orca-settings.json`, generated from the
-Orca source at the packaged release. When the release changes, regenerate the
-file from a checkout of that release and review the difference:
+Orca source at the packaged release. Install `requirements-tooling.txt` in the
+isolated contributor environment first. When the release changes, regenerate the
+file from a clean checkout of that revision and review the difference:
 
 ```sh
 python3 scripts/orca_settings.py /path/to/OrcaSlicer \
@@ -292,6 +310,10 @@ python3 scripts/orca_settings.py /path/to/OrcaSlicer \
   --output crates/printable-server/src/slicing/orca-settings.json
 ```
 
-A unit test fails until the file's engine version matches the worker's pinned
-version. Another test fails when a new setting name looks like a printer
+The generator checks the checkout's full revision and rejects modified definition
+files. It parses C++ syntax without executing the source. Conditional values,
+dynamic keys, ambiguous definitions and unresolved defaults stay explicit.
+The catalog must match the worker's pinned version and source revision; update
+both with the packaged executable and corresponding-source notice. A test fails
+when a new setting name looks like a printer
 connection, credential or script setting but is not on the refused list.
