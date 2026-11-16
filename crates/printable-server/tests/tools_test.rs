@@ -553,6 +553,7 @@ fn settings(blender_host: &str, blender_port: u16) -> Settings {
         geometry_worker_bin: Some(test_geometry_worker()),
         geometry_worker_memory_bytes: 1024 * 1024 * 1024,
         file_upload_max_bytes: 1024 * 1024 * 1024,
+        file_upload_max_staged: 20,
         mcp_bearer: BearerSecret::parse(
             concat!(
                 "0123456789abcdef",
@@ -2364,10 +2365,12 @@ async fn status_reports_blender_up_via_fake_addon() {
 }
 
 #[tokio::test]
-async fn status_reports_the_configured_openscad_runner_and_capacity() {
+async fn status_reports_configured_runners_and_incoming_file_limits() {
     let tmp = tempfile::tempdir().expect("workspace tempdir");
     let fake = fake_openscad();
-    let config = settings_with_openscad(fake.binary.clone());
+    let mut config = settings_with_openscad(fake.binary.clone());
+    config.file_upload_max_bytes = 3 * 1024 * 1024 * 1024;
+    config.file_upload_max_staged = 37;
 
     let status = dispatch(
         &workspace(Some(tmp.path())),
@@ -2386,6 +2389,22 @@ async fn status_reports_the_configured_openscad_runner_and_capacity() {
         json!(fake.binary.display().to_string())
     );
     assert_eq!(status["openscad"]["concurrency"], json!(2));
+    assert_eq!(
+        status["workspace"]["max_transfer_bytes_scope"],
+        json!("inline_artifact_io")
+    );
+    assert_eq!(
+        status["workspace"]["max_inline_write_bytes"],
+        json!(CHUNK_MAX_DECODED)
+    );
+    assert_eq!(
+        status["workspace"]["file_upload"]["max_bytes"],
+        json!(config.file_upload_max_bytes)
+    );
+    assert_eq!(
+        status["workspace"]["file_upload"]["max_staged"],
+        json!(config.file_upload_max_staged)
+    );
 }
 
 #[tokio::test]

@@ -61,7 +61,8 @@ pub use workspace::{
     WorkspaceStatus,
 };
 
-/// Hard cap on a single artifact transfer.
+/// Maximum bytes accepted by inline workspace artifact I/O.
+/// Streamed native uploads use their configured incoming-file limit.
 pub const MAX_TRANSFER_BYTES: u64 = 25 * 1024 * 1024;
 
 /// Default artifact count for MCP workspace listings.

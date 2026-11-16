@@ -1,5 +1,6 @@
 //! Native Orca layout observations over immutable project or prepared inputs.
 
+use super::processing::{ProcessingLimit as CaptureLimit, copy_and_hash};
 use super::{
     ProcessGroup, SliceHandle, SliceWorker, invalid, read_log, slice_directory, slice_error,
 };
@@ -7,10 +8,9 @@ use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    io::{Read, Write},
+    io::Read,
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     sync::Arc,
@@ -18,30 +18,6 @@ use std::{
 };
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Clone)]
-struct CaptureLimit {
-    deadline: Instant,
-    cancellation: CancellationToken,
-}
-
-impl CaptureLimit {
-    fn check(&self) -> Result<(), ToolError> {
-        if self.cancellation.is_cancelled() {
-            Err(slice_error("native Orca capture cancelled"))
-        } else if Instant::now() >= self.deadline {
-            Err(slice_error(
-                "native Orca capture exceeded its processing deadline",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn check_io(&self) -> std::io::Result<()> {
-        self.check().map_err(std::io::Error::other)
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -215,6 +191,7 @@ impl SliceWorker {
     pub(super) async fn capture(&self, params: CaptureParams) -> Result<Value, ToolError> {
         let budget = params.validate()?;
         let limit = CaptureLimit {
+            operation: "native Orca capture",
             deadline: Instant::now()
                 .checked_add(budget)
                 .ok_or_else(|| invalid("capture processing budget is not representable"))?,
@@ -527,31 +504,6 @@ fn read_regular(path: &Path, limit: &CaptureLimit) -> Result<Vec<u8>, ToolError>
     Ok(bytes)
 }
 
-fn copy_and_hash(
-    reader: &mut dyn Read,
-    writer: &mut dyn Write,
-    limit: &CaptureLimit,
-) -> std::io::Result<String> {
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
-    loop {
-        limit.check_io()?;
-        let count = reader.read(&mut buffer)?;
-        limit.check_io()?;
-        if count == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..count])?;
-        limit.check_io()?;
-        digest.update(&buffer[..count]);
-    }
-    Ok(digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
 struct CheckedImageReader<'a> {
     inner: std::io::Cursor<&'a [u8]>,
     limit: &'a CaptureLimit,
@@ -727,6 +679,7 @@ pathlib.Path('capture.png').write_bytes(b'incomplete PNG' if behavior == 'bad-pn
         }
         let token = CancellationToken::new();
         let limit = CaptureLimit {
+            operation: "native Orca capture",
             deadline: Instant::now() + Duration::from_secs(30),
             cancellation: token.clone(),
         };
@@ -734,6 +687,7 @@ pathlib.Path('capture.png').write_bytes(b'incomplete PNG' if behavior == 'bad-pn
         assert!(copy_and_hash(&mut CancellingReader(token), &mut destination, &limit).is_err());
         assert!(destination.is_empty());
         let expired = CaptureLimit {
+            operation: "native Orca capture",
             deadline: Instant::now(),
             cancellation: CancellationToken::new(),
         };
