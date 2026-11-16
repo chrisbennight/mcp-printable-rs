@@ -108,7 +108,7 @@ fn comparison_retains_baseline_transforms_reviews_unknowns_and_restart_readback(
         .snapshot_artifact("projects/part/baseline/plate_1.gcode")
         .unwrap();
     let original_hash = hash_file(original.path()).unwrap();
-    let result = compare(&ws, params).unwrap();
+    let result = compare(&ws, params, CancellationToken::new()).unwrap();
     let schema = crate::tools::output::action_schema("slice", "compare").unwrap();
     assert!(
         jsonschema::validator_for(&schema)
@@ -174,7 +174,7 @@ fn changed_current_source_preserves_historical_identity_and_flags_applicability(
     let params = params(&ws);
     ws.write_artifact("projects/part/source.stl", b"edited design", true)
         .unwrap();
-    let result = compare(&ws, params).unwrap();
+    let result = compare(&ws, params, CancellationToken::new()).unwrap();
     assert_eq!(result.baseline.current_source, "changed_since_slice");
     assert_eq!(
         result.baseline.source_sha256,
@@ -201,7 +201,7 @@ fn incompatible_material_source_and_conditions_are_retained_without_a_winner() {
         "PETG",
     );
     params.candidates[0].conditions.clear();
-    let result = compare(&ws, params).unwrap();
+    let result = compare(&ws, params, CancellationToken::new()).unwrap();
     for reason in [
         "different_source_geometry_or_authored_settings",
         "different_ordered_material_settings",
@@ -229,7 +229,7 @@ fn tampered_output_or_mismatched_review_fails_before_allocating_output() {
         } else {
             params.candidates[0].reviews = params.baseline.reviews.clone();
         }
-        assert!(compare(&ws, params).is_err());
+        assert!(compare(&ws, params, CancellationToken::new()).is_err());
         assert!(!root.path().join("projects/part/comparison").exists());
     }
 }
@@ -248,6 +248,26 @@ fn invalid_candidates_and_changed_review_media_fail_before_allocating_output() {
         true,
     )
     .unwrap();
-    assert!(compare(&ws, params).is_err());
+    assert!(compare(&ws, params, CancellationToken::new()).is_err());
     assert!(!root.path().join("projects/part/comparison").exists());
+}
+
+#[test]
+fn cancelled_comparison_keeps_its_inputs_and_does_not_publish() {
+    let root = tempfile::tempdir().unwrap();
+    let ws = workspace(root.path());
+    let params = params(&ws);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    assert!(
+        compare(&ws, params, cancellation)
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    assert!(!root.path().join("projects/part/comparison").exists());
+    assert!(
+        ws.snapshot_artifact("projects/part/baseline/plate_1.gcode")
+            .is_ok()
+    );
 }

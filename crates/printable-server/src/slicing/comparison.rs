@@ -16,6 +16,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 
 const RECORD_BYTES: u64 = 4 * 1024 * 1024;
 const INPUT_BYTES: u64 = 512 * 1024 * 1024;
@@ -137,6 +138,7 @@ impl CompareParams {
 struct Budget {
     remaining: u64,
     deadline: Instant,
+    cancellation: CancellationToken,
 }
 impl Budget {
     fn record(
@@ -156,7 +158,9 @@ impl Budget {
         Ok(record.data)
     }
     fn check(&self) -> Result<(), ToolError> {
-        if Instant::now() >= self.deadline {
+        if self.cancellation.is_cancelled() {
+            Err(invalid("preparation comparison cancelled"))
+        } else if Instant::now() >= self.deadline {
             Err(invalid("comparison processing deadline exceeded"))
         } else {
             Ok(())
@@ -508,12 +512,17 @@ fn compatibility(
     issues
 }
 
-fn compare(ws: &Workspace, params: CompareParams) -> Result<CompareResult, ToolError> {
+fn compare(
+    ws: &Workspace,
+    params: CompareParams,
+    cancellation: CancellationToken,
+) -> Result<CompareResult, ToolError> {
     params.validate()?;
     let output = slice_directory(ws, &params.project_id, &params.output_dir)?;
     let mut budget = Budget {
         remaining: INPUT_BYTES,
         deadline: Instant::now() + Duration::from_secs(30),
+        cancellation,
     };
     let mut baseline = load(ws, &params, &params.baseline, &mut budget)?;
     let mut candidates = Vec::new();
@@ -568,13 +577,15 @@ fn compare(ws: &Workspace, params: CompareParams) -> Result<CompareResult, ToolE
 impl SliceWorker {
     pub(super) async fn compare(&self, params: CompareParams) -> Result<Value, ToolError> {
         params.validate()?;
+        let cancellation = CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
         let admission = self
             .admit("slicer is busy; compare retained candidates after the active operation")
             .await?;
         let ws = Arc::clone(&self.workspace);
         let response = tokio::task::spawn_blocking(move || {
             let _admission = admission;
-            compare(&ws, params)
+            compare(&ws, params, cancellation)
         })
         .await
         .map_err(|_| invalid("comparison task failed"))??;

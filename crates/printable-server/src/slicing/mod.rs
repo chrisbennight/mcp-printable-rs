@@ -42,13 +42,19 @@ pub const ENGINE_VERSION: &str = "2.4.2";
 pub const ENGINE_SOURCE_REVISION: &str = "63c97a10eab70d6f4af73c29807dddbcab889273";
 
 pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
-    if matches!(request, SliceRequest::Capture(_)) {
+    let operation = match &request {
+        SliceRequest::Capture(_) => Some("native Orca capture"),
+        SliceRequest::InspectLayout(_) => Some("source layout inspection"),
+        SliceRequest::Compare(_) => Some("preparation comparison"),
+        _ => None,
+    };
+    if let Some(operation) = operation {
         let cancellation = crate::tools::REQUEST_CANCELLATION
             .try_with(Clone::clone)
             .unwrap_or_default();
         tokio::select! {
             biased;
-            () = cancellation.cancelled() => Err(slice_error("native Orca capture cancelled")),
+            () = cancellation.cancelled() => Err(slice_error(&format!("{operation} cancelled"))),
             result = forward_inner(endpoint, request) => result,
         }
     } else {
