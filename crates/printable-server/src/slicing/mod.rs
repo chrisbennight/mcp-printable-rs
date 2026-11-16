@@ -8,6 +8,7 @@ pub mod model;
 pub mod package;
 pub mod placement;
 pub mod preflight;
+mod processing;
 pub mod profiles;
 pub mod review;
 pub mod setup;

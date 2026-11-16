@@ -1,7 +1,13 @@
 //! Source layout evidence. Exact intersections run only in the disposable
 //! geometry process; a source report does not certify generated toolpaths.
 
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{
+    collections::BTreeSet,
+    io::Read,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use printable_geom::{
     AssemblyOptions, AssemblyRelation, analyze_assembly,
@@ -56,60 +62,100 @@ impl super::SliceWorker {
                 "source layout inspection requires a 3MF project".into(),
             ));
         }
-        let source = crate::projects::resolve(&self.workspace, &params.project_id, &params.source)?;
-        let output =
-            super::slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
-        let _admission = self
-            .admit("slicer is busy; inspect the active preparation before retrying")
-            .await?;
-        let snapshot = self.workspace.snapshot_artifact(&source)?;
-        let source_sha256 = super::hash_file(snapshot.path())?;
-        if params
-            .expected_source_sha256
-            .as_ref()
-            .is_some_and(|expected| expected != &source_sha256)
-        {
-            return Err(ToolError::Validation("source changed since layout selection; inspect the current source before applying placements".into()));
-        }
-        let staging = self
-            .workspace
-            .scratch(snapshot.meta().size_bytes, "source-layout")?;
-        let mut report =
-            run_worker(self, snapshot.path(), staging.path(), &params.options, None).await?;
-        report["source"] = json!({"path":source,"sha256":source_sha256});
-        report["engine"] = json!({"name":"OrcaSlicer","version":super::ENGINE_VERSION,
-            "source_revision":super::ENGINE_SOURCE_REVISION,"runtime_source_verified":false});
-        report["options"] = serde_json::to_value(&params.options)?;
-        if !self.workspace.create_public_directory(&output)? {
-            return Err(ToolError::Validation("layout output directory exists; inspect the retained report or choose a new directory".into()));
-        }
-        let report_bytes = serde_json::to_vec(&report)?;
-        let report_sha256 = crate::provenance::digest(&report_bytes);
-        let artifact = self.workspace.write_generated_bytes(
-            &format!("{output}/source-layout.json"),
-            &report_bytes,
-            false,
-        )?;
-        let instances = report["instances"]
-            .as_array()
-            .ok_or_else(|| ToolError::Validation("layout report omitted instances".into()))?;
-        let findings = report["findings"]
-            .as_array()
-            .ok_or_else(|| ToolError::Validation("layout report omitted findings".into()))?;
-        let compact_instances = instances.iter().take(32).map(|instance|json!({
+        let budget = Duration::from_secs(params.options.timeout_seconds + 5);
+        let limit = super::processing::ProcessingLimit {
+            deadline: Instant::now() + budget,
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            operation: "source layout inspection",
+        };
+        let _cancel_on_drop = limit.cancellation.clone().drop_guard();
+        let (report, output, admission, staging) = tokio::time::timeout(budget, async {
+            let source = crate::projects::resolve(&self.workspace, &params.project_id, &params.source)?;
+            let output = super::slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
+            let admission = Arc::new(self.admit("slicer is busy; inspect the active preparation before retrying").await?);
+            let workspace = Arc::clone(&self.workspace);
+            let input = source.clone();
+            let copy_limit = limit.clone();
+            let copy_admission = Arc::clone(&admission);
+            let (staging, source_sha256) = tokio::task::spawn_blocking(move || -> Result<_,ToolError> {
+                let _admission = copy_admission;
+                copy_limit.check()?;
+                let size = workspace.stat_artifact(&input)?.size_bytes;
+                let staging = Arc::new(workspace.scratch(size,"source-layout")?);
+                let mut destination = std::fs::File::create(staging.path().join("source.3mf"))?;
+                let (_, hash) = workspace.with_artifact_reader(&input, |reader| {
+                    let mut bounded = reader.take(size.saturating_add(1));
+                    super::processing::copy_and_hash(&mut bounded,&mut destination,&copy_limit)
+                })?;
+                copy_limit.check()?;
+                if destination.metadata()?.len() != size {
+                    return Err(ToolError::Validation("source changed during layout inspection".into()));
+                }
+                Ok((staging,hash))
+            }).await.map_err(|_|ToolError::Validation("layout source snapshot task failed".into()))??;
+            limit.check()?;
+            if params.expected_source_sha256.as_ref().is_some_and(|expected|expected != &source_sha256) {
+                return Err(ToolError::Validation("source changed since layout selection; inspect the current source before applying placements".into()));
+            }
+            let mut report = run_worker(self,&staging.path().join("source.3mf"),staging.path(),&params.options,None).await?;
+            limit.check()?;
+            report["source"] = json!({"path":source,"sha256":source_sha256});
+            report["engine"] = json!({"name":"OrcaSlicer","version":super::ENGINE_VERSION,
+                "source_revision":super::ENGINE_SOURCE_REVISION,"runtime_source_verified":false});
+            report["options"] = serde_json::to_value(&params.options)?;
+            Ok::<_,ToolError>((report,output,admission,staging))
+        }).await.map_err(|_|ToolError::Validation("source layout inspection exceeded its processing deadline".into()))??;
+        let workspace = Arc::clone(&self.workspace);
+        tokio::task::spawn_blocking(move || {
+            let _owners = (admission, staging);
+            publish_inspection(&workspace, &output, report, &limit)
+        })
+        .await
+        .map_err(|_| ToolError::Validation("layout report publication task failed".into()))?
+    }
+}
+
+fn publish_inspection(
+    workspace: &printable_workspace::Workspace,
+    output: &str,
+    report: Value,
+    limit: &super::processing::ProcessingLimit,
+) -> Result<Value, ToolError> {
+    let report_bytes = serde_json::to_vec(&report)?;
+    let report_sha256 = crate::provenance::digest(&report_bytes);
+    let instances = report["instances"]
+        .as_array()
+        .ok_or_else(|| ToolError::Validation("layout report omitted instances".into()))?;
+    let findings = report["findings"]
+        .as_array()
+        .ok_or_else(|| ToolError::Validation("layout report omitted findings".into()))?;
+    limit.check()?;
+    // Once publication begins, finish retaining the complete report.
+    if !workspace.create_public_directory(output)? {
+        return Err(ToolError::Validation(
+            "layout output directory exists; inspect the retained report or choose a new directory"
+                .into(),
+        ));
+    }
+    let artifact = workspace.write_generated_bytes(
+        &format!("{output}/source-layout.json"),
+        &report_bytes,
+        false,
+    )?;
+    let source_sha256 = &report["source"]["sha256"];
+    let compact_instances = instances.iter().take(32).map(|instance|json!({
             "build_index":instance["build_index"],"copy":instance["copy"],"resource":instance["resource"],
             "native_plate":instance["native_plate"],"native_identify_id":instance["native_identify_id"],
             "build_transform_3mf":instance["build_transform_3mf"],"resource_transform_3mf":instance["resource_transform_3mf"],
             "bounds":instance["footprint"]["bounds"]})).collect::<Vec<_>>();
-        Ok(
-            json!({"source_sha256":source_sha256,"state":report["state"],
+    Ok(
+        json!({"source_sha256":source_sha256,"state":report["state"],
             "instances":compact_instances,"instances_count":instances.len(),"instances_truncated":instances.len()>32,
             "findings":findings.iter().take(32).collect::<Vec<_>>(),"findings_count":findings.len(),"findings_truncated":findings.len()>32,
             "unresolved":report["unresolved"],"report_artifact":artifact,
             "report_sha256":report_sha256,
             "generated_toolpath_clearance":"unmeasured"}),
-        )
-    }
+    )
 }
 
 /// The child writes bulky evidence to a private file. Its stdout is only the
@@ -1141,6 +1187,91 @@ mod tests {
         check_requested_towers(&mut result, &Value::Null, Some(&controls));
         assert_eq!(result["state"], "unmeasured");
         assert!(result["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn public_cancellation_stops_inspection_without_publishing_and_releases_admission() {
+        use axum::{Json, Router, routing::post};
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("layout-child");
+        std::fs::write(&binary,b"#!/usr/bin/python3\nimport os,pathlib,time\npathlib.Path(__file__).with_name('layout-started').write_text(str(os.getpid()))\ntime.sleep(60)\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut worker = super::super::tests::fixture(root.path(), false);
+        Arc::get_mut(&mut worker).unwrap().geometry_worker_bin = Some(binary);
+        let source = cubes(&[0., 3.], false);
+        worker
+            .workspace
+            .write_artifact(
+                "projects/part/layout.3mf",
+                &std::fs::read(source.path()).unwrap(),
+                false,
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let routed = Arc::clone(&worker);
+        let app = Router::new().route(
+            "/slice",
+            post(move |Json(request): Json<super::super::SliceRequest>| {
+                let worker = Arc::clone(&routed);
+                async move {
+                    Json(
+                        worker
+                            .dispatch(request)
+                            .await
+                            .unwrap_or_else(|error| json!({"error":error.to_string()})),
+                    )
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let token = cancellation.clone();
+        let params = InspectParams {
+            project_id: "part".into(),
+            source: "layout.3mf".into(),
+            output_dir: "inspection".into(),
+            expected_source_sha256: None,
+            options: InspectOptions::default(),
+        };
+        let call = tokio::spawn(crate::tools::REQUEST_CANCELLATION.scope(token, async move {
+            super::super::forward(
+                Some(&endpoint),
+                super::super::SliceRequest::InspectLayout(params),
+            )
+            .await
+        }));
+        let started = root.path().join("layout-started");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("inspection must reach the isolated geometry child");
+        let pid: i32 = std::fs::read_to_string(started).unwrap().parse().unwrap();
+        cancellation.cancel();
+        assert!(
+            call.await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while unsafe { libc::kill(pid, 0) } == 0 || worker.admission.available_permits() != 1 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelled inspection must stop its child and release admission promptly");
+        assert!(!root.path().join("projects/part/inspection").exists());
+        server.abort();
     }
 
     #[tokio::test]

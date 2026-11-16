@@ -116,6 +116,11 @@ the response includes at most 32 instances and findings with total counts.
 Millimetre mesh projects are supported. Unknown required extensions, modifier
 semantics, units or resource paths remain explicit limitations.
 
+Source copying runs off the async executor and checks cancellation between chunks.
+The inspection deadline covers copying and geometry work. Cancelling the public
+call before publication stops the geometry child and releases its admission;
+once report publication begins, retention finishes as a completion boundary.
+
 `prepare.layout` binds edits to `source_sha256`. `placements` contains zero-based
 `build_index` and absolute `transform_3mf` values from inspection. The 12 values
 are the three linear columns followed by XYZ translation. Edits must preserve
@@ -128,7 +133,8 @@ require `auto_arrange: false` and `auto_orient: false`.
 `intended_interfaces` can carry distinct authored `build_indices: [a,b]` and a
 design `reason` under the same source hash. Their actual measured interference
 and stated intent remain in the report. Final inspection maps them through
-stable native identities; an uncertain mapping stays unverified. They do not suppress tower, bed or
+stable native identities; an uncertain mapping stays unverified and cannot remove
+a measured conflict finding. They do not suppress tower, bed or
 machine checks. Do not declare an unintended overlap to be a design interface
 merely to clear a finding.
 
