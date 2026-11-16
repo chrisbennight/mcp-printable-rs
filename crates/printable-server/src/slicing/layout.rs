@@ -348,6 +348,9 @@ pub fn inspect_source(path: &Path, options: &InspectOptions) -> Result<Value, To
                 "geometry_coordinate_grid_mm":0.0001,"triangles":mesh.mesh.triangles.len(),
                 "property_groups":archive.documents[&mesh.resource.model].objects[&mesh.resource.object_id].property_groups,
                 "property_indices":archive.documents[&mesh.resource.model].objects[&mesh.resource.object_id].property_indices,
+                "declared_object_property_defaults":{
+                    "pid":archive.documents[&mesh.resource.model].objects[&mesh.resource.object_id].default_property_group,
+                    "pindex":archive.documents[&mesh.resource.model].objects[&mesh.resource.object_id].default_property_index},
                 "footprint":model_footprint(&mesh.mesh)?}));
             if mesh.object_type != "model" || !semantics_supported(mesh.build_index) {
                 unresolved.insert("source_geometry_or_native_resource_semantics_not_verified".into());
@@ -794,6 +797,14 @@ mod tests {
     use std::io::Write;
 
     fn cubes(offsets: &[f64], component_pair: bool) -> tempfile::NamedTempFile {
+        cubes_with_reflection(offsets, component_pair, false)
+    }
+
+    fn cubes_with_reflection(
+        offsets: &[f64],
+        component_pair: bool,
+        reflect_first: bool,
+    ) -> tempfile::NamedTempFile {
         let vertices = [
             [0., 0., 0.],
             [2., 0., 0.],
@@ -818,7 +829,7 @@ mod tests {
             [3, 0, 4],
             [3, 4, 7],
         ];
-        let mut geometry = String::from("<object id='1'><mesh><vertices>");
+        let mut geometry = String::from("<object id='1' pid='4' pindex='0'><mesh><vertices>");
         for [x, y, z] in vertices {
             geometry.push_str(&format!("<vertex x='{x}' y='{y}' z='{z}'/>"));
         }
@@ -834,9 +845,12 @@ mod tests {
             geometry.push_str("<object id='2'><components><component objectid='1'/><component objectid='1' transform='1 0 0 0 1 0 0 0 1 1 0 0'/></components></object>");
             build.push_str("<item objectid='2'/>");
         } else {
-            for x in offsets {
+            for (index, x) in offsets.iter().enumerate() {
+                let reflected = reflect_first && index == 0;
+                let scale = if reflected { -1 } else { 1 };
+                let translation = x + if reflected { 2. } else { 0. };
                 build.push_str(&format!(
-                    "<item objectid='1' transform='1 0 0 0 1 0 0 0 1 {x} 0 0'/>"
+                    "<item objectid='1' transform='{scale} 0 0 0 1 0 0 0 1 {translation} 0 0'/>"
                 ));
             }
         }
@@ -872,6 +886,30 @@ mod tests {
         );
         assert_eq!(report["instances"][1]["resource"]["object_id"], 1);
         assert_eq!(report["instances"][1]["copy"], 1);
+    }
+
+    #[test]
+    fn reflected_source_solids_retain_positive_interference_and_property_defaults() {
+        let source = cubes_with_reflection(&[0., 1., 8.], false, true);
+        let report = inspect_source(source.path(), &InspectOptions::default()).unwrap();
+        assert_eq!(report["state"], "failed");
+        assert_eq!(report["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(report["findings"][0]["kind"], "source_part_interference");
+        assert_eq!(report["findings"][0]["build_indices"], json!([0, 1]));
+        assert!(
+            (report["findings"][0]["evidence"]["interference_volume_mm3"]
+                .as_f64()
+                .unwrap()
+                - 4.)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(
+            report["instances"][0]["declared_object_property_defaults"],
+            json!({"pid":4,"pindex":0})
+        );
+        assert_eq!(report["instances"][0]["property_groups"], json!([4]));
+        assert_eq!(report["instances"][0]["property_indices"], json!([0, 1]));
     }
 
     #[test]

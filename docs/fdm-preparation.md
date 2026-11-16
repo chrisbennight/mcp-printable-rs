@@ -154,11 +154,12 @@ advertising a control or a clearance check. For example,
 are not established capabilities of the packaged Orca 2.4.2 worker.
 
 The worker retains request and resolved profile settings, source/output hashes
-and provenance; completed slices may also have a compact summary. The client
-saves the additional purpose and decision rationale through existing project
-artifact operations. This is a client workflow, not a new server-owned planning
-record or optimization engine. Resolved profile files alone do not prove every
-effective per-object setting in an imported 3MF.
+and provenance; completed slices may also have a compact summary. Use
+`slice.compare` to retain the objective, critical faces, load assumptions and
+candidate rationale alongside verified slice and review identities. Ordinary
+project artifacts can retain additional calibration observations and design
+context. Resolved profile files alone do not prove every effective per-object
+setting in an imported 3MF.
 
 ## Decisions informed by the videos
 
@@ -239,7 +240,6 @@ the existing workflow's typed actions to adding an unrelated tool for each setti
 | --- | --- | --- |
 | High | Additional verified machine and coordinate-frame coverage | Extend the established source-solid and linear-path checks only with authoritative frame, firmware and hardware evidence. Preserve positive findings and explicit unresolved scope; source-model bounds and a native success code cannot establish every machine's clearance. |
 | High | Broader combination diagnostics | Extend existing literal definitions and tower-generator applicability when authoritative rules are available. Preserve native rejection details. A syntactically valid value is not proof of physical suitability or compatibility across every material/hardware combination. |
-| Implemented | Retained preparation decisions and candidate comparison | `slice.compare` binds the objective, critical faces, assumptions and rationale to verified slice/review identities, retained transforms, available native estimates and unresolved scope. Missing breakdowns are null; physical equivalence and strength remain unverified. |
 | Medium | Native adaptive profiles and local modifiers | Author and inspect per-object layer profiles, seam/texture masks and support regions. Prove preservation through upload, reslicing and export with actual toolpath regressions. Printer minimum/maximum layer settings alone do not provide this. |
 | Optional | Reusable physical-texture workflow or convenience action | Reuse Blender's geometry capability, retain scale/amplitude/masks and editable source, and verify output topology, dimensions and printability. Do not require a new texture service solely to copy a browser workflow. |
 | Experimental | Brick layers, micro non-planar slicing and sensor calibration | Require a compatible native implementation, reproducible baseline comparisons and hardware-specific evidence. Verify path order, nozzle clearance and extrusion behavior where relevant. Do not reinterpret inner-seam staggering or enable arbitrary post-process scripts as a substitute. |
