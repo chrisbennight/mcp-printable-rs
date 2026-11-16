@@ -13,7 +13,12 @@ import argparse
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
+
+import orca_definitions
+from tree_sitter import Language, Parser
+import tree_sitter_cpp
 
 
 # Orca builds each preset category from these initializer lists; see
@@ -25,35 +30,28 @@ CATEGORIES = {
     "process": [("src/libslic3r/Preset.cpp", "s_Preset_print_options")],
     "filament": [("src/libslic3r/Preset.cpp", "s_Preset_filament_options")],
 }
-TOKENS = re.compile(r'"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*', re.S)
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 
-def strip_comments(text):
-    """Remove C++ comments while keeping string literals intact."""
-    return TOKENS.sub(lambda match: match.group(0) if match.group(0).startswith('"') else " ", text)
-
-
 def initializer(text, symbol):
-    """Return the string literals in the braced initializer assigned to symbol."""
-    match = re.search(rf"\b{re.escape(symbol)}\s*(?:=\s*)?\{{", text)
-    if match is None:
-        raise ValueError(f"{symbol} initializer not found")
-    depth = 0
-    for index in range(match.end() - 1, len(text)):
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-            if depth == 0:
-                names = re.findall(r'"([^"\\]*)"', text[match.end():index])
-                invalid = [name for name in names if not NAME.fullmatch(name)]
-                if invalid:
-                    raise ValueError(f"{symbol} contains unexpected names: {invalid}")
-                if not names:
-                    raise ValueError(f"{symbol} initializer is empty")
-                return names
-    raise ValueError(f"{symbol} initializer is unterminated")
+    """Read the named initializer through syntax nodes, without counting braces."""
+    root = Parser(Language(tree_sitter_cpp.language())).parse(text.encode("utf-8")).root_node
+    matches = []
+    for node in orca_definitions.walk(root):
+        if node.type not in ("init_declarator", "assignment_expression"):
+            continue
+        name = node.child_by_field_name("declarator" if node.type == "init_declarator" else "left")
+        value = node.child_by_field_name("value" if node.type == "init_declarator" else "right")
+        if name is not None and orca_definitions.text(name) == symbol and value is not None:
+            matches.append(value)
+    if len(matches) != 1 or matches[0].has_error or matches[0].type != "initializer_list":
+        raise ValueError(f"{symbol} requires one complete literal initializer")
+    names = [orca_definitions.literal(child) for child in matches[0].named_children if child.type != "comment"]
+    if any(not isinstance(name, str) or not NAME.fullmatch(name) for name in names):
+        raise ValueError(f"{symbol} contains unexpected names")
+    if not names:
+        raise ValueError(f"{symbol} initializer is empty")
+    return names
 
 
 def extract(root):
@@ -63,10 +61,24 @@ def extract(root):
         names = set()
         for relative, symbol in parts:
             if relative not in sources:
-                sources[relative] = strip_comments((root / relative).read_text(encoding="utf-8"))
+                sources[relative] = (root / relative).read_text(encoding="utf-8")
             names.update(initializer(sources[relative], symbol))
         result[category] = sorted(names)
     return result
+
+
+def verify_source(root, revision):
+    """Bind generated facts to the clean public source revision named by the caller."""
+    result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0 or result.stdout.strip() != revision:
+        raise ValueError("source checkout HEAD does not match --source-revision")
+    files = sorted({relative for parts in CATEGORIES.values() for relative, _ in parts}
+                   | {"src/libslic3r/Config.hpp"})
+    result = subprocess.run(["git", "-C", str(root), "diff", "--quiet", "HEAD", "--", *files],
+                            capture_output=True, check=False)
+    if result.returncode != 0:
+        raise ValueError("source definition files differ from the specified revision")
 
 
 def main(argv=None):
@@ -82,11 +94,16 @@ def main(argv=None):
         parser.error("--source-revision must be a full lowercase commit SHA")
     try:
         settings = extract(args.orca)
+        verify_source(args.orca, args.source_revision)
+        keys = set().union(*(set(names) for names in settings.values()))
+        definitions = orca_definitions.extract(
+            (args.orca / "src/libslic3r/PrintConfig.cpp").read_text(encoding="utf-8"), keys)
+        verify_source(args.orca, args.source_revision)
     except (OSError, ValueError) as error:
         print(f"orca_settings: {error}", file=sys.stderr)
         return 1
     document = {"engine": "OrcaSlicer", "engine_version": args.engine_version,
-                "source_revision": args.source_revision, **settings}
+                "source_revision": args.source_revision, **settings, "definitions": definitions}
     args.output.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
     return 0
 

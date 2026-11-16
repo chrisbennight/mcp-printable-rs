@@ -1,2 +1,5 @@
 # Workflow policy parsing; not required by the service or direct client.
 PyYAML==6.0.3
+# Parse pinned Orca C++ definitions when regenerating slicer metadata.
+tree-sitter==0.26.1
+tree-sitter-cpp==0.23.4
