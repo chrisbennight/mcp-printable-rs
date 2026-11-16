@@ -9,7 +9,7 @@ use std::{
 };
 
 use printable_geom::plate::{Transform3mf, validate_transform};
-use quick_xml::{Writer, events::Event, name::ResolveResult, reader::NsReader};
+use quick_xml::{Writer, XmlVersion, events::Event, name::ResolveResult, reader::NsReader};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -177,7 +177,15 @@ fn rewrite_model(
                         let attribute =
                             attribute.map_err(|_| invalid("ambiguous model attributes"))?;
                         if attribute.key.as_ref() != b"transform" {
-                            output.push_attribute(attribute);
+                            let key = std::str::from_utf8(attribute.key.as_ref())
+                                .map_err(|_| invalid("model attribute name is not UTF-8"))?;
+                            let value = attribute
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
+                                .map_err(|_| invalid("malformed model attribute value"))?;
+                            output.push_attribute((key, value.as_ref()));
                         }
                     }
                     let transform = transform
@@ -355,6 +363,45 @@ mod tests {
         ]))
         .unwrap();
         file
+    }
+
+    #[test]
+    fn placement_reescapes_authored_attribute_values_without_changing_their_meaning() {
+        let source = format!(
+            r#"<model xmlns='{CORE}' xmlns:custom='urn:authored'><build><item objectid='1' custom:identity='first "copy" &amp; &quot;quoted&quot; &#39; café'/><item objectid='1' custom:identity="second &apos;copy&apos;"/></build></model>"#
+        );
+        let mut transform = IDENTITY_3MF;
+        transform[9] = 5.;
+        let rewritten =
+            rewrite_model(source.as_bytes(), &BTreeMap::from([(0, transform)])).unwrap();
+        let mut reader = NsReader::from_reader(rewritten.as_slice());
+        let mut identities = Vec::new();
+        loop {
+            match reader.read_event().unwrap() {
+                Event::Empty(start) if start.local_name().as_ref() == b"item" => {
+                    for attribute in start.attributes().with_checks(true) {
+                        let attribute = attribute.unwrap();
+                        if attribute.key.as_ref() == b"custom:identity" {
+                            identities.push(
+                                attribute
+                                    .decoded_and_normalized_value(
+                                        XmlVersion::Implicit1_0,
+                                        reader.decoder(),
+                                    )
+                                    .unwrap()
+                                    .into_owned(),
+                            );
+                        }
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            identities,
+            ["first \"copy\" & \"quoted\" ' café", "second 'copy'"]
+        );
     }
 
     #[test]

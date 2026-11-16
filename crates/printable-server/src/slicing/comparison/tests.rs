@@ -109,12 +109,22 @@ fn comparison_retains_baseline_transforms_reviews_unknowns_and_restart_readback(
         .unwrap();
     let original_hash = hash_file(original.path()).unwrap();
     let result = compare(&ws, params, CancellationToken::new()).unwrap();
-    let schema = crate::tools::output::action_schema("slice", "compare").unwrap();
-    assert!(
-        jsonschema::validator_for(&schema)
-            .unwrap()
-            .is_valid(&serde_json::to_value(&result).unwrap())
-    );
+    for uri in [
+        "printable://contracts/slice",
+        "printable://contracts/slice/compare",
+    ] {
+        let contract = crate::resources::contracts::read(
+            uri,
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        assert!(
+            jsonschema::validator_for(&contract["outputSchema"])
+                .unwrap()
+                .is_valid(&serde_json::to_value(&result).unwrap()),
+            "{uri} rejects a successful comparison"
+        );
+    }
     assert_eq!(result.automatic_selection, "not_performed");
     let estimate = &result.baseline.estimates["plate_1.gcode"];
     assert_eq!(estimate["time_native"], "1m 2s");

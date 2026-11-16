@@ -325,7 +325,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert state["source_layout"]["state"] == expected_source_state, state.get("source_layout")
             if state["status"] != "completed":
                 expected_reasons = {
-                    "crowded": ("collision", "too close", "overlap"),
+                    "crowded": ("collision", "too close", "overlap", "g-code conflicts detected"),
                     "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close"),
                     "sequential": ("collision", "too close", "by object", "sequential", "prime tower", "wipe tower"),
                     "slender": ("unprintable area",),
