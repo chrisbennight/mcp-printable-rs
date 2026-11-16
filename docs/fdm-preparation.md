@@ -171,9 +171,44 @@ The current catalog exposes relevant process and filament overrides: wall and
 shell thickness controls, feature-specific line widths, infill, ironing, fuzzy
 skin, seam/scarf controls, support interfaces, temperatures, cooling, material
 flow, pressure advance and volumetric-speed limits. Presence does not establish
-valid values, calibrated performance or hardware support. `slice.settings`
-provides category, current inherited value and overrideability, but not a
-complete typed definition with units, enums and native defaults.
+calibrated performance or hardware support. `slice.settings` reports available
+native definitions, their pinned source identity, profile value origins and
+explicit unknown fields. Literal definitions support early range/choice checks;
+dynamic combinations and effective output still require native validation.
+
+## Failure diagnosis and controlled comparisons
+
+The skill includes a tower decision sequence that distinguishes detachment,
+breakage above an attached brim, intermaterial splitting, buildup and suspected
+contact. Camera guidance retains the visible failure location and relevant
+tower-entry, transition and late-print context without inferring hidden motion
+or changing control authority. The Reddit reports cited above motivate these
+branches; they do not establish the cause of a particular failure.
+
+Named-face comparisons cover bed texture, horizontal top fill/ironing, vertical
+wall order/seams and shallow lettering. A cover example preserves its fitting
+rim and compares native time/material estimates and actual paths before making
+a cosmetic choice. The bracket example compares load-aware orientation, shells
+and core infill while preserving physical shell thickness and considering screw
+installation. Neither example assigns a strength rating or claims a measured
+surface result.
+
+Calibration observations can be imported and retained through ordinary project
+artifacts. Records identify source/profile/settings references, machine/nozzle,
+filament variant/condition, test conditions, observed results and whether each
+value is measured, estimated or inherited. Reuse is conditional on those facts;
+a compatible standard baseline does not require a new calibration campaign.
+The [current calibration guide](https://github.com/OrcaSlicer/OrcaSlicer/wiki/calibration_guide)
+provides dependency guidance, while automatic firmware calibration and packaged
+CLI support remain separate questions.
+
+Troubleshooting keeps the original slice and failed or inconclusive trials.
+Reports separate observation, hypothesis, intervention and result. Conflicting
+[Grid-infill](https://www.reddit.com/r/BambuLab/comments/1q3any0/psa_for_new_users_avoid_using_the_stock_infill/)
+and [retraction](https://www.reddit.com/r/BambuLab/comments/1cj0en2/psa_grid_infill_is_not_the_problem/)
+reports motivate considering crossing paths, extrusion buildup and travel
+behavior rather than prescribing a universal infill pattern or Z-hop value.
+Support choices likewise compare contact, removal access, stability and cost.
 
 ## Further capabilities to add
 
