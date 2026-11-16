@@ -67,9 +67,17 @@ check whether a fresh agent follows the guidance on representative tasks.
    Separate predicted benefits and estimates from measured geometry and physical
    results. Physical dispatch uses the existing printing workflow.
 
-An optional comparison workflow keeps a baseline and a few justified candidates
-in separate output directories. It records source identity, profiles, overrides,
-orientation, estimates, native warnings, review references and selection reasons.
+The optional `slice.compare` action keeps a baseline and up to eight justified
+completed candidates in separate output directories. It binds the objective,
+named face requirements, load assumptions and rationale to exact slice and review
+provenance. The retained comparison includes source identity, settings,
+transform requests, engine identity, native warnings and available estimates.
+It verifies historical source/output/review bytes before creating its report;
+mutable public state and settings files cannot redefine those identities.
+Changed current sources and different material, printer, shell settings or
+declared physical conditions remain explicit. Native estimate strings retain
+their original units and material-slot order; unsupported support/tower/flushing
+breakdowns are null. No winner or numeric strength prediction is generated.
 Calibration coupons are useful when their physical result could change a
 consequential choice; preparing them does not authorize printing them.
 
@@ -231,7 +239,7 @@ the existing workflow's typed actions to adding an unrelated tool for each setti
 | --- | --- | --- |
 | High | Additional verified machine and coordinate-frame coverage | Extend the established source-solid and linear-path checks only with authoritative frame, firmware and hardware evidence. Preserve positive findings and explicit unresolved scope; source-model bounds and a native success code cannot establish every machine's clearance. |
 | High | Broader combination diagnostics | Extend existing literal definitions and tower-generator applicability when authoritative rules are available. Preserve native rejection details. A syntactically valid value is not proof of physical suitability or compatibility across every material/hardware combination. |
-| Medium | Retained preparation decisions and candidate comparison | Bind the user's objective, critical faces, assumptions and changes to exact source/settings/output identities. Compare available time/material estimates and unresolved warnings while keeping physical measurements separate. Reuse current slice handles and provenance rather than duplicate job lifecycles. |
+| Implemented | Retained preparation decisions and candidate comparison | `slice.compare` binds the objective, critical faces, assumptions and rationale to verified slice/review identities, retained transforms, available native estimates and unresolved scope. Missing breakdowns are null; physical equivalence and strength remain unverified. |
 | Medium | Native adaptive profiles and local modifiers | Author and inspect per-object layer profiles, seam/texture masks and support regions. Prove preservation through upload, reslicing and export with actual toolpath regressions. Printer minimum/maximum layer settings alone do not provide this. |
 | Optional | Reusable physical-texture workflow or convenience action | Reuse Blender's geometry capability, retain scale/amplitude/masks and editable source, and verify output topology, dimensions and printability. Do not require a new texture service solely to copy a browser workflow. |
 | Experimental | Brick layers, micro non-planar slicing and sensor calibration | Require a compatible native implementation, reproducible baseline comparisons and hardware-specific evidence. Verify path order, nozzle clearance and extrusion behavior where relevant. Do not reinterpret inner-seam staggering or enable arbitrary post-process scripts as a substitute. |

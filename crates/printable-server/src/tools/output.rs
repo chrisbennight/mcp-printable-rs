@@ -603,6 +603,7 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
     use crate::projects::{Project, card::Card, catalog::SearchView, index};
     let mut schema = match (name, action) {
         ("slice", "inspect_layout") => with_errors(name, source_layout()),
+        ("slice", "compare") => typed::<crate::slicing::comparison::CompareResult>(name),
         ("printer" | "print", _) => crate::printers::action_output_schema(name, action)?,
         ("cad_build", _) => cad_action_schema(action)?,
         ("catalog", "search") => typed::<SearchView>(name),

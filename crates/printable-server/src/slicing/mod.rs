@@ -1,6 +1,7 @@
 //! Durable, explicitly configured Orca preparation in an isolated native worker.
 
 pub mod capture;
+pub mod comparison;
 mod definitions;
 pub mod layout;
 pub mod model;
@@ -238,6 +239,7 @@ pub enum SliceRequest {
     Review(review::ReviewParams),
     Capture(capture::CaptureParams),
     InspectLayout(layout::InspectParams),
+    Compare(Box<comparison::CompareParams>),
 }
 
 struct Active {
@@ -512,6 +514,7 @@ impl SliceWorker {
             SliceRequest::Review(params) => self.review(params).await,
             SliceRequest::Capture(params) => self.capture(params).await,
             SliceRequest::InspectLayout(params) => self.inspect_layout(params).await,
+            SliceRequest::Compare(params) => self.compare(*params).await,
         }
     }
 
@@ -583,6 +586,7 @@ impl SliceWorker {
             evidence["toolpath"] = json!(path);
             evidence["image"] = json!(artifact);
             evidence["slice_provenance"] = json!(slice_provenance);
+            evidence["request"] = json!(params);
             let image_sha256 = provenance::digest(&bytes);
             let retained_image = format!(".printable/evidence/review_media/{review_id}.png");
             let image = workspace.write_reserved_artifact(&retained_image, &bytes, false)?;
@@ -819,7 +823,8 @@ impl SliceWorker {
                     let preflight = outputs.preflight;
                     let data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
                         "settings":settings,"settings_sha256":provenance::digest(&serde_json::to_vec(&settings).expect("JSON value serializes")),
-                        "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
+                        "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION,
+                            "source_revision":ENGINE_SOURCE_REVISION,"runtime_source_verified":false},
                         "design_evidence":design_evidence,"artifacts":artifacts,"preflight":preflight,"source_layout":terminal["source_layout"],"final_layout":terminal["final_layout"]});
                     match provenance::store(
                         &worker.workspace,

@@ -19,6 +19,7 @@ pub struct RecordRef {
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Slice,
+    PreparationComparison,
     ToolpathReview,
     ImportIntent,
     ImportReceipt,
@@ -30,6 +31,7 @@ impl Kind {
     fn directory(self) -> &'static str {
         match self {
             Self::Slice => "slice",
+            Self::PreparationComparison => "preparation_comparison",
             Self::ToolpathReview => "toolpath_review",
             Self::ImportIntent => "import_intent",
             Self::ImportReceipt => "import_receipt",
@@ -92,6 +94,14 @@ pub fn store(
 /// Existing CAD measurement references use their own record format; their
 /// digest is verified before a caller interprets the available measurements.
 pub fn read_value(workspace: &Workspace, reference: &RecordRef) -> Result<Value, ToolError> {
+    read_value_bounded(workspace, reference, u64::MAX)
+}
+
+fn read_value_bounded(
+    workspace: &Workspace,
+    reference: &RecordRef,
+    max_bytes: u64,
+) -> Result<Value, ToolError> {
     if reference.sha256.len() != 64
         || !reference
             .sha256
@@ -100,7 +110,7 @@ pub fn read_value(workspace: &Workspace, reference: &RecordRef) -> Result<Value,
     {
         return Err(invalid("provenance requires a lowercase SHA-256 digest"));
     }
-    let snapshot = workspace.snapshot_artifact(&reference.path)?;
+    let snapshot = workspace.snapshot_artifact_bounded(&reference.path, max_bytes)?;
     if snapshot.meta().path != reference.path || !snapshot.meta().path.starts_with(".printable/") {
         return Err(invalid(
             "provenance must reference canonical retained metadata",
@@ -121,7 +131,19 @@ pub fn read(
     kind: Kind,
     project_id: &str,
 ) -> Result<Record, ToolError> {
-    let record: Record = serde_json::from_value(read_value(workspace, reference)?)?;
+    read_bounded(workspace, reference, kind, project_id, u64::MAX)
+}
+
+/// Read one immutable record within an operation's explicit processing budget.
+pub fn read_bounded(
+    workspace: &Workspace,
+    reference: &RecordRef,
+    kind: Kind,
+    project_id: &str,
+    max_bytes: u64,
+) -> Result<Record, ToolError> {
+    let record: Record =
+        serde_json::from_value(read_value_bounded(workspace, reference, max_bytes)?)?;
     if record.format_version != 1 || record.kind != kind || record.project_id != project_id {
         return Err(invalid(
             "provenance record kind, version, or project does not match this operation",

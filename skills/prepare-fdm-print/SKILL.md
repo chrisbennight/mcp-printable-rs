@@ -346,6 +346,18 @@ thickness comparable when testing a setting. Rank predictions against the user's
 objective, not just the shortest time. Record physical coupon results separately
 from estimates. Preparing candidates does not authorize printing them.
 
+Use `slice.compare` to retain the baseline and completed candidates. Supply each
+exact slice handle and returned slice provenance, motivated rationale, applicable
+toolpath-review provenance, and declared calibration/material/environment
+conditions. Choose `minimum_material_support`, `strength_in_use` or
+`finish_named_faces`, and record named critical faces and load assumptions.
+Names are requirements, not geometric face selectors. Retain the comparison
+artifact, digest and provenance with the decision. It verifies retained bytes
+and flags changed sources or incompatible settings; it does not choose a winner.
+Native estimate strings preserve ordered material slots. Missing support, tower
+or flushing breakdowns remain unknown. A shell-setting change needs an actual
+thickness review before a fair strength comparison; no strength score is inferred.
+
 ## Deliver the choice and its limits
 
 Save a compact preparation record in the project: exact source and output

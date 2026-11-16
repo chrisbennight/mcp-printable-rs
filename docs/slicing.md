@@ -282,6 +282,28 @@ Completed slices and reviews return retained provenance references. Optional
 review references to printer import to check their applicability before upload;
 see [design and print evidence](delivery-evidence.md).
 
+`slice.compare` accepts a baseline and one to eight completed candidates with
+exact handles and retained slice provenance, rationale, optional review
+provenance and declared calibration/material/environment conditions. Choose
+`minimum_material_support`, `strength_in_use` or `finish_named_faces`; record
+named `critical_faces` and `load_assumptions` when relevant. Supply a new
+`output_dir`. The response returns a comparison artifact, SHA-256 digest and
+retained comparison provenance for restart/readback through artifact operations.
+It does not create another slice job or select a winner.
+
+Comparison verifies retained source snapshots, native outputs, settings
+identities and applicable review/media bytes. It records exact requests,
+transforms, source/final layout references and collision scope. Source changes,
+different printer/nozzle/materials/build surface/engine, shell-setting changes,
+and missing or changed physical conditions are explicit compatibility flags.
+Historical evidence remains applicable to its original bytes. Physical
+equivalence and strength remain unverified. Global resolved inputs are distinct
+from native per-object settings. Native G-code estimate strings retain units
+and ordered material slots; unsupported support/tower/flushing breakdowns are
+null. Parsing is bounded to 30 seconds, 512 MiB of inputs (including conservative
+record charges), 4 MiB per retained record and 64 KiB per toolpath line. Larger
+comparisons require smaller completed candidates, not truncated conclusions.
+
 The worker accepts source artifacts and nonempty material-profile lists without
 fixed product capacity ceilings. Preparation uses a positive caller-selected
 timeout. Toolpath reviews accept ordered layer ranges, feature selections, and
