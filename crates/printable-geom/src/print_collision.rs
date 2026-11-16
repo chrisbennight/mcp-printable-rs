@@ -95,7 +95,8 @@ pub struct CollisionReport {
     pub toolhead: CheckState,
     pub complete: bool,
     pub missing_deposition_dimensions: bool,
-    /// One finding per kind/object pair/component, ordered by the identifying move.
+    /// One finding per kind/object pair/component. Unlabeled moves retain their
+    /// source-line identity so different obstacles are not silently combined.
     pub findings: Vec<CollisionFinding>,
 }
 
@@ -508,8 +509,10 @@ fn state(previous: CheckState, incomplete: bool, failed: bool) -> CheckState {
 type FindingKey = (
     CollisionKind,
     Option<String>,
+    Option<u64>,
     PathRole,
     Option<String>,
+    Option<u64>,
     Option<PathRole>,
     Option<String>,
 );
@@ -527,8 +530,12 @@ fn add_finding(
     let key = (
         kind,
         path.object.clone(),
+        path.object.is_none().then_some(path.source_line),
         path.role,
         other_object.clone(),
+        other
+            .filter(|path| path.object.is_none())
+            .map(|path| path.source_line),
         other.map(|p| p.role),
         component.map(str::to_owned),
     );
@@ -815,6 +822,40 @@ mod tests {
             affected,
             BTreeSet::from([(Some("part-a"), Some(1)), (Some("part-b"), Some(2))])
         );
+    }
+
+    #[test]
+    fn unlabeled_obstacles_retain_distinct_source_paths_and_locations() {
+        let first = line([10., 0., 0.2], [10., 5., 0.2], PathRole::Part, 1);
+        let second = line([20., 0., 0.2], [20., 5., 0.2], PathRole::Part, 2);
+        let mut moving = line([0., 2., 0.1], [30., 2., 0.1], PathRole::Part, 3);
+        moving.travel = true;
+        let envelope = ClearanceBox {
+            component: "shroud".into(),
+            minimum_mm: [-0.1, -0.1, 0.05],
+            maximum_mm: [0.1, 0.1, 0.2],
+        };
+        let report =
+            check_print_paths(&[first, second, moving], None, &[envelope], || true).unwrap();
+        let affected: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.source_line == 3)
+            .collect();
+        assert_eq!(affected.len(), 2);
+        assert_eq!(
+            affected
+                .iter()
+                .map(|finding| finding.other_source_line)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([Some(1), Some(2)])
+        );
+        assert!(
+            affected
+                .iter()
+                .all(|finding| finding.object.is_none() && finding.other_object.is_none())
+        );
+        assert_ne!(affected[0].position_mm, affected[1].position_mm);
     }
 
     #[test]

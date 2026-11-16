@@ -108,8 +108,8 @@ impl PreflightOptions {
     }
 }
 
-fn polygon(value: &Value) -> Option<Vec<[f64; 2]>> {
-    let points = value
+fn points(value: &Value) -> Option<Vec<[f64; 2]>> {
+    value
         .as_array()?
         .iter()
         .map(|point| {
@@ -120,22 +120,26 @@ fn polygon(value: &Value) -> Option<Vec<[f64; 2]>> {
                 .all(|v| v.is_finite() && v.abs() <= MAX_PRINT_COORDINATE_MM)
                 .then_some(point)
         })
-        .collect::<Option<Vec<_>>>()?;
-    (points.len() >= 3).then_some(points)
+        .collect()
 }
 
-fn plate(printer: &Value) -> Option<PlateGeometry> {
-    let boundary_mm = polygon(&printer["printable_area"])?;
-    let exclusions = &printer["bed_exclude_area"];
-    let exclusions_mm = if exclusions.as_array().is_some_and(Vec::is_empty) {
-        Vec::new()
-    } else {
-        vec![polygon(exclusions)?]
+fn plate(printer: &Value) -> (Option<PlateGeometry>, bool) {
+    let Some(boundary_mm) = points(&printer["printable_area"]).filter(|points| points.len() >= 3)
+    else {
+        return (None, false);
     };
-    Some(PlateGeometry {
-        boundary_mm,
-        exclusions_mm,
-    })
+    let (exclusions_mm, exclusions_known) = match points(&printer["bed_exclude_area"]) {
+        Some(points) if points.is_empty() || points.as_slice() == [[0., 0.]] => (Vec::new(), true),
+        Some(points) if points.len() >= 3 => (vec![points], true),
+        _ => (Vec::new(), false),
+    };
+    (
+        Some(PlateGeometry {
+            boundary_mm,
+            exclusions_mm,
+        }),
+        exclusions_known,
+    )
 }
 
 /// A failed analysis is explicit evidence of missing clearance, while prepared
@@ -187,12 +191,22 @@ fn analyze_inner(
             maximum_mm: envelope.maximum_mm,
         })
         .collect::<Vec<_>>();
-    let plate = plate(printer);
+    let (plate, bed_exclusions_known) = plate(printer);
     let mut report =
         print_collision::check_print_paths(&parsed.moves, plate.as_ref(), &boxes, || {
             Instant::now() < deadline && !cancel.is_cancelled()
         })
         .map_err(|error| invalid(&error.to_string()))?;
+    let mut unresolved = parsed.unresolved.clone();
+    if plate.is_none() {
+        unresolved.insert("bed_boundary_not_available".into());
+    }
+    if !bed_exclusions_known {
+        unresolved.insert("bed_exclusions_not_verified".into());
+        if report.bed != CheckState::Failed {
+            report.bed = CheckState::Unmeasured;
+        }
+    }
     if !parsed.complete || !parsed.unresolved.is_empty() || parsed.moves.is_empty() {
         let unsupported = parsed.unresolved.iter().any(|reason| {
             reason.starts_with("unsupported_")
@@ -224,19 +238,24 @@ fn analyze_inner(
     } else {
         "modeled_checks_passed"
     };
-    let coverage_complete = [report.bed, report.tower_interference, report.toolhead]
-        .iter()
-        .all(|state| matches!(state, CheckState::Passed | CheckState::Failed));
+    let coverage_complete = parsed.complete
+        && unresolved.is_empty()
+        && report.complete
+        && !report.missing_deposition_dimensions
+        && [report.bed, report.tower_interference, report.toolhead]
+            .iter()
+            .all(|state| matches!(state, CheckState::Passed | CheckState::Failed));
     Ok(json!({
         "status":status, "coordinate_frame":"final_gcode", "units":"mm",
         "checks":{"bed":report.bed,"tower_interference":report.tower_interference,"toolhead":report.toolhead},
         "processing_complete":parsed.complete && report.complete,
         "coverage_complete":coverage_complete,
-        "findings":report.findings, "unresolved":parsed.unresolved,
+        "findings":report.findings, "unresolved":unresolved,
         "missing_deposition_dimensions":report.missing_deposition_dimensions,
         "machine_envelopes":options.machine_envelopes,
         "initial_position":options.initial_position,
         "bed_geometry":plate,
+        "bed_exclusions_known":bed_exclusions_known,
         "scope":"explicit linear motion and conservative rectangular line envelopes in native execution order",
         "limits":["firmware macro motion, deformation, buildup and post-slice modifications are not simulated",
             "part-to-part source geometry and rounded deposition shape are not established by this check"],
@@ -357,9 +376,10 @@ mod tests {
     #[test]
     fn absolute_extrusion_and_tool_selection_do_not_invent_machine_state() {
         let options = known_start();
+        let printer = json!({"printable_area":["0x0","25x0","25x25","0x25"],"bed_exclude_area":[]});
         let body = "G90\nM82\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n";
         let gcode = source(body);
-        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        let report = analyze(gcode.path(), &printer, &options, options.deadline());
         assert!(
             report["unresolved"]
                 .as_array()
@@ -368,10 +388,10 @@ mod tests {
                 .any(|value| value == "absolute_extrusion_origin_unknown")
         );
         let gcode = source(&format!("G92 E0\n{body}"));
-        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        let report = analyze(gcode.path(), &printer, &options, options.deadline());
         assert_eq!(report["unresolved"], json!([]));
         let gcode = source(&format!("G92 E0\n{body}T1\nG1 X10 Y10 Z0.2 E0\n"));
-        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        let report = analyze(gcode.path(), &printer, &options, options.deadline());
         assert_eq!(report["coverage_complete"], false);
         assert!(
             report["unresolved"]
@@ -423,6 +443,46 @@ mod tests {
             assert_eq!(report["checks"]["bed"], "unmeasured");
             assert_eq!(report["checks"]["toolhead"], "unmeasured");
         }
+    }
+
+    #[test]
+    fn native_empty_exclusion_and_unknown_exclusions_preserve_known_boundary_findings() {
+        let gcode = source(
+            "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X30 E1\n",
+        );
+        let options = known_start();
+        for (excluded, known) in [
+            (json!(["0x0"]), true),
+            (json!(["0.000x-0.0"]), true),
+            (json!(["bad"]), false),
+        ] {
+            let printer =
+                json!({"printable_area":["0x0","25x0","25x25","0x25"],"bed_exclude_area":excluded});
+            let report = analyze(gcode.path(), &printer, &options, options.deadline());
+            assert_eq!(report["checks"]["bed"], "failed");
+            assert_eq!(report["status"], "blocked");
+            assert_eq!(report["bed_exclusions_known"], known);
+            assert!(
+                report["findings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|finding| finding["kind"] == "outside_bed")
+            );
+            if !known {
+                assert_eq!(report["coverage_complete"], false);
+            }
+        }
+        let inside = source(
+            "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n",
+        );
+        let report = analyze(
+            inside.path(),
+            &json!({"printable_area":["0x0","25x0","25x25","0x25"],"bed_exclude_area":["0x0"]}),
+            &options,
+            options.deadline(),
+        );
+        assert_eq!(report["checks"]["bed"], "passed");
     }
 
     #[test]
@@ -543,7 +603,8 @@ mod tests {
             "M104 S200\nG90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nM109 S200\nM106 S255\nG1 X20 E1\nM107\n",
         );
         let options = known_start();
-        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        let printer = json!({"printable_area":["0x0","25x0","25x25","0x25"],"bed_exclude_area":[]});
+        let report = analyze(gcode.path(), &printer, &options, options.deadline());
         assert_eq!(report["checks"]["tower_interference"], "passed");
         assert_eq!(report["unresolved"], json!([]));
     }
