@@ -349,9 +349,30 @@ impl IncomingFiles {
 
     pub async fn cancel(&self, uri: &str) -> Result<serde_json::Value, ToolError> {
         let transfer = self.get(uri)?;
-        let mut state = transfer.state.lock().await;
+        let mut state = Arc::clone(&transfer.state).lock_owned().await;
         let (name, cancelled) = match &*state {
-            TransferState::Prepared | TransferState::Ready(_) => {
+            TransferState::Ready(_) => {
+                let received = std::mem::replace(&mut *state, TransferState::Cancelling);
+                transfer.cancellation.cancel();
+                // Managed scratch cleanup can wait for a publication's storage
+                // lock. Keep its state and slot owned until that cleanup exits.
+                tokio::task::spawn_blocking(move || {
+                    drop(received);
+                    transfer
+                        .permit
+                        .lock()
+                        .expect("upload permit poisoned")
+                        .take();
+                    *state = TransferState::Cancelled;
+                })
+                .await
+                .map_err(|_| ToolError::FileUpload {
+                    code: "completion_unknown",
+                    message: "file cancellation outcome is unknown; inspect transfer status".into(),
+                })?;
+                return Ok(serde_json::json!({"state": "cancelled", "cancelled": true}));
+            }
+            TransferState::Prepared => {
                 *state = TransferState::Cancelled;
                 transfer.cancellation.cancel();
                 transfer
@@ -392,6 +413,12 @@ impl IncomingFiles {
                 "file_unavailable",
                 "upload_not_found",
                 "file upload is unavailable or expired",
+                false,
+            ),
+            "completion_unknown" => (
+                "file_unavailable",
+                "completion_unknown",
+                "file cancellation outcome is unknown; inspect transfer status before retrying",
                 false,
             ),
             "unsupported_type" => (
@@ -866,6 +893,65 @@ mod tests {
         assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
         assert_eq!(files.capacity.available_permits(), 1);
         authorize(&files, "replacement.3mf");
+    }
+
+    #[tokio::test]
+    async fn staged_cancellation_keeps_status_responsive_while_storage_is_locked() {
+        use std::os::fd::AsRawFd;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        workspace
+            .configure_storage_budget(Some(1024 * 1024))
+            .unwrap();
+        let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
+        let authorization = authorize(&files, "source.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap().to_owned();
+        assert_eq!(
+            receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+        let transfer = files.get(&uri).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join(".printable/storage/controller.lock"))
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let (release, released) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            // A separate thread releases the test lock even if an executor
+            // regression prevents the async test from making progress.
+            let _ = released.recv_timeout(Duration::from_secs(10));
+            drop(lock);
+        });
+        let cancel_files = Arc::clone(&files);
+        let cancel_uri = uri.clone();
+        let started = Instant::now();
+        let cancellation = tokio::spawn(async move { cancel_files.cancel(&cancel_uri).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !transfer.cancellation.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancellation does not block the executor on storage cleanup");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!cancellation.is_finished());
+        assert_eq!(files.capabilities()["available_staging_slots"], 0);
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "unknown");
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), cancellation)
+            .await
+            .expect("cancellation finishes after the storage lock is released")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["cancelled"], true);
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelled");
+        assert_eq!(files.capacity.available_permits(), 1);
+        blocker.join().unwrap();
     }
 
     #[tokio::test]
