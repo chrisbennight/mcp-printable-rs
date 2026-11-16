@@ -89,6 +89,13 @@ pub(super) struct ParsedPaths {
     pub complete: bool,
 }
 
+pub(super) fn native_bambu_total_time(line: &str) -> Option<&str> {
+    let body = line.strip_prefix("; model printing time:")?;
+    let (model, total) = body.split_once("; total estimated time:")?;
+    let total = total.trim();
+    (!model.trim().is_empty() && !total.is_empty()).then_some(total)
+}
+
 impl Parser {
     fn new() -> Self {
         Self {
@@ -153,6 +160,11 @@ impl Parser {
         }
         if let Some(value) = trimmed.strip_prefix("; estimated printing time (normal mode) =") {
             self.estimated_time = Some(value.trim().chars().take(128).collect());
+        } else if self.estimated_time.is_none()
+            && let Some(value) = native_bambu_total_time(trimmed)
+        {
+            // The pinned Bambu writer emits normal time before optional additional modes.
+            self.estimated_time = Some(value.chars().take(128).collect());
         }
         if let Some(value) = trimmed.strip_prefix("; filament used [g] =") {
             self.estimated_filament = Some(value.trim().chars().take(128).collect());
@@ -823,6 +835,36 @@ mod tests {
             size: 128,
             timeout_seconds: 30,
         }
+    }
+
+    #[test]
+    fn native_time_headers_preserve_total_normal_mode_for_bambu_and_other_printers() {
+        let request = review_request();
+        for (header, expected) in [
+            ("; estimated printing time (normal mode) = 1m 2s", "1m 2s"),
+            (
+                "; model printing time: 1m 46s; total estimated time: 2m 16s",
+                "2m 16s",
+            ),
+        ] {
+            let mut parser = Parser::new();
+            parser.line(header, &request).unwrap();
+            parser
+                .line(
+                    "; model printing time: 3m 0s; total estimated time: 3m 30s",
+                    &request,
+                )
+                .unwrap();
+            assert_eq!(parser.estimated_time.as_deref(), Some(expected));
+        }
+        assert_eq!(
+            native_bambu_total_time("; model printing time: ; total estimated time: 2m"),
+            None
+        );
+        assert_eq!(
+            native_bambu_total_time("; model printing time: 1m; total estimated time: "),
+            None
+        );
     }
 
     #[test]
