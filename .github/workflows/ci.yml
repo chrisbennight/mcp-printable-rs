@@ -103,9 +103,13 @@ jobs:
         run: bash scripts/ci-scope.sh
       - name: Install pinned actionlint
         if: steps.scope.outputs.workflows == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 \
+            --proto-redir '=https' \
             --retry 3 --connect-timeout 10 --max-time 120 \
+            --variable %GH_TOKEN --expand-oauth2-bearer '{{GH_TOKEN}}' \
             --header 'Accept: application/octet-stream' \
             --output "${RUNNER_TEMP}/actionlint.tar.gz" \
             https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896 # actionlint 1.7.12

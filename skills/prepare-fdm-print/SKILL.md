@@ -14,6 +14,16 @@ fit, surface quality, leak resistance or a successful print.
 
 Reuse the supplied model and current project. Ingest incoming files through
 `artifact.ingest`; keep source bytes and revisions instead of overwriting them.
+For a gateway upload, pass the original uploaded file URI and a supported
+destination suffix. Read `status.workspace.file_upload` for incoming-file
+limits; `workspace.max_transfer_bytes` governs inline artifact I/O. Do not split
+a large model into fragments or build a reassembly workflow. Retain the
+original gateway URI on a capacity or validation error and follow its recovery
+information. In Waygate, inspect that URI with `gateway-files.delivery_status`
+and cancel an abandoned uncommitted delivery with
+`gateway-files.cancel_delivery` using its `delivery_id`. Reconcile an uncertain
+publication before retrying. See the
+[incoming-file guide](../../docs/workflow-interface.md#incoming-files).
 Use project-relative paths for slicing and resolve workspace paths through
 `project.resolve` for tools that need them. STEP needs conversion through
 `cad_build` before slicing. Do not open or replace a shared Blender scene merely

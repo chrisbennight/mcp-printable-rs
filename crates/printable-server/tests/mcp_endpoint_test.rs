@@ -70,6 +70,7 @@ fn test_settings(blender_port: u16) -> Settings {
         geometry_worker_bin: None,
         geometry_worker_memory_bytes: 1024 * 1024 * 1024,
         file_upload_max_bytes: 1024 * 1024 * 1024,
+        file_upload_max_staged: 20,
         mcp_bearer: BearerSecret::parse(TEST_MCP_BEARER.to_string()).expect("test bearer is valid"),
         allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
         allowed_origins: Vec::new(),
@@ -440,6 +441,14 @@ async fn exercise_incoming_files(transfer_base: Option<&str>) {
     )
     .await;
     let uri = authorization["file"]["uri"].as_str().unwrap();
+    assert_eq!(
+        authorization["lifecycle"]["statusMethod"],
+        "files/transferStatus"
+    );
+    assert_eq!(
+        authorization["lifecycle"]["cancelMethod"],
+        "files/cancelUpload"
+    );
     let local_url = upstream_url(authorization["upload"]["url"].as_str().unwrap());
     let url = local_url.as_str();
     let token = authorization["upload"]["headers"]["Authorization"]
@@ -480,6 +489,34 @@ async fn exercise_incoming_files(transfer_base: Option<&str>) {
             .status(),
         409
     );
+    for (index, invalid_params) in [
+        json!({"file": uri}),
+        json!({"file": uri, "path": "board.step", "overwrite": "yes"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = rpc_result(
+            post(
+                &http,
+                &mcp,
+                Some(&session),
+                &json!({
+                    "jsonrpc":"2.0", "id":6+index, "method":"tools/call", "params":{
+                        "name":"artifact", "arguments":{"action":"ingest","params":invalid_params}
+                    }
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(rejected["isError"], true);
+        assert_eq!(rejected["structuredContent"]["error"]["stage"], "ingest");
+        assert_eq!(
+            rejected["structuredContent"]["error"]["publication_attempted"],
+            false
+        );
+    }
     let committed = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
     assert_ne!(committed["isError"], true, "{committed}");
     assert_eq!(committed["structuredContent"]["sha256"], digest);
@@ -489,6 +526,15 @@ async fn exercise_incoming_files(transfer_base: Option<&str>) {
     );
     let repeated = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
     assert_eq!(repeated, committed);
+    let status = rpc_result(post(&http, &mcp, Some(&session), &json!({
+        "jsonrpc":"2.0", "id":4, "method":"files/transferStatus", "params":{"uri":uri,"_meta":capabilities}
+    })).await).await;
+    assert_eq!(status["state"], "committed");
+    let cancellation = rpc_result(post(&http, &mcp, Some(&session), &json!({
+        "jsonrpc":"2.0", "id":5, "method":"files/cancelUpload", "params":{"uri":uri,"_meta":capabilities}
+    })).await).await;
+    assert_eq!(cancellation["state"], "committed");
+    assert_eq!(cancellation["cancelled"], false);
 
     // More than two completed transfers must release staging capacity.
     for index in 0..3 {

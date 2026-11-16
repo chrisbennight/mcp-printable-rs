@@ -6244,6 +6244,12 @@ async fn status(
             "workspace_root": ws.root,
             "blender_workspace_root": ws.blender_root,
             "max_transfer_bytes": ws.max_transfer_bytes,
+            "max_transfer_bytes_scope": "inline_artifact_io",
+            "max_inline_write_bytes": CHUNK_MAX_DECODED,
+            "file_upload": {
+                "max_bytes": settings.file_upload_max_bytes,
+                "max_staged": settings.file_upload_max_staged,
+            },
             "max_list_scan_entries": ws.max_list_scan_entries,
         },
     }))

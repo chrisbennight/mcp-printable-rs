@@ -221,31 +221,120 @@ remain those of the underlying delivered operations.
 
 ## Incoming files
 
+Upload the original model once through your client's file-transfer workflow,
+then pass the returned file URI to `artifact` with `action: "ingest"`. Keep the
+original gateway URI until ingestion succeeds and its size and SHA-256 match
+the source. File bytes do not belong in tool arguments. A large model does not
+need splitting into `.part` files, wrapping in ZIP fragments, or reassembly.
+
+`params.file` is the uploaded file URI, `params.path` is the confined workspace
+destination with a supported artifact suffix, and `params.overwrite` defaults
+to false. The file field advertises upload forwarding. A gateway transfers
+bytes through `files/authorizeUpload` and its authorized HTTP PUT before
+dispatching the artifact request. A successful upload into gateway storage
+alone does not establish that Printable has ingested the file.
+
+Read `status.workspace.file_upload` for the configured native incoming-file
+limit, staging capacity, current occupancy, and supported suffixes.
+Occupancy fields `active_receivers` and `staged_files` are null while state or
+expiry cleanup is busy; status does not wait for an in-progress publication.
+The available slot count is authoritative for admission. State counts describe
+registered transfers; expired transfers still owned by in-flight work are excluded.
+
+Each file is bounded by `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). Staging
+capacity is configured with `PRINTABLE_FILE_UPLOAD_MAX_STAGED` (default 20).
+The shared [workspace storage budget](storage.md) also applies. Gateway file
+storage and active-transfer limits are separate and may be smaller.
+With Waygate, `gateway-files.delivery_status` with `{}` reports
+`upload_max_bytes`, `active_transfer_capacity`, and
+`per_owner_transfer_capacity` without starting a delivery.
+
+`workspace.max_transfer_bytes` describes the inline artifact I/O helper's
+limit; its `max_transfer_bytes_scope` is `inline_artifact_io`. It is not the
+incoming-file limit. Public reads use that limit, while the lower
+`workspace.max_inline_write_bytes` limits a decoded single-shot write or chunk.
+Chunks keep that per-request transport limit while their cumulative artifact
+size is governed by the configured workspace budget. Use a gateway file URI
+with `ingest` for a local file already uploaded through the gateway.
+
 Upload and download authorization share `PRINTABLE_DOWNLOAD_BASE_URL`, including
 its HTTPS scheme and reverse-proxy path prefix. The existing setting name is
 retained. Without a configured base, both use the request's allowed HTTP Host;
 forwarded headers do not choose the transfer destination.
 
-Use `artifact` with `action: "ingest"` and `params` containing `file` (a
-gateway file URI), `path` (the workspace destination), and optional `overwrite`.
-The file field advertises native upload forwarding. The gateway transfers bytes
-through `files/authorizeUpload` and the authorized HTTP PUT before dispatching
-the artifact request. Bytes do not pass through tool arguments.
+Printable checks the declared size and SHA-256 digest before atomic workspace
+publication. STEP/STP and Python source are accepted as stored artifacts;
+storing them alone does not execute or convert them.
+Compare the successful ingest result's `size_bytes` and `sha256` with the
+source metadata. `sha256` is base64url without padding. Matching bytes establish
+file delivery, not model validity, slicer fidelity, or print quality.
 
-Printable stages at most two incoming files, each bounded by
-`PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). It checks the declared size
-and SHA-256 digest before atomic workspace publication. STEP/STP and Python
-source are accepted as stored artifacts; this alone does not execute or convert
-them. Base64 chunks retain a per-request transport limit; their cumulative
-artifact size is governed by the configured workspace budget.
+### Recover or cancel a gateway delivery
+
+Keep the original gateway file URI on ingestion failure. Uploading the same
+local bytes again does not resolve capacity, type, or size refusals.
+
+| Failure | Next action |
+| --- | --- |
+| Incoming upload capacity is full | Retain the URI, inspect its delivery, and retry after capacity is released or the reported delay. Cancel your own abandoned deliveries when applicable. |
+| Retained receipt capacity is full | Retain the URI and retry after the reported receipt expiry. Cancelling a committed receipt does not reclaim it. |
+| Unsupported file or destination type | Use the original supported format and a matching destination suffix. Do not rename or package fragments to bypass the check. |
+| File exceeds a configured limit | Compare the source byte count with the gateway and Printable limits. Report the boundary that needs an operator change; do not silently alter the model. |
+| Publication outcome is unknown | Inspect the destination and reconcile the delivery before retrying; the artifact may already exist. |
+
+Capacity can still be full after a staging retry delay.
+
+Ingest tool failures carry `error.stage: "ingest"`. An explicit
+`error.publication_attempted: false` confirms rejection before publication;
+`true` means publication was attempted. An absent field leaves the outcome
+unknown. Gateways may abandon staging automatically after an explicit false;
+`isError` alone does not establish that publication was never attempted.
+
+With Waygate, use `gateway-files.delivery_status` with `uri` set to the original
+gateway file URI to inspect its deliveries into Printable. To abandon an
+uncommitted delivery, call `gateway-files.cancel_delivery` with a `delivery_id`
+returned by that status or selected from a delivery error's `delivery_ids`.
+When status returns `next_cursor`, repeat with the same `uri` and that cursor
+to inspect older deliveries.
+The gateway enforces ownership
+and forwards cancellation without exposing the private Printable URI or upload
+credential. `gateway-files.upload_status` checks the earlier upload into gateway
+storage; it does not report delivery into Printable. See the
+[gateway file-transfer guide](https://github.com/chrisbennight/waygate/blob/main/docs/guides/files.md)
+for local upload and download commands.
+
+If cancellation is still in progress, retain the handle and inspect its status.
+A completed cancellation releases staging; it does not delete a committed
+workspace artifact. If publication was attempted and its outcome is unknown,
+inspect the destination and reconcile the delivery before retrying.
+
+### Native transfer lifecycle
 
 An authorized transfer expires after one hour; an idle body times out after one
-minute. The private Printable URI can be queried with `transfer_status` and
-`params.uri`. A successful ingest retains a receipt for the authorization
-lifetime; repeating the same ingest returns that receipt without writing again.
-It records the original commit, not a claim that another request has not since
-changed the destination. Receipts are in memory and bounded; after server
-restart or expiry, inspect the destination before authorizing a fresh upload.
+minute. Gateways can use the optional lifecycle methods named in the
+authorization's `lifecycle` object: `files/transferStatus` and
+`files/cancelUpload`, each with `{"uri": "<Printable-private URI>"}`. These are
+Printable extensions, not standard MCP methods. `artifact.transfer_status`
+continues to accept `params.uri` for the same private URI. Consumer clients
+should use their gateway's delivery handles rather than construct or retain
+Printable-private references.
+
+Transfer status reports `unknown` if its registry or state is currently busy,
+so a slow filesystem operation does not hold up status. This does not confirm
+success or failure; inspect the destination or check status again.
+
+A cancellation can report `cancelling` while an admitted write or staging cleanup
+finishes. A busy publication can return `unknown` without accepting cancellation;
+inspect status before trying again. Only `cancelled` confirms release.
+A successful native ingest retains a receipt for
+the authorization lifetime; repeating that native request with the same private
+URI and destination returns the receipt without writing again. It records the
+original commit, not a claim that another request has not since changed the
+destination. Receipts are in memory and bounded; after server restart or expiry,
+inspect the destination before authorizing a fresh upload.
+`status.workspace.file_upload.max_receipts` reports the transfer-registry bound.
+A `receipt_capacity` refusal can occur while staging slots are available because
+successful receipts remain recoverable for their authorization lifetime.
 
 A filesystem publication error leaves the receipt `commit_uncertain`, with its
 destination path. The destination may already exist even though publication
