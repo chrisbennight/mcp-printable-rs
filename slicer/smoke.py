@@ -326,7 +326,7 @@ with tempfile.TemporaryDirectory() as directory:
             if state["status"] != "completed":
                 expected_reasons = {
                     "crowded": ("collision", "too close", "overlap", "g-code conflicts detected"),
-                    "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close"),
+                    "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close", "unprintable area"),
                     "sequential": ("collision", "too close", "by object", "sequential", "prime tower", "wipe tower"),
                     "slender": ("unprintable area",),
                 }

@@ -41,6 +41,8 @@ pub struct Object {
     pub object_type: String,
     pub mesh: TriangleMesh,
     pub components: Vec<Component>,
+    pub default_property_group: Option<u32>,
+    pub default_property_index: Option<u32>,
     /// Native property groups and indices are not assumed to be filament slots.
     pub property_groups: BTreeSet<u32>,
     pub property_indices: BTreeSet<u32>,
@@ -611,6 +613,16 @@ pub fn parse_model(
                             if current.is_some() {
                                 return Err(invalid("nested object definitions"));
                             }
+                            let default_property_group = element
+                                .attributes
+                                .contains_key("pid")
+                                .then(|| integer(&element.attributes, "pid", true))
+                                .transpose()?;
+                            let default_property_index = element
+                                .attributes
+                                .contains_key("pindex")
+                                .then(|| integer(&element.attributes, "pindex", false))
+                                .transpose()?;
                             current = Some((
                                 integer(&element.attributes, "id", true)?,
                                 Object {
@@ -624,8 +636,10 @@ pub fn parse_model(
                                         triangles: Vec::new(),
                                     },
                                     components: Vec::new(),
-                                    property_groups: BTreeSet::new(),
-                                    property_indices: BTreeSet::new(),
+                                    default_property_group,
+                                    default_property_index,
+                                    property_groups: default_property_group.into_iter().collect(),
+                                    property_indices: default_property_index.into_iter().collect(),
                                 },
                             ));
                         }
@@ -815,6 +829,25 @@ mod tests {
         assert_eq!(document.build[0].component.transform[9..], [10., 20., 0.]);
         assert_eq!(document.build[1].copy, 1);
         assert!(!document.build[1].printable);
+    }
+
+    #[test]
+    fn retains_object_property_defaults_and_explicit_triangle_references() {
+        let text = model(
+            r#"<resources><object id="1" pid="4" pindex="0"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="1" v3="2" pid="7" p1="2" p2="3"/></triangles></mesh></object></resources><build><item objectid="1"/></build>"#,
+        );
+        let document = parse_model(text.as_bytes(), || true).unwrap();
+        let object = &document.objects[&1];
+        assert_eq!(object.default_property_group, Some(4));
+        assert_eq!(object.default_property_index, Some(0));
+        assert_eq!(object.property_groups, BTreeSet::from([4, 7]));
+        assert_eq!(object.property_indices, BTreeSet::from([0, 2, 3]));
+        for attribute in ["pid='0'", "pid='bad'", "pindex='-1'"] {
+            let invalid = model(&format!(
+                "<resources><object id='1' {attribute}/></resources><build/>"
+            ));
+            assert!(parse_model(invalid.as_bytes(), || true).is_err());
+        }
     }
 
     #[test]

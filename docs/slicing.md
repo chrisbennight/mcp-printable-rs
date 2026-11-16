@@ -115,6 +115,9 @@ solid interference. The complete report is a retained artifact with a SHA-256;
 the response includes at most 32 instances and findings with total counts.
 Millimetre mesh projects are supported. Unknown required extensions, modifier
 semantics, units or resource paths remain explicit limitations.
+The complete report retains declared object-level `pid`/`pindex` defaults and
+referenced property groups/indices. These core 3MF references are not inferred
+printer filament slots.
 
 Source copying runs off the async executor and checks cancellation between chunks.
 The inspection deadline covers copying and geometry work. Cancelling the public

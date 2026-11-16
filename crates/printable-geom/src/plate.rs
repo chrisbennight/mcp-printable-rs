@@ -59,7 +59,7 @@ pub fn compose_3mf(
     Ok(result)
 }
 
-/// Preserve triangle indexing while changing only vertex positions.
+/// Transform positions and preserve surface orientation through reflections.
 pub fn transform_mesh(
     mesh: &TriangleMesh,
     transform: &Transform3mf,
@@ -96,9 +96,23 @@ pub fn transform_mesh(
         }
         vertices.push(transformed);
     }
+    let mut linear = nalgebra::Matrix3::from_column_slice(&transform[..9]);
+    for mut column in linear.column_iter_mut() {
+        let scale = column.amax();
+        if scale > 0. {
+            column /= scale;
+        }
+    }
+    let mut triangles = mesh.triangles.clone();
+    if linear.determinant() < 0. {
+        for triangle in &mut triangles {
+            limit::check()?;
+            triangle.swap(1, 2);
+        }
+    }
     Ok(TriangleMesh {
         vertices,
-        triangles: mesh.triangles.clone(),
+        triangles,
     })
 }
 
@@ -216,6 +230,22 @@ mod tests {
         assert_eq!(footprint.bounds.minimum_mm, [19., 30., 4.]);
         assert_eq!(footprint.bounds.maximum_mm, [20., 32., 4.]);
         assert_eq!(footprint.convex_hull_mm.len(), 4);
+    }
+
+    #[test]
+    fn reflections_preserve_surface_orientation_and_two_reflections_cancel() {
+        let reflection = [-1., 0., 0., 0., 1., 0., 0., 0., 1., 2., 0., 0.];
+        let reflected = transform_mesh(&mesh(), &reflection).unwrap();
+        assert_eq!(reflected.vertices[0], [2., 0., 0.]);
+        assert_eq!(reflected.triangles, [[0, 2, 1], [0, 3, 2]]);
+        let restored = transform_mesh(&reflected, &reflection).unwrap();
+        assert_eq!(restored.vertices, mesh().vertices);
+        assert_eq!(restored.triangles, mesh().triangles);
+        let composed = compose_3mf(&reflection, &reflection).unwrap();
+        assert_eq!(
+            transform_mesh(&mesh(), &composed).unwrap().triangles,
+            mesh().triangles
+        );
     }
 
     #[test]
