@@ -131,13 +131,17 @@ finishing decisions, not slicer settings or actions authorized by slicing.
 
 ## Arrange the plate and assess the prime tower
 
-Preserve an authored 3MF layout when its placement matters. `auto_arrange` asks
-Orca to arrange the plate; it does not expose object locks, requested spacing or
-tower XY coordinates. Those tower coordinates are not profile overrides in the
-packaged catalog. Use supported native/modeling operations for deliberate changes
-and verify their preservation in the output; report a missing control rather than
-inventing a parameter. A model-only plate picture cannot show the final generated
-support, brim and tower footprint.
+Inspect an authored 3MF with `slice.inspect_layout` before selecting placements.
+Retain its source hash, native instance/plate identities and complete report.
+`prepare.layout` can preserve all placements except explicitly selected rigid
+build-instance transforms or bed-local tower XY coordinates for a known plate.
+Use the inspected build transform, not a composed resource transform. Bind edits
+to the source hash; disable automatic arrangement and orientation. Source spacing
+does not include generated support/brim expansion. Read final verification and
+deposition footprints after slicing; missing native identity or uncertain
+normalization remains unmeasured. Unknown metadata stays in the original/private
+source, while its native-export preservation and painted masks remain unverified.
+A model-only picture cannot show final support, brim and tower footprints.
 
 The preparing agent owns collision identification and clearance review, using
 backend checks and the available geometry and toolpath observations. Before
@@ -166,9 +170,12 @@ or an unsupported check into a clearance pass. Keep physical bed-readiness
 questions separate from this responsibility to analyze the prepared job.
 
 Discover the printer's tower implementation before choosing its controls.
-Orca's Bambu profiles use Type 1; cone stabilization, tower rotation and several
-purge controls belong to Type 2. Setting-name presence alone does not establish
-that a control affects the selected tower. Inspect applicable `prime_tower_width`,
+Orca's Bambu profiles use Type 1. Cone stabilization and purge controls need
+type-specific evidence. The packaged fork also wires tower rotation through its
+shared G-code integration; do not infer that rotation is ignored from an upstream
+Type 1/Type 2 label. Verify the final generated paths for the selected engine.
+Setting-name presence alone does not establish that a control affects the
+selected tower. Inspect applicable `prime_tower_width`,
 `prime_tower_brim_width` and `prime_tower_enable_framework` values and the generated
 result. Do not assume a globally best tower location, brim width or Z-hop height.
 Bed-moving printers and fixed-bed machines have different motion considerations.
@@ -314,9 +321,12 @@ recheck. Supply known machine-component bounds and their source through
 a passing check. Missing envelopes, dimensions or effective bed metadata remain
 unmeasured. Supply `clearance.initial_position` only with evidence for the starting
 nozzle coordinates in the input G-code frame; never infer them from zeroes.
-Read coverage and unresolved reasons: conservative line envelopes and
-explicit linear motion do not establish source-solid intersections, arc
-clearance, firmware macro motion or physical resistance to warping and buildup.
+Read source-solid findings and final placement verification separately from
+linear toolpath checks. Retained deposition bounds include available line width,
+height and end margins for parts, supports, brims and towers. Their XY separation
+is a conservative lower bound; overlapping bounds do not prove contact. Read
+coverage and unresolved reasons: linear motion does not establish arc clearance,
+firmware macro motion or physical resistance to warping and buildup.
 Any required unmeasured or unsupported check still prevents a print-ready
 recommendation.
 

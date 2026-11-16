@@ -913,7 +913,7 @@ mod tests {
     /// choice.
     const CONTRACT_BUDGETS: &[(&str, usize, usize)] = &[
         ("skill", 700, 0),
-        ("slice", 11_500, 0),
+        ("slice", 14_500, 0),
         ("printer", 4_300, 0),
         ("print", 13_700, 0),
         ("status", 300, 2_700),
@@ -940,7 +940,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 182_500;
+    const CATALOG_BUDGET: usize = 186_000;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {
@@ -955,6 +955,7 @@ mod tests {
         let compact = |value: &serde_json::Value| serde_json::to_string(value).unwrap().len();
         let mut catalog = 0;
         let mut names = Vec::new();
+        let mut violations = Vec::new();
         for meta in crate::tools::workflows::advertised(available) {
             let tool = super::PrintableServer::to_rmcp_tool(meta);
             let &(_, input_budget, output_budget) = CONTRACT_BUDGETS
@@ -965,16 +966,18 @@ mod tests {
             let output = tool.output_schema.as_ref().map_or(0, |schema| {
                 compact(&serde_json::Value::Object((**schema).clone()))
             });
-            assert!(
-                input <= input_budget,
-                "{}: input schema is {input} bytes",
-                meta.name
-            );
-            assert!(
-                output <= output_budget,
-                "{}: output schema is {output} bytes",
-                meta.name
-            );
+            if input > input_budget {
+                violations.push(format!(
+                    "{}: input schema is {input} bytes (budget {input_budget})",
+                    meta.name
+                ));
+            }
+            if output > output_budget {
+                violations.push(format!(
+                    "{}: output schema is {output} bytes (budget {output_budget})",
+                    meta.name
+                ));
+            }
             assert_eq!(output == 0, output_budget == 0, "{}", meta.name);
             assert!(
                 meta.description.chars().count() <= DESCRIPTION_BUDGET,
@@ -986,10 +989,12 @@ mod tests {
             names.push(meta.name);
         }
         assert_eq!(names.len(), CONTRACT_BUDGETS.len(), "{names:?}");
-        assert!(
-            catalog <= CATALOG_BUDGET,
-            "tools/list entries are {catalog} bytes"
-        );
+        if catalog > CATALOG_BUDGET {
+            violations.push(format!(
+                "tools/list entries are {catalog} bytes (budget {CATALOG_BUDGET})"
+            ));
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     #[test]

@@ -2,7 +2,10 @@
 
 pub mod capture;
 mod definitions;
+pub mod layout;
+pub mod model;
 pub mod package;
+pub mod placement;
 pub mod preflight;
 pub mod profiles;
 pub mod review;
@@ -10,6 +13,7 @@ pub mod setup;
 pub mod summary;
 #[cfg(test)]
 mod tests;
+mod tower;
 
 use crate::{error::ToolError, projects, provenance, upload::random_hex_id};
 use printable_workspace::Workspace;
@@ -198,6 +202,9 @@ pub struct PrepareParams {
     /// remains unmeasured; supplied component envelopes are relative to the nozzle.
     #[serde(default)]
     pub clearance: preflight::PreflightOptions,
+    /// Preserve every instance except explicit rigid placements. Automatic
+    /// arrangement/orientation must be disabled when these controls are present.
+    pub layout: Option<placement::LayoutControls>,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
@@ -225,11 +232,12 @@ pub struct SliceHandle {
 pub enum SliceRequest {
     Profiles(ProfileQuery),
     Settings(profiles::SettingsQuery),
-    Prepare(PrepareParams),
+    Prepare(Box<PrepareParams>),
     Status(SliceHandle),
     Cancel(SliceHandle),
     Review(review::ReviewParams),
     Capture(capture::CaptureParams),
+    InspectLayout(layout::InspectParams),
 }
 
 struct Active {
@@ -259,6 +267,8 @@ pub struct SliceWorker {
     workspace: Arc<Workspace>,
     profiles: Profiles,
     binary: PathBuf,
+    geometry_worker_bin: Option<PathBuf>,
+    geometry_worker_memory_bytes: u64,
     admission: Arc<Semaphore>,
     active: Mutex<Option<Active>>,
     /// True while a plate preview holds admission. A preview takes admission
@@ -333,10 +343,26 @@ impl SliceWorker {
             workspace,
             profiles,
             binary,
+            geometry_worker_bin: None,
+            geometry_worker_memory_bytes: 1024 * 1024 * 1024,
             admission: Arc::new(Semaphore::new(1)),
             active: Mutex::new(None),
             previewing: Arc::new(std::sync::Mutex::new(false)),
         }
+    }
+
+    /// Use the same explicitly configured isolation limits as assembly analysis.
+    pub fn with_geometry_worker(
+        mut self,
+        binary: Option<PathBuf>,
+        memory_bytes: u64,
+    ) -> Result<Self, ToolError> {
+        if memory_bytes == 0 {
+            return Err(invalid("geometry worker memory budget must be positive"));
+        }
+        self.geometry_worker_bin = binary;
+        self.geometry_worker_memory_bytes = memory_bytes;
+        Ok(self)
     }
 
     /// Admit an interactive operation. A plate preview is bounded, so an
@@ -480,11 +506,12 @@ impl SliceWorker {
         match request {
             SliceRequest::Profiles(query) => self.profiles.discover(query),
             SliceRequest::Settings(query) => self.profiles.settings(query),
-            SliceRequest::Prepare(params) => self.prepare(params).await,
+            SliceRequest::Prepare(params) => self.prepare(*params).await,
             SliceRequest::Status(handle) => self.status(handle, false).await,
             SliceRequest::Cancel(handle) => self.status(handle, true).await,
             SliceRequest::Review(params) => self.review(params).await,
             SliceRequest::Capture(params) => self.capture(params).await,
+            SliceRequest::InspectLayout(params) => self.inspect_layout(params).await,
         }
     }
 
@@ -622,6 +649,14 @@ impl SliceWorker {
 
     async fn prepare(self: &Arc<Self>, params: PrepareParams) -> Result<Value, ToolError> {
         params.clearance.validate()?;
+        if let Some(layout) = &params.layout {
+            layout.validate()?;
+            if params.auto_arrange || params.auto_orient {
+                return Err(invalid(
+                    "precise layout preservation requires automatic arrangement and orientation to be disabled",
+                ));
+            }
+        }
         if params.timeout_seconds == 0
             || params.filaments.is_empty()
             || std::time::Instant::now()
@@ -637,6 +672,11 @@ impl SliceWorker {
             .and_then(|x| x.to_str())
             .filter(|x| ["stl", "3mf"].contains(x))
             .ok_or_else(|| invalid("slicing accepts STL or 3MF"))?;
+        if params.layout.is_some() && extension != "3mf" {
+            return Err(invalid(
+                "precise instance placement requires an authored 3MF",
+            ));
+        }
         let source_path = projects::resolve(&self.workspace, &params.project_id, &params.source)?;
         let output = slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
         let printer = self.profiles.resolve(Category::Printer, &params.printer)?;
@@ -689,6 +729,15 @@ impl SliceWorker {
         })
         .await
         .map_err(|_| slice_error("source snapshot task failed"))??;
+        if params
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout.source_sha256 != source_hash)
+        {
+            return Err(invalid(
+                "source changed since layout selection; inspect the current source before preparing placements",
+            ));
+        }
         let design_evidence = provenance::design_evidence(
             &self.workspace,
             params.design_record.as_ref(),
@@ -771,7 +820,7 @@ impl SliceWorker {
                     let data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
                         "settings":settings,"settings_sha256":provenance::digest(&serde_json::to_vec(&settings).expect("JSON value serializes")),
                         "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
-                        "design_evidence":design_evidence,"artifacts":artifacts,"preflight":preflight});
+                        "design_evidence":design_evidence,"artifacts":artifacts,"preflight":preflight,"source_layout":terminal["source_layout"],"final_layout":terminal["final_layout"]});
                     match provenance::store(
                         &worker.workspace,
                         provenance::Kind::Slice,
@@ -857,6 +906,69 @@ impl SliceWorker {
         use std::os::unix::process::CommandExt;
         let staging = staging_owner.path();
         let output = staging.join("output");
+        let source_report = if source
+            .extension()
+            .is_some_and(|extension| extension == "3mf")
+        {
+            let options = layout::InspectOptions {
+                minimum_gap_mm: params
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout.minimum_gap_mm)
+                    .unwrap_or(0.),
+                intended_interfaces: params
+                    .layout
+                    .as_ref()
+                    .map(|layout| layout.intended_interfaces.clone())
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            let inspected = tokio::select! {
+                _ = cancel.cancelled() => return Err(slice_error("source layout inspection cancelled")),
+                inspected = layout::run_worker(self,source,staging,&options,params.layout.as_ref()) => inspected,
+            };
+            match inspected {
+                Ok(report) => report,
+                Err(error) if params.layout.is_some() => return Err(error),
+                Err(error) => json!({"state":"unmeasured","scope":"authored_source_solids",
+                    "findings":[],"unresolved":["source_inspection_failed"],
+                    "error":{"code":error.code(),"message":error.to_string()}}),
+            }
+        } else {
+            json!({"state":"unmeasured","scope":"authored_source_solids","findings":[],
+                "unresolved":["source_instance_inspection_requires_3mf"]})
+        };
+        let prepared_source = params.layout.as_ref().map(|_| staging.join("prepared.3mf"));
+        let source = prepared_source.as_deref().unwrap_or(source);
+        let prepared_source_sha256 = hash_file(source)?;
+        let destination = slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
+        let report_bytes = serde_json::to_vec(&source_report)?;
+        let report_sha256 = provenance::digest(&report_bytes);
+        let report_artifact = self.workspace.write_generated_bytes(
+            &format!("{destination}/source-layout.json"),
+            &report_bytes,
+            false,
+        )?;
+        if let Some(prepared) = &prepared_source {
+            self.workspace.commit_generated_artifact_bounded(
+                &format!("{destination}/prepared.3mf"),
+                prepared,
+                false,
+                u64::MAX,
+            )?;
+        }
+        let findings = source_report["findings"]
+            .as_array()
+            .ok_or_else(|| slice_error("source layout report omitted findings"))?;
+        let source_layout = json!({"state":source_report["state"],
+                "scope":"authored_source_solids_before_native_transforms",
+                "findings":findings.iter().take(32).collect::<Vec<_>>(),"findings_count":findings.len(),"findings_truncated":findings.len()>32,
+                "unresolved":source_report["unresolved"],"error":source_report["error"],"report_sha256":report_sha256,
+                "report_artifact":report_artifact,"prepared_source_sha256":prepared_source_sha256,
+                "final_layout_preservation":"unmeasured"});
+        if let Some(active) = self.active.lock().await.as_mut() {
+            active.state["source_layout"] = source_layout.clone();
+        }
         let progress_path = staging.join("progress.fifo");
         if !Command::new("/usr/bin/mkfifo")
             .arg(&progress_path)
@@ -966,6 +1078,67 @@ impl SliceWorker {
             false,
         )?;
         result?;
+        let final_staging = staging.join("final-layout");
+        std::fs::create_dir(&final_staging)?;
+        let native_package = output.join("model.gcode.3mf");
+        let native_package_sha256 = hash_file(&native_package)?;
+        let final_options = layout::InspectOptions::default();
+        let exported = tokio::select! {
+            _ = cancel.cancelled() => return Err(slice_error("final layout inspection cancelled")),
+            result = layout::run_worker(self,&native_package,&final_staging,&final_options,None) => result,
+        };
+        let mut exported = match exported {
+            Ok(report) => report,
+            Err(error) => {
+                json!({"state":"unmeasured","findings":[],"unresolved":["exported_layout_inspection_failed"],
+                "error":{"code":error.code(),"message":error.to_string()}})
+            }
+        };
+        layout::apply_final_interfaces(&source_report, &mut exported, params.layout.as_ref());
+        let mut preservation = layout::compare_final(
+            &source_report,
+            &exported,
+            params.auto_arrange || params.auto_orient,
+        );
+        layout::check_requested_towers(&mut preservation, &exported, params.layout.as_ref());
+        let tower_context = self.profiles.native_tower_context(
+            exported["native_metadata"]["project_settings"]
+                .as_object()
+                .map(|_| &exported["native_metadata"]["project_settings"]),
+        );
+        let final_report = json!({"format_version":1,"scope":"native_exported_source_solids",
+            "native_package_sha256":native_package_sha256,"prepared_source_sha256":prepared_source_sha256,
+            "source_report_sha256":report_sha256,"layout":exported,"preservation":preservation,
+            "tower_context":tower_context,"generated_footprints_source":"preflight.json:plates"});
+        let bytes = serde_json::to_vec(&final_report)?;
+        let final_artifact = self.workspace.write_generated_bytes(
+            &format!("{destination}/final-layout.json"),
+            &bytes,
+            false,
+        )?;
+        let final_findings = preservation["findings"]
+            .as_array()
+            .expect("comparison findings");
+        let final_layout = json!({"state":preservation["state"],"findings":final_findings.iter().take(32).collect::<Vec<_>>(),
+            "findings_count":final_findings.len(),"findings_inline_truncated":final_findings.len()>32,
+            "unresolved":preservation["unresolved"],"authored_feature_preservation":preservation["authored_feature_preservation"],
+            "material_assignment_preservation":preservation["material_assignment_preservation"],
+            "report_artifact":final_artifact,"report_sha256":provenance::digest(&bytes),
+            "native_package_sha256":native_package_sha256});
+        let native_solids = json!({"state":exported["state"],"scope":"native_exported_source_solids",
+            "findings":exported["findings"].as_array().into_iter().flatten().take(32).collect::<Vec<_>>(),
+            "findings_count":exported["findings"].as_array().map_or(0,Vec::len),
+            "findings_inline_truncated":exported["findings"].as_array().is_some_and(|f|f.len()>32),
+            "report_artifact":final_artifact,"report_sha256":provenance::digest(&bytes),"unresolved":exported["unresolved"]});
+        let source_conflicts_resolved = (params.auto_arrange || params.auto_orient)
+            && source_layout["state"] == "failed"
+            && exported["state"] == "passed"
+            && preservation["state"] == "passed";
+        if let Some(active) = self.active.lock().await.as_mut() {
+            active.state["final_layout"] = final_layout.clone();
+            active.state["source_layout"]["final_layout_preservation"] =
+                preservation["state"].clone();
+        }
         let workspace = Arc::clone(&self.workspace);
         let clearance = params.clearance.clone();
         let deadline = clearance.deadline();
@@ -1019,19 +1192,25 @@ impl SliceWorker {
                     "native slice omitted its 3MF or toolpath; retained outputs require inspection",
                 ));
             }
-            let status = if plates.values().any(|p| p["status"] == "blocked") {
+            let source_failed = source_layout["state"] == "failed" && !source_conflicts_resolved;
+            let native_solids_failed = native_solids["state"] == "failed";
+            let layout_failed = final_layout["state"] == "failed";
+            let status = if source_failed || native_solids_failed || layout_failed || plates.values().any(|p| p["status"] == "blocked") {
                 "blocked"
             } else if plates
                 .values()
                 .all(|p| p["status"] == "modeled_checks_passed")
+                && (source_layout["state"] == "passed" || source_conflicts_resolved) && native_solids["state"]=="passed" && final_layout["state"] == "passed"
             {
                 "modeled_checks_passed"
             } else {
                 "unresolved"
             };
             let preflight = json!({"format_version":1,"status":status,
-                "engine":{"name":"OrcaSlicer","version":ENGINE_VERSION},
-                "plates":plates,"physical_result":"not_observed"});
+                "engine":{"name":"OrcaSlicer","version":ENGINE_VERSION,"source_revision":ENGINE_SOURCE_REVISION},
+                "tower_context":tower_context,"source_layout":source_layout,
+                "native_solids":native_solids,"source_conflicts_resolved_by_verified_native_layout":source_conflicts_resolved,
+                "final_layout":final_layout,"plates":plates,"physical_result":"not_observed"});
             let bytes = serde_json::to_vec(&preflight)?;
             let artifact = workspace.write_generated_bytes(
                 &format!("{destination}/preflight.json"),
@@ -1042,6 +1221,9 @@ impl SliceWorker {
                 "preflight.json".into(),
                 json!({"artifact":artifact,"sha256":provenance::digest(&bytes)}),
             );
+            let mut preflight = preflight::compact(preflight);
+            preflight["report_artifact"] = artifacts["preflight.json"]["artifact"].clone();
+            preflight["report_sha256"] = json!(provenance::digest(&bytes));
             Ok(SliceOutputs {
                 artifacts: json!(artifacts),
                 preflight,

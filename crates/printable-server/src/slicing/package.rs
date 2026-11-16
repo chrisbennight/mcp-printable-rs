@@ -41,7 +41,7 @@ fn invalid(message: &str) -> ToolError {
     ToolError::Validation(format!("sliced 3MF package {message}"))
 }
 
-fn open(path: &Path) -> Result<ZipArchive<File>, ToolError> {
+pub(super) fn open(path: &Path) -> Result<ZipArchive<File>, ToolError> {
     let archive = ZipArchive::new(File::open(path)?)
         .map_err(|error| invalid(&format!("cannot be read: {error}")))?;
     if archive.len() > MAX_ENTRIES {

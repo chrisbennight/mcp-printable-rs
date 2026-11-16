@@ -47,6 +47,34 @@ fn artifact() -> Value {
     )
 }
 
+fn source_layout() -> Value {
+    object(
+        json!({"source_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+        "state":{"enum":["passed","failed","unmeasured"]},
+        "instances":{"type":"array","maxItems":32,"items":{"type":"object"}},
+        "instances_count":{"type":"integer","minimum":0},"instances_truncated":{"type":"boolean"},
+        "findings":{"type":"array","maxItems":32,"items":{"type":"object"}},
+        "findings_count":{"type":"integer","minimum":0},"findings_truncated":{"type":"boolean"},
+        "unresolved":{"type":"array","items":{"type":"string"}},
+        "report_artifact":artifact(),"report_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+        "generated_toolpath_clearance":{"const":"unmeasured"}}),
+        &[
+            "source_sha256",
+            "state",
+            "instances",
+            "instances_count",
+            "instances_truncated",
+            "findings",
+            "findings_count",
+            "findings_truncated",
+            "unresolved",
+            "report_artifact",
+            "report_sha256",
+            "generated_toolpath_clearance",
+        ],
+    )
+}
+
 fn photo_job() -> Value {
     let result = object(
         json!({
@@ -574,6 +602,7 @@ fn typed<T: schemars::JsonSchema>(name: &str) -> Value {
 pub fn action_schema(name: &str, action: &str) -> Option<Value> {
     use crate::projects::{Project, card::Card, catalog::SearchView, index};
     let mut schema = match (name, action) {
+        ("slice", "inspect_layout") => with_errors(name, source_layout()),
         ("printer" | "print", _) => crate::printers::action_output_schema(name, action)?,
         ("cad_build", _) => cad_action_schema(action)?,
         ("catalog", "search") => typed::<SearchView>(name),
@@ -634,12 +663,14 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             schema
         }
         "slice" => json!({"type":"object","anyOf":[
+            source_layout(),
             {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["kind","source_sha256","image","metadata_path"],"properties":{"kind":{"const":"actual_toolpath"},"source_sha256":{"type":"string"},"image":{"type":"object"},"metadata_path":{"type":"string"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
             {"required":["profiles","total","next_offset"],"properties":{"profiles":{"type":"array"},"total":{"type":"integer"}}},
             {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
                 "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
+                "source_layout":{"type":"object"},"final_layout":{"type":"object"},
                 "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
         ]}),
         "printer" | "print" => crate::printers::output_schema(name),

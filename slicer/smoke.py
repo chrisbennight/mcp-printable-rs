@@ -15,7 +15,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from PIL import Image
-from capture_fixture import COLORS, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
+from capture_fixture import COLORS, create_banded_fixture, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
+from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, tower_paths
 
 
 def verify_package(path):
@@ -118,7 +119,12 @@ with tempfile.TemporaryDirectory() as directory:
         "format_version": 1, "project_id": "native-slice", "name": "Native slice",
         "description": "", "root": "projects/native-slice"}))
     (project / "source.stl").write_text(cube())
-    env = {**os.environ, "PRINTABLE_WORKSPACE_ROOT": str(root)}
+    software_profile_root = root / "profiles/BBL"
+    software_profiles = create_software_profiles(
+        os.environ.get("PRINTABLE_SLICER_PROFILES", "/opt/orca/resources/profiles/BBL"),
+        software_profile_root)
+    env = {**os.environ, "PRINTABLE_WORKSPACE_ROOT": str(root),
+           "PRINTABLE_SLICER_PROFILES": str(software_profile_root)}
 
     def start():
         process = subprocess.Popen(["/usr/local/bin/printable-slicer-worker"], env=env)
@@ -152,6 +158,7 @@ with tempfile.TemporaryDirectory() as directory:
                                       "query": "brim_type"})
         assert any(row["key"] == "brim_type" and row["overrideable"] for row in hidden["settings"])
         handles = []
+        terminal_states = {}
         colours = {"a1": "#0A2CE3", "x1c-reslice": "#C12E1F"}
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
@@ -281,6 +288,281 @@ with tempfile.TemporaryDirectory() as directory:
                    zip(bounds["min"], bounds["max"], [10, 10, 3])), "prepared capture changed its source geometry"
         assert hashlib.sha256(fixture_path.read_bytes()).hexdigest() == source_hash, "capture changed source bytes"
         print("Native three-plate layout capture, source transforms, colors, towers, camera controls and replay passed")
+
+        # These isolated child profiles retain native BBL tower generation but
+        # replace firmware scripts. Their output must never reach a printer.
+        material_source = project / "material-layout.3mf"
+        create_fixture(project / "capture-template/model.gcode.3mf", material_source,
+                       part_heights_mm=(2, 4), plate_count=2)
+        material_hash = hashlib.sha256(material_source.read_bytes()).hexdigest()
+        inspected = request("inspect_layout", {"project_id": "native-slice", "source": material_source.name,
+            "output_dir": "material-source-inspection", "expected_source_sha256": material_hash})
+        assert inspected["source_sha256"] == material_hash and inspected["instances_count"] == 4
+        assert {item["native_plate"] for item in inspected["instances"]} == {1, 2}
+        common_overrides = {"enable_prime_tower": "1", "wipe_tower_wall_type": "rectangle",
+            "prime_tower_width": "35", "prime_tower_brim_width": "3",
+            "prime_tower_enable_framework": "1", "wipe_tower_rotation_angle": "0"}
+        material_results = {}
+
+        def material_trial(name, *, overrides=None, layout=None, source=None, clearance=None, plate=0,
+                           expected_source_state="passed", constraint=None, require_towers=True):
+            handle = {"project_id": "native-slice", "output_dir": name}
+            params = {**handle, "source": source or material_source.name, "plate": plate,
+                "build_plate": "Textured PEI Plate", "printer": {"name": software_profiles["printer"]},
+                "process": {"name": software_profiles["process"],
+                            "overrides": {**common_overrides, **(overrides or {})}},
+                "filaments": [{"name": software_profiles["pla"], "colour": color} for color in COLORS],
+                "auto_arrange": False, "auto_orient": False, "timeout_seconds": 300}
+            if layout is not None:
+                params["layout"] = layout
+            if clearance is not None:
+                params["clearance"] = clearance
+            state = request("prepare", params)
+            deadline = time.monotonic() + 360
+            while state["status"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.5)
+                state = request("status", handle)
+            assert state["source_layout"]["state"] == expected_source_state, state.get("source_layout")
+            if state["status"] != "completed":
+                expected_reasons = {
+                    "crowded": ("collision", "too close", "overlap"),
+                    "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close"),
+                    "sequential": ("collision", "too close", "by object", "sequential", "prime tower", "wipe tower"),
+                }
+                if (constraint and state["status"] == "failed"
+                        and any(reason in state.get("error", "").lower() for reason in expected_reasons[constraint])):
+                    handles.append(handle)
+                    terminal_states[name] = "failed"
+                    material_results[name] = {"state": state, "towers": []}
+                    print("NATIVE_CONSTRAINT_REJECTION", name, state["error"], flush=True)
+                    return []
+                log = project / name / "build-log.json"
+                raise RuntimeError(f"material fixture failed: {state}; {log.read_text() if log.exists() else 'no native log'}")
+            paths = sorted(key for key in state["artifacts"] if key.endswith(".gcode"))
+            assert len(paths) == (2 if plate == 0 else 1), ("native selected plate toolpaths missing", paths)
+            measured = ([tower_paths((project / name / path).read_text()) for path in paths]
+                        if require_towers else [])
+            final_report = project / name / "final-layout.json"
+            final_bytes = final_report.read_bytes()
+            assert hashlib.sha256(final_bytes).hexdigest() == state["final_layout"]["report_sha256"]
+            final = json.loads(final_bytes)
+            assert final["native_package_sha256"] == state["artifacts"]["model.gcode.3mf"]["sha256"]
+            assert state["final_layout"]["state"] in (("passed", "unmeasured", "failed") if constraint else ("passed", "unmeasured")), state["final_layout"]
+            assert state["final_layout"]["authored_feature_preservation"] == "unverified_after_native_export"
+            assert state["final_layout"]["material_assignment_preservation"] == "unverified_after_native_export"
+            for evidence in state["preflight"]["plates"].values():
+                assert evidence["coordinate_frame"] == "final_gcode" and evidence["units"] == "mm"
+                if require_towers:
+                    assert any(item["role"] == "prime_tower" for item in evidence["deposited_footprints"]["items"]), evidence
+            handles.append(handle)
+            material_results[name] = {"state": state, "towers": measured}
+            return measured
+
+        baseline_towers = material_trial("material-baseline")
+        selected = next(item for item in inspected["instances"] if item["build_index"] == 0)
+        placed_transform = list(selected["build_transform_3mf"])
+        placed_transform[9] += 5
+        original_tower = (256 * 0.73, 256 * 0.62)
+        shifted_towers = material_trial("material-shifted", layout={"source_sha256": material_hash,
+            "placements": [{"build_index": 0, "transform_3mf": placed_transform}],
+            "tower_positions": [{"plate": 2, "position_mm": [original_tower[0] + 8, original_tower[1] + 6]}],
+            "minimum_gap_mm": 3})
+        for edge in ("minimum_mm", "maximum_mm"):
+            assert all(abs(a - b) < 0.02 for a, b in zip(baseline_towers[0][edge], shifted_towers[0][edge])), (
+                "unselected plate tower moved", edge)
+            assert all(abs((b - a) - expected) < 0.02 for a, b, expected in
+                       zip(baseline_towers[1][edge], shifted_towers[1][edge], (8, 6, 0))), (
+                "selected tower placement did not affect native paths", edge)
+        wide_towers = material_trial("material-wide", overrides={"prime_tower_width": "45"})
+        for baseline, wider in zip(baseline_towers, wide_towers):
+            assert wider["maximum_mm"][0] - wider["minimum_mm"][0] > (
+                baseline["maximum_mm"][0] - baseline["minimum_mm"][0] + 5), "rectangle tower width override was ineffective"
+        rotated_towers = material_trial("material-rotated", overrides={"wipe_tower_rotation_angle": "45"})
+        assert any(abs(a - b) > 0.5 for a, b in zip(baseline_towers[0]["maximum_mm"], rotated_towers[0]["maximum_mm"])), (
+            "pinned BBL rotation path did not affect actual tower coordinates")
+        cone_towers = material_trial("material-cone", overrides={"wipe_tower_cone_angle": "60"})
+        for baseline, cone in zip(baseline_towers, cone_towers):
+            def coordinates(tower):
+                return [(path["material"], path["from_mm"], path["to_mm"]) for path in tower["paths"]]
+            assert coordinates(baseline) == coordinates(cone), "Type 1 cone unexpectedly changed generated tower paths"
+        framework_off = material_trial("material-framework-off", overrides={"prime_tower_enable_framework": "0"})
+        assert coordinates(framework_off[0]) != coordinates(baseline_towers[0]), "framework override did not change actual tower paths"
+        larger_brim = material_trial("material-larger-brim", overrides={"prime_tower_brim_width": "8"})
+        assert any(abs(a - b) > 1 for a, b in zip(baseline_towers[0]["minimum_mm"], larger_brim[0]["minimum_mm"])), "tower brim override did not change actual footprint"
+        material_trial("material-obstructed-head", clearance={
+            "initial_position": {"position_mm": [0, 0, 0], "source": "explicit software fixture start"},
+            "machine_envelopes": [{"component": "synthetic obstructing head", "minimum_mm": [-30, -30, -0.1],
+                "maximum_mm": [30, 30, 10], "source": "deliberate software regression obstruction; no hardware claim"}]})
+        obstructed = material_results["material-obstructed-head"]["state"]
+        assert obstructed["preflight"]["status"] == "blocked", obstructed["preflight"]
+        assert any(finding["kind"] == "toolhead_interference" for evidence in obstructed["preflight"]["plates"].values()
+                   for finding in evidence["findings"]), "successful native slice did not retain the known head obstruction"
+        slender_source = project / "material-slender.3mf"
+        create_fixture(project / "capture-template/model.gcode.3mf", slender_source,
+                       part_heights_mm=(20, 30), plate_count=1, xy_scale=(0.35, 0.35))
+        material_trial("material-slender-sparse", source=slender_source.name, plate=1,
+                       overrides={"wipe_tower_no_sparse_layers": "1", "prime_tower_width": "8"})
+        sparse_state = material_results["material-slender-sparse"]["state"]
+        assert sparse_state["preflight"]["status"] in ("blocked", "unresolved"), sparse_state["preflight"]
+        banded_source = project / "material-banded.3mf"
+        banded = create_banded_fixture(project / "capture-template/model.gcode.3mf", banded_source)
+        banded_hash = hashlib.sha256(banded_source.read_bytes()).hexdigest()
+        banded_evidence = {}
+        for skip_sparse in (False, True):
+            name = f"banded-sparse-{int(skip_sparse)}"
+            material_trial(name, source=banded_source.name, plate=1, require_towers=False,
+                overrides={"prime_tower_width": "8", "wipe_tower_no_sparse_layers": str(int(skip_sparse))},
+                layout={"source_sha256": banded_hash, "tower_positions": [{"plate": 1,
+                    "position_mm": banded["tower_position_mm"]}]},
+                clearance={"initial_position": {"position_mm": [0, 0, 0], "source": "explicit software fixture start"},
+                    "machine_envelopes": [{"component": "synthetic sparse-descent head", "minimum_mm": [-35, -35, 0.01],
+                        "maximum_mm": [35, 35, 14], "source": "deliberate software fixture envelope; no hardware claim"}]})
+            state = material_results[name]["state"]
+            toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
+            deposition, changes = linear_deposition_paths((project / name / toolpath).read_text())
+            tower = [path for path in deposition if path["feature"] in ("Prime tower", "Wipe tower")]
+            assert len(tower) > 8 and len(changes) >= 2 and {material for _, material in changes} >= {0, 1}
+            assert any(path["to_mm"][2] > 11 for path in deposition
+                       if path["feature"] not in ("Prime tower", "Wipe tower"))
+            banded_evidence[skip_sparse] = {"tower": tower, "state": state, "deposition": deposition}
+        dense_height = max(path["to_mm"][2] for path in banded_evidence[False]["tower"])
+        sparse_height = max(path["to_mm"][2] for path in banded_evidence[True]["tower"])
+        assert dense_height - sparse_height > 4, ("sparse-layer override did not change actual tower heights", dense_height, sparse_height)
+        printed_height = 0
+        late_low_tower = False
+        for path in banded_evidence[True]["deposition"]:
+            if path["feature"] in ("Prime tower", "Wipe tower"):
+                late_low_tower |= printed_height > 8 and path["to_mm"][2] < 5
+            else:
+                printed_height = max(printed_height, path["to_mm"][2])
+        assert late_low_tower, "fixture did not exercise a real late descent to the sparse tower"
+        sparse_report = banded_evidence[True]["state"]["preflight"]
+        assert sparse_report["status"] == "blocked" and any(finding["kind"] == "toolhead_interference"
+            for plate in sparse_report["plates"].values() for finding in plate["findings"]), sparse_report
+        assert not any(finding["kind"] == "toolhead_interference" for plate in
+            banded_evidence[False]["state"]["preflight"]["plates"].values() for finding in plate["findings"])
+        assert hashlib.sha256(banded_source.read_bytes()).hexdigest() == banded_hash
+        first, second = [next(item for item in inspected["instances"] if item["build_index"] == index)
+                         for index in (0, 1)]
+        centers = [[(item["bounds"]["minimum_mm"][axis] + item["bounds"]["maximum_mm"][axis]) / 2
+                    for axis in (0, 1)] for item in (first, second)]
+        crowded_transform = list(second["build_transform_3mf"])
+        for axis in (0, 1):
+            crowded_transform[9 + axis] += centers[0][axis] - centers[1][axis]
+        material_trial("material-crowded", plate=1, constraint="crowded", expected_source_state="failed",
+            require_towers=False, layout={"source_sha256": material_hash,
+                "placements": [{"build_index": 1, "transform_3mf": crowded_transform}]})
+        crowded = material_results["material-crowded"]["state"]
+        assert any(finding["kind"] == "source_part_interference" for finding in crowded["source_layout"]["findings"])
+        if crowded["status"] == "completed":
+            assert crowded["preflight"]["status"] == "blocked"
+        material_trial("material-fused-interface", plate=1, constraint="crowded", require_towers=False,
+            layout={"source_sha256": material_hash,
+                "placements": [{"build_index": 1, "transform_3mf": crowded_transform}],
+                "intended_interfaces": [{"build_indices": [0, 1],
+                    "reason": "Deliberate software fixture fused interface; no physical bond claim"}]})
+        fused = material_results["material-fused-interface"]["state"]
+        assert fused["source_layout"]["state"] == "passed" and not fused["source_layout"]["findings"]
+        fused_report = json.loads((project / "material-fused-interface/source-layout.json").read_text())
+        assert any(pair.get("intended_interface") and pair["solid_analysis"]["relation"] == "interfering"
+                   for pair in fused_report["pairs"]), "intended interface lost its actual interference evidence"
+        material_trial("material-tower-edge", plate=1, constraint="edge", require_towers=False,
+            layout={"source_sha256": material_hash,
+                    "tower_positions": [{"plate": 1, "position_mm": [-10, 160]}]})
+        edge = material_results["material-tower-edge"]["state"]
+        if edge["status"] == "completed":
+            assert edge["preflight"]["status"] in ("blocked", "unresolved"), edge["preflight"]
+            assert edge["final_layout"]["state"] in ("failed", "unmeasured"), edge["final_layout"]
+        sequential_transform = list(crowded_transform)
+        sequential_transform[9] += 25
+        material_trial("material-sequential", plate=1, constraint="sequential", require_towers=False,
+            overrides={"print_sequence": "by object", "enable_prime_tower": "0"},
+            layout={"source_sha256": material_hash,
+                "placements": [{"build_index": 1, "transform_3mf": sequential_transform}]},
+            clearance={"initial_position": {"position_mm": [0, 0, 0], "source": "explicit software fixture start"},
+                "machine_envelopes": [{"component": "synthetic sequential head", "minimum_mm": [-30, -30, 0.01],
+                    "maximum_mm": [30, 30, 10], "source": "deliberate software fixture envelope; no hardware claim"}]})
+        sequential = material_results["material-sequential"]["state"]
+        if sequential["status"] == "completed":
+            assert sequential["preflight"]["status"] == "blocked", sequential["preflight"]
+            assert any(finding["kind"] == "toolhead_interference" for evidence in sequential["preflight"]["plates"].values()
+                       for finding in evidence["findings"])
+        material_trial("material-reslice", source="material-baseline/model.gcode.3mf")
+        assert hashlib.sha256(material_source.read_bytes()).hexdigest() == material_hash
+        print("Native repeated material changes, two-plate tower paths, position, rectangle width, rotation, cone applicability and reslicing passed")
+
+        def surface_trial(name, kind, overrides, *, interface=False):
+            source = project / f"{kind}-fixture.stl"
+            design = extruded_fixture(source, kind)
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            handle = {"project_id": "native-slice", "output_dir": name}
+            materials = [{"name": software_profiles["pla"], "colour": color}
+                         for color in (COLORS if interface else COLORS[:1])]
+            state = request("prepare", {**handle, "source": source.name,
+                "build_plate": "Textured PEI Plate", "printer": {"name": software_profiles["printer"]},
+                "process": {"name": software_profiles["process"], "overrides": overrides},
+                "filaments": materials, "auto_arrange": True, "auto_orient": False, "timeout_seconds": 300})
+            deadline = time.monotonic() + 360
+            while state["status"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.5)
+                state = request("status", handle)
+            if state["status"] != "completed":
+                log = project / name / "build-log.json"
+                raise RuntimeError(f"surface fixture failed: {state}; {log.read_text() if log.exists() else 'no native log'}")
+            toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
+            gcode = (project / name / toolpath).read_text()
+            paths, changes = linear_deposition_paths(gcode)
+            assert len(paths) > 10, "surface fixture has no useful actual deposition"
+            final = json.loads((project / name / "final-layout.json").read_text())
+            instances = final["layout"]["instances"]
+            assert instances, "final native surface geometry was not inspected"
+            bounds = instances[0]["footprint"]["bounds"]
+            assert all(abs(a - b) < 0.001 for a, b in zip(bounds["dimensions_mm"], design["bounds_mm"]["max"])), (
+                "native slice changed a fitting-face dimension", bounds, design)
+            review = request("review", {"slice": handle, "toolpath": toolpath,
+                                       "first_layer": 1, "last_layer": 1000})
+            assert review["estimates"]["time"] and review["estimates"]["filament_grams"], review["estimates"]
+            assert review["provenance"] and review["slice_provenance"] == state["provenance"]
+            assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
+            handles.append(handle)
+            return {"handle": handle, "state": state, "design": design, "review": review,
+                    "paths": paths, "changes": changes, "bounds": bounds, "toolpath": toolpath}
+
+        flat_baseline = surface_trial("flat-baseline", "flat", {"ironing_type": "no ironing"})
+        flat_finish = surface_trial("flat-finish", "flat", {"ironing_type": "top"})
+        assert not any(path["feature"] == "Ironing" for path in flat_baseline["paths"])
+        assert sum(path["feature"] == "Ironing" for path in flat_finish["paths"]) > 8
+        relief = surface_trial("relief-detail", "relief", {"ironing_type": "no ironing"})
+        x_origin = relief["bounds"]["minimum_mm"][0]
+        ridges = [path for path in relief["paths"] if 1.05 < path["to_mm"][2] < 1.65
+                  and path["feature"] not in ("Prime tower", "Wipe tower", "Brim", "Skirt")]
+        for low, high in ((8, 9), (13, 14)):
+            assert any(low - 0.3 < path["to_mm"][0] - x_origin < high + 0.3 for path in ridges), (
+                "raised relief ridge disappeared from actual toolpaths", low, high)
+        assert not any(min(path["from_mm"][0], path["to_mm"][0]) < x_origin + 9.5
+                       and max(path["from_mm"][0], path["to_mm"][0]) > x_origin + 12.5 for path in ridges), (
+            "separate relief ridges merged in actual deposition")
+        interface = surface_trial("support-interface", "bridge", {**common_overrides,
+            "enable_support": "1", "support_type": "normal(auto)", "support_on_build_plate_only": "1",
+            "support_filament": "1", "support_interface_filament": "2",
+            "support_interface_top_layers": "3", "support_top_z_distance": "0.2"}, interface=True)
+        interface_paths = [path for path in interface["paths"] if path["feature"] == "Support interface"]
+        assert len(interface_paths) > 8 and {path["material"] for path in interface_paths} == {1}, (
+            "assigned interface material did not produce actual interface paths", len(interface_paths))
+        assert any(3.2 < path["to_mm"][2] < 4.01 for path in interface_paths), "supported underside layers were not exercised"
+        assert {material for _, material in interface["changes"]} >= {0, 1}
+        underside = request("review", {"slice": interface["handle"], "toolpath": interface["toolpath"],
+            "first_layer": 16, "last_layer": 22, "features": ["Support interface"], "material": 1})
+        assert underside["segments"] > 0 and underside["provenance"]
+        evidence = {"engine_source_revision": "63c97a10eab70d6f4af73c29807dddbcab889273",
+            "physical_result": "not_observed", "flat_top": [{"slice": result["handle"],
+                "slice_provenance": result["state"]["provenance"], "review": result["review"]["provenance"],
+                "estimates": result["review"]["estimates"]} for result in (flat_baseline, flat_finish)],
+            "relief_review": relief["review"]["provenance"], "underside_review": underside["provenance"],
+            "limits": ["Software fixture ironing parameters are not physically calibrated.",
+                       "No surface roughness, fit performance, adhesion or dissimilar-material bond is established."]}
+        (project / "native-preparation-evidence.json").write_text(json.dumps(evidence, indent=2))
+        print("Native flat-top comparison estimates, ironing paths, separate relief ridges, fitting dimensions and support-interface transitions passed", json.dumps(evidence))
         # Two-nozzle printers group the loaded filaments between their nozzles.
         # The bundled profiles set no filament colours, so this slice also checks
         # that a colour list shorter than the filament count is handled.
@@ -306,7 +588,7 @@ with tempfile.TemporaryDirectory() as directory:
         worker.wait(timeout=10)
         worker = start()
         for handle in handles:
-            assert request("status", handle)["status"] == "completed"
+            assert request("status", handle)["status"] == terminal_states.get(handle["output_dir"], "completed")
         print("Native A1/X1C slices, overrides, slot colours, vendor profiles, package thumbnails, "
               "actual toolpath images, and restart recovery passed")
     finally:

@@ -127,10 +127,18 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
         state["artifacts"]["preflight.json"]["sha256"],
         provenance::digest(&bytes)
     );
+    let complete_report: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
-        serde_json::from_slice::<Value>(&bytes).unwrap(),
-        state["preflight"]
+        state["preflight"]["report_sha256"],
+        provenance::digest(&bytes)
     );
+    assert_eq!(complete_report["status"], state["preflight"]["status"]);
+    assert_eq!(
+        complete_report["plates"]["plate_1.gcode"]["findings"],
+        plate["findings"]
+    );
+    assert_eq!(plate["findings_count"], 1);
+    assert_eq!(plate["findings_inline_truncated"], false);
     let reference = serde_json::from_value(state["provenance"].clone()).unwrap();
     let retained = provenance::read(
         &worker.workspace,
@@ -160,6 +168,39 @@ async fn invalid_clearance_input_does_not_admit_native_work() {
             .read_generated_bytes("projects/part/slice/state.json")
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn invalid_or_stale_layout_controls_do_not_allocate_public_results_or_start_native_work() {
+    for mode in ["automatic", "stl", "stale"] {
+        let directory = tempfile::tempdir().unwrap();
+        let worker = fixture(directory.path(), false);
+        let mut request = params();
+        request.layout =
+            Some(serde_json::from_value(json!({"source_sha256":"a".repeat(64)})).unwrap());
+        if mode == "automatic" {
+            request.auto_arrange = true;
+        }
+        if mode == "stale" {
+            worker
+                .workspace
+                .write_artifact("projects/part/source.3mf", b"current source bytes", false)
+                .unwrap();
+            request.source = "source.3mf".into();
+        }
+        let error = worker.prepare(request).await.unwrap_err();
+        assert!(
+            error.to_string().contains(match mode {
+                "automatic" => "automatic arrangement and orientation",
+                "stl" => "requires an authored 3MF",
+                "stale" => "source changed since layout selection",
+                _ => unreachable!(),
+            }),
+            "{error}"
+        );
+        assert!(!directory.path().join("slicer-argv.json").exists());
+        assert!(!directory.path().join("projects/part/slice").exists());
+    }
 }
 
 #[tokio::test]
@@ -470,6 +511,7 @@ fn settings_discovery_and_surface_selection_use_profile_overrides() {
     let query = profiles::SettingsQuery {
         category: Category::Filament,
         profile: request.filaments[0].profile(),
+        printer: None,
         query: "hot_plate_temp".into(),
         offset: 0,
         limit: 1,

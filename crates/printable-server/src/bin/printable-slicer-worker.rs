@@ -51,11 +51,19 @@ async fn main() -> anyhow::Result<()> {
     let binary = PathBuf::from(
         std::env::var("PRINTABLE_SLICER_BIN").unwrap_or_else(|_| "/opt/orca/AppRun".into()),
     );
-    let worker = Arc::new(SliceWorker::new(
-        Arc::new(Workspace::open(Some(&root), None)?),
-        Profiles::load(&profiles)?,
-        binary,
-    ));
+    let worker = Arc::new(
+        SliceWorker::new(
+            Arc::new(Workspace::open(Some(&root), None)?),
+            Profiles::load(&profiles)?,
+            binary,
+        )
+        .with_geometry_worker(
+            std::env::var_os("PRINTABLE_GEOMETRY_WORKER_BIN")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+            printable_server::config::geometry_worker_memory_bytes(&|key| std::env::var(key).ok())?,
+        )?,
+    );
     let readiness = worker.probe_engine().await;
     let health_worker = Arc::clone(&worker);
     let app = Router::new()

@@ -4,4 +4,5 @@ USER 0
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil && rm -rf /var/lib/apt/lists/*
 COPY slicer/smoke.py /opt/printable/slicer-smoke.py
 COPY slicer/capture_fixture.py /opt/printable/capture_fixture.py
+COPY slicer/preparation_fixture.py /opt/printable/preparation_fixture.py
 USER 10001

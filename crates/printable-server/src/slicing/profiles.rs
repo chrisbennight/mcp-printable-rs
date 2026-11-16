@@ -101,6 +101,8 @@ fn default_limit() -> usize {
 pub struct SettingsQuery {
     pub category: Category,
     pub profile: ProfileSelection,
+    /// Optional selected printer for engine-specific tower applicability.
+    pub printer: Option<ProfileSelection>,
     /// Filter native setting names, such as temperature, support or fan.
     #[serde(default)]
     pub query: String,
@@ -268,6 +270,21 @@ impl Profiles {
             return Err(invalid("settings discovery requires a positive limit"));
         }
         let (resolved, sources) = self.resolve_with_sources(query.category, &query.profile)?;
+        let printer = query
+            .printer
+            .as_ref()
+            .map(|p| self.resolve(Category::Printer, p))
+            .transpose()?;
+        let mut tower = super::tower::describe(
+            if query.category == Category::Printer {
+                Some(&resolved)
+            } else {
+                printer.as_ref()
+            },
+            (query.category == Category::Process).then_some(&resolved),
+            &self.definitions,
+        );
+        tower["context_origin"] = json!("resolved_selected_profiles");
         let needle = query.query.to_lowercase();
         let keys: Vec<_> = self.keys[&query.category]
             .iter()
@@ -283,6 +300,7 @@ impl Profiles {
                     else if let Some(profile) = sources.get(key) {json!({"kind":"profile","profile":profile,"inherited":profile != &query.profile.name})}
                     else {json!({"kind":"unspecified"})},
                 "definition":if UNAVAILABLE.contains(&key.as_str()) {None} else {self.definitions.get(key)},
+                "applicability":tower["controls"].get(key).cloned().unwrap_or_else(||json!({"state":"unknown","reason":"job-specific applicability has not been verified"})),
                 "overrideable":refusal(key).is_none()}))
             .collect();
         let next = query.offset.saturating_add(settings.len());
@@ -291,6 +309,7 @@ impl Profiles {
                 "next_offset":(next < total).then_some(next),
                 "value_format":"Orca strings or nonempty string arrays; null means this profile does not specify a value",
                 "catalog_identity":{"engine":"OrcaSlicer","version":super::ENGINE_VERSION,"source_revision":super::ENGINE_SOURCE_REVISION,"runtime_source_verified":false},
+                "tower_context":tower,
                 "definition_limits":"Only literal source facts are reported. Absent bounds and units are undeclared; unknown_fields identifies unresolved expressions. Native defaults do not replace profile values. Applicability requires the selected hardware, material assignments and effective native output; runtime probing establishes version compatibility, not source identity.",
                 "build_plates":super::setup::BuildPlate::ALL.iter().map(|plate| json!({"name":plate,"temperature_setting":plate.temperature_key(),"initial_layer_temperature_setting":format!("{}_initial_layer",plate.temperature_key())})).collect::<Vec<_>>()
             }),
@@ -337,6 +356,12 @@ impl Profiles {
     ) -> Result<Value, ToolError> {
         self.resolve_with_sources(category, selection)
             .map(|(value, _)| value)
+    }
+
+    pub(super) fn native_tower_context(&self, settings: Option<&Value>) -> Value {
+        let mut context = super::tower::describe(settings, settings, &self.definitions);
+        context["context_origin"] = json!("final_native_package_project_settings");
+        context
     }
 
     fn resolve_with_sources(

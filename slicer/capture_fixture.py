@@ -51,8 +51,17 @@ def object_vertices(package, model_path, object_id):
     return points
 
 
-def create_fixture(base_package, destination, print_sequence="by layer"):
+def create_fixture(base_package, destination, print_sequence="by layer", *,
+                   part_heights_mm=None, plate_count=3, xy_scale=(1.8, 1.0)):
     """Keep the packaged printer/material definitions and replace the simple layout."""
+    if plate_count not in (1, 2, 3):
+        raise ValueError("fixture plate count must be one, two or three")
+    if part_heights_mm is not None and (
+            len(part_heights_mm) != 2 or any(not math.isfinite(value) or value <= 0
+                                           for value in part_heights_mm)):
+        raise ValueError("fixture requires two finite positive part heights")
+    if len(xy_scale) != 2 or any(not math.isfinite(value) or value <= 0 for value in xy_scale):
+        raise ValueError("fixture requires two finite positive XY scales")
     ET.register_namespace("", CORE)
     with zipfile.ZipFile(base_package) as package:
         model_path = "3D/3dmodel.model"
@@ -98,7 +107,7 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
         width = max(point[0] for point in area) - min(point[0] for point in area)
         depth = max(point[1] for point in area) - min(point[1] for point in area)
         # Native three-plate placement uses two columns and a one-fifth-bed gap.
-        origins = [(0.0, 0.0), (width * 1.2, 0.0), (0.0, -depth * 1.2)]
+        origins = [(0.0, 0.0), (width * 1.2, 0.0), (0.0, -depth * 1.2)][:plate_count]
         expected = []
         for index, (origin_x, origin_y) in enumerate(origins):
             plate = ET.SubElement(settings, "plate")
@@ -111,11 +120,13 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
             for slot, object_id in enumerate([original_id, second_id]):
                 angle = math.radians([0, 35, 80][index] + slot * 15)
                 cosine, sine = math.cos(angle), math.sin(angle)
-                z_scale = 2 if slot == 0 else [250, 250, 160][index] / (max(point[2] for point in points) - floor)
-                flat = slot == 1 and index == 1
+                model_height = max(point[2] for point in points) - floor
+                z_scale = ((part_heights_mm[slot] / model_height) if part_heights_mm is not None
+                           else (2 if slot == 0 else [250, 250, 160][index] / model_height))
+                flat = part_heights_mm is None and slot == 1 and index == 1
                 pitch_cosine, pitch_sine = (0, 1) if flat else (1, 0)
-                values = [1.8 * cosine, 1.8 * sine, 0,
-                          -sine * pitch_cosine, cosine * pitch_cosine, pitch_sine,
+                values = [xy_scale[0] * cosine, xy_scale[0] * sine, 0,
+                          -xy_scale[1] * sine * pitch_cosine, xy_scale[1] * cosine * pitch_cosine, xy_scale[1] * pitch_sine,
                           sine * pitch_sine * z_scale, -cosine * pitch_sine * z_scale, pitch_cosine * z_scale,
                           0, 0, 0]
                 center = [center_x, center_y, center_z]
@@ -144,33 +155,107 @@ def create_fixture(base_package, destination, print_sequence="by layer"):
         config["print_sequence"] = print_sequence
         config["enable_prime_tower"] = "1"
         config["prime_tower_width"] = "35"
-        tower_x = [width * fraction for fraction in (0.75, 0.73, 0.71)]
-        tower_y = [depth * fraction for fraction in (0.64, 0.62, 0.60)]
+        tower_x = [width * fraction for fraction in (0.75, 0.73, 0.71)[:plate_count]]
+        tower_y = [depth * fraction for fraction in (0.64, 0.62, 0.60)[:plate_count]]
         config["wipe_tower_x"] = list(map(str, tower_x))
         config["wipe_tower_y"] = list(map(str, tower_y))
         config["wipe_tower_rotation_angle"] = "15"
         replacements = {model_path: ET.tostring(model, encoding="utf-8", xml_declaration=True),
                         "Metadata/model_settings.config": ET.tostring(settings, encoding="utf-8", xml_declaration=True),
                         "Metadata/project_settings.config": json.dumps(config).encode()}
-        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as output:
-            for name in package.namelist():
-                if name.endswith(".gcode") or name == "Metadata/slice_info.config":
-                    continue
-                data = replacements.get(name, package.read(name))
-                if name.endswith(".rels"):
-                    relationships = ET.fromstring(data)
-                    for relationship in list(relationships):
-                        if relationship.get("Target", "").endswith(".gcode"):
-                            relationships.remove(relationship)
-                    if relationships.tag.startswith("{"):
-                        ET.register_namespace("", relationships.tag[1:].split("}")[0])
-                    data = ET.tostring(relationships, encoding="utf-8", xml_declaration=True)
-                output.writestr(name, data)
+        write_fixture_package(package, destination, replacements)
     return {"objects": expected, "tower_positions_mm": [
         [origin[0] + x, origin[1] + y] for origin, x, y in zip(origins, tower_x, tower_y)],
         "tower_heights_mm": [max(obj["bounds_mm"]["max"][2] - obj["bounds_mm"]["min"][2]
-                                 for obj in expected if obj["plate"] == plate) for plate in (1, 2, 3)],
-        "plates": [1,2,3]}
+                                 for obj in expected if obj["plate"] == plate) for plate in range(1, plate_count + 1)],
+        "plates": list(range(1, plate_count + 1))}
+
+
+def write_fixture_package(package, destination, replacements):
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        for name in package.namelist():
+            if name.endswith(".gcode") or name == "Metadata/slice_info.config":
+                continue
+            data = replacements.get(name, package.read(name))
+            if name.endswith(".rels"):
+                relationships = ET.fromstring(data)
+                for relationship in list(relationships):
+                    if relationship.get("Target", "").endswith(".gcode"):
+                        relationships.remove(relationship)
+                if relationships.tag.startswith("{"):
+                    ET.register_namespace("", relationships.tag[1:].split("}")[0])
+                data = ET.tostring(relationships, encoding="utf-8", xml_declaration=True)
+            output.writestr(name, data)
+
+
+def create_banded_fixture(base_package, destination):
+    """Original software geometry with material changes before and after a gap.
+
+    One assembly keeps the elevated cap/column from being separately placed on
+    the bed. Red base/cap occupy Z=0–2/10–12 mm; blue occupies Z=2–10 mm. There
+    are actual material changes separated by eight millimetres of model height.
+    """
+    ET.register_namespace("", CORE)
+    with zipfile.ZipFile(base_package) as package:
+        config = json.loads(package.read("Metadata/project_settings.config"))
+        area = [[float(value) for value in point.split("x")] for point in config["printable_area"]]
+        center = [(min(p[axis] for p in area) + max(p[axis] for p in area)) / 2 for axis in (0, 1)]
+        model = ET.Element(f"{{{CORE}}}model", {"unit": "millimeter"})
+        resources = ET.SubElement(model, f"{{{CORE}}}resources")
+        boxes = [([-6, -6, 0], [6, 6, 2], 1),
+                 ([-3, -3, 2], [3, 3, 10], 2),
+                 ([-6, -6, 10], [6, 6, 12], 1)]
+        faces = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+                 (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+                 (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+        for identifier, (low, high, _) in enumerate(boxes, start=1):
+            obj = ET.SubElement(resources, f"{{{CORE}}}object", {"id": str(identifier), "type": "model"})
+            mesh = ET.SubElement(obj, f"{{{CORE}}}mesh")
+            vertices = ET.SubElement(mesh, f"{{{CORE}}}vertices")
+            points = [(low[0], low[1], low[2]), (high[0], low[1], low[2]),
+                      (high[0], high[1], low[2]), (low[0], high[1], low[2]),
+                      (low[0], low[1], high[2]), (high[0], low[1], high[2]),
+                      (high[0], high[1], high[2]), (low[0], high[1], high[2])]
+            for point in points:
+                ET.SubElement(vertices, f"{{{CORE}}}vertex", dict(zip("xyz", map(str, point))))
+            triangles = ET.SubElement(mesh, f"{{{CORE}}}triangles")
+            for face in faces:
+                ET.SubElement(triangles, f"{{{CORE}}}triangle", dict(zip(("v1", "v2", "v3"), map(str, face))))
+        assembly = ET.SubElement(resources, f"{{{CORE}}}object", {"id": "4", "type": "model"})
+        components = ET.SubElement(assembly, f"{{{CORE}}}components")
+        for identifier in range(1, 4):
+            ET.SubElement(components, f"{{{CORE}}}component", {"objectid": str(identifier)})
+        build = ET.SubElement(model, f"{{{CORE}}}build")
+        ET.SubElement(build, f"{{{CORE}}}item", {"objectid": "4",
+            "transform": f"1 0 0 0 1 0 0 0 1 {center[0]} {center[1]} 0"})
+        settings = ET.fromstring(package.read("Metadata/model_settings.config"))
+        for node in list(settings):
+            if node.tag in ("object", "plate", "assemble"):
+                settings.remove(node)
+        obj = ET.SubElement(settings, "object", {"id": "4"})
+        metadata(obj, "name", "Software banded material fixture")
+        metadata(obj, "extruder", 1)
+        for identifier, (_, _, slot) in enumerate(boxes, start=1):
+            part = ET.SubElement(obj, "part", {"id": str(identifier), "subtype": "normal_part"})
+            metadata(part, "extruder", slot)
+        plate = ET.SubElement(settings, "plate")
+        metadata(plate, "plater_id", 1)
+        metadata(plate, "locked", "false")
+        metadata(plate, "bed_type", "Textured PEI Plate")
+        instance = ET.SubElement(plate, "model_instance")
+        for key, value in (("object_id", 4), ("instance_id", 0), ("identify_id", 100)):
+            metadata(instance, key, value)
+        assert len(config["filament_colour"]) >= 2, "banded fixture requires two retained native slots"
+        config.update({"filament_colour": COLORS, "print_sequence": "by layer", "enable_prime_tower": "1",
+                       "wipe_tower_x": [str(center[0] + 22)], "wipe_tower_y": [str(center[1])],
+                       "prime_tower_width": "8", "wipe_tower_rotation_angle": "0"})
+        write_fixture_package(package, destination, {
+            "3D/3dmodel.model": ET.tostring(model, encoding="utf-8", xml_declaration=True),
+            "Metadata/model_settings.config": ET.tostring(settings, encoding="utf-8", xml_declaration=True),
+            "Metadata/project_settings.config": json.dumps(config).encode()})
+    return {"plate": 1, "material_height_ranges_mm": [[0, 2, 1], [2, 10, 2], [10, 12, 1]],
+            "model_height_mm": 12, "tower_position_mm": [center[0] + 22, center[1]],
+            "physical_result": "not_observed"}
 
 
 def verify_camera_replay(actual, expected):

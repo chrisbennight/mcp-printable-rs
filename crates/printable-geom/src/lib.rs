@@ -30,6 +30,7 @@ mod fit;
 mod intersect;
 mod isosurface;
 pub mod limit;
+pub mod plate;
 mod print_check;
 pub mod print_collision;
 mod remesh;

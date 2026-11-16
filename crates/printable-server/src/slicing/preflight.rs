@@ -52,6 +52,39 @@ fn default_timeout() -> u64 {
     30
 }
 
+/// Inline state is a bounded index into the complete hash-bound artifact.
+pub(super) fn compact(mut report: Value) -> Value {
+    if let Some(plates) = report["plates"].as_object_mut() {
+        let total = plates.len();
+        let names = plates.keys().skip(32).cloned().collect::<Vec<_>>();
+        for name in names {
+            plates.remove(&name);
+        }
+        for plate in plates.values_mut() {
+            for (object, key) in [
+                ("", "findings"),
+                ("deposited_footprints", "items"),
+                ("deposited_footprints", "separations"),
+            ] {
+                let value = if object.is_empty() {
+                    &mut *plate
+                } else {
+                    &mut plate[object]
+                };
+                if let Some(items) = value[key].as_array_mut() {
+                    let count = items.len();
+                    items.truncate(32);
+                    value[format!("{key}_count")] = json!(count);
+                    value[format!("{key}_inline_truncated")] = json!(count > 32);
+                }
+            }
+        }
+        report["plates_count"] = json!(total);
+        report["plates_inline_truncated"] = json!(total > 32);
+    }
+    report
+}
+
 impl Default for PreflightOptions {
     fn default() -> Self {
         Self {
@@ -246,6 +279,27 @@ fn analyze_inner(
         && [report.bed, report.tower_interference, report.toolhead]
             .iter()
             .all(|state| matches!(state, CheckState::Passed | CheckState::Failed));
+    let (footprints, footprints_complete) =
+        print_collision::deposited_footprints(&parsed.moves, || {
+            Instant::now() < deadline && !cancel.is_cancelled()
+        })
+        .map_err(|error| invalid(&error.to_string()))?;
+    let mut separations = Vec::new();
+    let mut separations_complete = footprints_complete;
+    'separations: for (a_index, a) in footprints.iter().enumerate() {
+        for (b_index, b) in footprints.iter().enumerate().skip(a_index + 1) {
+            if a.role == b.role && a.object == b.object {
+                continue;
+            }
+            if separations.len() >= 4096 || Instant::now() >= deadline || cancel.is_cancelled() {
+                separations_complete = false;
+                break 'separations;
+            }
+            separations.push(json!({"footprints":[a_index,b_index],
+                "xy_gap_lower_bound_mm":print_collision::footprint_gap_lower_bound(a,b),
+                "overlapping_bounds_establish_contact":false}));
+        }
+    }
     Ok(json!({
         "status":status, "coordinate_frame":"final_gcode", "units":"mm",
         "checks":{"bed":report.bed,"tower_interference":report.tower_interference,"toolhead":report.toolhead},
@@ -257,6 +311,13 @@ fn analyze_inner(
         "initial_position":options.initial_position,
         "bed_geometry":plate,
         "bed_exclusions_known":bed_exclusions_known,
+        "deposited_footprints":{"coordinate_frame":"final_gcode","units":"mm",
+            "representation":"conservative_axis_aligned_bounds_of_rectangular_deposition",
+            "complete":footprints_complete && parsed.complete && parsed.unresolved.is_empty(),"items":footprints,
+            "separations_complete":separations_complete,"separations":separations,
+            "limits":["Includes support, brim and tower paths only when explicit motion and deposition dimensions are available.",
+                "Bounds may include empty space; zero lower-bound separation does not prove contact.",
+                "Native object labels are retained; missing ownership is not assigned by proximity."]},
         "scope":"explicit linear motion and conservative rectangular line envelopes in native execution order",
         "limits":["firmware macro motion, deformation, buildup and post-slice modifications are not simulated",
             "part-to-part source geometry and rounded deposition shape are not established by this check"],
@@ -604,6 +665,28 @@ mod tests {
                     .any(|r| r == "absolute_extrusion_origin_unknown")
             );
             assert_eq!(report["coverage_complete"], false);
+        }
+    }
+
+    #[test]
+    fn inline_evidence_is_bounded_without_hiding_aggregate_failure_or_analysis_truncation() {
+        let plate = json!({"status":"blocked","findings":(0..100).map(|i|json!({"source_line":i})).collect::<Vec<_>>(),
+            "findings_truncated":true,"deposited_footprints":{"items":vec![json!({});100],"separations":vec![json!({});100]}});
+        let plates = (0..40)
+            .map(|i| (format!("plate_{i}.gcode"), plate.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let compact = compact(json!({"status":"blocked","plates":plates}));
+        assert_eq!(compact["status"], "blocked");
+        assert_eq!(compact["plates_count"], 40);
+        assert_eq!(compact["plates_inline_truncated"], true);
+        assert_eq!(compact["plates"].as_object().unwrap().len(), 32);
+        for plate in compact["plates"].as_object().unwrap().values() {
+            assert_eq!(plate["findings"].as_array().unwrap().len(), 32);
+            assert_eq!(plate["findings_count"], 100);
+            assert_eq!(plate["findings_inline_truncated"], true);
+            assert_eq!(plate["findings_truncated"], true);
+            assert_eq!(plate["deposited_footprints"]["items_count"], 100);
+            assert_eq!(plate["deposited_footprints"]["separations_count"], 100);
         }
     }
 
