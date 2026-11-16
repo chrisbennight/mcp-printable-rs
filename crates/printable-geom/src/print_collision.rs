@@ -6,11 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use parry3d_f64::{
-    bounding_volume::Aabb,
-    math::Vector,
-    partitioning::{Bvh, BvhBuildStrategy},
-};
+use parry3d_f64::{bounding_volume::Aabb, math::Vector, partitioning::Bvh};
 use serde::{Deserialize, Serialize};
 
 use crate::GeometryError;
@@ -200,7 +196,11 @@ fn validate(
     paths: &[PlannedMove],
     plate: Option<&PlateGeometry>,
     boxes: &[ClearanceBox],
-) -> Result<(), GeometryError> {
+    continue_work: &mut impl FnMut() -> bool,
+) -> Result<bool, GeometryError> {
+    if !continue_work() {
+        return Ok(false);
+    }
     let invalid = |message: &str| GeometryError::InvalidOptions(message.into());
     if paths.len() > u32::MAX as usize {
         return Err(invalid(
@@ -208,6 +208,9 @@ fn validate(
         ));
     }
     for path in paths {
+        if !continue_work() {
+            return Ok(false);
+        }
         if path
             .from_mm
             .iter()
@@ -224,6 +227,9 @@ fn validate(
         }
     }
     for envelope in boxes {
+        if !continue_work() {
+            return Ok(false);
+        }
         if envelope.component.is_empty()
             || (0..3).any(|i| {
                 !envelope.minimum_mm[i].is_finite()
@@ -240,19 +246,38 @@ fn validate(
     }
     if let Some(plate) = plate {
         for polygon in std::iter::once(&plate.boundary_mm).chain(&plate.exclusions_mm) {
-            if polygon.len() < 3
-                || polygon
-                    .iter()
-                    .flatten()
-                    .any(|v| !v.is_finite() || v.abs() > MAX_PRINT_COORDINATE_MM)
-            {
+            if !continue_work() {
+                return Ok(false);
+            }
+            if polygon.len() < 3 {
                 return Err(invalid(
                     "bed polygons require at least three finite vertices",
                 ));
             }
+            for value in polygon.iter().flatten() {
+                if !continue_work() {
+                    return Ok(false);
+                }
+                if !value.is_finite() || value.abs() > MAX_PRINT_COORDINATE_MM {
+                    return Err(invalid(
+                        "bed polygon coordinates exceed the supported numeric range",
+                    ));
+                }
+            }
         }
     }
-    Ok(())
+    Ok(true)
+}
+
+fn interrupted_report() -> CollisionReport {
+    CollisionReport {
+        bed: CheckState::Unmeasured,
+        tower_interference: CheckState::Unmeasured,
+        toolhead: CheckState::Unmeasured,
+        complete: false,
+        missing_deposition_dimensions: false,
+        findings: Vec::new(),
+    }
 }
 
 /// Analyze explicit machine motion against previously deposited line envelopes.
@@ -264,15 +289,11 @@ pub fn check_print_paths(
     boxes: &[ClearanceBox],
     mut continue_work: impl FnMut() -> bool,
 ) -> Result<CollisionReport, GeometryError> {
-    validate(paths, plate, boxes)?;
-    let deposits: Vec<_> = paths.iter().map(Prism::deposition).collect();
-    let indexed: Vec<_> = deposits
-        .iter()
-        .enumerate()
-        .filter_map(|(index, prism)| prism.as_ref().map(|prism| (index, prism.bounds())))
-        .collect();
-    let bounds: Vec<_> = indexed.iter().map(|(_, bounds)| *bounds).collect();
-    let tree = Bvh::from_leaves(BvhBuildStrategy::default(), &bounds);
+    if !validate(paths, plate, boxes, &mut continue_work)? {
+        return Ok(interrupted_report());
+    }
+    let mut deposits: Vec<Option<Prism>> = Vec::new();
+    let mut tree = Bvh::new();
     let mut report = CollisionReport {
         bed: if plate.is_some() {
             CheckState::Passed
@@ -290,15 +311,16 @@ pub fn check_print_paths(
         findings: Vec::new(),
     };
     let mut seen = BTreeSet::new();
-    for (index, path) in paths.iter().enumerate() {
+    'paths: for (index, path) in paths.iter().enumerate() {
         if !continue_work() {
             report.complete = false;
             break;
         }
-        if !path.travel && path.role != PathRole::Other && deposits[index].is_none() {
+        let current = Prism::deposition(path);
+        if !path.travel && path.role != PathRole::Other && current.is_none() {
             report.missing_deposition_dimensions = true;
         }
-        if let (Some(prism), Some(plate)) = (&deposits[index], plate) {
+        if let (Some(prism), Some(plate)) = (&current, plate) {
             let corners = footprint(prism);
             if let Some(point) = outside_witness(&plate.boundary_mm, &corners) {
                 add_finding(
@@ -327,16 +349,13 @@ pub fn check_print_paths(
                 );
             }
         }
-        if let Some(current) = &deposits[index] {
+        if let Some(current) = &current {
             for candidate in tree.intersect_aabb(&current.bounds()) {
                 if !continue_work() {
                     report.complete = false;
-                    break;
+                    break 'paths;
                 }
-                let other_index = indexed[candidate as usize].0;
-                if other_index >= index {
-                    continue;
-                }
+                let other_index = candidate as usize;
                 let other = &paths[other_index];
                 let tower_pair = (path.role == PathRole::PrimeTower
                     && matches!(other.role, PathRole::Part | PathRole::Support))
@@ -361,7 +380,7 @@ pub fn check_print_paths(
                         })
                     else {
                         report.complete = false;
-                        break;
+                        break 'paths;
                     };
                     let bottom =
                         (current.center[2] - current.half[2]).max(fixed.center[2] - fixed.half[2]);
@@ -380,6 +399,10 @@ pub fn check_print_paths(
             }
         }
         for envelope in boxes {
+            if !continue_work() {
+                report.complete = false;
+                break 'paths;
+            }
             let machine = Prism::machine(envelope, path.from_mm);
             let end = Prism::machine(envelope, path.to_mm);
             let first = machine.bounds();
@@ -390,12 +413,9 @@ pub fn check_print_paths(
             for candidate in tree.intersect_aabb(&swept) {
                 if !continue_work() {
                     report.complete = false;
-                    break;
+                    break 'paths;
                 }
-                let other_index = indexed[candidate as usize].0;
-                if other_index >= index {
-                    continue;
-                }
+                let other_index = candidate as usize;
                 if let Some(fraction) = first_interference(
                     &machine,
                     velocity,
@@ -418,7 +438,16 @@ pub fn check_print_paths(
                 );
             }
         }
-        if !report.complete {
+        if !continue_work() {
+            report.complete = false;
+            break;
+        }
+        if let Some(prism) = &current {
+            tree.insert(prism.bounds(), index as u32);
+        }
+        deposits.push(current);
+        if !continue_work() {
+            report.complete = false;
             break;
         }
     }
@@ -799,15 +828,44 @@ mod tests {
             line([15., 5., 1.], [15., 15., 1.], PathRole::PrimeTower, 2),
             line([30., 30., 1.], [40., 30., 1.], PathRole::Part, 3),
         ];
-        let mut calls = 0;
-        let report = check_print_paths(&paths, None, &[], || {
-            calls += 1;
-            calls <= 5
-        })
-        .unwrap();
+        let mut full_calls = 0;
+        assert!(
+            check_print_paths(&paths, None, &[], || {
+                full_calls += 1;
+                true
+            })
+            .unwrap()
+            .complete
+        );
+        let mut established = false;
+        for budget in 0..full_calls {
+            let mut calls = 0;
+            let report = check_print_paths(&paths, None, &[], || {
+                calls += 1;
+                calls <= budget
+            })
+            .unwrap();
+            assert!(!report.complete);
+            if !report.findings.is_empty() {
+                established = true;
+            }
+            if established {
+                assert_eq!(report.tower_interference, CheckState::Failed);
+                assert!(!report.findings.is_empty());
+            }
+        }
+        assert!(established);
+    }
+
+    #[test]
+    fn an_exhausted_budget_stops_before_validating_or_indexing_the_prefix() {
+        let paths = [line([f64::NAN, 0., 1.], [0., 10., 1.], PathRole::Part, 1)];
+        let report = check_print_paths(&paths, None, &[], || false).unwrap();
         assert!(!report.complete);
-        assert_eq!(report.tower_interference, CheckState::Failed);
-        assert!(!report.findings.is_empty());
+        assert_eq!(report.bed, CheckState::Unmeasured);
+        assert_eq!(report.tower_interference, CheckState::Unmeasured);
+        assert_eq!(report.toolhead, CheckState::Unmeasured);
+        assert!(report.findings.is_empty());
     }
 
     #[test]

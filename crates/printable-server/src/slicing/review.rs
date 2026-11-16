@@ -370,11 +370,18 @@ impl Parser {
                 }
             }
             _ => {
-                if let Some(capture) = &mut self.preflight
-                    && command.starts_with('G')
-                    && !matches!(command, "G4" | "G04" | "G17" | "G21")
-                {
-                    capture.known_position = [false; 3];
+                if let Some(capture) = &mut self.preflight {
+                    let numeric_opcode = command
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|family| b"GM".contains(family))
+                        && command.bytes().filter(|byte| *byte == b'.').count() <= 1
+                        && command[1..].split('.').all(|part| {
+                            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                        });
+                    let named_firmware_command = !numeric_opcode;
+                    let unsupported_g = command.starts_with('G')
+                        && !matches!(command, "G4" | "G04" | "G17" | "G21");
                     let coordinate_change = matches!(
                         command,
                         "G10"
@@ -390,12 +397,22 @@ impl Parser {
                             | "G68"
                             | "G69"
                             | "G92.1"
+                            | "M206"
+                            | "M218"
+                            | "M290"
+                            | "M428"
+                            | "M665"
+                            | "M666"
+                            | "M851"
                     );
-                    if self.layer > 0 || coordinate_change {
-                        capture.unknown_origin = [true; 3];
-                        capture.unresolved.insert(format!(
-                            "unsupported_coordinate_or_motion_command:{command}"
-                        ));
+                    if unsupported_g || coordinate_change || named_firmware_command {
+                        capture.known_position = [false; 3];
+                        if self.layer > 0 || coordinate_change || named_firmware_command {
+                            capture.unknown_origin = [true; 3];
+                            capture.unresolved.insert(format!(
+                                "unsupported_coordinate_or_motion_command:{command}"
+                            ));
+                        }
                     }
                 }
             }

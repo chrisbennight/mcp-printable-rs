@@ -355,4 +355,51 @@ mod tests {
         assert_eq!(report["checks"]["tower_interference"], "passed");
         assert!(report["findings"].as_array().unwrap().is_empty());
     }
+
+    #[test]
+    fn unsupported_firmware_commands_cannot_leave_a_false_clearance_pass() {
+        let baseline = "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n";
+        let printer = json!({"printable_area":["0x0","50x0","50x50","0x50"],"bed_exclude_area":[]});
+        let mut options = PreflightOptions::default();
+        options.machine_envelopes.push(MachineEnvelope {
+            component: "shroud".into(),
+            minimum_mm: [-1., -1., 1.],
+            maximum_mm: [1., 1., 4.],
+            source: "synthetic geometry".into(),
+        });
+        let original = source(baseline);
+        assert_eq!(
+            analyze(original.path(), &printer, &options, options.deadline())["status"],
+            "modeled_checks_passed"
+        );
+        for command in [
+            "SET_GCODE_OFFSET X=100 MOVE=0",
+            "VENDOR_POSITION_MACRO",
+            "M206 X100",
+            "M218 X100",
+        ] {
+            for text in [
+                format!("{command}\n{baseline}"),
+                format!("{baseline}{command}\nG1 X25 E1\n"),
+            ] {
+                let gcode = source(&text);
+                let report = analyze(gcode.path(), &printer, &options, options.deadline());
+                assert_eq!(report["status"], "unresolved", "{command}: {report}");
+                assert_eq!(report["coverage_complete"], false, "{command}: {report}");
+                assert!(!report["unresolved"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_later_named_macro_does_not_discard_an_established_collision() {
+        let gcode = source(
+            "G90\nM83\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 X20 E1\n; FEATURE: Prime tower\nG1 X15 Y5\nG1 Y15 E1\nSET_GCODE_OFFSET X=100 MOVE=0\nG1 X25 E1\n",
+        );
+        let options = PreflightOptions::default();
+        let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
+        assert_eq!(report["status"], "blocked");
+        assert_eq!(report["checks"]["tower_interference"], "failed");
+        assert!(!report["unresolved"].as_array().unwrap().is_empty());
+    }
 }
