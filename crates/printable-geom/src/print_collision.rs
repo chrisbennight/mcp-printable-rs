@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::GeometryError;
 
 const CONTACT_TOLERANCE_MM: f64 = 1e-6;
+pub const MAX_COLLISION_FINDINGS: usize = 512;
 /// Shared with G-code review; keeps orientation predicates and swept bounds in
 /// the supported numeric coordinate range.
 pub const MAX_PRINT_COORDINATE_MM: f64 = 1e7;
@@ -94,6 +95,7 @@ pub struct CollisionReport {
     pub tower_interference: CheckState,
     pub toolhead: CheckState,
     pub complete: bool,
+    pub findings_truncated: bool,
     pub missing_deposition_dimensions: bool,
     /// One finding per kind/object pair/component. Unlabeled moves retain their
     /// source-line identity so different obstacles are not silently combined.
@@ -217,6 +219,10 @@ fn validate(
             .iter()
             .chain(&path.to_mm)
             .any(|v| !v.is_finite() || v.abs() > MAX_PRINT_COORDINATE_MM)
+            || path
+                .object
+                .as_ref()
+                .is_some_and(|object| object.len() > 256)
             || [path.width_mm, path.height_mm]
                 .into_iter()
                 .flatten()
@@ -232,6 +238,7 @@ fn validate(
             return Ok(false);
         }
         if envelope.component.is_empty()
+            || envelope.component.len() > 256
             || (0..3).any(|i| {
                 !envelope.minimum_mm[i].is_finite()
                     || !envelope.maximum_mm[i].is_finite()
@@ -276,6 +283,7 @@ fn interrupted_report() -> CollisionReport {
         tower_interference: CheckState::Unmeasured,
         toolhead: CheckState::Unmeasured,
         complete: false,
+        findings_truncated: false,
         missing_deposition_dimensions: false,
         findings: Vec::new(),
     }
@@ -308,12 +316,13 @@ pub fn check_print_paths(
             CheckState::Passed
         },
         complete: true,
+        findings_truncated: false,
         missing_deposition_dimensions: false,
         findings: Vec::new(),
     };
     let mut seen = BTreeSet::new();
     'paths: for (index, path) in paths.iter().enumerate() {
-        if !continue_work() {
+        if report.findings_truncated || !continue_work() {
             report.complete = false;
             break;
         }
@@ -352,7 +361,7 @@ pub fn check_print_paths(
         }
         if let Some(current) = &current {
             for candidate in tree.intersect_aabb(&current.bounds()) {
-                if !continue_work() {
+                if report.findings_truncated || !continue_work() {
                     report.complete = false;
                     break 'paths;
                 }
@@ -400,7 +409,7 @@ pub fn check_print_paths(
             }
         }
         for envelope in boxes {
-            if !continue_work() {
+            if report.findings_truncated || !continue_work() {
                 report.complete = false;
                 break 'paths;
             }
@@ -429,7 +438,7 @@ pub fn check_print_paths(
                 );
             }
             for candidate in tree.intersect_aabb(&swept) {
-                if !continue_work() {
+                if report.findings_truncated || !continue_work() {
                     report.complete = false;
                     break 'paths;
                 }
@@ -453,7 +462,7 @@ pub fn check_print_paths(
                 }
             }
         }
-        if !continue_work() {
+        if report.findings_truncated || !continue_work() {
             report.complete = false;
             break;
         }
@@ -461,7 +470,7 @@ pub fn check_print_paths(
             tree.insert(prism.bounds(), index as u32);
         }
         deposits.push(current);
-        if !continue_work() {
+        if report.findings_truncated || !continue_work() {
             report.complete = false;
             break;
         }
@@ -526,6 +535,11 @@ fn add_finding(
     kind: CollisionKind,
     position: [f64; 3],
 ) {
+    if report.findings.len() >= MAX_COLLISION_FINDINGS {
+        report.findings_truncated = true;
+        report.complete = false;
+        return;
+    }
     let other_object = other.and_then(|p| p.object.clone());
     let key = (
         kind,
@@ -707,6 +721,26 @@ mod tests {
             minimum_mm: [-1., -1., 1.],
             maximum_mm: [1., 1., 4.],
         }
+    }
+
+    #[test]
+    fn dense_unlabeled_collisions_keep_bounded_positive_evidence() {
+        let mut paths = Vec::new();
+        for index in 0..2000 {
+            paths.push(line([0., 0., 0.2], [10., 0., 0.2], PathRole::Part, index));
+        }
+        let envelope = ClearanceBox {
+            component: "synthetic obstruction".into(),
+            minimum_mm: [-20., -20., -1.],
+            maximum_mm: [20., 20., 1.],
+        };
+        let report = check_print_paths(&paths, None, &[envelope], || true).unwrap();
+        assert_eq!(report.findings.len(), MAX_COLLISION_FINDINGS);
+        assert!(report.findings_truncated);
+        assert!(!report.complete);
+        assert_eq!(report.toolhead, CheckState::Failed);
+        assert_eq!(report.bed, CheckState::Unmeasured);
+        assert_eq!(report.findings[0].source_line, 0);
     }
 
     #[test]

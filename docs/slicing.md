@@ -185,6 +185,12 @@ clearance and firmware macro motion are outside this implementation's establishe
 coverage. Firmware conditionals leave subsequent motion/tool/extrusion state
 unverified: later explicit XYZ alone does not restore that history. Preflight
 retains earlier findings and marks the affected remainder unsupported.
+An absolute extrusion move without a known E origin also leaves that material's
+retraction debt uncertain. Later numerical E resets do not establish physical
+extrusion; those moves cannot create definite deposited obstacles. Each analysis
+retains at most 512 collision findings, then stops with
+`findings_truncated: true` and incomplete coverage. Established positive findings
+remain blocked, and omitted checks never become passes.
 Unsupported motion remains explicit; the preview's sampled arcs do not certify
 clearance. Warping, loose components and nozzle buildup can cause physical
 contact outside the model. No collision report establishes adhesion, strength or

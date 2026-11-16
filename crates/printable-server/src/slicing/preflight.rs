@@ -86,6 +86,7 @@ impl PreflightOptions {
         }
         for envelope in &self.machine_envelopes {
             if envelope.component.trim().is_empty()
+                || envelope.component.len() > 256
                 || envelope.source.trim().is_empty()
                 || (0..3).any(|i| {
                     !envelope.minimum_mm[i].is_finite()
@@ -250,7 +251,7 @@ fn analyze_inner(
         "checks":{"bed":report.bed,"tower_interference":report.tower_interference,"toolhead":report.toolhead},
         "processing_complete":parsed.complete && report.complete,
         "coverage_complete":coverage_complete,
-        "findings":report.findings, "unresolved":unresolved,
+        "findings":report.findings,"findings_truncated":report.findings_truncated, "unresolved":unresolved,
         "missing_deposition_dimensions":report.missing_deposition_dimensions,
         "machine_envelopes":options.machine_envelopes,
         "initial_position":options.initial_position,
@@ -582,6 +583,28 @@ mod tests {
         let report = analyze(gcode.path(), &json!({}), &options, options.deadline());
         assert_eq!(report["checks"]["tower_interference"], "passed");
         assert!(report["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unknown_absolute_origin_cannot_create_an_obstacle_from_unknown_retraction_debt() {
+        let options = known_start();
+        let printer = json!({"printable_area":["0x0","50x0","50x50","0x50"],"bed_exclude_area":[]});
+        for reset in ["", "G92 E0\nM83\n"] {
+            let gcode = source(&format!(
+                "G90\nM82\nG1 X10 Y10 Z0.2\n; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\n; LINE_WIDTH: 0.4\n; FEATURE: Outer wall\nG1 E1\n{reset}G1 X20 E2\n; FEATURE: Prime tower\nG1 X15 Y5\nG1 Y15 E3\n"
+            ));
+            let report = analyze(gcode.path(), &printer, &options, options.deadline());
+            assert_eq!(report["status"], "unresolved");
+            assert!(report["findings"].as_array().unwrap().is_empty());
+            assert!(
+                report["unresolved"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r == "absolute_extrusion_origin_unknown")
+            );
+            assert_eq!(report["coverage_complete"], false);
+        }
     }
 
     #[test]

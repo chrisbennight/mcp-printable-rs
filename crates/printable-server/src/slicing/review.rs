@@ -78,6 +78,7 @@ struct PreflightCapture {
     unknown_origin: [bool; 3],
     segment_known: bool,
     known_extrusion: bool,
+    uncertain_extrusion: BTreeSet<usize>,
     retracted_mm: BTreeMap<usize, f64>,
     conditional_state_unknown: bool,
 }
@@ -301,6 +302,7 @@ impl Parser {
                         capture
                             .unresolved
                             .insert("absolute_extrusion_origin_unknown".into());
+                        capture.uncertain_extrusion.insert(self.material);
                         travel = true;
                     } else if delta < 0. {
                         *debt -= delta;
@@ -311,6 +313,11 @@ impl Parser {
                     }
                     if !self.relative_e && values.contains_key(&b'E') {
                         capture.known_extrusion = true;
+                    }
+                    // A later coordinate reset establishes E's numerical origin,
+                    // not the physical retraction debt of an ambiguous move.
+                    if capture.uncertain_extrusion.contains(&self.material) {
+                        travel = true;
                     }
                 }
                 let from = [before[0], before[1], before[2]];
