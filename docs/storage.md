@@ -52,10 +52,13 @@ available staging slots and current receivers. The legacy
 
 Cancel an abandoned incoming delivery through the gateway's delivery lifecycle.
 Completed cancellation releases its staging; cancelling a receive waits until
-its admitted write has ended. Successful native ingest receipts are retained
-separately from staged file bytes; their bounded registry can refuse new
-authorization until a retained receipt expires. Gateway storage, gateway active transfers,
-and Printable staging have separate lifetimes and limits; a gateway upload
+its admitted write has ended. Printable tracks only unfinished uploads and
+publication or cleanup still using resources. Completed work leaves no upload
+receipt or history entry and does not consume admission capacity. Recover an
+uncertain ingest by inspecting the current destination artifact and comparing
+its size and SHA-256 with the source. Missing upload status does not prove that
+publication failed. Gateway storage, gateway active transfers, and Printable
+staging have separate lifetimes and limits; a gateway upload
 being ready does not mean its destination has been ingested. See
 [incoming-file recovery](workflow-interface.md#recover-or-cancel-a-gateway-delivery).
 
