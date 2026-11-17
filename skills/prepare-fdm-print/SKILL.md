@@ -21,8 +21,12 @@ a large model into fragments or build a reassembly workflow. Retain the
 original gateway URI on a capacity or validation error and follow its recovery
 information. In Waygate, inspect that URI with `gateway-files.delivery_status`
 and cancel an abandoned uncommitted delivery with
-`gateway-files.cancel_delivery` using its `delivery_id`. Reconcile an uncertain
-publication before retrying. See the
+`gateway-files.cancel_delivery` using its `delivery_id`. Completed uploads have
+no retained native status or replay receipt. Recover a lost ingest response by
+inspecting the known destination and comparing its current size and SHA-256
+with the source. Missing status or a missing artifact does not prove that an
+in-flight publication failed; avoid automatically repeating an uncertain
+mutation. See the
 [incoming-file guide](../../docs/workflow-interface.md#incoming-files).
 Use project-relative paths for slicing and resolve workspace paths through
 `project.resolve` for tools that need them. STEP needs conversion through

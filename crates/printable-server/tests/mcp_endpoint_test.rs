@@ -525,16 +525,52 @@ async fn exercise_incoming_files(transfer_base: Option<&str>) {
         bytes
     );
     let repeated = rpc_result(post(&http, &mcp, Some(&session), &ingest).await).await;
-    assert_eq!(repeated, committed);
-    let status = rpc_result(post(&http, &mcp, Some(&session), &json!({
-        "jsonrpc":"2.0", "id":4, "method":"files/transferStatus", "params":{"uri":uri,"_meta":capabilities}
-    })).await).await;
-    assert_eq!(status["state"], "committed");
-    let cancellation = rpc_result(post(&http, &mcp, Some(&session), &json!({
-        "jsonrpc":"2.0", "id":5, "method":"files/cancelUpload", "params":{"uri":uri,"_meta":capabilities}
-    })).await).await;
-    assert_eq!(cancellation["state"], "committed");
-    assert_eq!(cancellation["cancelled"], false);
+    assert_eq!(repeated["isError"], true);
+    assert!(
+        repeated["structuredContent"]["error"]
+            .get("publication_attempted")
+            .is_none()
+    );
+    for method in ["files/transferStatus", "files/cancelUpload"] {
+        let response = post(
+            &http,
+            &mcp,
+            Some(&session),
+            &json!({
+                "jsonrpc":"2.0", "id":4, "method":method, "params":{"uri":uri,"_meta":capabilities}
+            }),
+        )
+        .await;
+        let response = rpc_envelope(response).await;
+        assert_eq!(response["error"]["data"]["reason"], "upload_not_found");
+        assert!(
+            response["error"]["data"]
+                .get("publication_attempted")
+                .is_none()
+        );
+    }
+    // Recover a lost ingest response by querying the current known artifact.
+    let current = rpc_result(
+        post(
+            &http,
+            &mcp,
+            Some(&session),
+            &json!({
+                "jsonrpc":"2.0", "id":5, "method":"tools/call", "params":{
+                    "name":"artifact", "arguments":{"action":"stat","params":{"path":"board.step"}}
+                }
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(current["structuredContent"]["size_bytes"], bytes.len());
+    assert_eq!(
+        URL_SAFE_NO_PAD.encode(Sha256::digest(
+            std::fs::read(workspace.path().join("board.step")).unwrap()
+        )),
+        digest
+    );
 
     // More than two completed transfers must release staging capacity.
     for index in 0..3 {

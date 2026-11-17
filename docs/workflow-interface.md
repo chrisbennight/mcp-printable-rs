@@ -236,10 +236,10 @@ alone does not establish that Printable has ingested the file.
 
 Read `status.workspace.file_upload` for the configured native incoming-file
 limit, staging capacity, current occupancy, and supported suffixes.
-Occupancy fields `active_receivers` and `staged_files` are null while state or
-expiry cleanup is busy; status does not wait for an in-progress publication.
-The available slot count is authoritative for admission. State counts describe
-registered transfers; expired transfers still owned by in-flight work are excluded.
+Occupancy detail counts are null during registry or state contention or while
+cleanup owns staged resources; status does not wait for an in-progress publication. The available slot count is authoritative
+for admission. State counts include admitted receive, publication, and cleanup
+still using resources even after their grant deadline has passed.
 
 Each file is bounded by `PRINTABLE_FILE_UPLOAD_MAX_MIB` (default 1024 MiB). Staging
 capacity is configured with `PRINTABLE_FILE_UPLOAD_MAX_STAGED` (default 20).
@@ -277,7 +277,6 @@ local bytes again does not resolve capacity, type, or size refusals.
 | Failure | Next action |
 | --- | --- |
 | Incoming upload capacity is full | Retain the URI, inspect its delivery, and retry after capacity is released or the reported delay. Cancel your own abandoned deliveries when applicable. |
-| Retained receipt capacity is full | Retain the URI and retry after the reported receipt expiry. Cancelling a committed receipt does not reclaim it. |
 | Unsupported file or destination type | Use the original supported format and a matching destination suffix. Do not rename or package fragments to bypass the check. |
 | File exceeds a configured limit | Compare the source byte count with the gateway and Printable limits. Report the boundary that needs an operator change; do not silently alter the model. |
 | Publication outcome is unknown | Inspect the destination and reconcile the delivery before retrying; the artifact may already exist. |
@@ -303,45 +302,56 @@ storage; it does not report delivery into Printable. See the
 [gateway file-transfer guide](https://github.com/chrisbennight/waygate/blob/main/docs/guides/files.md)
 for local upload and download commands.
 
-If cancellation is still in progress, retain the handle and inspect its status.
-A completed cancellation releases staging; it does not delete a committed
-workspace artifact. If publication was attempted and its outcome is unknown,
-inspect the destination and reconcile the delivery before retrying.
+If cancellation is still in progress, retain the handle and inspect its status
+with a bounded retry policy. Cleanup retires the native entry, so later status
+may be unavailable rather than report a terminal cancellation. Only an explicit
+`cancelled: true` confirms cancellation; missing status does not confirm it.
+Cancellation never deletes a published workspace artifact. If an ingest response
+is lost, inspect the known destination using `artifact.stat`, then publish and
+download the current artifact to compare its SHA-256 with the source. Matching
+size and hash establish the current bytes. A missing artifact or upload entry
+does not establish historical failure: publication might still be running or a
+later request might have changed or removed the destination. Avoid automatically
+repeating an uncertain mutation.
 
 ### Native transfer lifecycle
 
-An authorized transfer expires after one hour; an idle body times out after one
-minute. Gateways can use the optional lifecycle methods named in the
-authorization's `lifecycle` object: `files/transferStatus` and
-`files/cancelUpload`, each with `{"uri": "<Printable-private URI>"}`. These are
-Printable extensions, not standard MCP methods. `artifact.transfer_status`
-continues to accept `params.uri` for the same private URI. Consumer clients
-should use their gateway's delivery handles rather than construct or retain
-Printable-private references.
+An unused upload grant expires after one hour. Once receiving begins, an idle
+body times out after one minute; the grant deadline does not terminate an
+admitted receive. Ready staged bytes expire one hour after receiving completes.
+Publication and cleanup remain tracked, with their staging slot held, until
+actual I/O and resource cleanup finish, even after those deadlines.
 
-Transfer status reports `unknown` if its registry or state is currently busy,
-so a slow filesystem operation does not hold up status. This does not confirm
-success or failure; inspect the destination or check status again.
+Gateways can use the optional lifecycle methods named in the authorization's
+`lifecycle` object: `files/transferStatus` and `files/cancelUpload`, each with
+`{"uri": "<Printable-private URI>"}`. These are Printable extensions, not standard
+MCP methods. `artifact.transfer_status` continues to accept `params.uri` for the
+same private URI. Consumer clients should use their gateway's delivery handles
+rather than construct or retain Printable-private references.
 
-A cancellation can report `cancelling` while an admitted write or staging cleanup
-finishes. A busy publication can return `unknown` without accepting cancellation;
-inspect status before trying again. Only `cancelled` confirms release.
-A successful native ingest retains a receipt for
-the authorization lifetime; repeating that native request with the same private
-URI and destination returns the receipt without writing again. It records the
-original commit, not a claim that another request has not since changed the
-destination. Receipts are in memory and bounded; after server restart or expiry,
-inspect the destination before authorizing a fresh upload.
-`status.workspace.file_upload.max_receipts` reports the transfer-registry bound.
-A `receipt_capacity` refusal can occur while staging slots are available because
-successful receipts remain recoverable for their authorization lifetime.
+Transfer status describes unfinished work: `prepared`, `receiving`, `ready`,
+`publishing`, or `cancelling`. `publishing` includes the destination path and
+cannot be cancelled safely. `unknown` means its registry or state is currently
+busy; status does not wait for slow filesystem operations. None of these states
+establishes completed publication. A cancellation can report `cancelling` while
+an admitted write or staging cleanup finishes. Only an explicit `cancelled`
+response with `cancelled: true` confirms cancellation.
 
-A filesystem publication error leaves the receipt `commit_uncertain`, with its
-destination path. The destination may already exist even though publication
-reported an error. This receipt cannot write again: inspect the destination
-before deciding whether to authorize another transfer. This conservative outcome
-also applies when a filesystem error occurred before publication. Successful
-receipts still return the original result without writing again.
+Printable keeps no completed-upload receipts or history and does not replay a
+successful ingest. After publication, failure, or cancellation has actually
+finished, its entry is retired. Reusing the upload grant cannot write again.
+Later status, cancellation, or ingest using that handle returns unavailable
+without claiming that publication was never attempted. Recover a lost response
+by inspecting the known artifact path and comparing its current size and hash,
+not by resubmitting the consumed upload handle.
+
+`status.workspace.file_upload` reports `max_bytes`, `max_staged`,
+`available_staging_slots`, `active_transfers`, `active_receivers`, `staged_files`,
+and `active_publications`. Detail counts can be null during contention or
+cleanup; the available slot count remains authoritative. `grant_lifetime_seconds` and
+`receive_idle_timeout_seconds` describe the deadlines above;
+`completed_uploads_retained` is false. Completed imports cannot cause an
+independent receipt-capacity refusal.
 
 ## OpenSCAD variants
 

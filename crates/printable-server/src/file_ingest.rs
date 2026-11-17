@@ -1,7 +1,6 @@
 //! Native raw-byte uploads consumed by workspace artifact operations.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -26,8 +25,7 @@ use crate::{error::ToolError, upload::random_hex_id};
 pub const INGEST_TOOL: &str = "printable_workspace_ingest";
 const URI_PREFIX: &str = "mcp-file://printable/upload/";
 const MAX_TRANSFERS: usize = 20;
-const MAX_RECEIPTS: usize = 128;
-const RETENTION: Duration = Duration::from_secs(3600);
+const GRANT_LIFETIME: Duration = Duration::from_secs(3600);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize)]
@@ -101,6 +99,7 @@ struct Received {
     file: Arc<StagedUpload>,
     size: u64,
     sha256: String,
+    expires: Instant,
 }
 
 struct StagedUpload {
@@ -118,18 +117,17 @@ enum TransferState {
     Prepared,
     Receiving,
     Cancelling,
-    Cancelled,
     Ready(Received),
-    Failed,
-    CommitUncertain { path: String },
-    Committed(IngestParams, IngestResult),
+    Publishing { path: String },
+    Consumed,
 }
 
 struct Transfer {
+    id: String,
     token_hash: [u8; 32],
     expected_size: Option<u64>,
     expected_digest: Option<[u8; 32]>,
-    expires: Instant,
+    grant_expires: Instant,
     state: Arc<tokio::sync::Mutex<TransferState>>,
     permit: Mutex<Option<OwnedSemaphorePermit>>,
     cancellation: CancellationToken,
@@ -139,10 +137,39 @@ pub struct IncomingFiles {
     workspace: Arc<Workspace>,
     max_bytes: u64,
     max_staged: usize,
-    transfers: Mutex<HashMap<String, Arc<Transfer>>>,
+    transfers: Arc<Mutex<HashMap<String, Arc<Transfer>>>>,
     capacity: Arc<Semaphore>,
-    // Only expiry batches are counted here; admission uses the semaphore.
-    pending_cleanup: Arc<AtomicUsize>,
+}
+
+/// Created only on a blocking worker, before its staged-file owner. The file
+/// owner drops first, including during unwinding, before tracking and capacity
+/// are released. A cancelled requesting future does not own this cleanup.
+struct WorkCompletion {
+    transfers: Arc<Mutex<HashMap<String, Arc<Transfer>>>>,
+    transfer: Arc<Transfer>,
+}
+
+impl Drop for WorkCompletion {
+    fn drop(&mut self) {
+        *self.transfer.state.blocking_lock() = TransferState::Consumed;
+        retire_transfer(&self.transfers, &self.transfer);
+    }
+}
+
+fn retire_transfer(transfers: &Mutex<HashMap<String, Arc<Transfer>>>, transfer: &Arc<Transfer>) {
+    let mut registry = transfers.lock().expect("incoming file registry poisoned");
+    if registry
+        .get(&transfer.id)
+        .is_some_and(|current| Arc::ptr_eq(current, transfer))
+    {
+        registry.remove(&transfer.id);
+    }
+    drop(registry);
+    transfer
+        .permit
+        .lock()
+        .expect("upload permit poisoned")
+        .take();
 }
 
 impl IncomingFiles {
@@ -155,9 +182,8 @@ impl IncomingFiles {
             workspace,
             max_bytes,
             max_staged,
-            transfers: Mutex::new(HashMap::new()),
+            transfers: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(max_staged)),
-            pending_cleanup: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -235,21 +261,6 @@ impl IncomingFiles {
             .transfers
             .lock()
             .expect("incoming file registry poisoned");
-        let max_receipts = MAX_RECEIPTS.max(self.max_staged);
-        if transfers.len() >= max_receipts {
-            transfers.retain(|_, transfer| {
-                Arc::strong_count(transfer) != 1
-                    || !transfer.state.try_lock().is_ok_and(|state| {
-                        matches!(*state, TransferState::Failed | TransferState::Cancelled)
-                    })
-            });
-        }
-        if transfers.len() >= max_receipts {
-            return Err(ToolError::FileUpload {
-                code: "upload_receipt_capacity",
-                message: "incoming file receipt capacity is full; wait for receipt expiry".into(),
-            });
-        }
         if transfers.contains_key(&id) {
             return Err(ToolError::Validation(
                 "file identity collision; authorize again".into(),
@@ -261,10 +272,11 @@ impl IncomingFiles {
         transfers.insert(
             id.clone(),
             Arc::new(Transfer {
+                id,
                 token_hash,
                 expected_size: params.size,
                 expected_digest,
-                expires: Instant::now() + RETENTION,
+                grant_expires: Instant::now() + GRANT_LIFETIME,
                 state: Arc::new(tokio::sync::Mutex::new(TransferState::Prepared)),
                 permit: Mutex::new(Some(permit)),
                 cancellation: CancellationToken::new(),
@@ -306,10 +318,7 @@ impl IncomingFiles {
             Err(TryLockError::WouldBlock) => return Ok(serde_json::json!({"state": "unknown"})),
             Err(TryLockError::Poisoned(_)) => panic!("incoming file registry poisoned"),
         };
-        let transfer = transfers
-            .get(id)
-            .filter(|transfer| transfer.expires > Instant::now())
-            .ok_or(ToolError::UploadNotFound)?;
+        let transfer = transfers.get(id).ok_or(ToolError::UploadNotFound)?;
         let Ok(state) = transfer.state.try_lock() else {
             return Ok(serde_json::json!({"state": "unknown"}));
         };
@@ -317,18 +326,13 @@ impl IncomingFiles {
             TransferState::Prepared => serde_json::json!({"state": "prepared"}),
             TransferState::Receiving => serde_json::json!({"state": "receiving"}),
             TransferState::Cancelling => serde_json::json!({"state": "cancelling"}),
-            TransferState::Cancelled => serde_json::json!({"state": "cancelled"}),
-            TransferState::Failed => serde_json::json!({"state": "failed"}),
-            TransferState::CommitUncertain { path } => serde_json::json!({
-                "state": "commit_uncertain", "path": path,
-                "message": "Inspect the destination before authorizing another transfer; this receipt cannot be retried."
+            TransferState::Publishing { path } => serde_json::json!({
+                "state": "publishing", "path": path,
             }),
             TransferState::Ready(received) => serde_json::json!({
                 "state": "ready", "size_bytes": received.size, "sha256": received.sha256
             }),
-            TransferState::Committed(_, result) => {
-                serde_json::json!({"state": "committed", "artifact": result})
-            }
+            TransferState::Consumed => return Err(ToolError::UploadNotFound),
         })
     }
 
@@ -339,28 +343,34 @@ impl IncomingFiles {
             Err(TryLockError::WouldBlock) => None,
             Err(TryLockError::Poisoned(_)) => panic!("incoming file registry poisoned"),
         };
+        let active = transfers.as_ref().map(|transfers| transfers.len());
         let counts = transfers.and_then(|transfers| {
-            if self.pending_cleanup.load(Ordering::Acquire) != 0 {
-                return None;
-            }
-            transfers.values().try_fold((0, 0), |mut counts, transfer| {
-                let state = transfer.state.try_lock().ok()?;
-                match &*state {
-                    TransferState::Receiving | TransferState::Cancelling => counts.0 += 1,
-                    TransferState::Ready(_) => counts.1 += 1,
-                    _ => {}
-                }
-                Some(counts)
-            })
+            transfers
+                .values()
+                .try_fold((0, 0, 0), |mut counts, transfer| {
+                    let state = transfer.state.try_lock().ok()?;
+                    match &*state {
+                        TransferState::Receiving => counts.0 += 1,
+                        TransferState::Ready(_) => counts.1 += 1,
+                        TransferState::Publishing { .. } => counts.2 += 1,
+                        // Cleanup can own staged bytes outside the state value.
+                        TransferState::Cancelling | TransferState::Consumed => return None,
+                        _ => {}
+                    }
+                    Some(counts)
+                })
         });
         serde_json::json!({
             "max_bytes": self.max_bytes,
             "max_staged": self.max_staged,
             "available_staging_slots": self.capacity.available_permits(),
+            "active_transfers": active,
             "active_receivers": counts.map(|counts| counts.0),
             "staged_files": counts.map(|counts| counts.1),
-            "lifetime_seconds": RETENTION.as_secs(),
-            "max_receipts": MAX_RECEIPTS.max(self.max_staged),
+            "active_publications": counts.map(|counts| counts.2),
+            "grant_lifetime_seconds": GRANT_LIFETIME.as_secs(),
+            "receive_idle_timeout_seconds": IDLE_TIMEOUT.as_secs(),
+            "completed_uploads_retained": false,
             "supported_suffixes": ALLOWED_ARTIFACT_SUFFIXES,
         })
     }
@@ -379,34 +389,17 @@ impl IncomingFiles {
             TransferState::Ready(_) => {
                 let received = std::mem::replace(&mut *state, TransferState::Cancelling);
                 transfer.cancellation.cancel();
-                // Managed scratch cleanup can wait for a publication's storage
-                // lock. Keep its state and slot owned until that cleanup exits.
-                let cleanup = tokio::task::spawn_blocking(move || {
-                    drop(received);
-                    transfer
-                        .permit
-                        .lock()
-                        .expect("upload permit poisoned")
-                        .take();
-                    *state = TransferState::Cancelled;
-                });
-                // The control request must release admission while cleanup
-                // waits; the cleanup task still owns the state and slot.
-                tokio::spawn(async move {
-                    if cleanup.await.is_err() {
-                        tracing::error!("incoming file cancellation cleanup task failed");
-                    }
-                });
+                let TransferState::Ready(received) = received else {
+                    unreachable!()
+                };
+                drop(state);
+                self.cleanup(transfer, received);
                 return Ok(serde_json::json!({"state": "cancelling", "cancelled": false}));
             }
             TransferState::Prepared => {
-                *state = TransferState::Cancelled;
+                *state = TransferState::Consumed;
                 transfer.cancellation.cancel();
-                transfer
-                    .permit
-                    .lock()
-                    .expect("upload permit poisoned")
-                    .take();
+                retire_transfer(&self.transfers, &transfer);
                 ("cancelled", true)
             }
             TransferState::Receiving | TransferState::Cancelling => {
@@ -414,10 +407,8 @@ impl IncomingFiles {
                 transfer.cancellation.cancel();
                 ("cancelling", false)
             }
-            TransferState::Cancelled => ("cancelled", true),
-            TransferState::Failed => ("failed", false),
-            TransferState::CommitUncertain { .. } => ("commit_uncertain", false),
-            TransferState::Committed(..) => ("committed", false),
+            TransferState::Publishing { .. } => ("publishing", false),
+            TransferState::Consumed => return Err(ToolError::UploadNotFound),
         };
         Ok(serde_json::json!({"state": name, "cancelled": cancelled}))
     }
@@ -430,22 +421,10 @@ impl IncomingFiles {
                 "incoming file staging capacity is full; retain the gateway file and retry after capacity is released",
                 true,
             ),
-            "upload_receipt_capacity" => (
-                "temporarily_unavailable",
-                "receipt_capacity",
-                "incoming file receipt capacity is full; retain the gateway file and retry after receipt expiry",
-                true,
-            ),
             "upload_not_found" => (
                 "file_unavailable",
                 "upload_not_found",
-                "file upload is unavailable or expired",
-                false,
-            ),
-            "completion_unknown" => (
-                "file_unavailable",
-                "completion_unknown",
-                "file cancellation outcome is unknown; inspect transfer status before retrying",
+                "file upload is no longer available; inspect the known destination before retrying",
                 false,
             ),
             "unsupported_type" => (
@@ -478,9 +457,6 @@ impl IncomingFiles {
             "retryable": retryable,
             "max_bytes": self.max_bytes, "capacity": self.max_staged,
         });
-        if reason == "receipt_capacity" {
-            data["capacity"] = MAX_RECEIPTS.max(self.max_staged).into();
-        }
         if stage == "authorize_upload" {
             data["publication_attempted"] = false.into();
         }
@@ -488,22 +464,6 @@ impl IncomingFiles {
             // Commits and cancellations can release staging promptly, so pacing
             // stays independent of the authorization lifetime.
             data["retry_after_seconds"] = 5.into();
-        } else if reason == "receipt_capacity" {
-            let now = Instant::now();
-            if let Some(expires) = self
-                .transfers
-                .lock()
-                .expect("incoming file registry poisoned")
-                .values()
-                .map(|transfer| transfer.expires)
-                .min()
-            {
-                data["retry_after_seconds"] = expires
-                    .saturating_duration_since(now)
-                    .as_secs()
-                    .max(1)
-                    .into();
-            }
         }
         rmcp::ErrorData::invalid_params(message, Some(data))
     }
@@ -513,84 +473,80 @@ impl IncomingFiles {
             .get(&params.file)
             .map_err(|error| ingest_error(error, None))?;
         let mut state = Arc::clone(&transfer.state).lock_owned().await;
+        let expired = match &*state {
+            TransferState::Ready(received) => received.expires <= Instant::now(),
+            TransferState::Consumed => return Err(ingest_error(ToolError::UploadNotFound, None)),
+            other => {
+                let publication_attempted = if matches!(other, TransferState::Publishing { .. }) {
+                    None
+                } else {
+                    Some(false)
+                };
+                return Err(ingest_error(ToolError::Validation(
+                    "file is not ready; query unfinished work and inspect the known destination before retrying".into(),
+                ), publication_attempted));
+            }
+        };
         let workspace = Arc::clone(&self.workspace);
         let max_bytes = self.max_bytes;
+        let validation_error = workspace.validate_public_mutation_path(&params.path).err();
+        let next = if expired || validation_error.is_some() {
+            TransferState::Cancelling
+        } else {
+            TransferState::Publishing {
+                path: params.path.clone(),
+            }
+        };
+        let TransferState::Ready(received) = std::mem::replace(&mut *state, next) else {
+            unreachable!()
+        };
+        drop(state);
+        let transfers = Arc::clone(&self.transfers);
         tokio::task::spawn_blocking(move || {
-            if transfer.expires <= Instant::now() {
+            let _completion = WorkCompletion {
+                transfers,
+                transfer,
+            };
+            let received = received;
+            if expired {
                 return Err(ingest_error(ToolError::UploadNotFound, None));
             }
-            match &*state {
-                TransferState::Committed(previous, result) if previous == &params => {
-                    return Ok(result.clone());
-                }
-                TransferState::Ready(_) => {}
-                TransferState::CommitUncertain { .. } => {
-                    return Err(ingest_error(ToolError::Validation(
-                        "previous publication outcome is uncertain; inspect the destination before authorizing another transfer".into(),
-                    ), Some(true)));
-                }
-                _ => {
-                    let publication_attempted = matches!(*state, TransferState::Committed(..));
-                    return Err(ingest_error(ToolError::Validation(
-                        "file is not ready or was committed to another destination".into(),
-                    ), Some(publication_attempted)));
-                }
-            }
-            if let Err(error) = workspace.validate_public_mutation_path(&params.path) {
-                *state = TransferState::Failed;
-                transfer.permit.lock().expect("upload permit poisoned").take();
+            if let Some(error) = validation_error {
                 return Err(ingest_error(error.into(), Some(false)));
             }
-            // Publication can precede a fallible directory sync. Once attempted,
-            // only a successful receipt permits a repeat request to return success.
-            // Declare the permit first so staging cleanup finishes before release.
-            let _permit = transfer
-                .permit
-                .lock()
-                .expect("upload permit poisoned")
-                .take();
-            let TransferState::Ready(received) = std::mem::replace(
-                &mut *state,
-                TransferState::CommitUncertain { path: params.path.clone() },
-            ) else {
-                unreachable!()
-            };
-            let artifact = workspace.commit_generated_artifact_bounded(
-                &params.path,
-                received.file.path(),
-                params.overwrite,
-                max_bytes,
-            ).map_err(|error| {
-                // These typed validation, admission and destination rejections
-                // precede publication. Generic I/O can follow publication or sync.
-                let publication_attempted = !matches!(
-                    error,
-                    WsError::Unconfined
-                        | WsError::PathEscapes
-                        | WsError::ReservedPath
-                        | WsError::SymlinkRefused
-                        | WsError::RefusingSymlinkReplace
-                        | WsError::UnsupportedArtifactType
-                        | WsError::NotRegularFile
-                        | WsError::AlreadyExists(_)
-                        | WsError::NotFound(_)
-                        | WsError::WriteTooLarge
-                        | WsError::ChangedWhileReading
-                        | WsError::StorageBudgetExceeded
-                        | WsError::StorageAccountingIncomplete
-                        | WsError::InvalidScratchId
-                );
-                if !publication_attempted {
-                    *state = TransferState::Failed;
-                }
-                ingest_error(error.into(), Some(publication_attempted))
-            })?;
-            let result = IngestResult {
+            let artifact = workspace
+                .commit_generated_artifact_bounded(
+                    &params.path,
+                    received.file.path(),
+                    params.overwrite,
+                    max_bytes,
+                )
+                .map_err(|error| {
+                    // These typed validation, admission and destination rejections
+                    // precede publication. Generic I/O can follow publication or sync.
+                    let publication_attempted = !matches!(
+                        error,
+                        WsError::Unconfined
+                            | WsError::PathEscapes
+                            | WsError::ReservedPath
+                            | WsError::SymlinkRefused
+                            | WsError::RefusingSymlinkReplace
+                            | WsError::UnsupportedArtifactType
+                            | WsError::NotRegularFile
+                            | WsError::AlreadyExists(_)
+                            | WsError::NotFound(_)
+                            | WsError::WriteTooLarge
+                            | WsError::ChangedWhileReading
+                            | WsError::StorageBudgetExceeded
+                            | WsError::StorageAccountingIncomplete
+                            | WsError::InvalidScratchId
+                    );
+                    ingest_error(error.into(), Some(publication_attempted))
+                })?;
+            Ok(IngestResult {
                 artifact,
                 sha256: received.sha256.clone(),
-            };
-            *state = TransferState::Committed(params, result.clone());
-            Ok(result)
+            })
         })
         .await
         .map_err(|error| ingest_error(ToolError::Io(std::io::Error::other(error)), None))?
@@ -598,32 +554,64 @@ impl IncomingFiles {
 
     fn prune(&self) {
         let expired = {
-            let mut transfers = self
+            let transfers = self
                 .transfers
                 .lock()
                 .expect("incoming file registry poisoned");
             let now = Instant::now();
-            let expired = transfers
-                .extract_if(|_, transfer| transfer.expires <= now)
-                .map(|(_, transfer)| transfer)
-                .collect::<Vec<_>>();
-            if !expired.is_empty() {
-                self.pending_cleanup.fetch_add(1, Ordering::Release);
+            let mut expired = Vec::new();
+            for transfer in transfers.values() {
+                let Ok(mut state) = transfer.state.try_lock() else {
+                    continue;
+                };
+                match &*state {
+                    TransferState::Prepared if transfer.grant_expires <= now => {
+                        *state = TransferState::Consumed;
+                        expired.push((Arc::clone(transfer), None));
+                    }
+                    TransferState::Ready(received) if received.expires <= now => {
+                        let TransferState::Ready(received) =
+                            std::mem::replace(&mut *state, TransferState::Cancelling)
+                        else {
+                            unreachable!()
+                        };
+                        transfer.cancellation.cancel();
+                        expired.push((Arc::clone(transfer), Some(received)));
+                    }
+                    _ => {}
+                }
             }
             expired
         };
-        if expired.is_empty() {
-            return;
+        for (transfer, received) in expired {
+            if let Some(received) = received {
+                self.cleanup(transfer, received);
+            } else {
+                retire_transfer(&self.transfers, &transfer);
+            }
         }
-        let pending_cleanup = Arc::clone(&self.pending_cleanup);
+    }
+
+    fn cleanup(&self, transfer: Arc<Transfer>, received: Received) {
+        let transfers = Arc::clone(&self.transfers);
         let cleanup = move || {
-            // The retired owners retain their permits through scratch cleanup.
-            drop(expired);
-            pending_cleanup.fetch_sub(1, Ordering::Release);
+            let _completion = WorkCompletion {
+                transfers,
+                transfer,
+            };
+            // Bind after the completion guard so scratch cleanup also precedes
+            // retirement when a blocking operation unwinds.
+            let received = received;
+            drop(received);
         };
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
-                runtime.spawn_blocking(cleanup);
+                let task = runtime.spawn_blocking(cleanup);
+                runtime.spawn(async move {
+                    if task.await.is_err() {
+                        tracing::error!("incoming file cleanup task failed");
+                    }
+                });
             }
             // Synchronous callers have no async executor to protect. The
             // registry lock has already been released before cleanup begins.
@@ -675,14 +663,17 @@ pub async fn upload(
         let mut state = transfer.state.lock().await;
         if !matches!(*state, TransferState::Prepared) {
             Some(StatusCode::CONFLICT)
+        } else if transfer.grant_expires <= Instant::now() {
+            *state = TransferState::Consumed;
+            retire_transfer(&files.transfers, &transfer);
+            Some(StatusCode::UNAUTHORIZED)
         } else {
             *state = TransferState::Receiving;
             None
         }
     };
     if let Some(status) = rejection {
-        // Expiry may concurrently retire the registry's owner, even for a
-        // rejected request. Release any last staging owner off the executor.
+        // A rejected concurrent request may own the last transfer reference.
         return tokio::task::spawn_blocking(move || {
             drop(transfer);
             status.into_response()
@@ -693,26 +684,27 @@ pub async fn upload(
     tokio::spawn(async move {
         let result = receive(body, &transfer, files.max_bytes, Arc::clone(&files.workspace)).await;
         let mut state = Arc::clone(&transfer.state).lock_owned().await;
-        // Finalization can own the last staging reference after cancellation
-        // or expiry. Its resource destruction belongs on the blocking pool.
+        // Finalization can own the last staging reference after cancellation.
+        // Resource destruction and terminal retirement belong on the blocking pool.
         tokio::task::spawn_blocking(move || {
-            let _files = files;
             let cancelled = transfer.cancellation.is_cancelled();
-            if cancelled || transfer.expires <= Instant::now() {
-                drop(result);
-                *state = if cancelled { TransferState::Cancelled } else { TransferState::Failed };
-                transfer.permit.lock().expect("upload permit poisoned").take();
-                return if cancelled { StatusCode::GONE } else { StatusCode::REQUEST_TIMEOUT }.into_response();
-            }
             match result {
-                Ok(received) => {
-                    let receipt = serde_json::json!({"state": "ready", "size_bytes": received.size, "sha256": received.sha256});
+                Ok(received) if !cancelled => {
+                    let response = serde_json::json!({"state": "ready", "size_bytes": received.size, "sha256": received.sha256});
                     *state = TransferState::Ready(received);
-                    (StatusCode::CREATED, Json(receipt)).into_response()
+                    (StatusCode::CREATED, Json(response)).into_response()
                 }
-                Err(status) => {
-                    *state = TransferState::Failed;
-                    transfer.permit.lock().expect("upload permit poisoned").take();
+                result => {
+                    *state = TransferState::Cancelling;
+                    drop(state);
+                    let _completion = WorkCompletion {
+                        transfers: Arc::clone(&files.transfers), transfer,
+                    };
+                    let result = result;
+                    let status = if cancelled { StatusCode::GONE } else {
+                        match &result { Err(status) => *status, Ok(_) => unreachable!() }
+                    };
+                    drop(result);
                     status.into_response()
                 }
             }
@@ -756,11 +748,10 @@ async fn receive(
         let mut size = 0_u64;
         let mut digest = Sha256::new();
         loop {
-            let deadline = transfer.expires.min(Instant::now() + IDLE_TIMEOUT);
             let frame = tokio::select! {
                 _ = transfer.cancellation.cancelled() => return Err(StatusCode::GONE),
-                frame = tokio::time::timeout_at(
-                    deadline.into(),
+                frame = tokio::time::timeout(
+                    IDLE_TIMEOUT,
                     std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)),
                 ) => frame.map_err(|_| StatusCode::REQUEST_TIMEOUT)?,
             };
@@ -815,6 +806,7 @@ async fn receive(
             file: staged,
             size,
             sha256: URL_SAFE_NO_PAD.encode(hash),
+            expires: Instant::now() + GRANT_LIFETIME,
         }),
         Err(status) => {
             tokio::task::spawn_blocking(move || drop(staged))
@@ -852,12 +844,14 @@ mod tests {
 
     async fn wait_for_cleanup(files: &IncomingFiles) {
         tokio::time::timeout(Duration::from_secs(5), async {
-            while files.pending_cleanup.load(Ordering::Acquire) != 0 {
+            while !files.transfers.lock().unwrap().is_empty()
+                || files.capacity.available_permits() != files.max_staged
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("expired transfer cleanup completes");
+        .expect("unfinished transfer cleanup completes");
     }
 
     fn authorize(files: &IncomingFiles, name: &str) -> serde_json::Value {
@@ -922,10 +916,11 @@ mod tests {
         let retry_after = data["retry_after_seconds"].as_u64().unwrap();
         assert!(retry_after > 0 && retry_after <= 30);
         let uri = authorizations[0]["file"]["uri"].as_str().unwrap();
-        assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
-        assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
         let status = files.status(uri).await.unwrap();
-        assert_eq!(status["state"], "cancelled");
+        assert_eq!(status["state"], "prepared");
+        assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
+        assert!(files.cancel(uri).await.is_err());
+        assert!(files.status(uri).await.is_err());
         let contract = crate::resources::contracts::read(
             "printable://contracts/artifact/transfer_status",
             crate::tools::workflows::Availability::default(),
@@ -993,21 +988,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_transfers_do_not_exhaust_retained_receipts() {
+    async fn cancelled_transfers_retire_tracking_and_release_capacity() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         let files = IncomingFiles::with_capacity(workspace, 1024, 1);
-        for _ in 0..=MAX_RECEIPTS {
+        for _ in 0..160 {
             let authorization = authorize(&files, "source.3mf");
             let uri = authorization["file"]["uri"].as_str().unwrap();
             assert_eq!(files.cancel(uri).await.unwrap()["cancelled"], true);
+            assert!(files.transfers.lock().unwrap().is_empty());
+            assert!(files.status(uri).await.is_err());
         }
         assert_eq!(files.capacity.available_permits(), 1);
-        assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+        assert!(files.transfers.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn quota_refusals_do_not_exhaust_receipts_and_recover_after_budget_is_freed() {
+    async fn more_than_128_successful_imports_leave_no_completed_uploads() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         let files = Arc::new(IncomingFiles::with_capacity(
@@ -1015,7 +1012,174 @@ mod tests {
             1024,
             1,
         ));
-        for _ in 0..=MAX_RECEIPTS {
+        let expected_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(b"abc"));
+        for index in 0..160 {
+            let authorization = authorize(&files, "source.3mf");
+            let uri = authorization["file"]["uri"].as_str().unwrap();
+            assert_eq!(
+                receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                    .await
+                    .status(),
+                StatusCode::CREATED
+            );
+            // The byte grant is already consumed before artifact publication.
+            assert_eq!(
+                receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                    .await
+                    .status(),
+                StatusCode::CONFLICT
+            );
+            let path = format!("model-{index}.3mf");
+            let params = IngestParams {
+                file: uri.into(),
+                path: path.clone(),
+                overwrite: false,
+            };
+            let result = files.ingest(params.clone()).await.unwrap();
+            assert_eq!(result.artifact.size_bytes, 3);
+            assert_eq!(result.sha256, expected_hash);
+            assert_eq!(std::fs::read(root.path().join(&path)).unwrap(), b"abc");
+            assert!(files.transfers.lock().unwrap().is_empty());
+            assert_eq!(files.capacity.available_permits(), 1);
+            assert!(files.status(uri).await.is_err());
+            assert!(files.cancel(uri).await.is_err());
+            // A lost response is recovered from the current artifact, not replay.
+            let error = files.ingest(params).await.err().unwrap();
+            assert!(matches!(
+                error,
+                ToolError::FileIngest {
+                    publication_attempted: None,
+                    ..
+                }
+            ));
+            assert_eq!(workspace.stat_artifact(&path).unwrap().size_bytes, 3);
+            assert_eq!(
+                receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                    .await
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let snapshot = files.capabilities();
+        assert_eq!(snapshot["active_transfers"], 0);
+        assert_eq!(snapshot["completed_uploads_retained"], false);
+        assert!(snapshot.get("max_receipts").is_none());
+    }
+
+    #[tokio::test]
+    async fn lost_ingest_response_and_expired_grant_do_not_hide_in_flight_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        workspace
+            .configure_storage_budget(Some(1024 * 1024))
+            .unwrap();
+        let files = Arc::new(IncomingFiles::with_capacity(
+            Arc::clone(&workspace),
+            1024,
+            1,
+        ));
+        let authorization = authorize(&files, "source.3mf");
+        let uri = authorization["file"]["uri"].as_str().unwrap().to_owned();
+        assert_eq!(
+            receive_test_file(Arc::clone(&files), &authorization, Body::from("abc"))
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+        {
+            let mut transfers = files.transfers.lock().unwrap();
+            Arc::get_mut(
+                transfers
+                    .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+            .grant_expires = Instant::now();
+        }
+        let (release, blocker) = block_storage(root.path());
+        let ingest_files = Arc::clone(&files);
+        let params = IngestParams {
+            file: uri.clone(),
+            path: "known.3mf".into(),
+            overwrite: false,
+        };
+        let request_params = params.clone();
+        let request = tokio::spawn(async move { ingest_files.ingest(request_params).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while files.status(&uri).await.unwrap()["state"] != "publishing" {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("publication starts");
+        request.abort();
+        assert!(matches!(request.await, Err(error) if error.is_cancelled()));
+        files.prune();
+        let status = files.status(&uri).await.unwrap();
+        assert_eq!(status["state"], "publishing");
+        assert_eq!(status["path"], "known.3mf");
+        let contract = crate::resources::contracts::read(
+            "printable://contracts/artifact/transfer_status",
+            crate::tools::workflows::Availability::default(),
+        )
+        .unwrap();
+        assert!(
+            jsonschema::validator_for(&contract["outputSchema"])
+                .unwrap()
+                .is_valid(&status)
+        );
+        assert_eq!(files.capabilities()["active_publications"], 1);
+        assert_eq!(files.capacity.available_permits(), 0);
+        let cancellation = files.cancel(&uri).await.unwrap();
+        assert_eq!(cancellation["state"], "publishing");
+        assert_eq!(cancellation["cancelled"], false);
+        let error = files.ingest(params.clone()).await.err().unwrap();
+        assert!(matches!(
+            error,
+            ToolError::FileIngest {
+                publication_attempted: None,
+                ..
+            }
+        ));
+        // Absence while the worker is blocked does not establish failure.
+        assert!(!root.path().join("known.3mf").exists());
+        release.send(()).unwrap();
+        wait_for_cleanup(&files).await;
+        blocker.join().unwrap();
+        assert_eq!(files.capacity.available_permits(), 1);
+        assert!(files.status(&uri).await.is_err());
+        assert!(files.cancel(&uri).await.is_err());
+        let current = std::fs::read(root.path().join("known.3mf")).unwrap();
+        assert_eq!(current, b"abc");
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(Sha256::digest(&current)),
+            URL_SAFE_NO_PAD.encode(Sha256::digest(b"abc"))
+        );
+        std::fs::write(root.path().join("known.3mf"), b"later").unwrap();
+        let error = files.ingest(params).await.err().unwrap();
+        assert!(matches!(
+            error,
+            ToolError::FileIngest {
+                publication_attempted: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read(root.path().join("known.3mf")).unwrap(),
+            b"later"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_refusals_retire_tracking_and_recover_after_budget_is_freed() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        let files = Arc::new(IncomingFiles::with_capacity(
+            Arc::clone(&workspace),
+            1024,
+            1,
+        ));
+        for _ in 0..160 {
             workspace.configure_storage_budget(None).unwrap();
             let authorization = authorize(&files, "source.3mf");
             let uri = authorization["file"]["uri"].as_str().unwrap();
@@ -1043,11 +1207,12 @@ mod tests {
                     ..
                 }
             ));
-            assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
+            assert!(files.status(uri).await.is_err());
+            assert!(files.transfers.lock().unwrap().is_empty());
             assert_eq!(files.capacity.available_permits(), 1);
             assert!(!root.path().join("model.3mf").exists());
         }
-        assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+        assert!(files.transfers.lock().unwrap().is_empty());
         workspace.configure_storage_budget(None).unwrap();
         let authorization = authorize(&files, "replacement.3mf");
         let uri = authorization["file"]["uri"].as_str().unwrap();
@@ -1069,17 +1234,18 @@ mod tests {
             std::fs::read(root.path().join("model.3mf")).unwrap(),
             b"abc"
         );
-        assert_eq!(files.status(uri).await.unwrap()["state"], "committed");
+        assert!(files.status(uri).await.is_err());
+        assert!(files.transfers.lock().unwrap().is_empty());
         assert_eq!(files.capacity.available_permits(), 1);
     }
 
     #[tokio::test]
-    async fn destination_conflicts_do_not_exhaust_receipts_or_replace_existing_bytes() {
+    async fn destination_conflicts_retire_tracking_without_replacing_existing_bytes() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
         std::fs::write(root.path().join("existing.3mf"), b"existing").unwrap();
-        for _ in 0..=MAX_RECEIPTS {
+        for _ in 0..160 {
             let authorization = authorize(&files, "source.3mf");
             let uri = authorization["file"]["uri"].as_str().unwrap();
             assert_eq!(
@@ -1105,14 +1271,15 @@ mod tests {
                     ..
                 }
             ));
-            assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
+            assert!(files.status(uri).await.is_err());
+            assert!(files.transfers.lock().unwrap().is_empty());
             assert_eq!(files.capacity.available_permits(), 1);
             assert_eq!(
                 std::fs::read(root.path().join("existing.3mf")).unwrap(),
                 b"existing"
             );
         }
-        assert!(files.transfers.lock().unwrap().len() <= MAX_RECEIPTS);
+        assert!(files.transfers.lock().unwrap().is_empty());
         let authorization = authorize(&files, "replacement.3mf");
         let uri = authorization["file"]["uri"].as_str().unwrap();
         assert_eq!(
@@ -1133,7 +1300,8 @@ mod tests {
             std::fs::read(root.path().join("replacement.3mf")).unwrap(),
             b"abc"
         );
-        assert_eq!(files.status(uri).await.unwrap()["state"], "committed");
+        assert!(files.status(uri).await.is_err());
+        assert!(files.transfers.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1175,7 +1343,8 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(files.status(uri).await.unwrap()["state"], "failed");
+        assert!(files.status(uri).await.is_err());
+        assert!(files.transfers.lock().unwrap().is_empty());
         assert_eq!(files.capacity.available_permits(), 1);
         authorize(&files, "replacement.3mf");
     }
@@ -1226,18 +1395,12 @@ mod tests {
         close_admission.cancel();
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(files.capabilities()["available_staging_slots"], 0);
-        assert_eq!(files.status(&uri).await.unwrap()["state"], "unknown");
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelling");
+        assert_eq!(files.capabilities()["active_transfers"], 1);
         release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while files.status(&uri).await.unwrap()["state"] != "cancelled" {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("cancellation finishes after the storage lock is released");
-        let result = files.cancel(&uri).await.unwrap();
-        assert_eq!(result["cancelled"], true);
-        assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelled");
+        wait_for_cleanup(&files).await;
+        assert!(files.cancel(&uri).await.is_err());
+        assert!(files.status(&uri).await.is_err());
         assert_eq!(files.capacity.available_permits(), 1);
         blocker.join().unwrap();
     }
@@ -1252,6 +1415,17 @@ mod tests {
         let files = Arc::new(IncomingFiles::with_capacity(workspace, 1024, 1));
         let authorization = authorize(&files, "source.3mf");
         let uri = authorization["file"]["uri"].as_str().unwrap().to_owned();
+        let grant_deadline = Instant::now() + Duration::from_secs(1);
+        {
+            let mut transfers = files.transfers.lock().unwrap();
+            Arc::get_mut(
+                transfers
+                    .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+            .grant_expires = grant_deadline;
+        }
         let started = Arc::new(tokio::sync::Notify::new());
         let signal = Arc::clone(&started);
         let stream = futures_util::stream::poll_fn(move |_| {
@@ -1265,6 +1439,13 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), started.notified())
             .await
             .expect("receiver starts polling the body");
+        // Advance to the exact grant deadline after the real HTTP receive has
+        // started. Expiry must not hide its admitted I/O or free its slot.
+        tokio::time::sleep_until(tokio::time::Instant::from_std(grant_deadline)).await;
+        files.prune();
+        assert_eq!(files.status(&uri).await.unwrap()["state"], "receiving");
+        assert_eq!(files.capabilities()["active_receivers"], 1);
+        assert_eq!(files.capacity.available_permits(), 0);
         let (release, blocker) = block_storage(root.path());
         let started = Instant::now();
         let cancellation = files.cancel(&uri).await.unwrap();
@@ -1290,7 +1471,7 @@ mod tests {
                 .status(),
             StatusCode::GONE
         );
-        assert_eq!(files.status(&uri).await.unwrap()["state"], "cancelled");
+        assert!(files.status(&uri).await.is_err());
         assert_eq!(files.capacity.available_permits(), 1);
         blocker.join().unwrap();
         authorize(&files, "replacement.3mf");
@@ -1317,7 +1498,11 @@ mod tests {
             let transfer = transfers
                 .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
                 .unwrap();
-            Arc::get_mut(transfer).unwrap().expires = Instant::now();
+            let mut state = transfer.state.try_lock().unwrap();
+            let TransferState::Ready(received) = &mut *state else {
+                panic!("file is staged")
+            };
+            received.expires = Instant::now();
         }
         let (release, blocker) = block_storage(root.path());
         let started = Instant::now();
@@ -1325,9 +1510,10 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         let snapshot = files.capabilities();
         assert_eq!(snapshot["available_staging_slots"], 0);
+        assert_eq!(snapshot["active_transfers"], 1);
         assert!(snapshot["active_receivers"].is_null());
         assert!(snapshot["staged_files"].is_null());
-        assert!(files.status(uri).await.is_err());
+        assert_eq!(files.status(uri).await.unwrap()["state"], "cancelling");
         release.send(()).unwrap();
         wait_for_cleanup(&files).await;
         assert_eq!(files.capabilities()["available_staging_slots"], 1);
@@ -1348,15 +1534,15 @@ mod tests {
             let transfer = transfers
                 .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
                 .unwrap();
-            Arc::get_mut(transfer).unwrap().expires = Instant::now();
+            Arc::get_mut(transfer).unwrap().grant_expires = Instant::now();
         }
         authorize(&files, "replacement.3mf");
         assert_eq!(files.transfers.lock().unwrap().len(), 1);
-        assert_eq!(files.pending_cleanup.load(Ordering::Acquire), 0);
+        assert_eq!(files.capacity.available_permits(), 0);
     }
 
     #[tokio::test]
-    async fn publication_error_consumes_receipt_without_overwriting_later_changes() {
+    async fn publication_error_retires_tracking_without_overwriting_later_changes() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         let files = Arc::new(IncomingFiles::new(workspace, 1024));
@@ -1404,21 +1590,25 @@ mod tests {
                 ..
             }
         ));
-        let status = files.status(uri).await.unwrap();
-        assert_eq!(status["state"], "commit_uncertain");
-        assert_eq!(status["path"], "result.stl");
-        let cancellation = files.cancel(uri).await.unwrap();
-        assert_eq!(cancellation["state"], "commit_uncertain");
-        assert_eq!(cancellation["cancelled"], false);
+        assert!(files.status(uri).await.is_err());
+        assert!(files.cancel(uri).await.is_err());
+        assert!(files.transfers.lock().unwrap().is_empty());
         assert_eq!(files.capacity.available_permits(), MAX_TRANSFERS);
         std::fs::remove_dir(&destination).unwrap();
         std::fs::write(&destination, b"later edit").unwrap();
-        assert!(files.ingest(params).await.is_err());
+        let error = files.ingest(params).await.err().unwrap();
+        assert!(matches!(
+            error,
+            ToolError::FileIngest {
+                publication_attempted: None,
+                ..
+            }
+        ));
         assert_eq!(std::fs::read(&destination).unwrap(), b"later edit");
     }
 
     #[tokio::test]
-    async fn missing_ingest_receipt_does_not_claim_a_publication_outcome() {
+    async fn missing_ingest_handle_does_not_claim_a_publication_outcome() {
         let root = tempfile::tempdir().unwrap();
         let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
         let files = IncomingFiles::new(workspace, 1024);
@@ -1507,10 +1697,10 @@ mod tests {
             let transfer = transfers
                 .get_mut(uri.strip_prefix(URI_PREFIX).unwrap())
                 .unwrap();
-            Arc::get_mut(transfer).unwrap().expires = Instant::now();
+            Arc::get_mut(transfer).unwrap().grant_expires = Instant::now();
         }
-        assert!(files.status(uri).await.is_err());
         files.prune();
+        assert!(files.status(uri).await.is_err());
         wait_for_cleanup(&files).await;
         assert_eq!(files.capacity.available_permits(), MAX_TRANSFERS);
         assert!(
