@@ -19,7 +19,8 @@ pub struct TextureReport {
     pub region: TextureRegion,
     pub samples: [usize; 2],
     pub depth_mm: f64,
-    pub applied_extreme_mm: f64,
+    /// Requested peak relief after rounding to binary STL coordinates.
+    pub rounded_peak_mm: f64,
     pub volume_change_mm3: f64,
     pub triangles: usize,
 }
@@ -131,6 +132,11 @@ pub fn bake_texture_stl(
     };
     let missing = below.difference(&solid);
     let blocked = solid.intersection(&above);
+    for probe in [&missing, &blocked] {
+        probe.status().map_err(|error| {
+            GeometryError::Kernel(format!("texture clearance check failed: {error}"))
+        })?;
+    }
     if !missing.is_empty() || !blocked.is_empty() {
         return Err(invalid(
             "the entire texture rectangle must lie on a clear upward-facing planar surface with material underneath the requested cut",
@@ -181,7 +187,7 @@ pub fn bake_texture_stl(
             region,
             samples: [width, height],
             depth_mm,
-            applied_extreme_mm: exported_extreme_mm,
+            rounded_peak_mm: exported_extreme_mm,
             volume_change_mm3: delta,
             triangles: checked.triangles,
         },
@@ -289,7 +295,7 @@ mod tests {
                 .find(|point| point[0] == 5.0 && point[1] == 5.0)
                 .unwrap();
             assert!((center[2] - (3.0 + depth)).abs() < 1e-6);
-            assert_eq!(report.applied_extreme_mm, center[2] - 3.0);
+            assert_eq!(report.rounded_peak_mm, center[2] - 3.0);
             let prepared = prepare_mesh(
                 &mesh,
                 ValidationOptions::default(),
@@ -321,7 +327,7 @@ mod tests {
             .map(|point| point[2])
             .fold(surface, f64::max);
         assert_eq!(peak - surface, 0.125);
-        assert_eq!(report.applied_extreme_mm, peak - surface);
+        assert_eq!(report.rounded_peak_mm, peak - surface);
     }
 
     #[test]
