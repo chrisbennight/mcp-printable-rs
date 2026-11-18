@@ -5,12 +5,12 @@ see [Slice, review, and send a print](workflows/model-to-printer.md).
 
 The `slice` workflow uses a separate, credential-free OrcaSlicer worker. It shares
 the project workspace with the server and other engines, but cannot control a
-printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
+printer. The packaged worker uses OrcaSlicer 2.5.1 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
 ## Why Printable maintains an OrcaSlicer fork
 
-The packaged [OrcaSlicer fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-63c97a1)
+The packaged [OrcaSlicer fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.5.1-6320f72)
 adds `--capture-workspace`, the native engine action behind
 [`slice.capture`](#native-layout-capture). It opens a project or prepared
 3MF under an isolated display and renders the requested Orca workspace view.
@@ -21,10 +21,9 @@ artifact and retains them as observation evidence.
 
 [OrcaSlicer 2.5.1](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.5.1)
 can generate plate thumbnails through its CLI. Workspace capture still needs
-the fork for the selection, camera, and native metadata this workflow requires. The current fork also backports CLI thumbnail,
-per-filament and tool-change bounds, and STL reader fixes to its 2.4.2 base.
-Equivalent fixes are present upstream in 2.5.1. The thumbnail path and those
-backports can use the upstream implementations when changing the base version.
+the fork for the selection, camera, and native metadata this workflow requires.
+The package uses upstream's thumbnail, per-filament bounds, tool-change bounds,
+and STL reader implementations.
 
 When changing the packaged engine, update the worker's version pin and the
 readiness assertion in [the native slicing smoke suite](../slicer/smoke.py)
@@ -62,10 +61,22 @@ behind its decisions, and capabilities that still need native support.
 Use `profiles` to find printer, process and filament profiles, and `settings` to
 inspect inherited settings before preparing a slice. Profiles come from the BBL
 collection, including its vendor subfolders such as Polymaker and the P1P
-variants. When a BBL filament inherits from a profile the collection lacks, the
-worker reads that parent from Orca's shared `OrcaFilamentLibrary` beside it.
+variants. Search for `Fiberon` to find the Polymaker Fiberon presets by their
+current display names. The worker reads missing filament parents from Orca's
+shared `OrcaFilamentLibrary` beside the vendor collection. Shared filament
+presets such as `AliZ PLA @P1-X1` can be selected when they explicitly support
+a printer in the vendor collection.
 
-Each selected profile may override any OrcaSlicer 2.4.2 setting in its category.
+The engine reads the preset caches (OPC files) bundled in the AppImage.
+Printable reads JSON presets from the same source revision to resolve inheritance
+and apply overrides. The worker passes the resolved overrides to Orca as JSON.
+Orca 2.5.1 represents `enable_arc_fitting` with an enum. Existing string
+overrides of `0` or `false` resolve to `disabled`. Values of `1` or `true`
+resolve to `enabled`. Discovery shows the current enum choices.
+Orca 2.5.1 marks `silent_mode` obsolete. Remove that key before replaying saved
+requests that set it as a printer override.
+
+Each selected profile may override any allowed OrcaSlicer 2.5.1 setting in its category.
 `settings` lists those settings with the resolved profile value, its originating
 profile or explicit override, and whether each one is overrideable. A null profile
 value means the profile leaves it unspecified. The separate `definition.default`
@@ -82,9 +93,9 @@ these overrides:
 
 - identity and compatibility settings, such as `inherits`, `printer_model`,
   `nozzle_diameter` and `compatible_printers`; select the matching profile instead
-- printer upload connections and credentials, post-processing scripts, and
-  custom bed model or texture files
-- names that Orca 2.4.2 does not define for the category, including Bambu Studio
+- printer upload connections and credentials, post-processing scripts, plugins,
+  and custom bed model or texture files
+- names that Orca does not define for the category, including Bambu Studio
   names such as `wall_infill_order`, which Orca would ignore
 
 For process discovery, the optional `printer` selection supplies tower context.
@@ -299,8 +310,10 @@ is missing; `modeled_checks_passed` applies only to the stated model and coverag
 Inspect `processing_complete`, `coverage_complete` and unresolved reasons.
 
 Bed geometry comes from `Metadata/project_settings.config` in the final native
-package. Invalid or unavailable settings leave that check unmeasured. The report
-records G-code hashes and the supplied machine geometry, and slice provenance
+package. Invalid or unavailable settings leave that check unmeasured. Active
+3D bed exclusion volumes also leave the bed check unmeasured unless a planar
+finding already blocks it. Set these volumes in the native printer configuration.
+The report records G-code hashes and the supplied machine geometry. Slice provenance
 binds it to the source, resolved settings and generated artifacts. Re-slice and
 recheck after a layout, material, settings, machine-envelope or output change.
 
@@ -399,12 +412,17 @@ Orthographic and perspective projections are supported. Automatic framing
 uses a margin of `1.1` by default; the margin must be at least one. Explicit
 target or zoom controls can crop the view. The returned `camera` contains the
 resolved controls and can be passed back unchanged to repeat that view over the
-same source and selection.
+same source and selection. Reuse the original plate selection. An empty plate
+list includes off-plate objects, and the result lists the resolved plate numbers.
 
-`plates` and `objects` contain one-based source indices. Empty lists select all;
-object selection applies within the selected plates. Plates keep their native
-relative positions. `visibility.beds`, `visibility.plate_identifiers` and
-`visibility.prime_towers` default to true. Image dimensions and the processing
+`plates` and `objects` contain one-based source indices. Empty lists select all.
+Object selection applies within the selected plates. The renderer uses saved
+plate assignments when present and infers membership from geometry when the
+project has no assignment. The native metadata records explicit bed overrides
+for selected plates in `plate_bed_overrides`, using one-based plate keys.
+Plates keep their native relative positions. `visibility.beds`,
+`visibility.plate_identifiers` and `visibility.prime_towers` default to true.
+Image dimensions and the processing
 budget must be positive and representable by the runtime. Graphics limits,
 container resources and the caller's request deadline still apply.
 
@@ -436,6 +454,10 @@ graphics return `native_capture_unavailable`. Other native failures retain a
 diagnostic artifact. Capture never substitutes a stored thumbnail or a composite
 of plate images for the requested native view.
 
+The project needs at least one imported model. Layouts saved before version
+1.5.9 use a legacy plate grid. For those projects, verify plate-local placement
+in the desktop application when the project uses a different printer size.
+
 ## Plate previews
 
 The worker also exports OrcaSlicer's plate picture of a model without slicing
@@ -462,7 +484,7 @@ file from a clean checkout of that revision and review the difference:
 
 ```sh
 python3 scripts/orca_settings.py /path/to/OrcaSlicer \
-  --engine-version 2.4.2 \
+  --engine-version 2.5.1 \
   --source-revision FULL_COMMIT_SHA \
   --output crates/printable-server/src/slicing/orca-settings.json
 ```

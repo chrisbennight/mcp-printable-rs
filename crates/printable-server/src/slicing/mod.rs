@@ -40,8 +40,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const MAX_LOG: usize = 1024 * 1024;
-pub const ENGINE_VERSION: &str = "2.4.2";
-pub const ENGINE_SOURCE_REVISION: &str = "63c97a10eab70d6f4af73c29807dddbcab889273";
+pub const ENGINE_VERSION: &str = "2.5.1";
+pub const ENGINE_SOURCE_REVISION: &str = "6320f7282263ac81d5a133c47e77e08191b409a2";
 
 pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Value, ToolError> {
     let operation = match &request {

@@ -33,16 +33,16 @@
     },
     {
       "name": "OrcaSlicer",
-      "version": "local-2.4.2-63c97a1",
+      "version": "local-2.5.1-6320f72",
       "roles": [
         "slicer"
       ],
       "license": "AGPL-3.0-only",
-      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/63c97a10eab70d6f4af73c29807dddbcab889273.tar.gz",
-      "source_commit": "63c97a10eab70d6f4af73c29807dddbcab889273",
-      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.4.2-63c97a1/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.4.2-63c97a1.AppImage",
-      "binary_sha256": "00e1875000f8bd97f2e4395b592cb8fba6454726be0da15d64f7f20cc5d6ca77",
-      "source_sha256": "8f2afba7d45c511ad472332b0b9635531c15bd4419b9341de75f4fd924494439",
+      "source_url": "https://github.com/chrisbennight/OrcaSlicer/archive/6320f7282263ac81d5a133c47e77e08191b409a2.tar.gz",
+      "source_commit": "6320f7282263ac81d5a133c47e77e08191b409a2",
+      "binary_url": "https://github.com/chrisbennight/OrcaSlicer/releases/download/local-2.5.1-6320f72/OrcaSlicer_Linux_AppImage_Ubuntu2404_local-2.5.1-6320f72.AppImage",
+      "binary_sha256": "b4c4fd90cd0fc7ec364373883ead5d7f7eafc68d7378445de4d831fddc3fdf0d",
+      "source_sha256": "955543783b0527a0d65c78437a1d6ec483ce140748c0cf3e2094074a2d7c5e21",
       "recipe_paths": [
         "Dockerfile"
       ],
@@ -53,7 +53,26 @@
         "/opt/orca/licenses/copyright-xz-utils.txt",
         "/opt/orca/licenses/copyright-zlib.txt"
       ],
-      "packaging": "The Dockerfile removes the optional web resources from the headless bundle."
+      "packaging": "The Dockerfile removes the optional web resources and replaces the bundled Python runtime in the headless image."
+    },
+    {
+      "name": "CPython",
+      "version": "3.12.16",
+      "roles": [
+        "slicer"
+      ],
+      "license": "PSF-2.0",
+      "source_url": "https://www.python.org/ftp/python/3.12.16/Python-3.12.16.tar.xz",
+      "source_sha256": "b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+      "binary_url": "https://registry-1.docker.io/v2/library/python/manifests/sha256:05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177",
+      "binary_sha256": "05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177",
+      "upstream_recipe_url": "https://github.com/docker-library/python/blob/3d7e95597e56a415d9e4abc0f15877e005d2cb2e/3.12/slim-trixie/Dockerfile",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/opt/orca/lib/python/lib/python3.12/LICENSE.txt"
+      ]
     },
     {
       "name": "VirtualGL",

@@ -129,17 +129,21 @@ const IDENTITY: &[&str] = &[
     "compatible_prints_condition",
 ];
 
-/// Settings slicing never needs: printer upload connections and credentials,
-/// post-processing programs, and files read from the slicer host.
+/// Settings that callers cannot use to configure host files, printer connections,
+/// post-processing programs, or OrcaSlicer plugins.
 const UNAVAILABLE: &[&str] = &[
     "bbl_use_printhost",
     "bed_custom_model",
     "bed_custom_texture",
+    "filament_plugin_config_overrides",
     "host_type",
+    "plugins",
     "post_process",
     "print_host",
     "print_host_webui",
+    "print_plugin_config_overrides",
     "printer_agent",
+    "printer_plugin_config_overrides",
     "printhost_apikey",
     "printhost_authorization_type",
     "printhost_cafile",
@@ -147,14 +151,20 @@ const UNAVAILABLE: &[&str] = &[
     "printhost_port",
     "printhost_ssl_ignore_revoke",
     "printhost_user",
+    "slicing_pipeline_plugin",
 ];
 
 fn refusal(key: &str) -> Option<&'static str> {
     if IDENTITY.contains(&key) {
         Some("profile identity and compatibility require selecting the matching profile")
+    } else if matches!(
+        key,
+        "bed_exclude_volume_mode" | "bed_exclude_volumes" | "extruder_bed_exclude_volumes"
+    ) {
+        Some("3D bed exclusion volumes require native printer configuration")
     } else if UNAVAILABLE.contains(&key) {
         Some(
-            "printer connection, post-processing and host file settings are not available for slicing",
+            "printer connection, post-processing, host file and plugin settings are not available for slicing",
         )
     } else {
         None
@@ -205,8 +215,9 @@ impl OrcaSettings {
 
 pub struct Profiles {
     entries: BTreeMap<Category, BTreeMap<String, Map<String, Value>>>,
-    /// Filament parents from Orca's shared filament library, used only to resolve inheritance.
+    /// Shared filament profiles used to resolve inheritance.
     library: BTreeMap<String, Map<String, Value>>,
+    shared_selections: BTreeSet<String>,
     keys: BTreeMap<Category, BTreeSet<String>>,
     definitions: BTreeMap<String, super::definitions::Definition>,
 }
@@ -244,12 +255,23 @@ fn load_category(
         if profile.get("type").and_then(Value::as_str) != Some(category.directory()) {
             continue;
         }
-        let name = profile
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("bundled profile has no name"))?
-            .to_owned();
-        if entries.insert(name, profile).is_some() {
+        let Some(name) = profile.get("name").and_then(Value::as_str) else {
+            // Orca places these non-preset resources beside its BBL filament presets.
+            if category == Category::Filament
+                && matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(
+                        "filament_id_map.json"
+                            | "filament_name_map.json"
+                            | "support_recommended_params.json"
+                    )
+                )
+            {
+                continue;
+            }
+            return Err(invalid("bundled profile has no name"));
+        };
+        if entries.insert(name.to_owned(), profile).is_some() {
             return Err(invalid("bundled profile names are ambiguous"));
         }
     }
@@ -318,6 +340,7 @@ impl Profiles {
 
     /// Loads a vendor profile directory, including its subfolders. Filament parents the
     /// vendor lacks are read from Orca's shared library beside it, when present.
+    /// Shared presets that explicitly list a vendor printer are selectable too.
     pub fn load(root: &Path) -> Result<Self, ToolError> {
         let mut entries = BTreeMap::new();
         for category in [Category::Printer, Category::Process, Category::Filament] {
@@ -335,6 +358,32 @@ impl Profiles {
             Some(directory) if directory.is_dir() => load_category(&directory, Category::Filament)?,
             _ => BTreeMap::new(),
         };
+        let printers = &entries[&Category::Printer];
+        let shared_selections = library.iter().filter(|(_, profile)| {
+            profile.get("instantiation").and_then(Value::as_str) == Some("true")
+                && profile
+                    .get("compatible_printers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|names| {
+                        names.iter().filter_map(Value::as_str).any(|name| {
+                            printers.get(name).is_some_and(|printer| {
+                                printer.get("instantiation").and_then(Value::as_str) == Some("true")
+                            })
+                        })
+                    })
+        });
+        let shared_selections: Vec<_> = shared_selections.collect();
+        let filaments = entries
+            .get_mut(&Category::Filament)
+            .expect("filament category");
+        let mut imported = BTreeSet::new();
+        for (name, profile) in shared_selections {
+            if let std::collections::btree_map::Entry::Vacant(entry) = filaments.entry(name.clone())
+            {
+                entry.insert(profile.clone());
+                imported.insert(name.clone());
+            }
+        }
         let settings = OrcaSettings::bundled()?;
         let keys = BTreeMap::from([
             (Category::Printer, settings.printer),
@@ -344,6 +393,7 @@ impl Profiles {
         Ok(Self {
             entries,
             library,
+            shared_selections: imported,
             keys,
             definitions: settings.definitions,
         })
@@ -370,6 +420,8 @@ impl Profiles {
         selection: &ProfileSelection,
     ) -> Result<(Value, BTreeMap<String, String>), ToolError> {
         let entries = &self.entries[&category];
+        let shared_selection =
+            category == Category::Filament && self.shared_selections.contains(&selection.name);
         let mut chain = Vec::new();
         let mut name = selection.name.as_str();
         let mut seen = BTreeSet::new();
@@ -378,15 +430,19 @@ impl Profiles {
                 return Err(invalid("profile inheritance is cyclic"));
             }
             let inherited = !chain.is_empty() && category == Category::Filament;
-            let profile = entries
-                .get(name)
-                .or_else(|| inherited.then(|| self.library.get(name)).flatten())
-                .ok_or_else(|| {
-                    invalid(&format!(
-                        "unresolved {} profile: {name}",
-                        category.directory()
-                    ))
-                })?;
+            let vendor = entries.get(name);
+            let shared = inherited.then(|| self.library.get(name)).flatten();
+            let profile = if shared_selection {
+                shared.or(vendor)
+            } else {
+                vendor.or(shared)
+            }
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "unresolved {} profile: {name}",
+                    category.directory()
+                ))
+            })?;
             chain.push(profile);
             match profile
                 .get("inherits")
@@ -431,10 +487,24 @@ impl Profiles {
                     "Orca profile values must be strings or nonempty string arrays",
                 ));
             }
+            // Keep the legacy boolean spelling accepted by Orca's profile loader.
+            let value = match (key.as_str(), value.as_str()) {
+                ("enable_arc_fitting", Some(text))
+                    if text == "1" || text.eq_ignore_ascii_case("true") =>
+                {
+                    json!("enabled")
+                }
+                ("enable_arc_fitting", Some(text))
+                    if text == "0" || text.eq_ignore_ascii_case("false") =>
+                {
+                    json!("disabled")
+                }
+                _ => value.clone(),
+            };
             if let Some(definition) = self.definitions.get(key) {
-                definition.validate(key, value)?;
+                definition.validate(key, &value)?;
             }
-            result.insert(key.clone(), value.clone());
+            result.insert(key.clone(), value);
         }
         result.insert("from".into(), json!("system"));
         Ok((Value::Object(result), sources))
@@ -541,6 +611,7 @@ mod tests {
         let profiles = Profiles {
             entries: BTreeMap::from([(Category::Process, entries)]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([(
                 Category::Process,
                 (0..301).map(|i| format!("setting-{i:03}")).collect(),
@@ -614,6 +685,7 @@ mod tests {
         let profiles = Profiles {
             entries: BTreeMap::from([(Category::Process, entries)]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([(Category::Process, BTreeSet::from(["wall_loops".into()]))]),
             definitions: BTreeMap::new(),
         };
@@ -660,6 +732,7 @@ mod tests {
                 "agent",
                 "post_process",
                 "bed_custom",
+                "plugin",
             ]
             .iter()
             .any(|part| key.contains(part))
@@ -786,6 +859,10 @@ mod tests {
             json!({"name":"fdm_filament_common","type":"filament","filament_type":["PLA"]}),
         );
         write_profile(
+            &vendor.join("filament/filament_id_map.json"),
+            json!({"type":"filament","GF01":"Bambu PLA Basic"}),
+        );
+        write_profile(
             &vendor.join("filament/Vendor/child.json"),
             json!({"name":"Vendor PLA @BBL X1C","type":"filament","inherits":"Vendor PLA @base",
                 "instantiation":"true","compatible_printers":["printer"]}),
@@ -803,6 +880,11 @@ mod tests {
             &library.join("generic.json"),
             json!({"name":"Generic PLA @System","type":"filament","instantiation":"true"}),
         );
+        write_profile(
+            &library.join("Vendor/selectable.json"),
+            json!({"name":"Shared PETG @printer","type":"filament","inherits":"Vendor PLA @base",
+                "compatible_printers":["printer"],"instantiation":"true"}),
+        );
         let profiles = Profiles::load(&vendor).unwrap();
         let child = ProfileSelection {
             name: "Vendor PLA @BBL X1C".into(),
@@ -814,13 +896,26 @@ mod tests {
         let found = profiles
             .discover(
                 serde_json::from_value(
-                    json!({"category":"filament","query":"PLA","printer":"printer"}),
+                    json!({"category":"filament","query":"@","printer":"printer"}),
                 )
                 .unwrap(),
             )
             .unwrap();
-        assert_eq!(found["total"], 1);
-        assert_eq!(found["profiles"][0]["name"], "Vendor PLA @BBL X1C");
+        assert_eq!(found["total"], 2);
+        assert_eq!(found["profiles"][0]["name"], "Shared PETG @printer");
+        assert_eq!(found["profiles"][0]["filament_type"], json!(["PETG"]));
+        assert_eq!(found["profiles"][1]["name"], "Vendor PLA @BBL X1C");
+        let shared = profiles
+            .resolve(
+                Category::Filament,
+                &ProfileSelection {
+                    name: "Shared PETG @printer".into(),
+                    overrides: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(shared["nozzle_temperature"], json!(["215"]));
+        assert_eq!(shared["filament_type"], json!(["PETG"]));
         for name in ["Vendor PLA @base", "Generic PLA @System"] {
             let selection = ProfileSelection {
                 name: name.into(),
@@ -828,6 +923,11 @@ mod tests {
             };
             assert!(profiles.resolve(Category::Filament, &selection).is_err());
         }
+        write_profile(
+            &vendor.join("filament/broken.json"),
+            json!({"type":"filament"}),
+        );
+        assert!(Profiles::load(&vendor).is_err());
     }
 
     #[test]
@@ -846,6 +946,7 @@ mod tests {
                 (Category::Filament, profile("filament")),
             ]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([
                 (Category::Printer, settings.printer),
                 (Category::Process, settings.process),
@@ -869,6 +970,16 @@ mod tests {
         };
         let brim = resolve(Category::Process, "brim_type", json!("no_brim")).unwrap();
         assert_eq!(brim["brim_type"], "no_brim");
+        for (value, expected) in [
+            ("0", "disabled"),
+            ("FALSE", "disabled"),
+            ("1", "enabled"),
+            ("true", "enabled"),
+            ("sparse_infill", "sparse_infill"),
+        ] {
+            let profile = resolve(Category::Process, "enable_arc_fitting", json!(value)).unwrap();
+            assert_eq!(profile["enable_arc_fitting"], expected);
+        }
         let advance = resolve(Category::Filament, "pressure_advance", json!(["0.03"])).unwrap();
         assert_eq!(advance["pressure_advance"], json!(["0.03"]));
         for (category, key, message) in [
@@ -878,7 +989,28 @@ mod tests {
                 "unknown process override",
             ),
             (Category::Process, "post_process", "not available"),
+            (
+                Category::Process,
+                "slicing_pipeline_plugin",
+                "not available",
+            ),
+            (Category::Process, "plugins", "not available"),
+            (
+                Category::Printer,
+                "printer_plugin_config_overrides",
+                "not available",
+            ),
+            (
+                Category::Filament,
+                "filament_plugin_config_overrides",
+                "not available",
+            ),
             (Category::Printer, "printhost_apikey", "not available"),
+            (
+                Category::Printer,
+                "bed_exclude_volumes",
+                "native printer configuration",
+            ),
             (Category::Printer, "printer_technology", "identity"),
             (
                 Category::Filament,

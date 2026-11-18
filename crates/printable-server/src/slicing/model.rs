@@ -901,6 +901,17 @@ mod tests {
     }
 
     #[test]
+    fn native_project_retains_sparse_layer_combination_setting() {
+        let settings = br#"{"wipe_tower_sparse_layers_combination":"1"}"#;
+        let (file, bytes) = archive_fixture(&[("Metadata/project_settings.config", settings)]);
+        let archive = read_archive(file.path(), bytes + settings.len() as u64, || true).unwrap();
+        assert_eq!(
+            archive.native.project_settings["wipe_tower_sparse_layers_combination"],
+            "1"
+        );
+    }
+
+    #[test]
     fn ambiguous_or_external_archive_names_are_rejected() {
         for path in [
             "../outside",

@@ -44,6 +44,7 @@ pub(super) fn describe(
         "prime_tower_brim_width",
         "prime_tower_enable_framework",
         "wipe_tower_no_sparse_layers",
+        "wipe_tower_sparse_layers_combination",
     ] {
         let (state, reason) = match (algorithm, key) {
             (None, _) => (
@@ -91,6 +92,10 @@ pub(super) fn describe(
                 "supported",
                 "shared G-code integration rotates both Type 1 and Type 2 tower paths",
             ),
+            (Some(_), "wipe_tower_sparse_layers_combination") => (
+                "supported",
+                "combination requires sparse-layer skipping, smooth timelapse and clumping detection to be off",
+            ),
             _ => (
                 "supported",
                 "the selected packaged generator consumes this control; final effect requires output evidence",
@@ -117,7 +122,7 @@ pub(super) fn describe(
     json!({"scope":"packaged_tower_generator","algorithm":algorithm,"wall":wall,
         "engine":{"version":super::ENGINE_VERSION,"source_revision":super::ENGINE_SOURCE_REVISION,"runtime_source_verified":false},
         "controls":controls,"physical_compatibility":"unknown",
-        "not_exposed":["native 3D collision volumes","combined sparse tower layers"],
+        "not_exposed":["native 3D collision volumes"],
         "basis":[format!("{base}/src/OrcaSlicer.cpp"),format!("{base}/src/libslic3r/Print.hpp"),
             format!("{base}/src/libslic3r/GCode.hpp"),format!("{base}/src/libslic3r/GCode.cpp"),
             format!("{base}/src/libslic3r/GCode/WipeTower.cpp"),format!("{base}/src/libslic3r/GCode/WipeTower2.cpp")],
@@ -140,6 +145,10 @@ mod tests {
         }
         assert_eq!(
             result["controls"]["wipe_tower_rotation_angle"]["state"],
+            "supported"
+        );
+        assert_eq!(
+            result["controls"]["wipe_tower_sparse_layers_combination"]["state"],
             "supported"
         );
         assert_eq!(

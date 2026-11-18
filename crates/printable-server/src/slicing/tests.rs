@@ -300,7 +300,7 @@ async fn readiness_verifies_the_native_interface_profiles_and_busy_state() {
     let worker = fixture(directory.path(), false);
     std::fs::write(
         &worker.binary,
-        "#!/bin/sh\nprintf 'OrcaSlicer-2.4.2:\\n--slice --export-3mf\\n'\n",
+        "#!/bin/sh\nprintf 'OrcaSlicer-2.5.1:\\n--slice --export-3mf\\n'\n",
     )
     .unwrap();
     let startup = worker.probe_engine().await;
@@ -312,7 +312,7 @@ async fn readiness_verifies_the_native_interface_profiles_and_busy_state() {
     assert_eq!(worker.readiness(&startup).state, CapabilityState::Ready);
     for script in [
         "#!/bin/sh\nprintf 'different interface\\n'\n",
-        "#!/bin/sh\nprintf 'OrcaSlicer-2.4.20:\\n--slice --export-3mf\\n'\n",
+        "#!/bin/sh\nprintf 'OrcaSlicer-2.5.10:\\n--slice --export-3mf\\n'\n",
     ] {
         std::fs::write(&worker.binary, script).unwrap();
         assert_eq!(

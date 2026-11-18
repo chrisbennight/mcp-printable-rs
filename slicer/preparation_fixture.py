@@ -114,7 +114,7 @@ def create_software_profiles(packaged_root, destination):
     return {"printer": PRINTER, "linear_printer": LINEAR_PRINTER, "process": PROCESS, "pla": PLA, "petg": PETG}
 
 
-def linear_deposition_paths(gcode):
+def linear_deposition_paths(gcode, *, descents=None):
     """Measure nominal linear paths in the minimal-script native fixture only.
 
     This independent test oracle does not simulate firmware or serve public
@@ -171,11 +171,15 @@ def linear_deposition_paths(gcode):
             restored = min(amount, debt)
             retracted[material] = debt - restored
             amount -= restored
-        if (amount > 0
-                and all(value is not None for value in before + position)
-                and before != position):
-            paths.append({"line": number, "material": material, "feature": feature,
-                          "from_mm": before, "to_mm": list(position)})
+        if any(value is None for value in before + position) or before == position:
+            continue
+        if amount > 0 or (descents is not None and before[2] > position[2]):
+            path = {"line": number, "material": material, "feature": feature,
+                    "from_mm": before, "to_mm": list(position)}
+            if amount > 0:
+                paths.append(path)
+            else:
+                descents.append(path)
     return paths, changes
 
 

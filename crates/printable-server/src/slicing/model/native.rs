@@ -39,6 +39,7 @@ const PROJECT_SETTINGS: &[&str] = &[
     "prime_tower_brim_width",
     "prime_tower_enable_framework",
     "wipe_tower_no_sparse_layers",
+    "wipe_tower_sparse_layers_combination",
     "wipe_tower_x",
     "wipe_tower_y",
     "wipe_tower_rotation_angle",
