@@ -84,9 +84,22 @@ RUN strip target/release/printable-smoke || true
 FROM scratch AS smoke-export
 COPY --from=smoke-build /app/target/release/printable-smoke /printable-smoke
 
+# Keep the same CPython ABI as Orca's embedded interpreter.
+FROM python:3.12.16-slim-trixie@sha256:05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177 AS slicer-python
+RUN install -D /usr/local/bin/python3.12 /orca-python/bin/python3.12 \
+ && install -D /usr/local/lib/libpython3.12.so.1.0 /orca-python/lib/libpython3.12.so.1.0 \
+ && install -m 0644 /usr/local/lib/libpython3.so /orca-python/lib/libpython3.so \
+ && ln -s python3.12 /orca-python/bin/python3 \
+ && ln -s libpython3.12.so.1.0 /orca-python/lib/libpython3.12.so \
+ && cp -a /usr/local/lib/python3.12 /orca-python/lib/ \
+ && rm -rf /orca-python/lib/python3.12/ensurepip /orca-python/lib/python3.12/site-packages \
+ && rm -f /orca-python/lib/python3.12/lib-dynload/_tkinter*.so \
+ && test -s /orca-python/lib/python3.12/LICENSE.txt
+
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS slicer-runtime
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates locales tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
+      libbz2-1.0 libcrypt1 libdb5.3t64 libffi8 libgdbm6t64 liblzma5 libncursesw6 libreadline8t64 libsqlite3-0 libssl3t64 libuuid1 libzstd1 zlib1g \
  && localedef -i en_US -f UTF-8 en_US.UTF-8 \
  && rm -rf /var/lib/apt/lists/*
 # Extracted modes depend on the AppImage runtime embedded in each build, so the
@@ -98,9 +111,13 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
  && echo 'b4c4fd90cd0fc7ec364373883ead5d7f7eafc68d7378445de4d831fddc3fdf0d  /tmp/orca.AppImage' | sha256sum --check --strict \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
- && rm -rf /opt/orca/resources/web \
+ && rm -rf /opt/orca/resources/web /opt/orca/lib/python \
+ && rm /opt/orca/lib/orca-runtime/libpython3.12.so.1.0 \
  && chmod -R u=rwX,go=rX /opt/orca \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+COPY --from=slicer-python /orca-python /opt/orca/lib/python
+RUN ln -s ../python/lib/libpython3.12.so.1.0 /opt/orca/lib/orca-runtime/libpython3.12.so.1.0 \
+ && /opt/orca/lib/python/bin/python3.12 -Es -c 'import bz2, ctypes, lzma, sqlite3, ssl, sys, zlib; assert sys.version_info[:3] == (3, 12, 16)'
 # Orca loads its bundled OPC caches. The worker resolves overrides against the
 # JSON presets from the same source revision in a separate directory.
 RUN orca_source=6320f7282263ac81d5a133c47e77e08191b409a2 \

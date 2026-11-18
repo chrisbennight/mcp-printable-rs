@@ -53,7 +53,26 @@
         "/opt/orca/licenses/copyright-xz-utils.txt",
         "/opt/orca/licenses/copyright-zlib.txt"
       ],
-      "packaging": "The Dockerfile removes the optional web resources from the headless bundle."
+      "packaging": "The Dockerfile removes the optional web resources and replaces the bundled Python runtime in the headless image."
+    },
+    {
+      "name": "CPython",
+      "version": "3.12.16",
+      "roles": [
+        "slicer"
+      ],
+      "license": "PSF-2.0",
+      "source_url": "https://www.python.org/ftp/python/3.12.16/Python-3.12.16.tar.xz",
+      "source_sha256": "b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+      "binary_url": "https://registry-1.docker.io/v2/library/python/manifests/sha256:05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177",
+      "binary_sha256": "05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177",
+      "upstream_recipe_url": "https://github.com/docker-library/python/blob/3d7e95597e56a415d9e4abc0f15877e005d2cb2e/3.12/slim-trixie/Dockerfile",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/opt/orca/lib/python/lib/python3.12/LICENSE.txt"
+      ]
     },
     {
       "name": "VirtualGL",
