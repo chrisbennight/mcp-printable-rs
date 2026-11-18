@@ -26,9 +26,14 @@ per-filament and tool-change bounds, and STL reader fixes to its 2.4.2 base.
 Equivalent fixes are present upstream in 2.5.1. The thumbnail path and those
 backports can use the upstream implementations when changing the base version.
 
-Use the native capture acceptance tests when evaluating a newer engine. Include
-an authored multi-plate project and the exact 3MF emitted by preparation, and
-verify source immutability, selection, repeatable framing, and image identity.
+When changing the packaged engine, update the worker's version pin and the
+readiness assertion in [the native slicing smoke suite](../slicer/smoke.py)
+together. Run the Verify native slicing CI step against the candidate image.
+It checks capture readiness, multi-plate selection, camera replay, prepared 3MF
+identity, source immutability, and retained diagnostics for an invalid camera
+request. Run the Rust capture tests in
+[`slicing::capture::tests`](../crates/printable-server/src/slicing/capture.rs)
+for request cancellation and worker behavior.
 The [component inventory](../release/components.json) records the packaged
 binary, corresponding source, and checksums.
 
