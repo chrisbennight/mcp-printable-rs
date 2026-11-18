@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let profiles = PathBuf::from(
         std::env::var("PRINTABLE_SLICER_PROFILES")
-            .unwrap_or_else(|_| "/opt/orca/resources/profiles/BBL".into()),
+            .unwrap_or_else(|_| "/opt/orca-worker-profiles/BBL".into()),
     );
     let binary = PathBuf::from(
         std::env::var("PRINTABLE_SLICER_BIN").unwrap_or_else(|_| "/opt/orca/AppRun".into()),

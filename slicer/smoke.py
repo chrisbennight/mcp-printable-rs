@@ -748,7 +748,12 @@ with tempfile.TemporaryDirectory() as directory:
         underside = request("review", {"slice": interface["handle"], "toolpath": interface["toolpath"],
             "first_layer": 16, "last_layer": 22, "features": ["Support interface"], "material": 1})
         assert underside["segments"] > 0 and underside["provenance"]
-        evidence = {"engine_source_revision": ENGINE_SOURCE_REVISION,
+        reference = flat_baseline["state"]["provenance"]
+        record = (root / reference["path"]).read_bytes()
+        assert hashlib.sha256(record).hexdigest() == reference["sha256"]
+        engine = json.loads(record)["data"]["engine"]
+        assert engine["version"] == "2.5.1" and engine["source_revision"] == ENGINE_SOURCE_REVISION
+        evidence = {"engine_source_revision": engine["source_revision"],
             "physical_result": "not_observed", "flat_top": [{"slice": result["handle"],
                 "slice_provenance": result["state"]["provenance"], "review": result["review"]["provenance"],
                 "estimates": result["review"]["estimates"]} for result in (flat_baseline, flat_finish)],
@@ -792,8 +797,18 @@ with tempfile.TemporaryDirectory() as directory:
             handles.append(handle)
             return used_purge, stored_purge
 
-        h2d_purge = h2d_trial("h2d-two-filaments", material_source.name)
-        assert h2d_trial("h2d-reslice", "h2d-two-filaments/model.gcode.3mf") == h2d_purge
+        baseline_purge, _ = h2d_trial("h2d-two-filaments", material_source.name)
+        authored_source = project / "h2d-authored-purge.3mf"
+        authored_purge = [0, 501, 371, 0, 0, 549, 447, 0]
+        config_path = "Metadata/project_settings.config"
+        with zipfile.ZipFile(project / "h2d-two-filaments/model.gcode.3mf") as original, \
+                zipfile.ZipFile(authored_source, "w", zipfile.ZIP_DEFLATED) as output:
+            settings = json.loads(original.read(config_path))
+            settings["flush_volumes_matrix"] = list(map(str, authored_purge))
+            for name in original.namelist():
+                output.writestr(name, json.dumps(settings) if name == config_path else original.read(name))
+        used_purge, stored_purge = h2d_trial("h2d-reslice", authored_source.name)
+        assert stored_purge == authored_purge and used_purge != baseline_purge
         print("Native H2D nozzle assignments, package thumbnails, and purge volumes survived reslicing")
         worker.terminate()
         worker.wait(timeout=10)
