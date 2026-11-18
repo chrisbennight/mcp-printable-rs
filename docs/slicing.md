@@ -8,15 +8,31 @@ the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.4.2 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
 
-The checksum-pinned [fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-63c97a1)
-supports native workspace capture and headless package thumbnails. Its thumbnail
-path fixes the CLI OpenGL context request and model initialization without a wx
-application. It also carries three upstream
-fixes from the 2.4.4 backports: bounds checks for per-filament settings lists
-shorter than the filament count, which crashed H2D slices with two or more
-filaments; bounds checks for tool-change lookups; and two buffer overflow fixes
-in the STL reader. It retains the upstream 2.4.2 JSON profile format used by the
-worker.
+## Why Printable maintains an OrcaSlicer fork
+
+The packaged [OrcaSlicer fork release](https://github.com/chrisbennight/OrcaSlicer/releases/tag/local-2.4.2-63c97a1)
+adds `--capture-workspace`, the native engine action behind
+[`slice.capture`](#native-layout-capture). It opens a project or prepared
+3MF under an isolated display and renders the requested Orca workspace view.
+The caller can select plates and objects, control the camera and replay the
+resolved view, and show or hide beds, plate identifiers, and Orca's estimated
+prime towers. Printable binds the image and resolved view to the exact source
+artifact and retains them as observation evidence.
+
+[OrcaSlicer 2.5.1](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.5.1)
+can generate plate thumbnails through its CLI. Workspace capture still needs
+the fork for the selection, camera, and native metadata this workflow requires. The current fork also backports CLI thumbnail,
+per-filament and tool-change bounds, and STL reader fixes to its 2.4.2 base.
+Equivalent fixes are present upstream in 2.5.1. The thumbnail path and those
+backports can use the upstream implementations when changing the base version.
+
+Use the native capture acceptance tests when evaluating a newer engine. Include
+an authored multi-plate project and the exact 3MF emitted by preparation, and
+verify source immutability, selection, repeatable framing, and image identity.
+The [component inventory](../release/components.json) records the packaged
+binary, corresponding source, and checksums.
+
+## Headless runtime
 
 The container's `orca-headless` wrapper provides Xvfb and Mesa software rendering
 without GPU passthrough. It creates a private runtime directory inside
