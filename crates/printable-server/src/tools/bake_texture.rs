@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 use crate::{config::Settings, error::ToolError};
 
 use super::{
-    geometry_blocking, geometry_worker_path, run_geometry_worker_process, validate_blender_artifact,
+    blocking, geometry_blocking, geometry_worker_path, run_geometry_worker_process,
+    validate_blender_artifact,
 };
 
 pub const FLAG: &str = "--bake-texture";
@@ -78,19 +79,24 @@ pub(super) async fn bake(
     settings: &Settings,
     params: BakeTextureParams,
 ) -> Result<Value, ToolError> {
-    validate_blender_artifact(&workspace, &params.source_path, ".stl", true)?;
-    validate_blender_artifact(&workspace, &params.height_map_path, ".png", true)?;
-    validate_blender_artifact(&workspace, &params.output_path, ".stl", false)?;
-    match workspace.stat_artifact(&params.output_path) {
-        Ok(_) => return Err(WsError::AlreadyExists(params.output_path).into()),
-        Err(WsError::NotFound(_)) => (),
-        Err(error) => return Err(error.into()),
-    }
+    let staging_workspace = Arc::clone(&workspace);
+    let (params, staging) = blocking(move || -> Result<_, ToolError> {
+        validate_blender_artifact(&staging_workspace, &params.source_path, ".stl", true)?;
+        validate_blender_artifact(&staging_workspace, &params.height_map_path, ".png", true)?;
+        validate_blender_artifact(&staging_workspace, &params.output_path, ".stl", false)?;
+        match staging_workspace.stat_artifact(&params.output_path) {
+            Ok(_) => return Err(WsError::AlreadyExists(params.output_path).into()),
+            Err(WsError::NotFound(_)) => (),
+            Err(error) => return Err(error.into()),
+        }
+        let staging = staging_workspace.scratch(0, "bake-texture")?;
+        Ok((params, staging))
+    })
+    .await?;
     let worker_bin = geometry_worker_path(settings)?;
     let memory_bytes = settings.geometry_worker_memory_bytes;
     geometry_blocking(move || -> Result<Value, ToolError> {
         let workspace_root = workspace.root_path().ok_or(WsError::Unconfined)?;
-        let staging = workspace.scratch(0, "bake-texture")?;
         let scratch_id = staging
             .path()
             .file_name()
