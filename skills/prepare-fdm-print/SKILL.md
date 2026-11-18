@@ -136,6 +136,37 @@ here. Do not substitute the printer's min/max layer settings for an adaptive
 profile. Tree-support compatibility depends on the specific implementation,
 style and settings; do not adopt a blanket prohibition from one experiment.
 
+### OrcaSlicer 2.5 overrides
+
+Use these trials only when `slice.settings` lists the required keys and choices
+for the selected profiles and packaged engine. Prepare the unchanged baseline
+and each trial into separate output directories with the same source, layout,
+build surface and material assignments. Apply the settings as process overrides.
+
+- **Adaptive Gyroid.** For a Gyroid baseline, try `adaptive_infill_mode` with the
+  discovered choice `distance_warp` and a lower
+  `adaptive_infill_interior_density`. Keep the baseline
+  `sparse_infill_density`, which sets the density near the surface. Inspect
+  infill at the edge and center on several layers. Compare material and time
+  estimates. Wall thickness and physical strength need separate evidence.
+- **Small support perimeters.** Try `small_support_perimeter_speed` and
+  `small_support_perimeter_threshold` on a model with short support paths.
+  Discover the settings' per-nozzle values. A speed of `80%` uses the applicable
+  support or support-interface speed as its reference. Set a nonzero perimeter
+  length threshold in millimeters and compare the resulting support paths and
+  estimated duration.
+- **Cyclic tool changes.** On a multi-material project, try
+  `toolchange_ordering: "cyclic"`. If needed, set `toolchange_cyclic_order`
+  to a comma-separated sequence of the project's one-based filament slots.
+  Keep the normal first-layer behavior unless the trial specifically requires
+  changing `toolchange_cyclic_first_layer`. Check the actual material transitions,
+  purge paths, and time and material estimates. Cooling and surface finish
+  require a physical test.
+
+Use `slice.review` on the retained G-code and `slice.compare` to retain the trial
+and baseline evidence. Workspace capture shows model placement and estimated
+towers. Use toolpath review to examine what the slicer generated.
+
 Brick layers/staggered perimeters and micro non-planar finishing are not exposed
 by the packaged setting catalog. `staggered_inner_seams` is not brick layering.
 Reported strength gains from added flow also change dimensions and material use;
