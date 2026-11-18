@@ -138,8 +138,8 @@ describe the full project, including volumes omitted from the response. A facet
 can contribute to the count for more than one paint layer. Large results return
 summary counts with a bounded volume list and a truncation flag. Inspection
 accepts files up to 128 MiB and rejects native reports above 8 MiB. It uses a
-private snapshot, leaves the source unchanged, and requires an engine with
-`--inspect-paint` support.
+private snapshot and leaves the source unchanged. It runs a supported engine
+without a display and limits the child process to a 1 GiB address space.
 
 `inspect_layout` accepts an authored project-relative 3MF, a new output directory
 and optional expected source SHA-256. It resolves core/production model resources

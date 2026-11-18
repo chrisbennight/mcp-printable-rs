@@ -5364,7 +5364,7 @@ pub(crate) fn set_worker_memory_limit(
         )
     })?;
     // The limit is installed after fork and before exec, so only the disposable
-    // geometry child receives the address-space restriction.
+    // worker child receives the address-space restriction.
     unsafe {
         command.pre_exec(move || {
             let resource_limit = libc::rlimit {

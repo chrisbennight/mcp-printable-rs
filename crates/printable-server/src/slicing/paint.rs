@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 const TIME_LIMIT: Duration = Duration::from_secs(60);
 const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_INLINE_VOLUMES: usize = 32;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -266,7 +267,8 @@ impl SliceWorker {
             () = limit.cancellation.cancelled() => return Err(slice_error("native Orca paint inspection cancelled")),
             output = probe_native(help) => output,
         };
-        if !help.is_some_and(|text| text.contains("--inspect-paint")) {
+        let help = help.ok_or_else(|| slice_error("could not verify OrcaSlicer paint support"))?;
+        if !help.contains("--inspect-paint") {
             return Err(slice_error(
                 "the installed OrcaSlicer does not support paint inspection",
             ));
@@ -304,6 +306,7 @@ impl SliceWorker {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         command.as_std_mut().process_group(0);
+        crate::tools::set_worker_memory_limit(command.as_std_mut(), MAX_MEMORY_BYTES)?;
         snapshot
             .child_lease()?
             .retain_for_command(command.as_std_mut())?;

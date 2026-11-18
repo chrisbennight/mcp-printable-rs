@@ -12,4 +12,7 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 # The bundled OpenSSL otherwise asks the GUI to confirm the system certificate store.
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+if [ "${1:-}" = "--inspect-paint" ]; then
+    exec /opt/orca/AppRun "$@"
+fi
 exec xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' /opt/orca/AppRun "$@"
