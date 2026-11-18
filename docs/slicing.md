@@ -31,7 +31,10 @@ readiness assertion in [the native slicing smoke suite](../slicer/smoke.py)
 together. Run the Verify native slicing CI step against the candidate image.
 It checks capture readiness, multi-plate selection, camera replay, prepared 3MF
 identity, source immutability, and retained diagnostics for an invalid camera
-request. Run the Rust capture tests in
+request. The independent installation and direct-client CI step runs
+[the public capture check](../scripts/slicer_client_smoke.py) through MCP and
+verifies the retained source, camera, image, and provenance identities.
+Run the Rust capture tests in
 [`slicing::capture::tests`](../crates/printable-server/src/slicing/capture.rs)
 for request cancellation and worker behavior.
 The [component inventory](../release/components.json) records the packaged
