@@ -140,8 +140,9 @@ the migration from temporary live-session rendering to a separate worker.
 rectangular patch of a watertight STL. Coordinates and depth use millimetres.
 Open the source in the intended print orientation and use its coordinates for
 the rectangle and surface height. The entire region needs a flat surface with
-enough material underneath. Leave 0.001 mm of material beyond a recess or
-0.001 mm of clearance beyond a raised texture. Select an unused output path.
+enough material underneath. After rounding to STL precision, leave 0.001 mm
+of material beyond a recess or 0.001 mm of clearance beyond a raised texture.
+Select an unused output path.
 
 ```json
 {

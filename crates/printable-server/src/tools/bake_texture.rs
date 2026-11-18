@@ -6,7 +6,7 @@ use std::{
 };
 
 use image::{ColorType, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
-use printable_geom::{TextureRegion, bake_texture_stl};
+use printable_geom::{TextureRegion, bake_texture_stl, limit::WorkLimit};
 use printable_workspace::{ArtifactMeta, ManagedScratch, Workspace, WsError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 use crate::{config::Settings, error::ToolError};
 
 use super::{
-    blocking, geometry_blocking, geometry_worker_path, run_geometry_worker_process,
-    validate_blender_artifact,
+    GEOMETRY_TIME_LIMIT, REQUEST_CANCELLATION, blocking, geometry_blocking, geometry_worker_path,
+    run_geometry_worker_process, validate_blender_artifact,
 };
 
 pub const FLAG: &str = "--bake-texture";
@@ -74,49 +74,120 @@ struct WorkerResult {
     report: Value,
 }
 
+struct PreparedBake {
+    staging: TextureScratch,
+    request: WorkerRequest,
+    source_artifact: ArtifactMeta,
+    height_map_artifact: ArtifactMeta,
+    output_path: String,
+}
+
+/// The tool future can be cancelled between its blocking stages. Keep cleanup
+/// off the executor even if that future still owns the directory lease.
+struct TextureScratch {
+    directory: Option<ManagedScratch>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for TextureScratch {
+    fn drop(&mut self) {
+        if let Some(directory) = self.directory.take() {
+            self.runtime.spawn_blocking(move || drop(directory));
+        }
+    }
+}
+
 pub(super) async fn bake(
     workspace: Arc<Workspace>,
     settings: &Settings,
     params: BakeTextureParams,
 ) -> Result<Value, ToolError> {
+    let cancellation = REQUEST_CANCELLATION.try_with(Clone::clone).ok();
+    let limit = WorkLimit::new(GEOMETRY_TIME_LIMIT, move || {
+        cancellation
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    });
+    let memory_bytes = settings.geometry_worker_memory_bytes;
+    let runtime = tokio::runtime::Handle::current();
     let staging_workspace = Arc::clone(&workspace);
-    let (params, staging) = blocking(move || -> Result<_, ToolError> {
-        validate_blender_artifact(&staging_workspace, &params.source_path, ".stl", true)?;
-        validate_blender_artifact(&staging_workspace, &params.height_map_path, ".png", true)?;
-        validate_blender_artifact(&staging_workspace, &params.output_path, ".stl", false)?;
-        match staging_workspace.stat_artifact(&params.output_path) {
-            Ok(_) => return Err(WsError::AlreadyExists(params.output_path).into()),
-            Err(WsError::NotFound(_)) => (),
-            Err(error) => return Err(error.into()),
-        }
-        let staging = staging_workspace.scratch(0, "bake-texture")?;
-        Ok((params, staging))
+    let preparation_limit = limit.clone();
+    let prepared = blocking(move || {
+        preparation_limit.apply(|| prepare_bake(&staging_workspace, params, memory_bytes, runtime))
     })
     .await?;
     let worker_bin = geometry_worker_path(settings)?;
-    let memory_bytes = settings.geometry_worker_memory_bytes;
-    geometry_blocking(move || -> Result<Value, ToolError> {
-        let workspace_root = workspace.root_path().ok_or(WsError::Unconfined)?;
-        let scratch_id = staging
-            .path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("workspace scratch IDs contain only ASCII hexadecimal digits");
-        let (source_artifact, source) = stage_input(
-            &workspace,
-            &staging,
-            &params.source_path,
-            SOURCE_FILE,
-            memory_bytes,
-        )?;
-        let (height_map_artifact, height_map) = stage_input(
-            &workspace,
-            &staging,
-            &params.height_map_path,
-            HEIGHT_MAP_FILE,
-            memory_bytes,
-        )?;
-        let request = WorkerRequest {
+    let workspace_root = workspace.root_path().ok_or(WsError::Unconfined)?.to_owned();
+    let worker_limit = limit.clone();
+    let (prepared, result) = geometry_blocking(move || {
+        worker_limit.apply(|| -> Result<_, ToolError> {
+            printable_geom::limit::check()?;
+            let scratch_id = prepared
+                .staging
+                .directory
+                .as_ref()
+                .expect("prepared bake retains its scratch lease")
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("workspace scratch IDs contain only ASCII hexadecimal digits");
+            // Keep the worker instructions outside the shared workspace.
+            let mut input = tempfile::tempfile()?;
+            serde_json::to_writer(&mut input, &prepared.request)?;
+            input.rewind()?;
+            let result: WorkerResult = serde_json::from_value(run_geometry_worker_process(
+                &worker_bin,
+                memory_bytes,
+                &[
+                    FLAG.as_ref(),
+                    workspace_root.as_os_str(),
+                    scratch_id.as_ref(),
+                ],
+                Some(input),
+            )?)?;
+            Ok((prepared, result))
+        })
+    })
+    .await?;
+    blocking(move || limit.apply(|| publish_bake(&workspace, prepared, result))).await
+}
+
+fn prepare_bake(
+    workspace: &Workspace,
+    params: BakeTextureParams,
+    memory_bytes: u64,
+    runtime: tokio::runtime::Handle,
+) -> Result<PreparedBake, ToolError> {
+    printable_geom::limit::check()?;
+    validate_blender_artifact(workspace, &params.source_path, ".stl", true)?;
+    validate_blender_artifact(workspace, &params.height_map_path, ".png", true)?;
+    validate_blender_artifact(workspace, &params.output_path, ".stl", false)?;
+    match workspace.stat_artifact(&params.output_path) {
+        Ok(_) => return Err(WsError::AlreadyExists(params.output_path).into()),
+        Err(WsError::NotFound(_)) => (),
+        Err(error) => return Err(error.into()),
+    }
+    let staging = workspace.scratch(0, "bake-texture")?;
+    let (source_artifact, source) = stage_input(
+        workspace,
+        &staging,
+        &params.source_path,
+        SOURCE_FILE,
+        memory_bytes,
+    )?;
+    let (height_map_artifact, height_map) = stage_input(
+        workspace,
+        &staging,
+        &params.height_map_path,
+        HEIGHT_MAP_FILE,
+        memory_bytes,
+    )?;
+    Ok(PreparedBake {
+        staging: TextureScratch {
+            directory: Some(staging),
+            runtime,
+        },
+        request: WorkerRequest {
             source,
             height_map,
             region: TextureRegion {
@@ -126,44 +197,51 @@ pub(super) async fn bake(
             },
             depth_mm: params.depth_mm,
             geometry_memory_bytes: memory_bytes,
-        };
-        // Keep the worker instructions outside the shared workspace.
-        let mut input = tempfile::tempfile()?;
-        serde_json::to_writer(&mut input, &request)?;
-        input.rewind()?;
-        let result: WorkerResult = serde_json::from_value(run_geometry_worker_process(
-            &worker_bin,
-            memory_bytes,
-            &[FLAG.as_ref(), workspace_root.as_os_str(), scratch_id.as_ref()],
-            Some(input),
-        )?)?;
-        printable_geom::limit::check()?;
-        let output = result.output;
-        let publication = workspace.commit_verified_scratch_artifact(
-            &params.output_path, &staging, OUTPUT_FILE, output.size_bytes,
-            |input, destination| {
-                let (size, digest) = copy_and_hash(input, destination)?;
-                if size != output.size_bytes || digest != output.sha256 {
-                    return Err(WsError::ChangedWhileReading);
-                }
-                Ok(size)
-            },
-        );
-        let artifact = match publication {
-            Ok(artifact) => artifact,
-            Err(error) => {
-                printable_geom::limit::check()?;
-                return Err(error.into());
-            }
-        };
-        Ok(json!({
-            "artifact": artifact, "sha256": output.sha256,
-            "source_artifact": source_artifact, "source_sha256": request.source.sha256,
-            "height_map_artifact": height_map_artifact, "height_map_sha256": request.height_map.sha256,
-            "units": "millimetres", "report": result.report,
-        }))
+        },
+        source_artifact,
+        height_map_artifact,
+        output_path: params.output_path,
     })
-    .await
+}
+
+fn publish_bake(
+    workspace: &Workspace,
+    mut prepared: PreparedBake,
+    result: WorkerResult,
+) -> Result<Value, ToolError> {
+    let staging = prepared
+        .staging
+        .directory
+        .take()
+        .expect("prepared bake retains its scratch lease");
+    printable_geom::limit::check()?;
+    let output = result.output;
+    let publication = workspace.commit_verified_scratch_artifact(
+        &prepared.output_path,
+        &staging,
+        OUTPUT_FILE,
+        output.size_bytes,
+        |input, destination| {
+            let (size, digest) = copy_and_hash(input, destination)?;
+            if size != output.size_bytes || digest != output.sha256 {
+                return Err(WsError::ChangedWhileReading);
+            }
+            Ok(size)
+        },
+    );
+    let artifact = match publication {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            printable_geom::limit::check()?;
+            return Err(error.into());
+        }
+    };
+    Ok(json!({
+        "artifact": artifact, "sha256": output.sha256,
+        "source_artifact": prepared.source_artifact, "source_sha256": prepared.request.source.sha256,
+        "height_map_artifact": prepared.height_map_artifact, "height_map_sha256": prepared.request.height_map.sha256,
+        "units": "millimetres", "report": result.report,
+    }))
 }
 
 fn stage_input(
@@ -298,4 +376,48 @@ pub fn worker_run(workspace_root: &Path, scratch_id: &OsStr) -> Result<Value, To
     let _storage = staging.admit_growth(output.size_bytes)?;
     staging.create_file(OUTPUT_FILE)?.write_all(&stl)?;
     Ok(json!({"output":output,"report":report}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_a_prepared_texture_does_not_wait_for_storage_on_the_executor() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::open(Some(root.path()), None).unwrap());
+        workspace.configure_storage_budget(Some(1_000_000)).unwrap();
+        let staged = workspace.scratch(0, "fixture").unwrap();
+        staged
+            .create_file("draft.stl")
+            .unwrap()
+            .write_all(b"solid")
+            .unwrap();
+        let pending = TextureScratch {
+            directory: Some(workspace.scratch(0, "fixture").unwrap()),
+            runtime: tokio::runtime::Handle::current(),
+        };
+        let (lock_held, locked) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let publishing = tokio::task::spawn_blocking(move || {
+            workspace.commit_verified_scratch_artifact(
+                "other.stl",
+                &staged,
+                "draft.stl",
+                5,
+                |source, output| {
+                    lock_held.send(()).unwrap();
+                    wait.recv_timeout(std::time::Duration::from_secs(5))
+                        .map_err(io::Error::other)?;
+                    Ok(std::io::copy(source, output)?)
+                },
+            )
+        });
+        locked.await.unwrap();
+        drop(pending);
+        release
+            .send(())
+            .expect("dropping the pending bake must return while publication holds the lock");
+        publishing.await.unwrap().unwrap();
+    }
 }

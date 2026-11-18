@@ -76,10 +76,6 @@ pub fn bake_texture_stl(
     for vertex in &mut source.vertices {
         vertex[2] -= surface;
     }
-    let local_region = TextureRegion {
-        surface_z_mm: 0.0,
-        ..region
-    };
     let prepared = prepare_mesh(
         &source,
         ValidationOptions::default(),
@@ -109,24 +105,10 @@ pub fn bake_texture_stl(
     let below = if depth_mm.is_sign_positive() {
         box_between(-overlap, 0.0)
     } else {
-        height_field(
-            local_region,
-            depth_mm,
-            [0.0, -overlap],
-            width,
-            height,
-            samples,
-        )?
+        height_field(region, depth_mm, [0.0, -overlap], width, height, samples)?
     };
     let above = if depth_mm.is_sign_positive() {
-        height_field(
-            local_region,
-            depth_mm,
-            [0.0, overlap],
-            width,
-            height,
-            samples,
-        )?
+        height_field(region, depth_mm, [0.0, overlap], width, height, samples)?
     } else {
         box_between(0.0, overlap)
     };
@@ -149,7 +131,7 @@ pub fn bake_texture_stl(
         overlap
     };
     let brush = height_field(
-        local_region,
+        region,
         depth_mm,
         [fixed_offset, 0.0],
         width,
@@ -214,13 +196,14 @@ fn height_field(
             for column in 0..width {
                 let x = left + (right - left) * column as f64 / (width - 1) as f64;
                 let sample = samples[(height - 1 - row) * width + column];
-                let relief = depth * f64::from(sample) / f64::from(u16::MAX);
-                let z = surface
-                    + if top == depth.is_sign_positive() {
-                        relief + relief_offset
-                    } else {
-                        fixed_offset
-                    };
+                let requested = depth * f64::from(sample) / f64::from(u16::MAX);
+                // Check and apply the same depth that the binary STL can store.
+                let relief = f64::from((surface + requested) as f32) - surface;
+                let z = if top == depth.is_sign_positive() {
+                    relief + relief_offset
+                } else {
+                    fixed_offset
+                };
                 vertices.extend([x, y, z]);
             }
         }
@@ -328,6 +311,13 @@ mod tests {
             .fold(surface, f64::max);
         assert_eq!(peak - surface, 0.125);
         assert_eq!(report.rounded_peak_mm, peak - surface);
+
+        let thin = Manifold::cube(10.0, 10.0, 0.5, false).translate(0.0, 0.0, surface - 0.5);
+        let stl = bust_stl(&crate::bust::mesh_from(&thin));
+        assert!(matches!(
+            bake_texture_stl(&stl, region, -0.48, [2, 2], &[u16::MAX; 4]),
+            Err(GeometryError::InvalidOptions(_))
+        ));
     }
 
     #[test]
