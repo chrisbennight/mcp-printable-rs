@@ -220,7 +220,7 @@ impl NativeInspection {
 
 impl SliceWorker {
     pub(super) async fn inspect_paint(
-        &self,
+        self: &Arc<Self>,
         params: InspectPaintParams,
     ) -> Result<Value, ToolError> {
         if !Path::new(&params.source)
@@ -236,10 +236,15 @@ impl SliceWorker {
             operation: "native Orca paint inspection",
         };
         let _cancel_on_drop = limit.cancellation.clone().drop_guard();
-        let inspection =
-            tokio::time::timeout(TIME_LIMIT, self.inspect_paint_snapshot(source, limit))
-                .await
-                .map_err(|_| slice_error("native Orca paint inspection exceeded its deadline"))??;
+        let worker = Arc::clone(self);
+        // The supervisor retains the staging lease until the native child
+        // terminates, even if the request or its timeout drops the caller.
+        let observation =
+            tokio::spawn(async move { worker.inspect_paint_snapshot(source, limit).await });
+        let inspection = tokio::time::timeout(TIME_LIMIT, observation)
+            .await
+            .map_err(|_| slice_error("native Orca paint inspection exceeded its deadline"))?
+            .map_err(|_| slice_error("native Orca paint inspection task failed"))??;
         Ok(serde_json::to_value(inspection)?)
     }
 
@@ -299,28 +304,39 @@ impl SliceWorker {
             .retain_for_command(command.as_std_mut())?;
         let mut child = command.spawn()?;
         let group = ProcessGroup(child.id().expect("spawned paint inspection process"));
-        let mut output = Vec::new();
-        child
+        let mut stdout = child
             .stdout
             .take()
             .expect("piped paint inspection stdout")
-            .take(MAX_REPORT_BYTES + 1)
-            .read_to_end(&mut output)
-            .await?;
-        if output.len() as u64 > MAX_REPORT_BYTES {
-            return Err(slice_error(
-                "native paint inspection report exceeds its size limit",
-            ));
-        }
-        let status = child.wait().await?;
+            .take(MAX_REPORT_BYTES + 1);
+        let observe = async {
+            let mut output = Vec::new();
+            stdout.read_to_end(&mut output).await?;
+            if output.len() as u64 > MAX_REPORT_BYTES {
+                return Err(slice_error(
+                    "native paint inspection report exceeds its size limit",
+                ));
+            }
+            let status = child.wait().await?;
+            if !status.success() {
+                return Err(slice_error(&format!(
+                    "OrcaSlicer could not inspect 3MF paint ({status})"
+                )));
+            }
+            Ok(output)
+        };
+        let result = tokio::select! {
+            biased;
+            () = limit.cancellation.cancelled() => Err(slice_error("native Orca paint inspection cancelled")),
+            () = tokio::time::sleep_until(limit.deadline.into()) => Err(slice_error("native Orca paint inspection exceeded its deadline")),
+            result = observe => result,
+        };
         drop(group);
-        if !status.success() {
-            return Err(slice_error(&format!(
-                "OrcaSlicer could not inspect 3MF paint ({status})"
-            )));
-        }
+        drop(stdout);
+        let _ = child.wait().await;
         tokio::task::spawn_blocking(move || {
             let _admission = admission;
+            let output = result?;
             let mut input = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -395,6 +411,7 @@ mod tests {
             ("painted.3mf", b"painted".as_slice()),
             ("plain.3mf", b"plain".as_slice()),
             ("invalid.3mf", b"invalid".as_slice()),
+            ("oversized.3mf", b"oversized".as_slice()),
         ] {
             worker
                 .workspace
@@ -404,7 +421,7 @@ mod tests {
         std::fs::write(
             &worker.binary,
             r#"#!/usr/bin/python3
-import json, pathlib, sys
+import json, pathlib, sys, time
 if sys.argv[1:] == ["--help"]:
     print("--inspect-paint")
     sys.exit(0)
@@ -414,6 +431,10 @@ assert source.parent == pathlib.Path.cwd()
 content = source.read_bytes()
 if content == b"invalid":
     sys.exit(1)
+if content == b"oversized":
+    sys.stdout.write("x" * (8 * 1024 * 1024 + 1))
+    sys.stdout.flush()
+    time.sleep(60)
 painted = int(content == b"painted")
 def layer(state, facets):
     return {"states":[{"state":state,"facets":facets}]} if painted else {"empty":True}
@@ -453,6 +474,23 @@ print(json.dumps({"frame":"mesh_local","sources":[str(source)],"summary":{
         assert_eq!(plain["summary"]["volumes_with_paint"], 0);
         assert_eq!(plain["painted_volumes"], json!([]));
         assert!(worker.inspect_paint(request("invalid.3mf")).await.is_err());
+        let usage = worker.workspace.storage_usage().unwrap().charged_bytes;
+        let oversized = tokio::time::timeout(
+            Duration::from_secs(10),
+            worker.inspect_paint(request("oversized.3mf")),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(
+            oversized
+                .to_string()
+                .contains("report exceeds its size limit")
+        );
+        assert_eq!(
+            worker.workspace.storage_usage().unwrap().charged_bytes,
+            usage
+        );
         let (_, bytes) = worker
             .workspace
             .read_artifact("projects/part/painted.3mf")

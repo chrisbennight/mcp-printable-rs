@@ -137,8 +137,9 @@ Painted volumes use one-based object and volume indices. The category flags
 describe the full project, including volumes omitted from the response. A facet
 can contribute to the count for more than one paint layer. Large results return
 summary counts with a bounded volume list and a truncation flag. Inspection
-accepts files up to 128 MiB, uses a private snapshot, and leaves the source
-unchanged. It requires an engine with `--inspect-paint` support.
+accepts files up to 128 MiB and rejects native reports above 8 MiB. It uses a
+private snapshot, leaves the source unchanged, and requires an engine with
+`--inspect-paint` support.
 
 `inspect_layout` accepts an authored project-relative 3MF, a new output directory
 and optional expected source SHA-256. It resolves core/production model resources

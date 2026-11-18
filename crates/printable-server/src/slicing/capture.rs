@@ -22,9 +22,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CaptureSource {
-    /// An existing project-relative 3MF, captured without arranging or slicing.
+    /// Existing project-relative 3MF.
     Project { path: String },
-    /// The hashed output package of a completed preparation, including its final layout.
+    /// Retained package from a completed slice.
     Prepared { output_dir: String },
 }
 
@@ -54,13 +54,13 @@ pub enum Projection {
 pub struct Camera {
     pub preset: Preset,
     pub projection: Projection,
-    /// Optional native camera quaternion in w/x/y/z order, overriding the preset.
+    /// Native quaternion in w/x/y/z order.
     pub orientation: Option<[f64; 4]>,
-    /// Optional target in Orca workspace millimeters, overriding automatic centering.
+    /// Target in Orca workspace millimeters.
     pub target: Option<[f64; 3]>,
-    /// Optional native zoom, overriding automatic framing. Close-ups may crop.
+    /// Native zoom. Close-ups may crop.
     pub zoom: Option<f64>,
-    /// Automatic framing margin, at least one. Defaults to 1.1.
+    /// Framing margin, at least one.
     pub margin: f64,
 }
 
@@ -100,10 +100,10 @@ impl Default for Visibility {
 pub struct CaptureParams {
     pub project_id: String,
     pub source: CaptureSource,
-    /// One-based source plate indices; empty selects all, preserving native positions.
+    /// One-based plate indices. Empty selects all.
     #[serde(default)]
     pub plates: Vec<u32>,
-    /// One-based source model object indices; empty selects all on the selected plates.
+    /// One-based object indices. Empty selects all on selected plates.
     #[serde(default)]
     pub objects: Vec<u32>,
     #[serde(default)]
@@ -114,7 +114,7 @@ pub struct CaptureParams {
     pub width: u32,
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Positive budget through native validation. Retention completes once publication starts.
+    /// Time budget through native validation.
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
