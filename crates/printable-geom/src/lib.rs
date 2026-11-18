@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 mod assembly;
 mod assessment;
+mod baked_texture;
 mod bust;
 mod compare;
 mod draft;
@@ -38,6 +39,7 @@ mod thickness;
 mod volume;
 
 pub use assessment::{AssessmentCriterion, AssessmentStatus, CriterionStatus, MeshAssessment};
+pub use baked_texture::{TextureRegion, TextureReport, bake_texture_stl};
 pub use bust::{
     Body, BodyKind, BodyReport, BustReport, BustRequest, DetailPercentiles, Displacement,
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, MAX_RAISED_SHARE,

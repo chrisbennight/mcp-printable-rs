@@ -1482,6 +1482,7 @@ async fn print_bust(
                 request_path.as_os_str(),
                 output_path.as_os_str(),
             ],
+            None,
         )?;
         let bytes = std::fs::read(&output_path)?;
         let validation = analyze_stl(&bytes, validation_options)?;

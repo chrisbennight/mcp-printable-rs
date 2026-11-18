@@ -142,6 +142,13 @@ impl Workspace {
         self.confined.is_some()
     }
 
+    /// Canonical root used by a cooperating native worker.
+    pub fn root_path(&self) -> Option<&Path> {
+        self.confined
+            .as_ref()
+            .map(|confined| confined.root.as_path())
+    }
+
     pub fn ready(&self) -> bool {
         let Some(confined) = &self.confined else {
             return false;
@@ -416,6 +423,53 @@ impl Workspace {
         max_bytes: u64,
         scope: MutationScope,
     ) -> Result<ArtifactMeta, WsError> {
+        self.commit_generated_reader(
+            path,
+            || {
+                let fd = rustix::fs::open(
+                    source,
+                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                    Mode::empty(),
+                )
+                .map_err(errno_io)?;
+                Ok(std::fs::File::from(fd))
+            },
+            overwrite,
+            max_bytes,
+            scope,
+            |input, output| Ok(std::io::copy(input, output)?),
+        )
+    }
+
+    /// Stream a scratch file into a new artifact. The verifier must transfer
+    /// and verify the same bytes before the workspace publishes the destination.
+    pub fn commit_verified_scratch_artifact(
+        &self,
+        path: &str,
+        scratch: &ManagedScratch,
+        source: &str,
+        max_bytes: u64,
+        copy_and_verify: impl FnOnce(&mut dyn Read, &mut dyn std::io::Write) -> Result<u64, WsError>,
+    ) -> Result<ArtifactMeta, WsError> {
+        self.commit_generated_reader(
+            path,
+            || scratch.open_file(source),
+            false,
+            max_bytes,
+            MutationScope::Public,
+            copy_and_verify,
+        )
+    }
+
+    fn commit_generated_reader(
+        &self,
+        path: &str,
+        open_input: impl FnOnce() -> Result<std::fs::File, WsError>,
+        overwrite: bool,
+        max_bytes: u64,
+        scope: MutationScope,
+        copy_and_verify: impl FnOnce(&mut dyn Read, &mut dyn std::io::Write) -> Result<u64, WsError>,
+    ) -> Result<ArtifactMeta, WsError> {
         self.require_confined()?;
         if max_bytes == 0 {
             return Err(WsError::WriteTooLarge);
@@ -428,14 +482,7 @@ impl Workspace {
             .ok_or(WsError::UnsupportedArtifactType)?
             .clone();
         let suffix = allowed_suffix(&name).ok_or(WsError::UnsupportedArtifactType)?;
-        let mut input = std::fs::File::from(
-            rustix::fs::open(
-                source,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(errno_io)?,
-        );
+        let mut input = open_input()?;
         let before = input.metadata()?;
         if !before.file_type().is_file() {
             return Err(WsError::NotRegularFile);
@@ -456,7 +503,7 @@ impl Workspace {
 
         let commit = (|| -> Result<Stat, WsError> {
             let mut output = std::fs::File::from(temp_fd);
-            let copied = std::io::copy(
+            let copied = copy_and_verify(
                 &mut Read::by_ref(&mut input).take(before.len().saturating_add(1)),
                 &mut output,
             )?;
@@ -1137,6 +1184,74 @@ fn temp_name() -> Result<String, WsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verified_scratch_copy_publishes_only_after_verification() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = workspace.scratch(0, "fixture").unwrap();
+        scratch
+            .create_file("draft.stl")
+            .unwrap()
+            .write_all(b"solid")
+            .unwrap();
+        let result = workspace.commit_verified_scratch_artifact(
+            "finished.stl",
+            &scratch,
+            "draft.stl",
+            5,
+            |source, destination| {
+                assert_eq!(std::io::copy(source, destination)?, 5);
+                Err(WsError::ChangedWhileReading)
+            },
+        );
+        assert!(matches!(result, Err(WsError::ChangedWhileReading)));
+        assert!(matches!(
+            workspace.stat_artifact("finished.stl"),
+            Err(WsError::NotFound(_))
+        ));
+        workspace
+            .commit_verified_scratch_artifact(
+                "finished.stl",
+                &scratch,
+                "draft.stl",
+                5,
+                |source, destination| Ok(std::io::copy(source, destination)?),
+            )
+            .unwrap();
+        assert_eq!(
+            workspace.read_generated_bytes("finished.stl").unwrap().1,
+            b"solid"
+        );
+    }
+
+    #[test]
+    fn a_verified_scratch_copy_preserves_a_destination_created_during_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = workspace.scratch(0, "fixture").unwrap();
+        scratch
+            .create_file("draft.stl")
+            .unwrap()
+            .write_all(b"solid")
+            .unwrap();
+        let result = workspace.commit_verified_scratch_artifact(
+            "finished.stl",
+            &scratch,
+            "draft.stl",
+            5,
+            |source, destination| {
+                let copied = std::io::copy(source, destination)?;
+                std::fs::write(root.path().join("finished.stl"), b"first")?;
+                Ok(copied)
+            },
+        );
+        assert!(matches!(result, Err(WsError::AlreadyExists(_))));
+        assert_eq!(
+            workspace.read_generated_bytes("finished.stl").unwrap().1,
+            b"first"
+        );
+    }
 
     #[test]
     fn reserved_lock_serializes_independently_opened_workspaces_and_releases_on_drop() {

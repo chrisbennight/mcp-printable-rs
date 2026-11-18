@@ -848,6 +848,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "compare_renders",
             "validate_mesh",
             "analyze_assembly",
+            "bake_texture",
             "job",
             "project",
             "catalog",

@@ -9,6 +9,7 @@
 use std::{ffi::OsString, fs, io, process::ExitCode};
 
 use printable_geom::{AssemblyOptions, BustRequest, analyze_assembly_stl, bust_stl, prepare_bust};
+use printable_server::tools::bake_texture;
 use serde_json::{Value, json};
 
 const BUST_FLAG: &str = "--bust";
@@ -112,6 +113,14 @@ fn run() -> Result<Value, WorkerFailure> {
     if first == BUST_FLAG {
         return run_bust(&second, &third);
     }
+    if first == bake_texture::FLAG {
+        return bake_texture::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {
+            WorkerFailure {
+                code: error.code(),
+                message: error.to_string(),
+            }
+        });
+    }
     run_assembly(&first, &second, &third)
 }
 
@@ -175,7 +184,7 @@ fn exact_args() -> Result<[OsString; 3], WorkerFailure> {
 fn invalid_args() -> WorkerFailure {
     WorkerFailure {
         code: "validation",
-        message: "geometry worker requires fixed, moving, and options paths, or --bust with request and output paths".to_string(),
+        message: "geometry worker requires three arguments".to_string(),
     }
 }
 

@@ -2628,7 +2628,7 @@ fn separate_pinches(mesh: &mut TriangleMesh) {
     }
 }
 
-fn mesh_from(manifold: &Manifold) -> TriangleMesh {
+pub(crate) fn mesh_from(manifold: &Manifold) -> TriangleMesh {
     let (vertices, properties, triangles) = manifold.to_mesh_f64();
     TriangleMesh {
         vertices: vertices

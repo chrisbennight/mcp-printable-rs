@@ -2904,6 +2904,68 @@ async fn mesh_validation_reports_open_geometry_and_rejects_invalid_stl() {
 }
 
 #[tokio::test]
+async fn bake_texture_exports_with_input_provenance_and_rejects_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    let plain = cube_stl_at(10.0, [0.0; 3]);
+    let map = displacement_png(3, 3, |x, y| if (x, y) == (1, 1) { u16::MAX } else { 0 });
+    ws.write_artifact("part/plain.stl", &plain, false).unwrap();
+    ws.write_artifact("part/detail.png", &map, false).unwrap();
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    let request = |output_path: &str| {
+        printable_server::tools::workflows::resolve("bake_texture", json!({
+            "source_path": "part/plain.stl", "height_map_path": "part/detail.png",
+            "output_path": output_path, "region": {"x_mm": [2.0, 8.0], "y_mm": [2.0, 8.0], "surface_z_mm": 10.0},
+            "depth_mm": -0.8,
+        })).unwrap()
+    };
+    let bake = request("part/textured.stl");
+    let report = dispatch(&ws, &upload, &backend, &config, bake.name, bake.arguments)
+        .await
+        .unwrap();
+    let (_, output) = ws.read_generated_bytes("part/textured.stl").unwrap();
+    assert_eq!(report["sha256"], sha256_hex(&output));
+    assert_eq!(report["source_sha256"], sha256_hex(&plain));
+    assert_eq!(report["height_map_sha256"], sha256_hex(&map));
+    assert!(report["report"]["volume_change_mm3"].as_f64().unwrap() < 0.0);
+    let contract = printable_server::resources::contracts::read(
+        "printable://contracts/bake_texture",
+        Default::default(),
+    )
+    .unwrap();
+    assert!(
+        jsonschema::validator_for(&contract["outputSchema"])
+            .unwrap()
+            .is_valid(&report)
+    );
+
+    let mut unavailable = config;
+    unavailable.geometry_worker_bin = Some(temp.path().join("missing-worker"));
+    for path in ["part/plain.stl", "part/textured.stl"] {
+        let bake = request(path);
+        let error = dispatch(
+            &ws,
+            &upload,
+            &backend,
+            &unavailable,
+            bake.name,
+            bake.arguments,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "already_exists");
+    }
+    assert_eq!(ws.read_generated_bytes("part/plain.stl").unwrap().1, plain);
+    assert_eq!(ws.read_generated_bytes("part/detail.png").unwrap().1, map);
+    assert_eq!(
+        ws.read_generated_bytes("part/textured.stl").unwrap().1,
+        output
+    );
+}
+
+#[tokio::test]
 async fn assembly_analysis_separates_clearance_limits_from_physical_retention() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = workspace(Some(tmp.path()));

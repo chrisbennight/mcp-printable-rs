@@ -60,6 +60,42 @@ impl ManagedScratch {
         &self.path
     }
 
+    /// Open one regular file relative to the leased directory without following a link.
+    pub fn open_file(&self, name: &str) -> Result<std::fs::File, WsError> {
+        self.open_payload(name, OFlags::RDONLY, Mode::empty())
+    }
+
+    /// Create one new file relative to the leased directory.
+    pub fn create_file(&self, name: &str) -> Result<std::fs::File, WsError> {
+        self.open_payload(
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+            Mode::from_bits_truncate(0o600),
+        )
+    }
+
+    fn open_payload(
+        &self,
+        name: &str,
+        flags: OFlags,
+        mode: Mode,
+    ) -> Result<std::fs::File, WsError> {
+        if Path::new(name).file_name() != Some(name.as_ref()) {
+            return Err(WsError::PathEscapes);
+        }
+        let file = std::fs::File::from(openat(
+            self.directory.as_fd(),
+            name,
+            flags | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            mode,
+            name,
+        )?);
+        if !file.metadata()?.is_file() {
+            return Err(WsError::NotRegularFile);
+        }
+        Ok(file)
+    }
+
     /// Hold storage admission across an incremental scratch write. The caller
     /// keeps the returned guard alive until the write finishes.
     pub fn admit_growth(&self, bytes: u64) -> Result<Option<OwnedFd>, WsError> {

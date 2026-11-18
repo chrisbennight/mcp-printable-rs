@@ -430,6 +430,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             "printable_analyze_assembly",
             de::<AnalyzeAssemblyParams>(arguments)?,
         ),
+        "bake_texture" => ResolvedCall::new(
+            "printable_bake_texture",
+            de::<bake_texture::BakeTextureParams>(arguments)?,
+        ),
         _ => Err(ToolError::Validation("unknown workflow tool".to_string())),
     }
 }
@@ -655,6 +659,12 @@ pub const TOOLS: &[ToolDef] = &[
         description: "Analyze two watertight STL solids in millimetres for interference, surface gap and optional continuous rigid motion. Uncertified rotation fails closed; clearance does not imply retention or press-fit behaviour.",
         schema: schema_of::<AnalyzeAssemblyParams>,
         annotations: read_only_idempotent,
+    },
+    ToolDef {
+        name: "bake_texture",
+        description: "Bake a grayscale PNG into an STL as raised or recessed geometry. Select an upward-facing rectangular planar region and signed depth in millimetres. Black means zero relief and white means full depth. Writes a new watertight STL and returns input and output hashes. Use slice to check fine detail against the chosen nozzle and layer heights.",
+        schema: schema_of::<bake_texture::BakeTextureParams>,
+        annotations: write_annotations,
     },
     ToolDef {
         name: "job",
@@ -995,6 +1005,7 @@ mod tests {
                 "compare_renders",
                 "validate_mesh",
                 "analyze_assembly",
+                "bake_texture",
                 "job",
                 "project",
                 "catalog",
