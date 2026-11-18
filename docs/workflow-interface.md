@@ -103,7 +103,8 @@ enough material underneath. Select a separate, unused path for the output.
 }
 ```
 
-The 8-bit or 16-bit grayscale PNG fills the rectangle. Its top row maps to
+Use an 8-bit or 16-bit grayscale PNG with at least two pixels on each side.
+The map fills the rectangle, and its top row maps to
 the larger Y coordinate. Black leaves the surface at its original height and
 white applies the full signed depth. Use a black border for a texture that
 meets the surrounding surface at its original height. The result includes

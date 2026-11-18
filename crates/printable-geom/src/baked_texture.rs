@@ -92,7 +92,6 @@ pub fn bake_texture_stl(
     // Give the brush a small overlap across the original surface. A solid
     // probe on either side confirms the footprint is supported and clear.
     let overlap = 0.001_f64.max(surface.abs() * f64::from(f32::EPSILON) * 4.0);
-    let upper = surface + extreme.max(0.0) + overlap;
     let box_between = |bottom, top| {
         Manifold::cube(right - left, back - front, top - bottom, false)
             .translate(left, front, bottom)
@@ -102,7 +101,11 @@ pub fn bake_texture_stl(
     } else {
         height_field(region, depth_mm, [0.0, -overlap], width, height, samples)?
     };
-    let above = box_between(surface, upper);
+    let above = if depth_mm.is_sign_positive() {
+        height_field(region, depth_mm, [0.0, overlap], width, height, samples)?
+    } else {
+        box_between(surface, surface + overlap)
+    };
     let missing = below.difference(&solid);
     let blocked = solid.intersection(&above);
     if !missing.is_empty() || !blocked.is_empty() {
@@ -310,5 +313,16 @@ mod tests {
             bake_texture_stl(&stl, region, -1.7, [2, 2], &[u16::MAX, 0, u16::MAX, 0]).unwrap();
         assert!(report.volume_change_mm3 < 0.0);
         assert!(bake_texture_stl(&stl, region, -1.7, [2, 2], &[u16::MAX; 4]).is_err());
+    }
+
+    #[test]
+    fn raised_clearance_follows_the_local_relief() {
+        let block = Manifold::cube(10.0, 10.0, 3.0, false);
+        let overhang = Manifold::cube(1.0, 4.0, 1.0, false).translate(2.3, 3.0, 4.0);
+        let stl = bust_stl(&crate::bust::mesh_from(&block.union(&overhang)));
+        let samples = [0, u16::MAX, 0, u16::MAX];
+        let (_, report) = bake_texture_stl(&stl, REGION, 1.7, [2, 2], &samples).unwrap();
+        assert!(report.volume_change_mm3 > 0.0);
+        assert!(bake_texture_stl(&stl, REGION, 1.7, [2, 2], &[u16::MAX; 4]).is_err());
     }
 }

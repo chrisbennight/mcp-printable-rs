@@ -1,18 +1,19 @@
 use std::{
     fs,
-    io::BufReader,
+    io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use image::{ColorType, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use printable_geom::{TextureRegion, TextureReport, bake_texture_stl};
-use printable_workspace::{Workspace, WsError};
+use printable_workspace::{ArtifactMeta, ManagedScratch, Workspace, WsError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
-use crate::{config::Settings, error::ToolError, projects::revisions::hash_file};
+use crate::{config::Settings, error::ToolError};
 
 use super::{
     geometry_blocking, geometry_worker_path, run_geometry_worker_process, validate_blender_artifact,
@@ -69,10 +70,6 @@ pub(super) async fn bake(
     let worker_bin = geometry_worker_path(settings)?;
     let memory_bytes = settings.geometry_worker_memory_bytes;
     geometry_blocking(move || -> Result<Value, ToolError> {
-        let source = workspace.snapshot_artifact(&params.source_path)?;
-        let height_map = workspace.snapshot_artifact(&params.height_map_path)?;
-        let source_sha256 = hash_file(source.path())?;
-        let height_map_sha256 = hash_file(height_map.path())?;
         let workspace_root = workspace.root_path().ok_or(WsError::Unconfined)?;
         let staging = workspace.scratch(0, "bake-texture")?;
         let scratch_id = staging
@@ -82,11 +79,27 @@ pub(super) async fn bake(
             .expect("workspace scratch IDs contain only ASCII hexadecimal digits");
         let request = staging.path().join("request.json");
         let output = staging.path().join("textured.stl");
+        let source = staging.path().join("source.stl");
+        let height_map = staging.path().join("height.png");
+        let (source_artifact, source_sha256) = stage_input(
+            &workspace,
+            &staging,
+            &params.source_path,
+            &source,
+            memory_bytes,
+        )?;
+        let (height_map_artifact, height_map_sha256) = stage_input(
+            &workspace,
+            &staging,
+            &params.height_map_path,
+            &height_map,
+            memory_bytes,
+        )?;
         fs::write(
             &request,
             serde_json::to_vec(&WorkerRequest {
-                source: source.path().into(),
-                height_map: height_map.path().into(),
+                source,
+                height_map,
                 region: TextureRegion {
                     x_mm: params.region.x_mm,
                     y_mm: params.region.y_mm,
@@ -103,17 +116,66 @@ pub(super) async fn bake(
             memory_bytes,
             &[FLAG.as_ref(), request.as_os_str(), output.as_os_str()],
         )?;
-        let sha256 = hash_file(&output)?;
+        let written = copy_and_hash(&mut fs::File::open(&output)?, &mut io::sink());
         printable_geom::limit::check()?;
+        let (_, sha256) = written?;
         let artifact = workspace.commit_generated_artifact(&params.output_path, &output, false)?;
         Ok(json!({
             "artifact": artifact, "sha256": sha256,
-            "source_artifact": source.meta(), "source_sha256": source_sha256,
-            "height_map_artifact": height_map.meta(), "height_map_sha256": height_map_sha256,
+            "source_artifact": source_artifact, "source_sha256": source_sha256,
+            "height_map_artifact": height_map_artifact, "height_map_sha256": height_map_sha256,
             "units": "millimetres", "report": report,
         }))
     })
     .await
+}
+
+fn stage_input(
+    workspace: &Workspace,
+    staging: &ManagedScratch,
+    path: &str,
+    destination: &Path,
+    memory_bytes: u64,
+) -> Result<(ArtifactMeta, String), ToolError> {
+    printable_geom::limit::check()?;
+    let size = workspace.stat_artifact(path)?.size_bytes;
+    if size >= memory_bytes {
+        return Err(ToolError::Validation(
+            "texture input exceeds the geometry worker's memory budget".into(),
+        ));
+    }
+    let _storage = staging.admit_growth(size)?;
+    let staged = workspace.with_artifact_reader(path, |source| {
+        copy_and_hash(&mut source.take(size), &mut fs::File::create(destination)?)
+    });
+    printable_geom::limit::check()?;
+    let (artifact, (size, digest)) = staged?;
+    if artifact.size_bytes != size {
+        return Err(WsError::ChangedWhileReading.into());
+    }
+    Ok((artifact, digest))
+}
+
+fn copy_and_hash(source: &mut dyn Read, destination: &mut dyn Write) -> io::Result<(u64, String)> {
+    let mut buffer = [0u8; 65_536];
+    let mut hash = Sha256::new();
+    let mut copied = 0u64;
+    loop {
+        printable_geom::limit::check().map_err(io::Error::other)?;
+        let len = source.read(&mut buffer)?;
+        if len == 0 {
+            let digest = hash
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            return Ok((copied, digest));
+        }
+        let bytes = &buffer[..len];
+        destination.write_all(bytes)?;
+        hash.update(bytes);
+        copied += len as u64;
+    }
 }
 
 /// Run in the disposable geometry worker over server-owned snapshot paths.
