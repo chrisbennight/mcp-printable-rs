@@ -100,10 +100,10 @@ impl Default for Visibility {
 pub struct CaptureParams {
     pub project_id: String,
     pub source: CaptureSource,
-    /// One-based plate indices. Empty selects all.
+    /// One-based source plates. Empty selects all.
     #[serde(default)]
     pub plates: Vec<u32>,
-    /// One-based object indices. Empty selects all on selected plates.
+    /// One-based source model objects. Empty selects all on selected plates.
     #[serde(default)]
     pub objects: Vec<u32>,
     #[serde(default)]
@@ -114,7 +114,7 @@ pub struct CaptureParams {
     pub width: u32,
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Time budget through native validation.
+    /// Time budget through validation. Started publication completes.
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
