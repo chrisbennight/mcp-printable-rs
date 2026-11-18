@@ -78,6 +78,60 @@ fn params() -> PrepareParams {
         "printer":{"name":"printer"},"process":{"name":"process"},"filaments":[{"name":"filament"}]})).unwrap()
 }
 
+#[test]
+fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("result.json");
+    std::fs::write(&report, br#"{"return_code":0}"#).unwrap();
+    let (legacy, summary) = public_native_result(&report).ok().unwrap();
+    assert_eq!(legacy, br#"{"return_code":0}"#);
+    assert!(summary.is_none());
+    std::fs::write(&report, br#"{"return_code":0,"warnings":[]}"#).unwrap();
+    let (clean, empty) = public_native_result(&report).ok().unwrap();
+    assert_eq!(clean, legacy);
+    assert_eq!(
+        json!(empty.unwrap()),
+        json!({"state":"reported","keys":[],"truncated":false})
+    );
+
+    let warnings: Vec<_> = (0..40)
+        .map(
+            |index| json!({"class":"config_value_substituted","key":format!("setting_{index:02}")}),
+        )
+        .rev()
+        .collect();
+    std::fs::write(&report, json!({"warnings":warnings}).to_string()).unwrap();
+    let (_, capped) = public_native_result(&report).ok().unwrap();
+    let capped = json!(capped.unwrap());
+    assert_eq!(capped["keys"].as_array().unwrap().len(), 32);
+    assert_eq!(capped["keys"][0], "setting_00");
+    assert_eq!(capped["keys"][31], "setting_31");
+    assert_eq!(capped["truncated"], true);
+
+    std::fs::write(&report, vec![b' '; 1024 * 1024 + 1]).unwrap();
+    let (placeholder, unavailable) = public_native_result(&report).unwrap();
+    assert_eq!(
+        json!(unavailable.unwrap()),
+        json!({"state":"unavailable","reason":"too_large"})
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&placeholder).unwrap()["settings_substitutions"],
+        json!({"state":"unavailable","reason":"too_large"})
+    );
+    let invalid_key = settings_substitutions(&[
+        json!({"class":"config_value_substituted","key":"/private/path"}),
+    ]);
+    assert_eq!(
+        json!(invalid_key),
+        json!({"state":"reported","keys":[],"truncated":true})
+    );
+    let invalid_class = settings_substitutions(&[json!({})]);
+    assert_eq!(
+        json!(invalid_class),
+        json!({"state":"reported","keys":[],"truncated":true})
+    );
+}
+
 #[tokio::test]
 async fn successful_native_exit_retains_collision_findings_and_output_identities() {
     let directory = tempfile::tempdir().unwrap();
@@ -102,6 +156,10 @@ root=pathlib.Path(__file__).parent
 output=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])
 shutil.copyfile(root/'fixture.3mf',output/'model.gcode.3mf')
 shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
+(output/'result.json').write_text('''{"return_code":0,"warnings":[
+ {"class":"config_value_substituted","key":"ironing_type","file":"/private/staging/process.json","old_value":"invalid"},
+ {"class":"config_value_substituted","key":"ironing_type"},
+ {"class":"unrelated_warning","key":"wall_loops"}]}''')
 "#,
     )
     .unwrap();
@@ -148,6 +206,38 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
     )
     .unwrap();
     assert_eq!(retained.data["preflight"], state["preflight"]);
+    assert_eq!(
+        state["settings_substitutions"],
+        json!({"state":"reported","keys":["ironing_type"],"truncated":false})
+    );
+    assert_eq!(
+        retained.data["settings_substitutions"],
+        state["settings_substitutions"]
+    );
+    assert_eq!(
+        worker.status(handle(), false).await.unwrap()["settings_substitutions"],
+        state["settings_substitutions"]
+    );
+    let (_, native_report) = worker
+        .workspace
+        .read_generated_bytes("projects/part/slice/result.json")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&native_report).unwrap(),
+        json!({"return_code":0})
+    );
+    assert_eq!(
+        state["artifacts"]["result.json"]["sha256"],
+        provenance::digest(&native_report)
+    );
+    let schema = crate::tools::output::schema("slice");
+    let schema = json!(schema.as_ref());
+    assert!(jsonschema::is_valid(&schema, &state));
+    let mut invalid_state = state.clone();
+    invalid_state["settings_substitutions"]["keys"] = json!("ironing_type");
+    assert!(!jsonschema::is_valid(&schema, &invalid_state));
+    invalid_state["settings_substitutions"]["keys"] = json!(["invalid/path"]);
+    assert!(!jsonschema::is_valid(&schema, &invalid_state));
     assert_eq!(
         worker.status(handle(), false).await.unwrap()["preflight"],
         state["preflight"]
@@ -402,6 +492,7 @@ async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
     );
     let completed = terminal(&worker).await;
     assert_eq!(completed["status"], "completed", "{completed}");
+    assert!(completed.get("settings_substitutions").is_none());
     assert!(worker.prepare(params()).await.is_err());
     let (_, source) = worker
         .workspace

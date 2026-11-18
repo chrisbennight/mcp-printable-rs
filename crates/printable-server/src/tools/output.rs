@@ -668,6 +668,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             let mut generator = schemars::SchemaGenerator::default();
             let comparison = generator.subschema_for::<crate::slicing::comparison::CompareResult>();
             let paint = generator.subschema_for::<crate::slicing::paint::PaintInspection>();
+            let substitutions = generator.subschema_for::<crate::slicing::SettingsSubstitutions>();
             json!({"type":"object","anyOf":[
                 comparison,
                 paint,
@@ -679,6 +680,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
                     "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
                     "source_layout":{"type":"object"},"final_layout":{"type":"object"},
+                    "settings_substitutions":substitutions,
                     "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
             ],"$defs":generator.take_definitions(true)})
         }
