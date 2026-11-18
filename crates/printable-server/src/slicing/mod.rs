@@ -272,7 +272,6 @@ pub(crate) enum SettingsSubstitutions {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SettingsReportIssue {
     TooLarge,
-    Unreadable,
     Invalid,
 }
 
@@ -1196,21 +1195,15 @@ impl SliceWorker {
                     continue;
                 }
                 if name == "result.json" {
-                    match public_native_result(&entry.path()) {
-                        Ok((bytes, substitutions)) => {
-                            let artifact = workspace.write_generated_bytes(
-                                &format!("{destination}/{name}"), &bytes, false,
-                            )?;
-                            artifacts.insert(
-                                name,
-                                json!({"artifact":artifact,"sha256":provenance::digest(&bytes)}),
-                            );
-                            settings_substitutions = substitutions;
-                        }
-                        Err(reason) => {
-                            settings_substitutions = Some(SettingsSubstitutions::Unavailable { reason });
-                        }
-                    }
+                    let (bytes, substitutions) = public_native_result(&entry.path())?;
+                    let artifact = workspace.write_generated_bytes(
+                        &format!("{destination}/{name}"), &bytes, false,
+                    )?;
+                    artifacts.insert(
+                        name,
+                        json!({"artifact":artifact,"sha256":provenance::digest(&bytes)}),
+                    );
+                    settings_substitutions = substitutions;
                     continue;
                 }
                 let hash = hash_file(&entry.path())?;
@@ -1400,7 +1393,7 @@ fn slice_error(message: &str) -> ToolError {
 
 fn public_native_result(
     path: &Path,
-) -> Result<(Vec<u8>, Option<SettingsSubstitutions>), SettingsReportIssue> {
+) -> Result<(Vec<u8>, Option<SettingsSubstitutions>), ToolError> {
     const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 
     use std::io::Read;
@@ -1408,24 +1401,27 @@ fn public_native_result(
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| SettingsReportIssue::Unreadable)?;
-    if !file
-        .metadata()
-        .map_err(|_| SettingsReportIssue::Unreadable)?
-        .is_file()
-    {
-        return Err(SettingsReportIssue::Unreadable);
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(slice_error("native slice result requires a regular file"));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_REPORT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| SettingsReportIssue::Unreadable)?;
-    if bytes.len() as u64 > MAX_REPORT_BYTES {
-        return Err(SettingsReportIssue::TooLarge);
-    }
-    let mut result: serde_json::Map<String, Value> =
-        serde_json::from_slice(&bytes).map_err(|_| SettingsReportIssue::Invalid)?;
+    file.take(MAX_REPORT_BYTES + 1).read_to_end(&mut bytes)?;
+    let report = if bytes.len() as u64 > MAX_REPORT_BYTES {
+        Err(SettingsReportIssue::TooLarge)
+    } else {
+        serde_json::from_slice::<serde_json::Map<String, Value>>(&bytes)
+            .map_err(|_| SettingsReportIssue::Invalid)
+    };
+    let mut result = match report {
+        Ok(report) => report,
+        Err(reason) => {
+            let summary = SettingsSubstitutions::Unavailable { reason };
+            let public =
+                serde_json::to_vec(&json!({"return_code":0,"settings_substitutions":summary}))?;
+            return Ok((public, Some(summary)));
+        }
+    };
     let Some(warnings) = result.remove("warnings") else {
         return Ok((bytes, None));
     };
@@ -1435,7 +1431,7 @@ fn public_native_result(
             reason: SettingsReportIssue::Invalid,
         },
     };
-    let public = serde_json::to_vec(&result).map_err(|_| SettingsReportIssue::Invalid)?;
+    let public = serde_json::to_vec(&result)?;
     Ok((public, Some(substitutions)))
 }
 
@@ -1444,20 +1440,26 @@ fn settings_substitutions(warnings: &[Value]) -> SettingsSubstitutions {
 
     // Native diagnostics can contain user values and staging paths. Only project
     // the affected option name from each substitution.
-    let keys: BTreeSet<_> = warnings
+    let substitutions = warnings
         .iter()
-        .filter(|warning| warning["class"] == "config_value_substituted")
-        .filter_map(|warning| warning["key"].as_str())
-        .filter(|key| {
+        .filter(|warning| warning["class"] == "config_value_substituted");
+    let mut keys = BTreeSet::new();
+    let mut omitted_keys = false;
+    for warning in substitutions {
+        if let Some(key) = warning["key"].as_str().filter(|key| {
             !key.is_empty()
                 && key.len() <= 128
                 && key
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        })
-        .collect();
+        }) {
+            keys.insert(key);
+        } else {
+            omitted_keys = true;
+        }
+    }
     SettingsSubstitutions::Reported {
-        truncated: keys.len() > MAX_INLINE_KEYS,
+        truncated: omitted_keys || keys.len() > MAX_INLINE_KEYS,
         keys: keys
             .into_iter()
             .take(MAX_INLINE_KEYS)

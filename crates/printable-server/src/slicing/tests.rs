@@ -109,10 +109,22 @@ fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_repor
     assert_eq!(capped["truncated"], true);
 
     std::fs::write(&report, vec![b' '; 1024 * 1024 + 1]).unwrap();
-    assert!(matches!(
-        public_native_result(&report),
-        Err(SettingsReportIssue::TooLarge)
-    ));
+    let (placeholder, unavailable) = public_native_result(&report).unwrap();
+    assert_eq!(
+        json!(unavailable.unwrap()),
+        json!({"state":"unavailable","reason":"too_large"})
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&placeholder).unwrap()["settings_substitutions"],
+        json!({"state":"unavailable","reason":"too_large"})
+    );
+    let invalid_key = settings_substitutions(&[
+        json!({"class":"config_value_substituted","key":"/private/path"}),
+    ]);
+    assert_eq!(
+        json!(invalid_key),
+        json!({"state":"reported","keys":[],"truncated":true})
+    );
 }
 
 #[tokio::test]
@@ -214,7 +226,11 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
         provenance::digest(&native_report)
     );
     let schema = crate::tools::output::schema("slice");
-    assert!(jsonschema::is_valid(&json!(schema.as_ref()), &state));
+    let schema = json!(schema.as_ref());
+    assert!(jsonschema::is_valid(&schema, &state));
+    let mut invalid_state = state.clone();
+    invalid_state["settings_substitutions"]["keys"] = json!("ironing_type");
+    assert!(!jsonschema::is_valid(&schema, &invalid_state));
     assert_eq!(
         worker.status(handle(), false).await.unwrap()["preflight"],
         state["preflight"]
