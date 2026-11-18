@@ -1,4 +1,5 @@
 """Exercise packaged Orca slicing, toolpath previews, and restart recovery."""
+import base64
 import io
 import hashlib
 import json
@@ -19,6 +20,17 @@ from capture_fixture import COLORS, create_banded_fixture, create_fixture, verif
 from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, object_material_assignments, tower_paths
 
 ENGINE_SOURCE_REVISION = "6320f7282263ac81d5a133c47e77e08191b409a2"
+
+
+def verify_thumbnail(payload, name):
+    with Image.open(io.BytesIO(payload)) as image:
+        image.load()
+        assert image.format == "PNG", f"thumbnail is not PNG: {name}"
+        assert min(image.size) > 0
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, "white")
+        background.alpha_composite(rgba)
+        assert any(low != high for low, high in background.convert("RGB").getextrema()), f"blank thumbnail: {name}"
 
 
 def verify_package(path):
@@ -45,14 +57,15 @@ def verify_package(path):
             f"missing expected plate thumbnail relationships: {sorted(thumbnails)}")
         for name in thumbnails:
             assert name in names, f"missing thumbnail: {name}"
-            with Image.open(io.BytesIO(package.read(name))) as image:
-                image.load()
-                assert image.format == "PNG", f"thumbnail is not PNG: {name}"
-                assert min(image.size) > 0
-                rgba = image.convert("RGBA")
-                background = Image.new("RGBA", rgba.size, "white")
-                background.alpha_composite(rgba)
-                assert any(low != high for low, high in background.convert("RGB").getextrema()), f"blank thumbnail: {name}"
+            verify_thumbnail(package.read(name), name)
+
+
+def verify_library_preview():
+    body = json.dumps({"project_id": "native-slice", "source": "source.stl"}).encode()
+    req = urllib.request.Request("http://127.0.0.1:8003/preview", body, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as response:
+        payload = base64.b64decode(json.load(response)["png_base64"], validate=True)
+    verify_thumbnail(payload, "project library preview")
 
 
 def verify_paint(project, plain):
@@ -167,6 +180,9 @@ with tempfile.TemporaryDirectory() as directory:
         "format_version": 1, "project_id": "native-slice", "name": "Native slice",
         "description": "", "root": "projects/native-slice"}))
     (project / "source.stl").write_text(cube())
+    legacy = project / "orca-2.4.2-flat.3mf"
+    legacy.write_bytes((Path(__file__).parent / "fixtures" / legacy.name).read_bytes())
+    legacy_hash = hashlib.sha256(legacy.read_bytes()).hexdigest()
     software_profile_root = root / "profiles/BBL"
     software_profiles = create_software_profiles(
         os.environ.get("PRINTABLE_SLICER_PROFILES", "/opt/orca-worker-profiles/BBL"),
@@ -201,6 +217,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.5.1"
         assert readiness["native_capture"] is True
         assert all(count > 0 for count in readiness["profile_counts"].values())
+        verify_library_preview()
         vendor = request("profiles", {"category": "filament", "query": "Fiberon",
                                       "printer": "Bambu Lab X1 Carbon 0.4 nozzle"})
         assert vendor["total"] > 0, "vendor subfolder profiles are missing"
@@ -216,6 +233,7 @@ with tempfile.TemporaryDirectory() as directory:
         for model, suffix, printer in [("a1", "A1", "Bambu Lab A1 0.4 nozzle"),
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
                                         ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
+                                        ("legacy-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
                                         ("capture-template", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
             profiles = request("profiles", {"category": "process", "printer": printer, "query": "0.20mm Standard"})
             assert profiles["total"] > 0
@@ -227,18 +245,21 @@ with tempfile.TemporaryDirectory() as directory:
                 process["name"] = substitution_profile
             filament = {"name": "AliZ PLA @P1-X1" if model == "x1c-reslice"
                         else f"Bambu PLA Basic @BBL {suffix}"}
-            if model == "a1":
+            if model in ("a1", "legacy-reslice"):
                 process["overrides"] = {"brim_type": "no_brim"}
                 filament["overrides"] = {"pressure_advance": ["0.031"]}
+            if model == "legacy-reslice":
+                process["overrides"].update({"layer_height": "0.16", "enable_arc_fitting": "0"})
             if model in colours:
                 filament["colour"] = colours[model]
-            state = request("prepare", {**handle, "source": "x1c/model.gcode.3mf" if model == "x1c-reslice" else "source.stl",
+            source = {"x1c-reslice": "x1c/model.gcode.3mf", "legacy-reslice": legacy.name}.get(model, "source.stl")
+            state = request("prepare", {**handle, "source": source,
                 "build_plate": "High Temp Plate" if model == "x1c" else "Textured PEI Plate",
                 "printer": {"name": printer},
                 "process": process,
                 "filaments": ([{**filament, "colour": color} for color in COLORS]
                               if model == "capture-template" else [filament]),
-                "auto_arrange": True, "timeout_seconds": 300})
+                "auto_arrange": model != "legacy-reslice", "timeout_seconds": 300})
             deadline = time.monotonic() + 360
             while state["status"] == "running" and time.monotonic() < deadline:
                 time.sleep(0.5)
@@ -259,9 +280,13 @@ with tempfile.TemporaryDirectory() as directory:
             assert f'; curr_bed_type = {state["setup"]["build_plate"]}' in gcode
             temperature = state["setup"]["filaments"][0]["bed_temperature_initial_layer"][0]
             assert f"M190 S{temperature}" in gcode or f"M140 S{temperature}" in gcode
-            if model == "a1":
+            if model in ("a1", "legacy-reslice"):
                 assert "; brim_type = no_brim" in gcode, "process override did not reach Orca"
                 assert "; pressure_advance = 0.031" in gcode, "filament override did not reach Orca"
+            if model == "legacy-reslice":
+                assert "; layer_height = 0.16" in gcode and "; enable_arc_fitting = disabled" in gcode
+                assert state["source_sha256"] == legacy_hash
+                assert hashlib.sha256(legacy.read_bytes()).hexdigest() == legacy_hash
             if model == "x1c-reslice":
                 assert '; filament_settings_id = "AliZ PLA @P1-X1"' in gcode, (
                     "selected shared filament did not reach Orca")
@@ -535,31 +560,35 @@ with tempfile.TemporaryDirectory() as directory:
                         "maximum_mm": [93, 71, 14], "source": "deliberate software fixture envelope; no hardware claim"}]})
             state = material_results[name]["state"]
             toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
-            deposition, changes = linear_deposition_paths((project / name / toolpath).read_text())
+            descents = []
+            deposition, changes = linear_deposition_paths((project / name / toolpath).read_text(),
+                                                          descents=descents)
             tower = [path for path in deposition if path["feature"] in ("Prime tower", "Wipe tower")]
             assert len(tower) > 8 and len(changes) >= 2 and {material for _, material in changes} >= {0, 1}
             assert any(path["to_mm"][2] > 11 for path in deposition
                        if path["feature"] not in ("Prime tower", "Wipe tower"))
-            banded_evidence[skip_sparse] = {"tower": tower, "state": state, "deposition": deposition}
+            banded_evidence[skip_sparse] = {"tower": tower, "state": state, "deposition": deposition,
+                                            "descents": descents}
         dense_height = max(path["to_mm"][2] for path in banded_evidence[False]["tower"])
         sparse_height = max(path["to_mm"][2] for path in banded_evidence[True]["tower"])
         tower_levels = {sparse: {round(path["to_mm"][2], 4) for path in banded_evidence[sparse]["tower"]}
                         for sparse in (False, True)}
         assert len(tower_levels[False]) > len(tower_levels[True]), "sparse-layer override did not remove intermediate tower layers"
-        printed_height = 0
-        late_low_tower = False
-        for path in banded_evidence[True]["deposition"]:
-            if path["feature"] in ("Prime tower", "Wipe tower"):
-                late_low_tower |= printed_height > 8 and path["to_mm"][2] < 5
-            else:
-                printed_height = max(printed_height, path["to_mm"][2])
-        assert late_low_tower, "fixture did not exercise a real late descent to the sparse tower"
+        tower_features = ("Prime tower", "Wipe tower")
+        tall_part_line = next(path["line"] for path in banded_evidence[True]["deposition"]
+                              if path["feature"] not in tower_features and path["to_mm"][2] > 8)
+        late_descent_lines = {path["line"] for path in banded_evidence[True]["descents"]
+                              if path["line"] > tall_part_line and path["feature"] in tower_features
+                              and path["to_mm"][2] < 5}
+        assert late_descent_lines, "fixture did not exercise a real late descent to the sparse tower"
+        sparse_report = json.loads((project / "banded-sparse-1/preflight.json").read_text())
+        blocked_lines = late_descent_lines.intersection(
+            finding["source_line"] for plate in sparse_report["plates"].values()
+            for finding in plate["findings"] if finding["kind"] == "toolhead_interference")
+        assert sparse_report["status"] == "blocked" and blocked_lines, sparse_report
         print("NATIVE_SPARSE_DESCENT", json.dumps({"dense_tower_height_mm": dense_height,
-            "sparse_tower_height_mm": sparse_height, "late_low_tower": late_low_tower,
+            "sparse_tower_height_mm": sparse_height, "blocked_descent_lines": sorted(blocked_lines),
             "physical_result": "not_observed"}), flush=True)
-        sparse_report = banded_evidence[True]["state"]["preflight"]
-        assert sparse_report["status"] == "blocked" and any(finding["kind"] == "toolhead_interference"
-            for plate in sparse_report["plates"].values() for finding in plate["findings"]), sparse_report
         assert not any(finding["kind"] == "toolhead_interference" for plate in
             banded_evidence[False]["state"]["preflight"]["plates"].values() for finding in plate["findings"])
         assert hashlib.sha256(banded_source.read_bytes()).hexdigest() == banded_hash
@@ -728,27 +757,44 @@ with tempfile.TemporaryDirectory() as directory:
                        "No surface roughness, fit performance, adhesion or dissimilar-material bond is established."]}
         (project / "native-preparation-evidence.json").write_text(json.dumps(evidence, indent=2))
         print("Native flat-top comparison estimates, ironing paths, separate relief ridges, fitting dimensions and support-interface transitions passed", json.dumps(evidence))
-        # Two-nozzle printers group the loaded filaments between their nozzles.
-        # The bundled profiles set no filament colours, so this slice also checks
-        # that a colour list shorter than the filament count is handled.
-        handle = {"project_id": "native-slice", "output_dir": "h2d-two-filaments"}
-        state = request("prepare", {**handle, "source": "source.stl", "build_plate": "Textured PEI Plate",
-            "printer": {"name": "Bambu Lab H2D 0.4 nozzle"},
-            "process": {"name": "0.20mm Standard @BBL H2D"},
-            "filaments": [{"name": "Bambu PLA Basic @BBL H2D"}, {"name": "Bambu PETG HF @BBL H2D 0.4 nozzle"}],
-            "auto_arrange": True, "timeout_seconds": 300})
-        deadline = time.monotonic() + 360
-        while state["status"] == "running" and time.monotonic() < deadline:
-            time.sleep(0.5)
-            state = request("status", handle)
-        if state["status"] != "completed":
-            log = project / handle["output_dir"] / "build-log.json"
-            raise RuntimeError(f"H2D slice failed: {state}; {log.read_text() if log.exists() else 'no log'}")
-        toolpath = next(name for name in state["artifacts"] if name.endswith(".gcode"))
-        gcode = (project / handle["output_dir"] / toolpath).read_text()
-        assert "; filament_type = PLA;PETG" in gcode, "both H2D filaments did not reach Orca"
-        handles.append(handle)
-        print("Native H2D two-filament slice passed")
+        def h2d_trial(name, source):
+            handle = {"project_id": "native-slice", "output_dir": name}
+            state = request("prepare", {**handle, "source": source, "plate": 1,
+                "build_plate": "Textured PEI Plate", "printer": {"name": "Bambu Lab H2D 0.4 nozzle"},
+                "process": {"name": "0.20mm Standard @BBL H2D"},
+                "filaments": [{"name": "Bambu PLA Basic @BBL H2D"},
+                              {"name": "Bambu PETG HF @BBL H2D 0.4 nozzle"}],
+                "auto_arrange": False, "timeout_seconds": 300})
+            deadline = time.monotonic() + 360
+            while state["status"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.5)
+                state = request("status", handle)
+            if state["status"] != "completed":
+                log = project / name / "build-log.json"
+                raise RuntimeError(f"H2D slice failed: {state}; {log.read_text() if log.exists() else 'no log'}")
+            toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
+            lines = (project / name / toolpath).read_text().splitlines()
+            assert {"; filament_type = PLA;PETG", "; filament_map = 2,1",
+                    "; filament_nozzle_map = 1,0", "T0", "T1"} <= set(lines), name
+            prefix = "; flush_volumes_matrix = "
+            used_purge = [float(value) for line in lines if line.startswith(prefix)
+                          for value in line.removeprefix(prefix).split(",")]
+            package_path = project / name / "model.gcode.3mf"
+            verify_package(package_path)
+            with zipfile.ZipFile(package_path) as package:
+                layout = ET.fromstring(package.read("Metadata/model_settings.config"))
+                nozzle_map = layout.find("./plate/metadata[@key='filament_maps']")
+                assert nozzle_map is not None and nozzle_map.get("value") == "2 1", name
+                settings = json.loads(package.read("Metadata/project_settings.config"))
+                stored_purge = list(map(float, settings["flush_volumes_matrix"]))
+            assert len(used_purge) == len(stored_purge) == 8
+            assert any(value > 0 for value in used_purge) and any(value > 0 for value in stored_purge)
+            handles.append(handle)
+            return used_purge, stored_purge
+
+        h2d_purge = h2d_trial("h2d-two-filaments", material_source.name)
+        assert h2d_trial("h2d-reslice", "h2d-two-filaments/model.gcode.3mf") == h2d_purge
+        print("Native H2D nozzle assignments, package thumbnails, and purge volumes survived reslicing")
         worker.terminate()
         worker.wait(timeout=10)
         worker = start()

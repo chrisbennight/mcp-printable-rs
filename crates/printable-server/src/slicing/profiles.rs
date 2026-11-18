@@ -212,6 +212,7 @@ pub struct Profiles {
     entries: BTreeMap<Category, BTreeMap<String, Map<String, Value>>>,
     /// Shared filament profiles used to resolve inheritance.
     library: BTreeMap<String, Map<String, Value>>,
+    shared_selections: BTreeSet<String>,
     keys: BTreeMap<Category, BTreeSet<String>>,
     definitions: BTreeMap<String, super::definitions::Definition>,
 }
@@ -370,10 +371,13 @@ impl Profiles {
         let filaments = entries
             .get_mut(&Category::Filament)
             .expect("filament category");
+        let mut imported = BTreeSet::new();
         for (name, profile) in shared_selections {
-            filaments
-                .entry(name.clone())
-                .or_insert_with(|| profile.clone());
+            if let std::collections::btree_map::Entry::Vacant(entry) = filaments.entry(name.clone())
+            {
+                entry.insert(profile.clone());
+                imported.insert(name.clone());
+            }
         }
         let settings = OrcaSettings::bundled()?;
         let keys = BTreeMap::from([
@@ -384,6 +388,7 @@ impl Profiles {
         Ok(Self {
             entries,
             library,
+            shared_selections: imported,
             keys,
             definitions: settings.definitions,
         })
@@ -410,6 +415,8 @@ impl Profiles {
         selection: &ProfileSelection,
     ) -> Result<(Value, BTreeMap<String, String>), ToolError> {
         let entries = &self.entries[&category];
+        let shared_selection =
+            category == Category::Filament && self.shared_selections.contains(&selection.name);
         let mut chain = Vec::new();
         let mut name = selection.name.as_str();
         let mut seen = BTreeSet::new();
@@ -418,15 +425,19 @@ impl Profiles {
                 return Err(invalid("profile inheritance is cyclic"));
             }
             let inherited = !chain.is_empty() && category == Category::Filament;
-            let profile = entries
-                .get(name)
-                .or_else(|| inherited.then(|| self.library.get(name)).flatten())
-                .ok_or_else(|| {
-                    invalid(&format!(
-                        "unresolved {} profile: {name}",
-                        category.directory()
-                    ))
-                })?;
+            let vendor = entries.get(name);
+            let shared = inherited.then(|| self.library.get(name)).flatten();
+            let profile = if shared_selection {
+                shared.or(vendor)
+            } else {
+                vendor.or(shared)
+            }
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "unresolved {} profile: {name}",
+                    category.directory()
+                ))
+            })?;
             chain.push(profile);
             match profile
                 .get("inherits")
@@ -471,10 +482,24 @@ impl Profiles {
                     "Orca profile values must be strings or nonempty string arrays",
                 ));
             }
+            // Keep the legacy boolean spelling accepted by Orca's profile loader.
+            let value = match (key.as_str(), value.as_str()) {
+                ("enable_arc_fitting", Some(text))
+                    if text == "1" || text.eq_ignore_ascii_case("true") =>
+                {
+                    json!("enabled")
+                }
+                ("enable_arc_fitting", Some(text))
+                    if text == "0" || text.eq_ignore_ascii_case("false") =>
+                {
+                    json!("disabled")
+                }
+                _ => value.clone(),
+            };
             if let Some(definition) = self.definitions.get(key) {
-                definition.validate(key, value)?;
+                definition.validate(key, &value)?;
             }
-            result.insert(key.clone(), value.clone());
+            result.insert(key.clone(), value);
         }
         result.insert("from".into(), json!("system"));
         Ok((Value::Object(result), sources))
@@ -581,6 +606,7 @@ mod tests {
         let profiles = Profiles {
             entries: BTreeMap::from([(Category::Process, entries)]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([(
                 Category::Process,
                 (0..301).map(|i| format!("setting-{i:03}")).collect(),
@@ -654,6 +680,7 @@ mod tests {
         let profiles = Profiles {
             entries: BTreeMap::from([(Category::Process, entries)]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([(Category::Process, BTreeSet::from(["wall_loops".into()]))]),
             definitions: BTreeMap::new(),
         };
@@ -850,7 +877,7 @@ mod tests {
         );
         write_profile(
             &library.join("Vendor/selectable.json"),
-            json!({"name":"Shared PLA @printer","type":"filament","inherits":"Vendor PLA @base",
+            json!({"name":"Shared PETG @printer","type":"filament","inherits":"Vendor PLA @base",
                 "compatible_printers":["printer"],"instantiation":"true"}),
         );
         let profiles = Profiles::load(&vendor).unwrap();
@@ -864,24 +891,26 @@ mod tests {
         let found = profiles
             .discover(
                 serde_json::from_value(
-                    json!({"category":"filament","query":"PLA","printer":"printer"}),
+                    json!({"category":"filament","query":"@","printer":"printer"}),
                 )
                 .unwrap(),
             )
             .unwrap();
         assert_eq!(found["total"], 2);
-        assert_eq!(found["profiles"][0]["name"], "Shared PLA @printer");
+        assert_eq!(found["profiles"][0]["name"], "Shared PETG @printer");
+        assert_eq!(found["profiles"][0]["filament_type"], json!(["PETG"]));
         assert_eq!(found["profiles"][1]["name"], "Vendor PLA @BBL X1C");
         let shared = profiles
             .resolve(
                 Category::Filament,
                 &ProfileSelection {
-                    name: "Shared PLA @printer".into(),
+                    name: "Shared PETG @printer".into(),
                     overrides: BTreeMap::new(),
                 },
             )
             .unwrap();
         assert_eq!(shared["nozzle_temperature"], json!(["215"]));
+        assert_eq!(shared["filament_type"], json!(["PETG"]));
         for name in ["Vendor PLA @base", "Generic PLA @System"] {
             let selection = ProfileSelection {
                 name: name.into(),
@@ -912,6 +941,7 @@ mod tests {
                 (Category::Filament, profile("filament")),
             ]),
             library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([
                 (Category::Printer, settings.printer),
                 (Category::Process, settings.process),
@@ -935,6 +965,16 @@ mod tests {
         };
         let brim = resolve(Category::Process, "brim_type", json!("no_brim")).unwrap();
         assert_eq!(brim["brim_type"], "no_brim");
+        for (value, expected) in [
+            ("0", "disabled"),
+            ("FALSE", "disabled"),
+            ("1", "enabled"),
+            ("true", "enabled"),
+            ("sparse_infill", "sparse_infill"),
+        ] {
+            let profile = resolve(Category::Process, "enable_arc_fitting", json!(value)).unwrap();
+            assert_eq!(profile["enable_arc_fitting"], expected);
+        }
         let advance = resolve(Category::Filament, "pressure_advance", json!(["0.03"])).unwrap();
         assert_eq!(advance["pressure_advance"], json!(["0.03"]));
         for (category, key, message) in [
