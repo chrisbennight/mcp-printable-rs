@@ -664,15 +664,10 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             schema
         }
         "slice" => {
-            let mut comparison = serde_json::to_value(schemars::schema_for!(
-                crate::slicing::comparison::CompareResult
-            ))
-            .expect("comparison output schema serializes");
-            let definitions = comparison
-                .as_object_mut()
-                .expect("schema object")
-                .remove("$defs");
-            let mut result = json!({"type":"object","anyOf":[
+            let mut generator = schemars::SchemaGenerator::default();
+            let comparison = generator.subschema_for::<crate::slicing::comparison::CompareResult>();
+            let substitutions = generator.subschema_for::<crate::slicing::SettingsSubstitutions>();
+            json!({"type":"object","anyOf":[
                 comparison,
                 source_layout(),
                 {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
@@ -682,12 +677,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
                     "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
                     "source_layout":{"type":"object"},"final_layout":{"type":"object"},
+                    "settings_substitutions":substitutions,
                     "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
-            ]});
-            if let Some(definitions) = definitions {
-                result["$defs"] = definitions;
-            }
-            result
+            ],"$defs":generator.take_definitions(true)})
         }
         "printer" | "print" => crate::printers::output_schema(name),
         "status" => object(

@@ -101,7 +101,14 @@ Override values are Orca strings or nonempty string arrays. The worker checks
 literal numeric bounds and closed enum choices before admitting a slice. Open
 suggestions do not restrict numeric values. Complex serialization, unresolved
 definitions and combinations retain native validation; a failed slice repeats
-Orca's reason. Static bounds do not establish suitable printing values.
+Orca's reason. When the engine reports structured warnings, completed status
+and retained slice provenance include `settings_substitutions`. In the
+`reported` state, `keys` lists the settings the engine replaced and
+`truncated` indicates that the key list is incomplete. The `unavailable` state
+reports an invalid or oversized native report. Older runs and engines may omit
+the field. The retained native result omits raw warning records, and a report
+that exceeds the limit or cannot be parsed is replaced with a summary artifact.
+Static bounds do not establish suitable printing values.
 
 `catalog_identity` identifies the packaged engine and corresponding source.
 `runtime_source_verified: false` means the worker's version probe does not attest
