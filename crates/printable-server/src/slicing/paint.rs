@@ -253,15 +253,20 @@ impl SliceWorker {
         source: String,
         limit: ProcessingLimit,
     ) -> Result<PaintInspection, ToolError> {
-        let admission = self
-            .admit("slicer is busy; retry paint inspection later")
-            .await?;
+        let admission = tokio::select! {
+            biased;
+            () = limit.cancellation.cancelled() => return Err(slice_error("native Orca paint inspection cancelled")),
+            permit = self.admit("slicer is busy; retry paint inspection later") => permit?,
+        };
+        limit.check()?;
         let mut help = Command::new(&self.binary);
         help.arg("--help");
-        if !probe_native(help)
-            .await
-            .is_some_and(|text| text.contains("--inspect-paint"))
-        {
+        let help = tokio::select! {
+            biased;
+            () = limit.cancellation.cancelled() => return Err(slice_error("native Orca paint inspection cancelled")),
+            output = probe_native(help) => output,
+        };
+        if !help.is_some_and(|text| text.contains("--inspect-paint")) {
             return Err(slice_error(
                 "the installed OrcaSlicer does not support paint inspection",
             ));
@@ -411,6 +416,7 @@ mod tests {
             ("painted.3mf", b"painted".as_slice()),
             ("plain.3mf", b"plain".as_slice()),
             ("invalid.3mf", b"invalid".as_slice()),
+            ("modified.3mf", b"modified".as_slice()),
             ("oversized.3mf", b"oversized".as_slice()),
         ] {
             worker
@@ -428,9 +434,10 @@ if sys.argv[1:] == ["--help"]:
 assert sys.argv[1] == "--inspect-paint"
 source = pathlib.Path(sys.argv[2])
 assert source.parent == pathlib.Path.cwd()
+assert not source.is_relative_to(pathlib.Path(__file__).parent / "projects")
 content = source.read_bytes()
-if content == b"invalid":
-    sys.exit(1)
+if content == b"modified":
+    source.write_bytes(b"changed snapshot")
 if content == b"oversized":
     sys.stdout.write("x" * (8 * 1024 * 1024 + 1))
     sys.stdout.flush()
@@ -444,6 +451,8 @@ print(json.dumps({"frame":"mesh_local","sources":[str(source)],"summary":{
     "supports":layer("ENFORCER",1),"seam":layer("BLOCKER",1),
     "mmu_segmentation":layer("extruder_2",2),"fuzzy_skin":layer("FUZZY_SKIN",1)
 }}]}]}))
+if content == b"invalid":
+    sys.exit(1)
 "#,
         )
         .unwrap();
@@ -473,7 +482,24 @@ print(json.dumps({"frame":"mesh_local","sources":[str(source)],"summary":{
         let plain = worker.inspect_paint(request("plain.3mf")).await.unwrap();
         assert_eq!(plain["summary"]["volumes_with_paint"], 0);
         assert_eq!(plain["painted_volumes"], json!([]));
-        assert!(worker.inspect_paint(request("invalid.3mf")).await.is_err());
+        assert!(
+            worker
+                .inspect_paint(request("invalid.3mf"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("could not inspect 3MF paint")
+        );
+        let modified = worker
+            .inspect_paint(request("modified.3mf"))
+            .await
+            .unwrap_err();
+        assert!(modified.to_string().contains("changed its input snapshot"));
+        let (_, bytes) = worker
+            .workspace
+            .read_artifact("projects/part/modified.3mf")
+            .unwrap();
+        assert_eq!(bytes, b"modified");
         let usage = worker.workspace.storage_usage().unwrap().charged_bytes;
         let oversized = tokio::time::timeout(
             Duration::from_secs(10),
