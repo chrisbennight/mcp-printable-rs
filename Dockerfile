@@ -116,8 +116,7 @@ COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/pri
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY release/notices/orca /opt/orca/licenses
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
-ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless \
-    PRINTABLE_SLICER_PROFILES=/opt/orca-worker-profiles/BBL
+ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
 COPY LICENSE /usr/share/doc/printable/LICENSE
 # Declared here so the per-commit revision leaves earlier layers cacheable.
 ARG SOURCE_REVISION
