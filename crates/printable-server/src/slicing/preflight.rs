@@ -225,7 +225,9 @@ fn analyze_inner(
             maximum_mm: envelope.maximum_mm,
         })
         .collect::<Vec<_>>();
-    let (plate, bed_exclusions_known) = plate(printer);
+    let (plate, planar_exclusions_known) = plate(printer);
+    let volumes_configured = printer["bed_exclusion_volumes_configured"].as_bool() == Some(true);
+    let bed_exclusions_known = planar_exclusions_known && !volumes_configured;
     let mut report =
         print_collision::check_print_paths(&parsed.moves, plate.as_ref(), &boxes, || {
             Instant::now() < deadline && !cancel.is_cancelled()
@@ -235,11 +237,14 @@ fn analyze_inner(
     if plate.is_none() {
         unresolved.insert("bed_boundary_not_available".into());
     }
-    if !bed_exclusions_known {
+    if !planar_exclusions_known {
         unresolved.insert("bed_exclusions_not_verified".into());
-        if report.bed != CheckState::Failed {
-            report.bed = CheckState::Unmeasured;
-        }
+    }
+    if volumes_configured {
+        unresolved.insert("bed_exclusion_volumes_unmeasured".into());
+    }
+    if !bed_exclusions_known && report.bed != CheckState::Failed {
+        report.bed = CheckState::Unmeasured;
     }
     if !parsed.complete || !parsed.unresolved.is_empty() || parsed.moves.is_empty() {
         let unsupported = parsed.unresolved.iter().any(|reason| {
@@ -545,6 +550,21 @@ mod tests {
             options.deadline(),
         );
         assert_eq!(report["checks"]["bed"], "passed");
+        let with_volume = json!({"printable_area":["0x0","25x0","25x25","0x25"],
+            "bed_exclude_area":["0x0"],"bed_exclusion_volumes_configured":true});
+        let report = analyze(inside.path(), &with_volume, &options, options.deadline());
+        assert_eq!(report["checks"]["bed"], "unmeasured");
+        assert_eq!(report["bed_exclusions_known"], false);
+        assert_eq!(report["coverage_complete"], false);
+        assert!(
+            report["unresolved"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("bed_exclusion_volumes_unmeasured"))
+        );
+        let report = analyze(gcode.path(), &with_volume, &options, options.deadline());
+        assert_eq!(report["checks"]["bed"], "failed");
+        assert_eq!(report["status"], "blocked");
     }
 
     #[test]

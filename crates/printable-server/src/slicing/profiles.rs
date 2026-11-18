@@ -157,6 +157,11 @@ const UNAVAILABLE: &[&str] = &[
 fn refusal(key: &str) -> Option<&'static str> {
     if IDENTITY.contains(&key) {
         Some("profile identity and compatibility require selecting the matching profile")
+    } else if matches!(
+        key,
+        "bed_exclude_volume_mode" | "bed_exclude_volumes" | "extruder_bed_exclude_volumes"
+    ) {
+        Some("3D bed exclusion volumes require native printer configuration")
     } else if UNAVAILABLE.contains(&key) {
         Some(
             "printer connection, post-processing, host file and plugin settings are not available for slicing",
@@ -1001,6 +1006,11 @@ mod tests {
                 "not available",
             ),
             (Category::Printer, "printhost_apikey", "not available"),
+            (
+                Category::Printer,
+                "bed_exclude_volumes",
+                "native printer configuration",
+            ),
             (Category::Printer, "printer_technology", "identity"),
             (
                 Category::Filament,

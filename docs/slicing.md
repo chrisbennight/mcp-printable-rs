@@ -308,8 +308,10 @@ is missing; `modeled_checks_passed` applies only to the stated model and coverag
 Inspect `processing_complete`, `coverage_complete` and unresolved reasons.
 
 Bed geometry comes from `Metadata/project_settings.config` in the final native
-package. Invalid or unavailable settings leave that check unmeasured. The report
-records G-code hashes and the supplied machine geometry, and slice provenance
+package. Invalid or unavailable settings leave that check unmeasured. Active
+3D bed exclusion volumes also leave the bed check unmeasured unless a planar
+finding already blocks it. Set these volumes in the native printer configuration.
+The report records G-code hashes and the supplied machine geometry. Slice provenance
 binds it to the source, resolved settings and generated artifacts. Re-slice and
 recheck after a layout, material, settings, machine-envelope or output change.
 

@@ -145,9 +145,24 @@ pub(super) fn collision_settings(path: &Path) -> Result<Value, ToolError> {
     let bytes = read_entry(&mut archive, SETTINGS_ENTRY, MAX_SETTINGS_BYTES)?;
     let settings: Value =
         serde_json::from_slice(&bytes).map_err(|_| invalid("has unreadable project settings"))?;
+    let configured = |value: &Value| {
+        !value.is_null() && !value.as_str().is_some_and(|text| text.trim().is_empty())
+    };
+    let shared = configured(&settings["bed_exclude_volumes"]);
+    let per_extruder = &settings["extruder_bed_exclude_volumes"];
+    let per_extruder = per_extruder.as_array().map_or_else(
+        || configured(per_extruder),
+        |values| values.iter().any(configured),
+    );
+    let volumes_configured = match settings["bed_exclude_volume_mode"].as_str() {
+        Some("per_extruder") => per_extruder,
+        Some("shared" | "toolhead_offset") | None => shared,
+        _ => shared || per_extruder,
+    };
     Ok(serde_json::json!({
         "printable_area":settings["printable_area"],
         "bed_exclude_area":settings["bed_exclude_area"],
+        "bed_exclusion_volumes_configured":volumes_configured,
     }))
 }
 
@@ -262,6 +277,26 @@ mod tests {
         let facts = super::facts(&path).unwrap();
         assert_eq!(facts.filaments.len(), MAX_FILAMENTS);
         assert!(facts.filaments_truncated);
+    }
+
+    #[test]
+    fn collision_settings_report_active_native_volumes_without_copying_them() {
+        let dir = tempfile::tempdir().unwrap();
+        for (mode, shared, per_extruder, active) in [
+            ("shared", " ", ["ignored", ""], false),
+            ("toolhead_offset", "configured", ["", ""], true),
+            ("per_extruder", "ignored", [" ", ""], false),
+            ("per_extruder", "", ["", "configured"], true),
+        ] {
+            let settings = json!({"bed_exclude_volume_mode":mode,"bed_exclude_volumes":shared,
+                "extruder_bed_exclude_volumes":per_extruder,"bed_exclude_area":["0x0"]});
+            let bytes = serde_json::to_vec(&settings).unwrap();
+            let path = write(&dir, &fixture::package(&[(SETTINGS_ENTRY, &bytes)]));
+            let projected = collision_settings(&path).unwrap();
+            assert_eq!(projected["bed_exclusion_volumes_configured"], active);
+            assert_eq!(projected["bed_exclude_area"], json!(["0x0"]));
+            assert!(projected.get("extruder_bed_exclude_volumes").is_none());
+        }
     }
 
     #[test]

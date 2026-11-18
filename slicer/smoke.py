@@ -234,6 +234,7 @@ with tempfile.TemporaryDirectory() as directory:
                                         ("x1c", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
                                         ("x1c-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
                                         ("legacy-reslice", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle"),
+                                        ("h2d-stl", "H2D", "Bambu Lab H2D 0.4 nozzle"),
                                         ("capture-template", "X1C", "Bambu Lab X1 Carbon 0.4 nozzle")]:
             profiles = request("profiles", {"category": "process", "printer": printer, "query": "0.20mm Standard"})
             assert profiles["total"] > 0
@@ -252,13 +253,16 @@ with tempfile.TemporaryDirectory() as directory:
                 process["overrides"].update({"layer_height": "0.16", "enable_arc_fitting": "0"})
             if model in colours:
                 filament["colour"] = colours[model]
+            filaments = ([{**filament, "colour": color} for color in COLORS]
+                         if model == "capture-template" else [filament])
+            if model == "h2d-stl":
+                filaments.append({"name": "Bambu PETG HF @BBL H2D 0.4 nozzle"})
             source = {"x1c-reslice": "x1c/model.gcode.3mf", "legacy-reslice": legacy.name}.get(model, "source.stl")
             state = request("prepare", {**handle, "source": source,
                 "build_plate": "High Temp Plate" if model == "x1c" else "Textured PEI Plate",
                 "printer": {"name": printer},
                 "process": process,
-                "filaments": ([{**filament, "colour": color} for color in COLORS]
-                              if model == "capture-template" else [filament]),
+                "filaments": filaments,
                 "auto_arrange": model != "legacy-reslice", "timeout_seconds": 300})
             deadline = time.monotonic() + 360
             while state["status"] == "running" and time.monotonic() < deadline:
@@ -287,6 +291,8 @@ with tempfile.TemporaryDirectory() as directory:
                 assert "; layer_height = 0.16" in gcode and "; enable_arc_fitting = disabled" in gcode
                 assert state["source_sha256"] == legacy_hash
                 assert hashlib.sha256(legacy.read_bytes()).hexdigest() == legacy_hash
+            if model == "h2d-stl":
+                assert "; filament_type = PLA;PETG" in gcode, "uncoloured H2D input lost the second material"
             if model == "x1c-reslice":
                 assert '; filament_settings_id = "AliZ PLA @P1-X1"' in gcode, (
                     "selected shared filament did not reach Orca")
@@ -797,7 +803,7 @@ with tempfile.TemporaryDirectory() as directory:
             handles.append(handle)
             return used_purge, stored_purge
 
-        baseline_purge, _ = h2d_trial("h2d-two-filaments", material_source.name)
+        h2d_trial("h2d-two-filaments", material_source.name)
         authored_source = project / "h2d-authored-purge.3mf"
         authored_purge = [0, 501, 371, 0, 0, 549, 447, 0]
         config_path = "Metadata/project_settings.config"
@@ -808,7 +814,9 @@ with tempfile.TemporaryDirectory() as directory:
             for name in original.namelist():
                 output.writestr(name, json.dumps(settings) if name == config_path else original.read(name))
         used_purge, stored_purge = h2d_trial("h2d-reslice", authored_source.name)
-        assert stored_purge == authored_purge and used_purge != baseline_purge
+        assert stored_purge == authored_purge
+        # Orca reduces the first nozzle's purge volumes in this fixture.
+        assert used_purge == [0, 150, 111, 0, 0, 549, 447, 0], used_purge
         print("Native H2D nozzle assignments, package thumbnails, and purge volumes survived reslicing")
         worker.terminate()
         worker.wait(timeout=10)
