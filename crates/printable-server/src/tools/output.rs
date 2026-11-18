@@ -603,6 +603,7 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
     use crate::projects::{Project, card::Card, catalog::SearchView, index};
     let mut schema = match (name, action) {
         ("slice", "inspect_layout") => with_errors(name, source_layout()),
+        ("slice", "inspect_paint") => typed::<crate::slicing::paint::PaintInspection>(name),
         ("slice", "compare") => typed::<crate::slicing::comparison::CompareResult>(name),
         ("printer" | "print", _) => crate::printers::action_output_schema(name, action)?,
         ("cad_build", _) => cad_action_schema(action)?,
@@ -666,9 +667,11 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
         "slice" => {
             let mut generator = schemars::SchemaGenerator::default();
             let comparison = generator.subschema_for::<crate::slicing::comparison::CompareResult>();
+            let paint = generator.subschema_for::<crate::slicing::paint::PaintInspection>();
             let substitutions = generator.subschema_for::<crate::slicing::SettingsSubstitutions>();
             json!({"type":"object","anyOf":[
                 comparison,
+                paint,
                 source_layout(),
                 {"required":["kind","representation","source_sha256","image","image_sha256","metadata_path","camera","plates"],"properties":{"kind":{"const":"native_orca_layout"},"representation":{"const":"model_placement"},"source_sha256":{"type":"string"},"image":{"type":"object"},"image_sha256":{"type":"string"},"metadata_path":{"type":"string"},"camera":{"type":"object"},"plates":{"type":"array"},"provenance":schemars::schema_for!(crate::provenance::RecordRef)}},
                 {"required":["profile","settings","build_plates","total","next_offset"],"properties":{"profile":{"type":"string"},"settings":{"type":"array"},"build_plates":{"type":"array"},"total":{"type":"integer"}}},

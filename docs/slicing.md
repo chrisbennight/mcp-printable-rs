@@ -138,6 +138,16 @@ work as interrupted; it never silently resumes or replays it.
 
 ### Source and final layout evidence
 
+`inspect_paint` accepts a project-relative 3MF and returns its source hash and
+the support, seam, material and fuzzy-skin paint reported by OrcaSlicer.
+Painted volumes use one-based object and volume indices. The category flags
+describe the full project, including volumes omitted from the response. A facet
+can contribute to the count for more than one paint layer. Large results return
+summary counts with a bounded volume list and a truncation flag. Inspection
+accepts files up to 128 MiB and rejects native reports above 8 MiB. It uses a
+private snapshot and leaves the source unchanged. It runs a supported engine
+without a display and limits the child process to a 1 GiB address space.
+
 `inspect_layout` accepts an authored project-relative 3MF, a new output directory
 and optional expected source SHA-256. It resolves core/production model resources
 without extracting archive members, and reports build indices, native instance

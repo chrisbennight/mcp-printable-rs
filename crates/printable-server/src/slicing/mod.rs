@@ -6,6 +6,7 @@ mod definitions;
 pub mod layout;
 pub mod model;
 pub mod package;
+pub mod paint;
 pub mod placement;
 pub mod preflight;
 mod processing;
@@ -46,6 +47,7 @@ pub async fn forward(endpoint: Option<&str>, request: SliceRequest) -> Result<Va
     let operation = match &request {
         SliceRequest::Capture(_) => Some("native Orca capture"),
         SliceRequest::InspectLayout(_) => Some("source layout inspection"),
+        SliceRequest::InspectPaint(_) => Some("native Orca paint inspection"),
         SliceRequest::Compare(_) => Some("preparation comparison"),
         _ => None,
     };
@@ -246,6 +248,7 @@ pub enum SliceRequest {
     Review(review::ReviewParams),
     Capture(capture::CaptureParams),
     InspectLayout(layout::InspectParams),
+    InspectPaint(paint::InspectPaintParams),
     Compare(Box<comparison::CompareParams>),
 }
 
@@ -546,6 +549,7 @@ impl SliceWorker {
             SliceRequest::Review(params) => self.review(params).await,
             SliceRequest::Capture(params) => self.capture(params).await,
             SliceRequest::InspectLayout(params) => self.inspect_layout(params).await,
+            SliceRequest::InspectPaint(params) => self.inspect_paint(params).await,
             SliceRequest::Compare(params) => self.compare(*params).await,
         }
     }
