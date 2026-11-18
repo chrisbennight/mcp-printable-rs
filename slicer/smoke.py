@@ -796,6 +796,10 @@ with tempfile.TemporaryDirectory() as directory:
                 layout = ET.fromstring(package.read("Metadata/model_settings.config"))
                 nozzle_map = layout.find("./plate/metadata[@key='filament_maps']")
                 assert nozzle_map is not None and nozzle_map.get("value") == "2 1", name
+                objects = [{node.get("key"): node.get("value") for node in obj.findall("metadata")}
+                           for obj in layout.findall("object")]
+                assignments = {obj.get("name"): obj.get("extruder") for obj in objects}
+                assert assignments == {"Fixture part 1": "1", "Fixture part 2": "2"}, assignments
                 settings = json.loads(package.read("Metadata/project_settings.config"))
                 stored_purge = list(map(float, settings["flush_volumes_matrix"]))
             assert len(used_purge) == len(stored_purge) == 8
