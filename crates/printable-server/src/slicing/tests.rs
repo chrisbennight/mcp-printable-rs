@@ -82,13 +82,17 @@ fn params() -> PrepareParams {
 fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_reports() {
     let directory = tempfile::tempdir().unwrap();
     let report = directory.path().join("result.json");
-    assert!(settings_substitutions(&report).is_none());
     std::fs::write(&report, br#"{"return_code":0}"#).unwrap();
-    assert!(settings_substitutions(&report).is_none());
+    let (legacy, summary) = public_native_result(&report).ok().unwrap();
+    assert_eq!(legacy, br#"{"return_code":0}"#);
+    assert!(summary.is_none());
     std::fs::write(&report, br#"{"return_code":0,"warnings":[]}"#).unwrap();
-    let empty = settings_substitutions(&report).unwrap();
-    assert!(empty.keys.is_empty());
-    assert!(!empty.truncated);
+    let (clean, empty) = public_native_result(&report).ok().unwrap();
+    assert_eq!(clean, legacy);
+    assert_eq!(
+        json!(empty.unwrap()),
+        json!({"state":"reported","keys":[],"truncated":false})
+    );
 
     let warnings: Vec<_> = (0..40)
         .map(
@@ -97,11 +101,18 @@ fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_repor
         .rev()
         .collect();
     std::fs::write(&report, json!({"warnings":warnings}).to_string()).unwrap();
-    let capped = settings_substitutions(&report).unwrap();
-    assert_eq!(capped.keys.len(), 32);
-    assert_eq!(capped.keys.first().unwrap(), "setting_00");
-    assert_eq!(capped.keys.last().unwrap(), "setting_31");
-    assert!(capped.truncated);
+    let (_, capped) = public_native_result(&report).ok().unwrap();
+    let capped = json!(capped.unwrap());
+    assert_eq!(capped["keys"].as_array().unwrap().len(), 32);
+    assert_eq!(capped["keys"][0], "setting_00");
+    assert_eq!(capped["keys"][31], "setting_31");
+    assert_eq!(capped["truncated"], true);
+
+    std::fs::write(&report, vec![b' '; 1024 * 1024 + 1]).unwrap();
+    assert!(matches!(
+        public_native_result(&report),
+        Err(SettingsReportIssue::TooLarge)
+    ));
 }
 
 #[tokio::test]
@@ -180,7 +191,7 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
     assert_eq!(retained.data["preflight"], state["preflight"]);
     assert_eq!(
         state["settings_substitutions"],
-        json!({"keys":["ironing_type"],"truncated":false})
+        json!({"state":"reported","keys":["ironing_type"],"truncated":false})
     );
     assert_eq!(
         retained.data["settings_substitutions"],
@@ -190,6 +201,20 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
         worker.status(handle(), false).await.unwrap()["settings_substitutions"],
         state["settings_substitutions"]
     );
+    let (_, native_report) = worker
+        .workspace
+        .read_generated_bytes("projects/part/slice/result.json")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&native_report).unwrap(),
+        json!({"return_code":0})
+    );
+    assert_eq!(
+        state["artifacts"]["result.json"]["sha256"],
+        provenance::digest(&native_report)
+    );
+    let schema = crate::tools::output::schema("slice");
+    assert!(jsonschema::is_valid(&json!(schema.as_ref()), &state));
     assert_eq!(
         worker.status(handle(), false).await.unwrap()["preflight"],
         state["preflight"]

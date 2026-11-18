@@ -102,10 +102,12 @@ literal numeric bounds and closed enum choices before admitting a slice. Open
 suggestions do not restrict numeric values. Complex serialization, unresolved
 definitions and combinations retain native validation; a failed slice repeats
 Orca's reason. When the engine reports structured warnings, completed status
-and retained slice provenance include `settings_substitutions`. Its `keys` list
-identifies settings the engine replaced, and `truncated` indicates that more keys
-were reported. Older runs and engines may omit this field. Static bounds do not
-establish suitable printing values.
+and retained slice provenance include `settings_substitutions`. In the
+`reported` state, `keys` lists the settings the engine replaced and
+`truncated` indicates that more keys were reported. The `unavailable` state
+gives a reason when the worker cannot read the report within its limits. Older
+runs and engines may omit the field. The retained native result omits raw
+warning records. Static bounds do not establish suitable printing values.
 
 `catalog_identity` identifies the packaged engine and corresponding source.
 `runtime_source_verified: false` means the worker's version probe does not attest

@@ -262,9 +262,18 @@ struct SliceOutputs {
 }
 
 #[derive(Serialize, JsonSchema)]
-pub(crate) struct SettingsSubstitutions {
-    keys: Vec<String>,
-    truncated: bool,
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum SettingsSubstitutions {
+    Reported { keys: Vec<String>, truncated: bool },
+    Unavailable { reason: SettingsReportIssue },
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SettingsReportIssue {
+    TooLarge,
+    Unreadable,
+    Invalid,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1171,6 +1180,7 @@ impl SliceWorker {
         let cancellation = cancel.clone();
         tokio::task::spawn_blocking(move || {
             let mut artifacts = BTreeMap::new();
+            let mut settings_substitutions = None;
             let native_settings = package::collision_settings(&output.join("model.gcode.3mf"));
             let mut entries = std::fs::read_dir(&output)?.collect::<Result<Vec<_>, _>>()?;
             entries.sort_by_key(|entry| entry.file_name());
@@ -1183,6 +1193,24 @@ impl SliceWorker {
                 if ![Some("gcode"), Some("3mf"), Some("json")]
                     .contains(&entry.path().extension().and_then(|x| x.to_str()))
                 {
+                    continue;
+                }
+                if name == "result.json" {
+                    match public_native_result(&entry.path()) {
+                        Ok((bytes, substitutions)) => {
+                            let artifact = workspace.write_generated_bytes(
+                                &format!("{destination}/{name}"), &bytes, false,
+                            )?;
+                            artifacts.insert(
+                                name,
+                                json!({"artifact":artifact,"sha256":provenance::digest(&bytes)}),
+                            );
+                            settings_substitutions = substitutions;
+                        }
+                        Err(reason) => {
+                            settings_substitutions = Some(SettingsSubstitutions::Unavailable { reason });
+                        }
+                    }
                     continue;
                 }
                 let hash = hash_file(&entry.path())?;
@@ -1253,7 +1281,7 @@ impl SliceWorker {
             Ok(SliceOutputs {
                 artifacts: json!(artifacts),
                 preflight,
-                settings_substitutions: settings_substitutions(&output.join("result.json")),
+                settings_substitutions,
             })
         })
         .await
@@ -1370,21 +1398,50 @@ fn slice_error(message: &str) -> ToolError {
     ToolError::Slice(message.into())
 }
 
-fn settings_substitutions(path: &Path) -> Option<SettingsSubstitutions> {
+fn public_native_result(
+    path: &Path,
+) -> Result<(Vec<u8>, Option<SettingsSubstitutions>), SettingsReportIssue> {
     const MAX_REPORT_BYTES: u64 = 1024 * 1024;
-    const MAX_INLINE_KEYS: usize = 32;
 
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| SettingsReportIssue::Unreadable)?;
+    if !file
+        .metadata()
+        .map_err(|_| SettingsReportIssue::Unreadable)?
+        .is_file()
+    {
+        return Err(SettingsReportIssue::Unreadable);
+    }
     let mut bytes = Vec::new();
     file.take(MAX_REPORT_BYTES + 1)
         .read_to_end(&mut bytes)
-        .ok()?;
+        .map_err(|_| SettingsReportIssue::Unreadable)?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
-        return None;
+        return Err(SettingsReportIssue::TooLarge);
     }
-    let result: Value = serde_json::from_slice(&bytes).ok()?;
-    let warnings = result["warnings"].as_array()?;
+    let mut result: serde_json::Map<String, Value> =
+        serde_json::from_slice(&bytes).map_err(|_| SettingsReportIssue::Invalid)?;
+    let Some(warnings) = result.remove("warnings") else {
+        return Ok((bytes, None));
+    };
+    let substitutions = match warnings.as_array() {
+        Some(warnings) => settings_substitutions(warnings),
+        None => SettingsSubstitutions::Unavailable {
+            reason: SettingsReportIssue::Invalid,
+        },
+    };
+    let public = serde_json::to_vec(&result).map_err(|_| SettingsReportIssue::Invalid)?;
+    Ok((public, Some(substitutions)))
+}
+
+fn settings_substitutions(warnings: &[Value]) -> SettingsSubstitutions {
+    const MAX_INLINE_KEYS: usize = 32;
+
     // Native diagnostics can contain user values and staging paths. Only project
     // the affected option name from each substitution.
     let keys: BTreeSet<_> = warnings
@@ -1399,14 +1456,14 @@ fn settings_substitutions(path: &Path) -> Option<SettingsSubstitutions> {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         })
         .collect();
-    Some(SettingsSubstitutions {
+    SettingsSubstitutions::Reported {
         truncated: keys.len() > MAX_INLINE_KEYS,
         keys: keys
             .into_iter()
             .take(MAX_INLINE_KEYS)
             .map(str::to_owned)
             .collect(),
-    })
+    }
 }
 
 /// OrcaSlicer records each deliberate refusal in `result.json` with a nonzero
