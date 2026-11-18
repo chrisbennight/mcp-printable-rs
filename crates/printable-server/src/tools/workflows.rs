@@ -568,7 +568,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "slice",
-        description: "Discover profiles/settings and prepare STL/3MF prints on an explicit build surface. inspect_layout reports source solids; layout controls preserve placements. status/cancel inspect work; review shows toolpaths; capture shows model placement and estimated towers. compare retains objectives and evidence for completed candidates. Load prepare-fdm-print with skill.get before choosing settings. Preparation flags supported collisions; missing clearance stays unresolved. Actions never start a print. Inspect retained state before retrying uncertain work.",
+        description: "Discover profiles/settings and prepare STL/3MF prints on an explicit build surface. inspect_layout reports source solids; inspect_paint reads 3MF paint assignments when supported by the engine. status/cancel inspect work; review shows toolpaths; capture shows model placement and estimated towers. compare retains objectives and evidence for completed candidates. Load prepare-fdm-print with skill.get before choosing settings. Preparation flags supported collisions; missing clearance stays unresolved. Actions never start a print. Inspect retained state before retrying uncertain work.",
         schema: workflow_schema_of::<crate::slicing::SliceRequest>,
         annotations: write_annotations,
     },
