@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, PoisonError},
     time::Duration,
@@ -258,6 +258,13 @@ struct Active {
 struct SliceOutputs {
     artifacts: Value,
     preflight: Value,
+    settings_substitutions: Option<SettingsSubstitutions>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SettingsSubstitutions {
+    keys: Vec<String>,
+    truncated: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -828,11 +835,15 @@ impl SliceWorker {
                 Ok(outputs) => {
                     let artifacts = outputs.artifacts;
                     let preflight = outputs.preflight;
-                    let data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
+                    let mut data = json!({"slice":handle,"source_sha256":source_hash,"source":source_path_for_evidence,
                         "settings":settings,"settings_sha256":provenance::digest(&serde_json::to_vec(&settings).expect("JSON value serializes")),
                         "request":params,"engine":{"name":"OrcaSlicer","version":ENGINE_VERSION,
                             "source_revision":ENGINE_SOURCE_REVISION,"runtime_source_verified":false},
                         "design_evidence":design_evidence,"artifacts":artifacts,"preflight":preflight,"source_layout":terminal["source_layout"],"final_layout":terminal["final_layout"]});
+                    let substitutions = outputs.settings_substitutions.map(|value| json!(value));
+                    if let Some(substitutions) = &substitutions {
+                        data["settings_substitutions"] = substitutions.clone();
+                    }
                     match provenance::store(
                         &worker.workspace,
                         provenance::Kind::Slice,
@@ -844,6 +855,9 @@ impl SliceWorker {
                             terminal["artifacts"] = artifacts;
                             terminal["preflight"] = preflight;
                             terminal["provenance"] = json!(reference);
+                            if let Some(substitutions) = substitutions {
+                                terminal["settings_substitutions"] = substitutions;
+                            }
                         }
                         Err(error) => {
                             terminal["status"] = json!("failed");
@@ -1239,6 +1253,7 @@ impl SliceWorker {
             Ok(SliceOutputs {
                 artifacts: json!(artifacts),
                 preflight,
+                settings_substitutions: settings_substitutions(&output.join("result.json")),
             })
         })
         .await
@@ -1353,6 +1368,45 @@ fn invalid(message: &str) -> ToolError {
 }
 fn slice_error(message: &str) -> ToolError {
     ToolError::Slice(message.into())
+}
+
+fn settings_substitutions(path: &Path) -> Option<SettingsSubstitutions> {
+    const MAX_REPORT_BYTES: u64 = 1024 * 1024;
+    const MAX_INLINE_KEYS: usize = 32;
+
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_REPORT_BYTES {
+        return None;
+    }
+    let result: Value = serde_json::from_slice(&bytes).ok()?;
+    let warnings = result["warnings"].as_array()?;
+    // Native diagnostics can contain user values and staging paths. Only project
+    // the affected option name from each substitution.
+    let keys: BTreeSet<_> = warnings
+        .iter()
+        .filter(|warning| warning["class"] == "config_value_substituted")
+        .filter_map(|warning| warning["key"].as_str())
+        .filter(|key| {
+            !key.is_empty()
+                && key.len() <= 128
+                && key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+        .collect();
+    Some(SettingsSubstitutions {
+        truncated: keys.len() > MAX_INLINE_KEYS,
+        keys: keys
+            .into_iter()
+            .take(MAX_INLINE_KEYS)
+            .map(str::to_owned)
+            .collect(),
+    })
 }
 
 /// OrcaSlicer records each deliberate refusal in `result.json` with a nonzero

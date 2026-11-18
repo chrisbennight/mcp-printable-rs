@@ -78,6 +78,32 @@ fn params() -> PrepareParams {
         "printer":{"name":"printer"},"process":{"name":"process"},"filaments":[{"name":"filament"}]})).unwrap()
 }
 
+#[test]
+fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("result.json");
+    assert!(settings_substitutions(&report).is_none());
+    std::fs::write(&report, br#"{"return_code":0}"#).unwrap();
+    assert!(settings_substitutions(&report).is_none());
+    std::fs::write(&report, br#"{"return_code":0,"warnings":[]}"#).unwrap();
+    let empty = settings_substitutions(&report).unwrap();
+    assert!(empty.keys.is_empty());
+    assert!(!empty.truncated);
+
+    let warnings: Vec<_> = (0..40)
+        .map(
+            |index| json!({"class":"config_value_substituted","key":format!("setting_{index:02}")}),
+        )
+        .rev()
+        .collect();
+    std::fs::write(&report, json!({"warnings":warnings}).to_string()).unwrap();
+    let capped = settings_substitutions(&report).unwrap();
+    assert_eq!(capped.keys.len(), 32);
+    assert_eq!(capped.keys.first().unwrap(), "setting_00");
+    assert_eq!(capped.keys.last().unwrap(), "setting_31");
+    assert!(capped.truncated);
+}
+
 #[tokio::test]
 async fn successful_native_exit_retains_collision_findings_and_output_identities() {
     let directory = tempfile::tempdir().unwrap();
@@ -102,6 +128,10 @@ root=pathlib.Path(__file__).parent
 output=pathlib.Path(sys.argv[sys.argv.index('--outputdir')+1])
 shutil.copyfile(root/'fixture.3mf',output/'model.gcode.3mf')
 shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
+(output/'result.json').write_text('''{"return_code":0,"warnings":[
+ {"class":"config_value_substituted","key":"ironing_type","file":"/private/staging/process.json","old_value":"invalid"},
+ {"class":"config_value_substituted","key":"ironing_type"},
+ {"class":"unrelated_warning","key":"wall_loops"}]}''')
 "#,
     )
     .unwrap();
@@ -148,6 +178,18 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
     )
     .unwrap();
     assert_eq!(retained.data["preflight"], state["preflight"]);
+    assert_eq!(
+        state["settings_substitutions"],
+        json!({"keys":["ironing_type"],"truncated":false})
+    );
+    assert_eq!(
+        retained.data["settings_substitutions"],
+        state["settings_substitutions"]
+    );
+    assert_eq!(
+        worker.status(handle(), false).await.unwrap()["settings_substitutions"],
+        state["settings_substitutions"]
+    );
     assert_eq!(
         worker.status(handle(), false).await.unwrap()["preflight"],
         state["preflight"]
@@ -402,6 +444,7 @@ async fn completion_retains_source_and_rejects_duplicate_or_changed_review() {
     );
     let completed = terminal(&worker).await;
     assert_eq!(completed["status"], "completed", "{completed}");
+    assert!(completed.get("settings_substitutions").is_none());
     assert!(worker.prepare(params()).await.is_err());
     let (_, source) = worker
         .workspace

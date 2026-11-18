@@ -682,6 +682,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 {"required":["id","slice","status"],"properties":{"id":{"type":"string"},"slice":{"type":"object"},"status":{"enum":["running","completed","failed","cancelled","interrupted"]},"provenance":schemars::schema_for!(crate::provenance::RecordRef),
                     "preflight":{"type":"object","description":"Collision findings and modeled coverage; completion does not imply clearance."},
                     "source_layout":{"type":"object"},"final_layout":{"type":"object"},
+                    "settings_substitutions":schemars::schema_for!(crate::slicing::SettingsSubstitutions),
                     "finished_unix_ms":{"type":"integer","minimum":0},"summary":{"type":"object"}}}
             ]});
             if let Some(definitions) = definitions {
