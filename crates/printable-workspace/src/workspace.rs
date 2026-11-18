@@ -1226,6 +1226,34 @@ mod tests {
     }
 
     #[test]
+    fn a_verified_scratch_copy_preserves_a_destination_created_during_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(Some(root.path()), None).unwrap();
+        let scratch = workspace.scratch(0, "fixture").unwrap();
+        scratch
+            .create_file("draft.stl")
+            .unwrap()
+            .write_all(b"solid")
+            .unwrap();
+        let result = workspace.commit_verified_scratch_artifact(
+            "finished.stl",
+            &scratch,
+            "draft.stl",
+            5,
+            |source, destination| {
+                let copied = std::io::copy(source, destination)?;
+                std::fs::write(root.path().join("finished.stl"), b"first")?;
+                Ok(copied)
+            },
+        );
+        assert!(matches!(result, Err(WsError::AlreadyExists(_))));
+        assert_eq!(
+            workspace.read_generated_bytes("finished.stl").unwrap().1,
+            b"first"
+        );
+    }
+
+    #[test]
     fn reserved_lock_serializes_independently_opened_workspaces_and_releases_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let first = Workspace::open(Some(dir.path()), None).unwrap();

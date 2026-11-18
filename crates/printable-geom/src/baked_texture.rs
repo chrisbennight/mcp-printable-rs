@@ -63,7 +63,8 @@ pub fn bake_texture_stl(
     }
     let level = samples.iter().copied().max().unwrap_or_default();
     let extreme = depth_mm * f64::from(level) / f64::from(u16::MAX);
-    if ((surface + extreme) as f32) == (surface as f32) {
+    let exported_extreme_mm = f64::from((surface + extreme) as f32) - surface;
+    if exported_extreme_mm == 0.0 {
         return Err(invalid(
             "height map and depth produce no change in STL precision",
         ));
@@ -180,7 +181,7 @@ pub fn bake_texture_stl(
             region,
             samples: [width, height],
             depth_mm,
-            applied_extreme_mm: extreme,
+            applied_extreme_mm: exported_extreme_mm,
             volume_change_mm3: delta,
             triangles: checked.triangles,
         },
@@ -280,7 +281,6 @@ mod tests {
         let outside_patch = Manifold::cube(10.0, 10.0, 3.0, false).difference(&box_around_patch);
         for depth in [0.8_f64, -0.8] {
             let (stl, report) = bake_texture_stl(&source, REGION, depth, [3, 3], &map).unwrap();
-            assert_eq!(report.applied_extreme_mm, depth);
             assert!(report.volume_change_mm3 * depth > 0.0);
             let mesh = decode_stl(&stl).unwrap();
             let center = mesh
@@ -289,6 +289,7 @@ mod tests {
                 .find(|point| point[0] == 5.0 && point[1] == 5.0)
                 .unwrap();
             assert!((center[2] - (3.0 + depth)).abs() < 1e-6);
+            assert_eq!(report.applied_extreme_mm, center[2] - 3.0);
             let prepared = prepare_mesh(
                 &mesh,
                 ValidationOptions::default(),
@@ -312,6 +313,28 @@ mod tests {
         };
         let (_, report) = bake_texture_stl(&stl, region, -0.5, [2, 2], &[u16::MAX; 4]).unwrap();
         assert!((report.volume_change_mm3 + 18.0).abs() < 1e-6);
+        let (raised, report) = bake_texture_stl(&stl, region, 0.1, [2, 2], &[u16::MAX; 4]).unwrap();
+        let peak = decode_stl(&raised)
+            .unwrap()
+            .vertices
+            .iter()
+            .map(|point| point[2])
+            .fold(surface, f64::max);
+        assert_eq!(peak - surface, 0.125);
+        assert_eq!(report.applied_extreme_mm, peak - surface);
+    }
+
+    #[test]
+    fn first_map_row_relief_is_at_the_larger_y_coordinate() {
+        let (stl, _) =
+            bake_texture_stl(&source(), REGION, 0.75, [2, 2], &[u16::MAX, 0, 0, 0]).unwrap();
+        let mesh = decode_stl(&stl).unwrap();
+        let peak = mesh
+            .vertices
+            .into_iter()
+            .max_by(|left, right| left[2].total_cmp(&right[2]))
+            .unwrap();
+        assert_eq!(peak, [2.0, 8.0, 3.75]);
     }
 
     #[test]

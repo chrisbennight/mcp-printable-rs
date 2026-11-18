@@ -113,6 +113,10 @@ output and inspect toolpaths to see which details resolve at the chosen line
 width and layer height. Resample large maps at the resolution the printed
 surface can use if they exceed the geometry worker's memory budget.
 
+Cancellation can stop input staging, baking, and the verified output copy.
+The workspace finishes atomic publication after the copy is verified.
+After a storage error during publication, inspect the output path before retrying.
+
 For example, a concise object search is:
 
 ```json
