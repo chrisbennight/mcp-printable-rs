@@ -64,7 +64,7 @@ if '--version' in sys.argv:
     print('2.6.1')
     sys.exit(0)
 if '--help' in sys.argv:
-    print('OrcaSlicer-2.4.2: --slice --export-3mf')
+    print('OrcaSlicer-2.5.1: --slice --export-3mf')
     sys.exit(0)
 if '--check' in sys.argv:
     print(json.dumps({{'missing': []}}))

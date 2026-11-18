@@ -18,6 +18,8 @@ from PIL import Image
 from capture_fixture import COLORS, create_banded_fixture, create_fixture, verify_bed_surface, verify_camera_replay, verify_capture
 from preparation_fixture import create_software_profiles, extruded_fixture, linear_deposition_paths, object_material_assignments, tower_paths
 
+ENGINE_SOURCE_REVISION = "6320f7282263ac81d5a133c47e77e08191b409a2"
+
 
 def verify_package(path):
     with zipfile.ZipFile(path) as package:
@@ -51,6 +53,52 @@ def verify_package(path):
                 background = Image.new("RGBA", rgba.size, "white")
                 background.alpha_composite(rgba)
                 assert any(low != high for low, high in background.convert("RGB").getextrema()), f"blank thumbnail: {name}"
+
+
+def verify_paint(project, plain):
+    painted = project / "painted.3mf"
+    assigned = False
+    with zipfile.ZipFile(plain) as original, zipfile.ZipFile(painted, "w", zipfile.ZIP_DEFLATED) as output:
+        for name in original.namelist():
+            data = original.read(name)
+            if name.endswith(".model") and not assigned:
+                mesh = ET.fromstring(data)
+                triangle = mesh.find(".//{*}triangle")
+                if triangle is not None:
+                    for key, value in {"paint_supports": "4", "paint_seam": "8",
+                                       "paint_color": "8", "paint_fuzzy_skin": "4"}.items():
+                        triangle.set(key, value)
+                    data = ET.tostring(mesh, encoding="utf-8", xml_declaration=True)
+                    assigned = True
+            output.writestr(name, data)
+    assert assigned, "the paint fixture did not contain a mesh triangle"
+    invalid = project / "invalid-paint.3mf"
+    invalid.write_text("Invalid synthetic test project\n")
+    hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (plain, painted, invalid)}
+
+    def inspect(path):
+        return request("inspect_paint", {"project_id": "native-slice",
+                                         "source": str(path.relative_to(project))})
+
+    clean = inspect(plain)
+    assert clean["source_sha256"] == hashes[plain]
+    assert clean["summary"]["painted_facets_total"] == 0 and not clean["painted_volumes"]
+    assert not any(clean["categories"].values())
+    result = inspect(painted)
+    assert result["source_sha256"] == hashes[painted]
+    assert result["summary"]["painted_facets_total"] == 4 and all(result["categories"].values()), result
+    assert result["painted_volumes"] == [{
+        "object": 1, "volume": 1, "supports": {"enforcer_facets": 1, "blocker_facets": 0},
+        "seam": {"enforcer_facets": 0, "blocker_facets": 1},
+        "material": [{"filament": 2, "facets": 1}], "fuzzy_skin_facets": 1,
+    }]
+    try:
+        inspect(invalid)
+    except urllib.error.HTTPError as error:
+        assert error.code == 422 and "could not inspect 3MF paint" in json.load(error)["error"]
+    else:
+        raise AssertionError("native paint inspection accepted an invalid project")
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in hashes.items())
 
 
 def request(action, params):
@@ -121,8 +169,13 @@ with tempfile.TemporaryDirectory() as directory:
     (project / "source.stl").write_text(cube())
     software_profile_root = root / "profiles/BBL"
     software_profiles = create_software_profiles(
-        os.environ.get("PRINTABLE_SLICER_PROFILES", "/opt/orca/resources/profiles/BBL"),
+        os.environ.get("PRINTABLE_SLICER_PROFILES", "/opt/orca-worker-profiles/BBL"),
         software_profile_root)
+    substitution_profile = "Printable compatibility fixture"
+    (software_profile_root / "process" / "compatibility-fixture.json").write_text(json.dumps({
+        "type": "process", "name": substitution_profile, "inherits": "0.20mm Standard @BBL X1C",
+        "from": "user", "instantiation": "true", "ironing_type": "unknown_compatibility_fixture_value",
+    }))
     env = {**os.environ, "PRINTABLE_WORKSPACE_ROOT": str(root),
            "PRINTABLE_SLICER_PROFILES": str(software_profile_root)}
 
@@ -145,10 +198,10 @@ with tempfile.TemporaryDirectory() as directory:
         with urllib.request.urlopen("http://127.0.0.1:8003/readyz", timeout=5) as response:
             readiness = json.load(response)
         assert readiness["state"] == "ready"
-        assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.4.2"
+        assert readiness["engine"] == "OrcaSlicer" and readiness["version"] == "2.5.1"
         assert readiness["native_capture"] is True
         assert all(count > 0 for count in readiness["profile_counts"].values())
-        vendor = request("profiles", {"category": "filament", "query": "Polymaker",
+        vendor = request("profiles", {"category": "filament", "query": "Fiberon",
                                       "printer": "Bambu Lab X1 Carbon 0.4 nozzle"})
         assert vendor["total"] > 0, "vendor subfolder profiles are missing"
         library_child = request("settings", {"category": "filament", "profile": {"name": "AliZ PLA @P1-X1"},
@@ -170,7 +223,10 @@ with tempfile.TemporaryDirectory() as directory:
             assert any(row["key"] == "hot_plate_temp" for row in inspected["settings"])
             handle = {"project_id": "native-slice", "output_dir": model}
             process = {"name": f"0.20mm Standard @BBL {suffix}"}
-            filament = {"name": f"Bambu PLA Basic @BBL {suffix}"}
+            if model == "x1c":
+                process["name"] = substitution_profile
+            filament = {"name": "AliZ PLA @P1-X1" if model == "x1c-reslice"
+                        else f"Bambu PLA Basic @BBL {suffix}"}
             if model == "a1":
                 process["overrides"] = {"brim_type": "no_brim"}
                 filament["overrides"] = {"pressure_advance": ["0.031"]}
@@ -190,6 +246,12 @@ with tempfile.TemporaryDirectory() as directory:
             if state["status"] != "completed":
                 log = project / model / "build-log.json"
                 raise RuntimeError(f"slice failed: {state}; {log.read_text() if log.exists() else 'no log'}")
+            if model == "x1c":
+                assert state["settings_substitutions"] == {
+                    "state": "reported", "keys": ["ironing_type"], "truncated": False}
+                retained_result = (project / model / "result.json").read_text()
+                assert "warnings" not in json.loads(retained_result)
+                assert "unknown_compatibility_fixture_value" not in retained_result
             assert state["setup"]["build_plate"] == ("High Temp Plate" if model == "x1c" else "Textured PEI Plate")
             assert isinstance(state["progress"]["total_percent"], (int, float))
             toolpath = next(name for name in state["artifacts"] if name.endswith(".gcode"))
@@ -200,6 +262,9 @@ with tempfile.TemporaryDirectory() as directory:
             if model == "a1":
                 assert "; brim_type = no_brim" in gcode, "process override did not reach Orca"
                 assert "; pressure_advance = 0.031" in gcode, "filament override did not reach Orca"
+            if model == "x1c-reslice":
+                assert '; filament_settings_id = "AliZ PLA @P1-X1"' in gcode, (
+                    "selected shared filament did not reach Orca")
             if model in colours:
                 assert f"; filament_colour = {colours[model]}" in gcode, "slot colour did not reach the G-code"
                 with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
@@ -214,6 +279,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert settings["printer"]["machine_start_gcode"]
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
+        verify_paint(project, project / "capture-template/model.gcode.3mf")
         fixture_path = project / "capture-layout.3mf"
         fixture = create_fixture(project / "capture-template/model.gcode.3mf", fixture_path)
         source_hash = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
@@ -222,6 +288,9 @@ with tempfile.TemporaryDirectory() as directory:
                           "width": 1600, "height": 1000}
         overview = request("capture", capture_params)
         assert overview["source_sha256"] == source_hash
+        build_revision = overview["engine"]["source_revision"]
+        assert len(build_revision) >= 7 and ENGINE_SOURCE_REVISION.startswith(build_revision), (
+            "native AppImage was built from a different source revision", build_revision)
         verify_capture(root, overview, fixture)
         replay = request("capture", {**capture_params, "camera": overview["camera"]})
         verify_camera_replay(replay["camera"], overview["camera"])
@@ -328,7 +397,8 @@ with tempfile.TemporaryDirectory() as directory:
                     "crowded": ("collision", "too close", "overlap", "g-code conflicts detected"),
                     "edge": ("outside", "exclusion", "bounds", "border", "out of", "not fit", "too close", "unprintable area"),
                     "sequential": ("collision", "too close", "by object", "sequential", "prime tower", "wipe tower"),
-                    "slender": ("unprintable area",),
+                    "slender": ("unprintable area", "object conflicts were detected"),
+                    "compacted_tower": ("object conflicts were detected",),
                 }
                 if (constraint and state["status"] == "failed"
                         and any(reason in state.get("error", "").lower() for reason in expected_reasons[constraint])):
@@ -442,16 +512,27 @@ with tempfile.TemporaryDirectory() as directory:
         banded_source = project / "material-banded.3mf"
         banded = create_banded_fixture(project / "capture-template/model.gcode.3mf", banded_source)
         banded_hash = hashlib.sha256(banded_source.read_bytes()).hexdigest()
+        material_trial("banded-compact-refusal", source=banded_source.name, plate=1,
+            require_towers=False, linear=True, constraint="compacted_tower",
+            overrides={"prime_tower_width": "8", "wipe_tower_no_sparse_layers": "1"},
+            layout={"source_sha256": banded_hash, "tower_positions": [{"plate": 1,
+                "position_mm": banded["tower_position_mm"]}]})
+        assert material_results["banded-compact-refusal"]["state"]["status"] == "failed"
+        rejection = json.loads((project / "banded-compact-refusal" / "build-log.json").read_text())
+        assert "No sparse layers" in rejection["stderr"], "native refusal did not identify compacted tower clearance"
+        # The wider tower with more XY separation passes the engine's clearance
+        # check. The independent envelope still detects a late descent.
+        separated_tower = [coordinate + 55 for coordinate in banded["tower_position_mm"]]
         banded_evidence = {}
         for skip_sparse in (False, True):
             name = f"banded-sparse-{int(skip_sparse)}"
             material_trial(name, source=banded_source.name, plate=1, require_towers=False, linear=True,
-                overrides={"prime_tower_width": "8", "wipe_tower_no_sparse_layers": str(int(skip_sparse))},
+                overrides={"prime_tower_width": "20", "wipe_tower_no_sparse_layers": str(int(skip_sparse))},
                 layout={"source_sha256": banded_hash, "tower_positions": [{"plate": 1,
-                    "position_mm": banded["tower_position_mm"]}]},
+                    "position_mm": separated_tower}]},
                 clearance={"initial_position": {"position_mm": [0, 0, 0], "source": "explicit software fixture start"},
-                    "machine_envelopes": [{"component": "synthetic sparse-descent head", "minimum_mm": [-35, -35, 0.01],
-                        "maximum_mm": [35, 35, 14], "source": "deliberate software fixture envelope; no hardware claim"}]})
+                    "machine_envelopes": [{"component": "synthetic sparse-descent head", "minimum_mm": [-93, -71, 0.01],
+                        "maximum_mm": [93, 71, 14], "source": "deliberate software fixture envelope; no hardware claim"}]})
             state = material_results[name]["state"]
             toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
             deposition, changes = linear_deposition_paths((project / name / toolpath).read_text())
@@ -638,7 +719,7 @@ with tempfile.TemporaryDirectory() as directory:
         underside = request("review", {"slice": interface["handle"], "toolpath": interface["toolpath"],
             "first_layer": 16, "last_layer": 22, "features": ["Support interface"], "material": 1})
         assert underside["segments"] > 0 and underside["provenance"]
-        evidence = {"engine_source_revision": "63c97a10eab70d6f4af73c29807dddbcab889273",
+        evidence = {"engine_source_revision": ENGINE_SOURCE_REVISION,
             "physical_result": "not_observed", "flat_top": [{"slice": result["handle"],
                 "slice_provenance": result["state"]["provenance"], "review": result["review"]["provenance"],
                 "estimates": result["review"]["estimates"]} for result in (flat_baseline, flat_finish)],

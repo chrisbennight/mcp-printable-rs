@@ -603,7 +603,7 @@ import base64,json,pathlib,sys,time
 root=pathlib.Path(__ROOT__)
 if '--help' in sys.argv:
  root.joinpath('capability-probed').touch()
- print('OrcaSlicer-2.4.2: --slice --export-3mf --capture-workspace')
+ print('OrcaSlicer-2.5.1: --slice --export-3mf --capture-workspace')
  sys.exit(0)
 behavior=__BEHAVIOR__
 root.joinpath('capture-argv.json').write_text(json.dumps(sys.argv))
@@ -620,7 +620,7 @@ camera['orientation']=camera.get('orientation') or [1,0,0,0]
 camera['target']=camera.get('target') or [50,50,0]
 camera['zoom']=camera.get('zoom') or 2.5
 metadata={'format_version':1,'kind':'native_orca_layout','representation':'model_placement',
- 'prime_towers':'native_estimated','engine':{'name':'OrcaSlicer','version':'2.4.2','source_revision':'fixture'},
+ 'prime_towers':'native_estimated','engine':{'name':'OrcaSlicer','version':'2.5.1','source_revision':'fixture'},
  'width':request['width'],'height':request['height'],'plates':request['plates'] or [1,2,3],
  'objects':request['objects'],'camera':camera,'visibility':request['visibility'],'volumes':[]}
 if behavior == 'wrong-plate': metadata['plates']=[2]

@@ -1,7 +1,7 @@
 {
  "engine": "OrcaSlicer",
- "engine_version": "2.4.2",
- "source_revision": "63c97a10eab70d6f4af73c29807dddbcab889273",
+ "engine_version": "2.5.1",
+ "source_revision": "6320f7282263ac81d5a133c47e77e08191b409a2",
  "printer": [
   "adaptive_bed_mesh_margin",
   "auxiliary_fan",
@@ -9,46 +9,84 @@
   "bed_custom_model",
   "bed_custom_texture",
   "bed_exclude_area",
+  "bed_exclude_volume_mode",
+  "bed_exclude_volumes",
   "bed_mesh_max",
   "bed_mesh_min",
   "bed_mesh_probe_distance",
   "bed_temperature_formula",
   "before_layer_change_gcode",
+  "belt_frame_tilt_angle",
+  "belt_frame_tilt_decouple",
+  "belt_printer",
+  "belt_printer_infinite_y",
+  "belt_slice_rotation",
+  "belt_slice_rotation_angle",
+  "belt_support_floor_offset",
   "best_object_pos",
+  "build_plate_tilt_x",
+  "build_plate_tilt_y",
   "change_extrusion_role_gcode",
   "change_filament_gcode",
+  "cooling_filter_enabled",
   "cooling_tube_length",
   "cooling_tube_retraction",
   "default_bed_type",
   "default_filament_profile",
   "default_nozzle_volume_type",
   "default_print_profile",
+  "deretract_speed_extruder_change",
   "deretraction_speed",
   "disable_m73",
   "emit_machine_limits_to_gcode",
+  "enable_belt_purge_tower",
   "enable_filament_ramming",
   "enable_long_retraction_when_cut",
   "enable_power_loss_recovery",
+  "enable_pre_heating",
   "extra_loading_move",
+  "extruder_bed_exclude_volumes",
+  "extruder_clearance_dist_to_rod",
   "extruder_clearance_height_to_lid",
   "extruder_clearance_height_to_rod",
   "extruder_clearance_radius",
   "extruder_colour",
+  "extruder_max_nozzle_count",
   "extruder_offset",
   "extruder_printable_area",
   "extruder_printable_height",
   "extruder_type",
   "extruder_variant_list",
+  "fan_direction",
   "fan_kickstart",
   "fan_speedup_overhangs",
   "fan_speedup_time",
+  "farthest_point_timelapse",
   "file_start_gcode",
   "flashforge_serial_number",
   "gcode_flavor",
+  "gcode_remap_x",
+  "gcode_remap_y",
+  "gcode_remap_z",
+  "gcode_skip_config_block",
   "grab_length",
+  "group_algo_with_time",
   "head_wrap_detect_zone",
   "high_current_on_filament_swap",
   "host_type",
+  "hotend_cooling_rate",
+  "hotend_heating_rate",
+  "imex_carriage_margin",
+  "imex_firmware_managed_zones",
+  "imex_gantry_count",
+  "imex_mode_active_tools",
+  "imex_mode_gcodes",
+  "imex_mode_names",
+  "imex_nozzle_clearance_x",
+  "imex_nozzle_clearance_y",
+  "imex_tool_layout",
+  "imex_tools_per_gantry",
+  "imex_viz_theme",
   "inherits",
   "input_shaping_damp_x",
   "input_shaping_damp_y",
@@ -56,9 +94,12 @@
   "input_shaping_freq_x",
   "input_shaping_freq_y",
   "input_shaping_type",
+  "is_imex",
   "layer_change_gcode",
   "long_retractions_when_cut",
+  "machine_bed_mass_Y",
   "machine_end_gcode",
+  "machine_hotend_change_time",
   "machine_load_filament_time",
   "machine_max_acceleration_e",
   "machine_max_acceleration_extruding",
@@ -67,11 +108,13 @@
   "machine_max_acceleration_x",
   "machine_max_acceleration_y",
   "machine_max_acceleration_z",
+  "machine_max_force_Y",
   "machine_max_jerk_e",
   "machine_max_jerk_x",
   "machine_max_jerk_y",
   "machine_max_jerk_z",
   "machine_max_junction_deviation",
+  "machine_max_printed_mass",
   "machine_max_speed_e",
   "machine_max_speed_x",
   "machine_max_speed_y",
@@ -79,6 +122,7 @@
   "machine_min_extruding_rate",
   "machine_min_travel_rate",
   "machine_pause_gcode",
+  "machine_prepare_compensation_time",
   "machine_start_gcode",
   "machine_tool_change_time",
   "machine_unload_filament_time",
@@ -110,6 +154,7 @@
   "printer_extruder_variant",
   "printer_model",
   "printer_notes",
+  "printer_plugin_config_overrides",
   "printer_structure",
   "printer_technology",
   "printer_variant",
@@ -123,6 +168,7 @@
   "printing_by_object_gcode",
   "purge_in_prime_tower",
   "resonance_avoidance",
+  "retract_after_wipe",
   "retract_before_wipe",
   "retract_length_toolchange",
   "retract_lift_above",
@@ -136,10 +182,11 @@
   "retraction_minimum_travel",
   "retraction_speed",
   "scan_first_layer",
-  "silent_mode",
   "single_extruder_multi_material",
   "support_air_filtration",
   "support_chamber_temp_control",
+  "support_cooling_filter",
+  "support_fast_purge_mode",
   "support_multi_bed_types",
   "support_object_skip_flush",
   "support_parallel_printheads",
@@ -154,6 +201,7 @@
   "use_3mf",
   "use_firmware_retraction",
   "use_relative_e_distances",
+  "wait_for_temp_on_wipe_tower",
   "wipe",
   "wipe_distance",
   "wipe_tower_type",
@@ -167,13 +215,21 @@
  "process": [
   "accel_to_decel_enable",
   "accel_to_decel_factor",
+  "adaptive_infill_gradient",
+  "adaptive_infill_interior_density",
+  "adaptive_infill_mode",
   "align_infill_direction_to_model",
   "alternate_extra_wall",
+  "belt_purge_tower_object",
+  "belt_purge_tower_width",
+  "bottom_color_penetration_layers",
+  "bottom_layer_direction",
   "bottom_shell_layers",
   "bottom_shell_thickness",
   "bottom_solid_infill_flow_ratio",
   "bottom_surface_density",
   "bottom_surface_filament_id",
+  "bottom_surface_fill_order",
   "bottom_surface_pattern",
   "bridge_acceleration",
   "bridge_angle",
@@ -184,12 +240,14 @@
   "bridge_speed",
   "brim_ears_detection_length",
   "brim_ears_max_angle",
+  "brim_ears_outer_only",
   "brim_flow_ratio",
   "brim_object_gap",
   "brim_type",
   "brim_use_efc_outline",
   "brim_width",
   "calib_flowrate_topinfill_special_order",
+  "center_of_surface_pattern",
   "combine_brims",
   "compatible_printers",
   "compatible_printers_condition",
@@ -207,6 +265,7 @@
   "elefant_foot_layers_density",
   "enable_arc_fitting",
   "enable_extra_bridge_layer",
+  "enable_mixed_color_sublayer",
   "enable_overhang_speed",
   "enable_prime_tower",
   "enable_support",
@@ -216,6 +275,8 @@
   "enforce_support_layers",
   "ensure_vertical_shell_thickness",
   "exclude_object",
+  "exclude_object_tolerance",
+  "extra_brim_width",
   "extra_perimeters_on_overhangs",
   "extra_solid_infills",
   "extrusion_rate_smoothing_external_perimeter_only",
@@ -245,14 +306,19 @@
   "gcode_comments",
   "gcode_label_objects",
   "gyroid_optimized",
+  "high_precision_gcode",
   "hole_to_polyhole",
+  "hole_to_polyhole_max_edges",
   "hole_to_polyhole_threshold",
   "hole_to_polyhole_twisted",
+  "imex_head_filament_map",
+  "imex_parallel_mode",
   "independent_support_layer_height",
   "infill_anchor",
   "infill_anchor_max",
   "infill_combination",
   "infill_combination_max_layer_height",
+  "infill_complete_top",
   "infill_direction",
   "infill_jerk",
   "infill_lock_depth",
@@ -306,6 +372,7 @@
   "lateral_lattice_angle_1",
   "lateral_lattice_angle_2",
   "layer_height",
+  "leading_brim_length",
   "lightning_overhang_angle",
   "lightning_prune_angle",
   "lightning_straightening_angle",
@@ -343,6 +410,7 @@
   "overhang_reverse",
   "overhang_reverse_internal_only",
   "overhang_reverse_threshold",
+  "plugins",
   "post_process",
   "precise_outer_wall",
   "precise_z_height",
@@ -359,6 +427,7 @@
   "print_extruder_variant",
   "print_flow_ratio",
   "print_order",
+  "print_plugin_config_overrides",
   "print_sequence",
   "process_change_extrusion_role_gcode",
   "raft_contact_distance",
@@ -384,6 +453,7 @@
   "seam_slope_start_height",
   "seam_slope_steps",
   "seam_slope_type",
+  "separated_infills",
   "set_other_flow_ratios",
   "single_extruder_multi_material_priming",
   "single_loop_draft_shield",
@@ -400,12 +470,15 @@
   "skirt_type",
   "slice_closing_radius",
   "slicing_mode",
+  "slicing_pipeline_plugin",
   "slow_down_layers",
   "slowdown_for_curled_perimeters",
   "small_area_infill_flow_compensation",
   "small_area_infill_flow_compensation_model",
   "small_perimeter_speed",
   "small_perimeter_threshold",
+  "small_support_perimeter_speed",
+  "small_support_perimeter_threshold",
   "solid_infill_direction",
   "solid_infill_rotate_template",
   "sparse_infill_acceleration",
@@ -415,6 +488,7 @@
   "sparse_infill_line_width",
   "sparse_infill_pattern",
   "sparse_infill_rotate_template",
+  "sparse_infill_smooth_factor",
   "sparse_infill_speed",
   "spiral_finishing_flow_ratio",
   "spiral_mode",
@@ -460,13 +534,22 @@
   "thick_bridges",
   "thick_internal_bridges",
   "timelapse_type",
+  "toolchange_cyclic_first_layer",
+  "toolchange_cyclic_order",
+  "toolchange_ordering",
   "top_bottom_infill_wall_overlap",
+  "top_color_penetration_layers",
+  "top_layer_direction",
   "top_shell_layers",
   "top_shell_thickness",
   "top_solid_infill_flow_ratio",
   "top_surface_acceleration",
   "top_surface_density",
+  "top_surface_expansion",
+  "top_surface_expansion_direction",
+  "top_surface_expansion_margin",
   "top_surface_filament_id",
+  "top_surface_fill_order",
   "top_surface_jerk",
   "top_surface_line_width",
   "top_surface_pattern",
@@ -488,6 +571,7 @@
   "tree_support_tip_diameter",
   "tree_support_top_rate",
   "tree_support_wall_count",
+  "unsupported_wall_last",
   "wall_direction",
   "wall_distribution_count",
   "wall_generator",
@@ -499,6 +583,8 @@
   "wall_transition_filter_deviation",
   "wall_transition_length",
   "wipe_before_external_loop",
+  "wipe_inward",
+  "wipe_inward_distance",
   "wipe_on_loops",
   "wipe_speed",
   "wipe_tower_bridging",
@@ -512,6 +598,7 @@
   "wipe_tower_no_sparse_layers",
   "wipe_tower_rib_width",
   "wipe_tower_rotation_angle",
+  "wipe_tower_sparse_layers_combination",
   "wipe_tower_wall_type",
   "wiping_volumes_extruders",
   "xy_contour_compensation",
@@ -557,6 +644,7 @@
   "filament_adhesiveness_category",
   "filament_change_extrusion_role_gcode",
   "filament_change_length",
+  "filament_change_length_nc",
   "filament_cooling_before_tower",
   "filament_cooling_final_speed",
   "filament_cooling_initial_speed",
@@ -564,11 +652,21 @@
   "filament_cost",
   "filament_density",
   "filament_deretraction_speed",
+  "filament_dev_ams_drying_ams_limitations",
+  "filament_dev_ams_drying_heat_distortion_temperature",
+  "filament_dev_ams_drying_temperature",
+  "filament_dev_ams_drying_time",
+  "filament_dev_chamber_drying_bed_temperature",
+  "filament_dev_chamber_drying_time",
+  "filament_dev_drying_cooling_temperature",
+  "filament_dev_drying_softening_temperature",
   "filament_diameter",
   "filament_end_gcode",
+  "filament_extruder_compatibility",
   "filament_extruder_variant",
   "filament_flow_ratio",
   "filament_flush_temp",
+  "filament_flush_temp_fast",
   "filament_flush_volumetric_speed",
   "filament_ironing_flow",
   "filament_ironing_inset",
@@ -584,13 +682,27 @@
   "filament_multitool_ramming_flow",
   "filament_multitool_ramming_volume",
   "filament_notes",
+  "filament_plugin_config_overrides",
+  "filament_pre_cooling_temperature",
+  "filament_pre_cooling_temperature_nc",
+  "filament_preheat_temperature_delta",
+  "filament_prime_volume",
+  "filament_prime_volume_nc",
   "filament_printable",
   "filament_ramming_parameters",
+  "filament_ramming_travel_time",
+  "filament_ramming_travel_time_nc",
+  "filament_ramming_volumetric_speed",
+  "filament_ramming_volumetric_speed_nc",
+  "filament_retract_after_wipe",
   "filament_retract_before_wipe",
+  "filament_retract_length_nc",
+  "filament_retract_length_toolchange",
   "filament_retract_lift_above",
   "filament_retract_lift_below",
   "filament_retract_lift_enforce",
   "filament_retract_restart_extra",
+  "filament_retract_restart_extra_toolchange",
   "filament_retract_when_changing_layer",
   "filament_retraction_distances_when_cut",
   "filament_retraction_length",
@@ -622,6 +734,7 @@
   "hot_plate_temp_initial_layer",
   "idle_temperature",
   "inherits",
+  "initial_layer_fan_speed",
   "internal_bridge_fan_speed",
   "ironing_fan_speed",
   "long_retractions_when_ec",
@@ -764,6 +877,69 @@
    "unit": "mm",
    "default": {
     "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "adaptive_infill_gradient": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "exponential",
+    "linear",
+    "quadratic"
+   ],
+   "default": {
+    "value": "linear",
+    "source": "native_definition"
+   }
+  },
+  "adaptive_infill_interior_density": {
+   "status": "source_literal",
+   "native_type": "coPercent",
+   "type": "percent",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "%",
+   "minimum": 1,
+   "maximum": 100,
+   "default": {
+    "value": 5,
+    "source": "native_definition"
+   }
+  },
+  "adaptive_infill_mode": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "disabled",
+    "distance_warp",
+    "lobes",
+    "normal_x",
+    "normal_y",
+    "normal_z",
+    "smooth_blend",
+    "stepped_shells"
+   ],
+   "default": {
+    "value": "disabled",
     "source": "native_definition"
    }
   },
@@ -982,6 +1158,39 @@
     "source": "native_definition"
    }
   },
+  "bed_exclude_volume_mode": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "per_extruder",
+    "shared",
+    "toolhead_offset"
+   ],
+   "default": {
+    "value": "shared",
+    "source": "native_definition"
+   }
+  },
+  "bed_exclude_volumes": {
+   "status": "source_literal",
+   "native_type": "coString",
+   "type": "string",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ],
+   "gui_type": "one_string"
+  },
   "bed_mesh_max": {
    "status": "source_literal",
    "native_type": "coPoint",
@@ -1053,6 +1262,156 @@
     "nullable"
    ]
   },
+  "belt_frame_tilt_angle": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "choices",
+    "default",
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -89.9,
+   "maximum": 89.9
+  },
+  "belt_frame_tilt_decouple": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "belt_printer": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "belt_printer_infinite_y": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": true,
+    "source": "native_definition"
+   }
+  },
+  "belt_purge_tower_object": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "belt_purge_tower_width": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 1,
+   "default": {
+    "value": 35,
+    "source": "native_definition"
+   }
+  },
+  "belt_slice_rotation": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "none",
+    "x",
+    "y",
+    "z"
+   ],
+   "default": {
+    "value": "x",
+    "source": "native_definition"
+   }
+  },
+  "belt_slice_rotation_angle": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -180,
+   "maximum": 180,
+   "default": {
+    "value": 45,
+    "source": "native_definition"
+   }
+  },
+  "belt_support_floor_offset": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": -500,
+   "maximum": 500,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "best_object_pos": {
    "status": "source_literal",
    "native_type": "coPoint",
@@ -1064,6 +1423,41 @@
     "default",
     "nullable"
    ]
+  },
+  "bottom_color_penetration_layers": {
+   "status": "source_literal",
+   "native_type": "coInt",
+   "type": "integer",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "layers",
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "bottom_layer_direction": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -1,
+   "maximum": 360,
+   "default": {
+    "value": -1,
+    "source": "native_definition"
+   }
   },
   "bottom_shell_layers": {
    "status": "source_literal",
@@ -1151,6 +1545,26 @@
     "source": "native_definition"
    }
   },
+  "bottom_surface_fill_order": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "default",
+    "inward",
+    "outward"
+   ],
+   "default": {
+    "value": "default",
+    "source": "native_definition"
+   }
+  },
   "bottom_surface_pattern": {
    "status": "source_literal",
    "native_type": "coEnum",
@@ -1184,6 +1598,7 @@
     "octagramspiral",
     "quartercubic",
     "rectilinear",
+    "spiralinset",
     "supportcubic",
     "tpmsd",
     "tpmsfk",
@@ -1198,24 +1613,18 @@
   },
   "bridge_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2 or %",
    "minimum": 0,
    "ratio_over": "outer_wall_acceleration",
-   "default": {
-    "value": {
-     "value": 50,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "bridge_angle": {
    "status": "source_literal",
@@ -1309,20 +1718,17 @@
   },
   "bridge_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 25,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "brim_ears_detection_length": {
    "status": "source_literal",
@@ -1356,6 +1762,21 @@
    "maximum": 180,
    "default": {
     "value": 125,
+    "source": "native_definition"
+   }
+  },
+  "brim_ears_outer_only": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -1408,6 +1829,7 @@
     "auto_brim",
     "brim_ears",
     "inner_only",
+    "leading_edge_only",
     "no_brim",
     "outer_and_inner",
     "outer_only",
@@ -1451,6 +1873,42 @@
     "source": "native_definition"
    }
   },
+  "build_plate_tilt_x": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -89,
+   "maximum": 89,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "build_plate_tilt_y": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -89,
+   "maximum": 89,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "calib_flowrate_topinfill_special_order": {
    "status": "source_literal",
    "native_type": "coBool",
@@ -1463,6 +1921,26 @@
    ],
    "default": {
     "value": false,
+    "source": "native_definition"
+   }
+  },
+  "center_of_surface_pattern": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "each_assembly",
+    "each_model",
+    "each_surface"
+   ],
+   "default": {
+    "value": "each_surface",
     "source": "native_definition"
    }
   },
@@ -1693,6 +2171,21 @@
     "source": "native_definition"
    }
   },
+  "cooling_filter_enabled": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "cooling_tube_length": {
    "status": "source_literal",
    "native_type": "coFloat",
@@ -1749,20 +2242,17 @@
   },
   "default_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2",
    "minimum": 0,
-   "default": {
-    "value": 500,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "default_bed_type": {
    "status": "source_literal",
@@ -1808,38 +2298,32 @@
   },
   "default_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 0,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "default_junction_deviation": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm",
    "minimum": 0,
    "maximum": 0.3,
-   "default": {
-    "value": 0,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "default_nozzle_volume_type": {
    "status": "source_literal",
@@ -1853,8 +2337,12 @@
     "nullable"
    ],
    "choices": [
+    "E3D High Flow",
+    "Extra High Flow",
     "High Flow",
-    "Standard"
+    "Hybrid",
+    "Standard",
+    "TPU High Flow"
    ]
   },
   "default_print_profile": {
@@ -1868,6 +2356,19 @@
     "default",
     "nullable"
    ]
+  },
+  "deretract_speed_extruder_change": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm/s",
+   "nullable": true
   },
   "deretraction_speed": {
    "status": "source_literal",
@@ -2092,6 +2593,26 @@
   },
   "enable_arc_fitting": {
    "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "disabled",
+    "enabled",
+    "sparse_infill"
+   ],
+   "default": {
+    "value": "disabled",
+    "source": "native_definition"
+   }
+  },
+  "enable_belt_purge_tower": {
+   "status": "source_literal",
    "native_type": "coBool",
    "type": "boolean",
    "vector": false,
@@ -2101,7 +2622,7 @@
     "nullable"
    ],
    "default": {
-    "value": 0,
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -2156,6 +2677,21 @@
     "source": "native_definition"
    }
   },
+  "enable_mixed_color_sublayer": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "enable_overhang_bridge_fan": {
    "status": "source_literal",
    "native_type": "coBools",
@@ -2175,18 +2711,15 @@
   },
   "enable_overhang_speed": {
    "status": "source_literal",
-   "native_type": "coBool",
+   "native_type": "coBools",
    "type": "boolean",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
-   "default": {
-    "value": true,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "enable_power_loss_recovery": {
    "status": "source_literal",
@@ -2205,6 +2738,21 @@
    ],
    "default": {
     "value": "printer_configuration",
+    "source": "native_definition"
+   }
+  },
+  "enable_pre_heating": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -2394,6 +2942,42 @@
     "source": "native_definition"
    }
   },
+  "exclude_object_tolerance": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "maximum": 5,
+   "default": {
+    "value": 0.1,
+    "source": "native_definition"
+   }
+  },
+  "extra_brim_width": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "maximum": 100,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "extra_loading_move": {
    "status": "source_literal",
    "native_type": "coFloat",
@@ -2436,6 +3020,41 @@
     "default",
     "nullable"
    ]
+  },
+  "extruder_bed_exclude_volumes": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "gui_type": "one_string",
+   "default": {
+    "value": [
+     ""
+    ],
+    "source": "native_definition"
+   }
+  },
+  "extruder_clearance_dist_to_rod": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "default": {
+    "value": 40,
+    "source": "native_definition"
+   }
   },
   "extruder_clearance_height_to_lid": {
    "status": "source_literal",
@@ -2505,6 +3124,18 @@
     ],
     "source": "native_definition"
    }
+  },
+  "extruder_max_nozzle_count": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "nullable": true
   },
   "extruder_offset": {
    "status": "source_literal",
@@ -2611,15 +3242,36 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "maximum": 1000,
    "default": {
     "value": [
      60
     ],
+    "source": "native_definition"
+   }
+  },
+  "fan_direction": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "both",
+    "left",
+    "right",
+    "undefine"
+   ],
+   "default": {
+    "value": "undefine",
     "source": "native_definition"
    }
   },
@@ -2631,9 +3283,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "default": {
     "value": 0,
@@ -2703,11 +3355,26 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "default": {
     "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "farthest_point_timelapse": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -2759,6 +3426,25 @@
    }
   },
   "filament_change_length": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "default": {
+    "value": [
+     10
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_change_length_nc": {
    "status": "source_literal",
    "native_type": "coFloats",
    "type": "number",
@@ -2890,6 +3576,142 @@
    "applicability": "unknown",
    "reason": "dynamic_or_missing_definition"
   },
+  "filament_dev_ams_drying_ams_limitations": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     ""
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_ams_drying_heat_distortion_temperature": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_ams_drying_temperature": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_ams_drying_time": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_chamber_drying_bed_temperature": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_chamber_drying_time": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_drying_cooling_temperature": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_dev_drying_softening_temperature": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
   "filament_diameter": {
    "status": "source_literal",
    "native_type": "coFloats",
@@ -2926,6 +3748,23 @@
     "source": "native_definition"
    }
   },
+  "filament_extruder_compatibility": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": [
+     0
+    ],
+    "source": "native_definition"
+   }
+  },
   "filament_extruder_variant": {
    "status": "source_literal",
    "native_type": "coStrings",
@@ -2958,6 +3797,21 @@
    "nullable": true
   },
   "filament_flush_temp": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "maximum",
+    "unit"
+   ],
+   "nullable": true,
+   "minimum": 0
+  },
+  "filament_flush_temp_fast": {
    "status": "source_literal",
    "native_type": "coInts",
    "type": "integer",
@@ -3216,6 +4070,90 @@
     "source": "native_definition"
    }
   },
+  "filament_plugin_config_overrides": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "filament_pre_cooling_temperature": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "unit"
+   ],
+   "minimum": 0,
+   "nullable": true
+  },
+  "filament_pre_cooling_temperature_nc": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "unit"
+   ],
+   "minimum": 0,
+   "nullable": true
+  },
+  "filament_preheat_temperature_delta": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "unit"
+   ],
+   "nullable": true
+  },
+  "filament_prime_volume": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm\u00b3",
+   "minimum": 1,
+   "default": {
+    "value": [
+     45
+    ],
+    "source": "native_definition"
+   }
+  },
+  "filament_prime_volume_nc": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm\u00b3",
+   "minimum": 1,
+   "default": {
+    "value": [
+     60
+    ],
+    "source": "native_definition"
+   }
+  },
   "filament_printable": {
    "status": "source_literal",
    "native_type": "coInts",
@@ -3245,7 +4183,90 @@
     "nullable"
    ]
   },
+  "filament_ramming_travel_time": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "s",
+   "minimum": 0,
+   "nullable": true
+  },
+  "filament_ramming_travel_time_nc": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "s",
+   "minimum": 0,
+   "nullable": true
+  },
+  "filament_ramming_volumetric_speed": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm\u00b3/s",
+   "minimum": -1,
+   "maximum": 200,
+   "nullable": true
+  },
+  "filament_ramming_volumetric_speed_nc": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm\u00b3/s",
+   "minimum": -1,
+   "maximum": 200,
+   "nullable": true
+  },
+  "filament_retract_after_wipe": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
   "filament_retract_before_wipe": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "filament_retract_length_nc": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm",
+   "nullable": true,
+   "minimum": 0,
+   "maximum": 18
+  },
+  "filament_retract_length_toolchange": {
    "status": "unknown",
    "applicability": "unknown",
    "reason": "dynamic_or_missing_definition"
@@ -3266,6 +4287,11 @@
    "reason": "dynamic_or_missing_definition"
   },
   "filament_retract_restart_extra": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "filament_retract_restart_extra_toolchange": {
    "status": "unknown",
    "applicability": "unknown",
    "reason": "dynamic_or_missing_definition"
@@ -3415,9 +4441,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "default": {
     "value": [
@@ -3949,11 +4975,11 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable",
-    "unit"
+    "nullable"
    ],
    "minimum": 0,
    "maximum": 100,
+   "unit": "%",
    "default": {
     "value": 50,
     "source": "native_definition"
@@ -4050,20 +5076,17 @@
   },
   "gap_infill_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 30,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "gcode_add_line_number": {
    "status": "source_literal",
@@ -4140,6 +5163,36 @@
     "source": "native_definition"
    }
   },
+  "gcode_remap_x": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "gcode_remap_y": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "gcode_remap_z": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
+  "gcode_skip_config_block": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "grab_length": {
    "status": "source_literal",
    "native_type": "coFloats",
@@ -4156,6 +5209,21 @@
     "value": [
      0
     ],
+    "source": "native_definition"
+   }
+  },
+  "group_algo_with_time": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -4201,6 +5269,21 @@
     "source": "native_definition"
    }
   },
+  "high_precision_gcode": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "hole_to_polyhole": {
    "status": "source_literal",
    "native_type": "coBool",
@@ -4213,6 +5296,22 @@
    ],
    "default": {
     "value": false,
+    "source": "native_definition"
+   }
+  },
+  "hole_to_polyhole_max_edges": {
+   "status": "source_literal",
+   "native_type": "coInt",
+   "type": "integer",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "minimum": 3,
+   "default": {
+    "value": 50,
     "source": "native_definition"
    }
   },
@@ -4276,7 +5375,8 @@
     "prusaconnect",
     "prusalink",
     "repetier",
-    "simplyprint"
+    "simplyprint",
+    "ultimaker"
    ],
    "default": {
     "value": "octoprint",
@@ -4322,6 +5422,30 @@
     "source": "native_definition"
    }
   },
+  "hotend_cooling_rate": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "nullable": true
+  },
+  "hotend_heating_rate": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "nullable": true
+  },
   "idle_temperature": {
    "status": "source_literal",
    "native_type": "coInts",
@@ -4339,6 +5463,215 @@
     "value": [
      0
     ],
+    "source": "native_definition"
+   }
+  },
+  "imex_carriage_margin": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "maximum": 200,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "imex_firmware_managed_zones": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "imex_gantry_count": {
+   "status": "source_literal",
+   "native_type": "coInt",
+   "type": "integer",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "minimum": 1,
+   "maximum": 2,
+   "default": {
+    "value": 1,
+    "source": "native_definition"
+   }
+  },
+  "imex_head_filament_map": {
+   "status": "source_literal",
+   "native_type": "coString",
+   "type": "string",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": "",
+    "source": "native_definition"
+   }
+  },
+  "imex_mode_active_tools": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ]
+  },
+  "imex_mode_gcodes": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ]
+  },
+  "imex_mode_names": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ]
+  },
+  "imex_nozzle_clearance_x": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "default": {
+    "value": 30,
+    "source": "native_definition"
+   }
+  },
+  "imex_nozzle_clearance_y": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "default": {
+    "value": 30,
+    "source": "native_definition"
+   }
+  },
+  "imex_parallel_mode": {
+   "status": "source_literal",
+   "native_type": "coString",
+   "type": "string",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": "primary",
+    "source": "native_definition"
+   }
+  },
+  "imex_tool_layout": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "front-left",
+    "front-right",
+    "rear-left",
+    "rear-right"
+   ],
+   "default": {
+    "value": "front-left",
+    "source": "native_definition"
+   }
+  },
+  "imex_tools_per_gantry": {
+   "status": "source_literal",
+   "native_type": "coInt",
+   "type": "integer",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "minimum": 1,
+   "maximum": 4,
+   "default": {
+    "value": 2,
+    "source": "native_definition"
+   }
+  },
+  "imex_viz_theme": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "deuteranopia",
+    "high_contrast",
+    "standard",
+    "tritanopia"
+   ],
+   "default": {
+    "value": "standard",
     "source": "native_definition"
    }
   },
@@ -4418,6 +5751,21 @@
     "source": "native_definition"
    }
   },
+  "infill_complete_top": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "infill_direction": {
    "status": "source_literal",
    "native_type": "coFloat",
@@ -4438,20 +5786,17 @@
   },
   "infill_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 9,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "infill_lock_depth": {
    "status": "source_literal",
@@ -4538,54 +5883,65 @@
   },
   "initial_layer_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm/s\u00b2",
+   "minimum": 0,
+   "nullable": true
+  },
+  "initial_layer_fan_speed": {
+   "status": "source_literal",
+   "native_type": "coInts",
+   "type": "integer",
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
     "nullable"
    ],
-   "unit": "mm/s\u00b2",
-   "minimum": 0,
+   "unit": "%",
+   "minimum": -1,
+   "maximum": 100,
    "default": {
-    "value": 300,
+    "value": [
+     -1
+    ],
     "source": "native_definition"
    }
   },
   "initial_layer_infill_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 60,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "initial_layer_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 9,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "initial_layer_line_width": {
    "status": "source_literal",
@@ -4645,100 +6001,76 @@
   },
   "initial_layer_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 30,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "initial_layer_travel_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2 or %",
    "minimum": 0,
    "ratio_over": "travel_acceleration",
-   "default": {
-    "value": {
-     "value": 100,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "initial_layer_travel_jerk": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "minimum": 0,
    "ratio_over": "travel_jerk",
-   "default": {
-    "value": {
-     "value": 100,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "initial_layer_travel_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "travel_speed",
    "minimum": 1,
-   "default": {
-    "value": {
-     "value": 100,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "inner_wall_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2",
    "minimum": 0,
-   "default": {
-    "value": 10000,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "inner_wall_filament_id": {
    "status": "source_literal",
@@ -4776,20 +6108,17 @@
   },
   "inner_wall_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 9,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "inner_wall_line_width": {
    "status": "source_literal",
@@ -4815,20 +6144,17 @@
   },
   "inner_wall_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 60,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "input_shaping_damp_x": {
    "status": "source_literal",
@@ -5133,24 +6459,18 @@
   },
   "internal_bridge_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "bridge_speed",
    "minimum": 1,
-   "default": {
-    "value": {
-     "value": 150,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "internal_solid_filament_id": {
    "status": "source_literal",
@@ -5171,24 +6491,18 @@
   },
   "internal_solid_infill_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2 or %",
    "minimum": 0,
    "ratio_over": "default_acceleration",
-   "default": {
-    "value": {
-     "value": 100,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "internal_solid_infill_flow_ratio": {
    "status": "source_literal",
@@ -5262,6 +6576,7 @@
     "octagramspiral",
     "quartercubic",
     "rectilinear",
+    "spiralinset",
     "supportcubic",
     "tpmsd",
     "tpmsfk",
@@ -5276,20 +6591,17 @@
   },
   "internal_solid_infill_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 100,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "ironing_angle": {
    "status": "source_literal",
@@ -5432,6 +6744,7 @@
     "octagramspiral",
     "quartercubic",
     "rectilinear",
+    "spiralinset",
     "supportcubic",
     "tpmsd",
     "tpmsfk",
@@ -5497,6 +6810,21 @@
    ],
    "default": {
     "value": "no ironing",
+    "source": "native_definition"
+   }
+  },
+  "is_imex": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -5576,6 +6904,24 @@
    ],
    "unit": "mm",
    "minimum": 0
+  },
+  "leading_brim_length": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "maximum": 100,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
   },
   "lightning_overhang_angle": {
    "status": "source_literal",
@@ -5682,6 +7028,23 @@
    ],
    "nullable": true
   },
+  "machine_bed_mass_Y": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable",
+    "unit"
+   ],
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "machine_end_gcode": {
    "status": "source_literal",
    "native_type": "coString",
@@ -5697,6 +7060,23 @@
     "source": "native_definition"
    }
   },
+  "machine_hotend_change_time": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable",
+    "unit"
+   ],
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "machine_load_filament_time": {
    "status": "source_literal",
    "native_type": "coFloat",
@@ -5705,9 +7085,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "default": {
     "value": 0,
@@ -5794,6 +7174,23 @@
    "applicability": "unknown",
    "reason": "dynamic_or_missing_definition"
   },
+  "machine_max_force_Y": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable",
+    "unit"
+   ],
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
   "machine_max_jerk_e": {
    "status": "unknown",
    "applicability": "unknown",
@@ -5831,6 +7228,23 @@
     "value": [
      0.01
     ],
+    "source": "native_definition"
+   }
+  },
+  "machine_max_printed_mass": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable",
+    "unit"
+   ],
+   "minimum": 0,
+   "default": {
+    "value": 0,
     "source": "native_definition"
    }
   },
@@ -5906,6 +7320,21 @@
     "nullable"
    ]
   },
+  "machine_prepare_compensation_time": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": 260,
+    "source": "native_definition"
+   }
+  },
   "machine_start_gcode": {
    "status": "source_literal",
    "native_type": "coString",
@@ -5929,9 +7358,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "default": {
     "value": 0,
@@ -5946,9 +7375,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "default": {
     "value": 0,
@@ -6206,7 +7635,6 @@
    "unknown_fields": [
     "nullable"
    ],
-   "unit": "mm",
    "minimum": 0,
    "maximum": 25,
    "default": {
@@ -6557,20 +7985,17 @@
   },
   "outer_wall_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2",
    "minimum": 0,
-   "default": {
-    "value": 500,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "outer_wall_filament_id": {
    "status": "source_literal",
@@ -6608,20 +8033,17 @@
   },
   "outer_wall_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 9,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "outer_wall_line_width": {
    "status": "source_literal",
@@ -6647,104 +8069,77 @@
   },
   "outer_wall_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 60,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "overhang_1_4_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "outer_wall_speed",
    "minimum": 0,
-   "default": {
-    "value": {
-     "value": 0,
-     "percent": false
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "overhang_2_4_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "outer_wall_speed",
    "minimum": 0,
-   "default": {
-    "value": {
-     "value": 0,
-     "percent": false
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "overhang_3_4_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "outer_wall_speed",
    "minimum": 0,
-   "default": {
-    "value": {
-     "value": 0,
-     "percent": false
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "overhang_4_4_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "outer_wall_speed",
    "minimum": 0,
-   "default": {
-    "value": {
-     "value": 0,
-     "percent": false
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "overhang_fan_speed": {
    "status": "source_literal",
@@ -6968,6 +8363,18 @@
     "source": "native_definition"
    }
   },
+  "plugins": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ]
+  },
   "post_process": {
    "status": "source_literal",
    "native_type": "coStrings",
@@ -7053,9 +8460,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "maximum": 120,
    "default": {
@@ -7285,12 +8692,19 @@
    ],
    "choices": [
     "as_obj_list",
-    "default"
+    "best_of",
+    "default",
+    "snake"
    ],
    "default": {
     "value": "default",
     "source": "native_definition"
    }
+  },
+  "print_plugin_config_overrides": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
   },
   "print_sequence": {
    "status": "source_literal",
@@ -7433,6 +8847,11 @@
     "default",
     "nullable"
    ]
+  },
+  "printer_plugin_config_overrides": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
   },
   "printer_structure": {
    "status": "source_literal",
@@ -7812,6 +9231,24 @@
    ],
    "default": {
     "value": false,
+    "source": "native_definition"
+   }
+  },
+  "retract_after_wipe": {
+   "status": "source_literal",
+   "native_type": "coPercents",
+   "type": "percent",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "%",
+   "default": {
+    "value": [
+     0
+    ],
     "source": "native_definition"
    }
   },
@@ -8283,7 +9720,7 @@
     "source": "native_definition"
    }
   },
-  "set_other_flow_ratios": {
+  "separated_infills": {
    "status": "source_literal",
    "native_type": "coBool",
    "type": "boolean",
@@ -8298,7 +9735,7 @@
     "source": "native_definition"
    }
   },
-  "silent_mode": {
+  "set_other_flow_ratios": {
    "status": "source_literal",
    "native_type": "coBool",
    "type": "boolean",
@@ -8597,6 +10034,19 @@
     "source": "native_definition"
    }
   },
+  "slicing_pipeline_plugin": {
+   "status": "source_literal",
+   "native_type": "coStrings",
+   "type": "string",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "gui_type",
+    "nullable"
+   ]
+  },
   "slow_down_for_layer_cooling": {
    "status": "source_literal",
    "native_type": "coBools",
@@ -8622,9 +10072,9 @@
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "nullable",
+    "unit"
    ],
-   "unit": "s",
    "minimum": 0,
    "maximum": 1000,
    "default": {
@@ -8672,18 +10122,15 @@
   },
   "slowdown_for_curled_perimeters": {
    "status": "source_literal",
-   "native_type": "coBool",
+   "native_type": "coBools",
    "type": "boolean",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
-   "default": {
-    "value": false,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "small_area_infill_flow_compensation": {
    "status": "source_literal",
@@ -8728,41 +10175,61 @@
   },
   "small_perimeter_speed": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s or %",
    "ratio_over": "outer_wall_speed",
    "minimum": 1,
-   "default": {
-    "value": {
-     "value": 50,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "small_perimeter_threshold": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm",
    "minimum": 0,
-   "default": {
-    "value": 0,
-    "source": "native_definition"
-   }
+   "nullable": true
+  },
+  "small_support_perimeter_speed": {
+   "status": "source_literal",
+   "native_type": "coFloatsOrPercents",
+   "type": "number_or_percent",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ],
+   "unit": "mm/s or %",
+   "ratio_over": "support_speed",
+   "minimum": 1
+  },
+  "small_support_perimeter_threshold": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default",
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0
   },
   "solid_infill_direction": {
    "status": "source_literal",
@@ -8800,24 +10267,18 @@
   },
   "sparse_infill_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloatOrPercent",
+   "native_type": "coFloatsOrPercents",
    "type": "number_or_percent",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2 or %",
    "minimum": 0,
    "ratio_over": "default_acceleration",
-   "default": {
-    "value": {
-     "value": 100,
-     "percent": true
-    },
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "sparse_infill_density": {
    "status": "source_literal",
@@ -8926,6 +10387,7 @@
     "octagramspiral",
     "quartercubic",
     "rectilinear",
+    "spiralinset",
     "supportcubic",
     "tpmsd",
     "tpmsfk",
@@ -8954,22 +10416,37 @@
     "source": "native_definition"
    }
   },
-  "sparse_infill_speed": {
+  "sparse_infill_smooth_factor": {
    "status": "source_literal",
-   "native_type": "coFloat",
-   "type": "number",
+   "native_type": "coPercent",
+   "type": "percent",
    "vector": false,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
     "nullable"
    ],
-   "unit": "mm/s",
-   "minimum": 1,
+   "unit": "%",
+   "minimum": 0,
+   "maximum": 100,
    "default": {
-    "value": 100,
+    "value": 0,
     "source": "native_definition"
    }
+  },
+  "sparse_infill_speed": {
+   "status": "source_literal",
+   "native_type": "coFloats",
+   "type": "number",
+   "vector": true,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "default"
+   ],
+   "unit": "mm/s",
+   "minimum": 1,
+   "nullable": true
   },
   "spiral_finishing_flow_ratio": {
    "status": "source_literal",
@@ -9252,6 +10729,21 @@
     "source": "native_definition"
    }
   },
+  "support_cooling_filter": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "support_critical_regions_only": {
    "status": "source_literal",
    "native_type": "coBool",
@@ -9280,6 +10772,21 @@
    "unit": "mm",
    "default": {
     "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "support_fast_purge_mode": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -9417,7 +10924,8 @@
     "concentric",
     "grid",
     "rectilinear",
-    "rectilinear_interlaced"
+    "rectilinear_interlaced",
+    "spiralinset"
    ],
    "default": {
     "value": "auto",
@@ -9443,20 +10951,17 @@
   },
   "support_interface_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 80,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "support_interface_top_layers": {
    "status": "unknown",
@@ -9530,6 +11035,7 @@
     "octagramspiral",
     "quartercubic",
     "rectilinear",
+    "spiralinset",
     "supportcubic",
     "tpmsd",
     "tpmsfk",
@@ -9715,20 +11221,17 @@
   },
   "support_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 80,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "support_style": {
    "status": "source_literal",
@@ -10087,6 +11590,55 @@
     "source": "native_definition"
    }
   },
+  "toolchange_cyclic_first_layer": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "toolchange_cyclic_order": {
+   "status": "source_literal",
+   "native_type": "coString",
+   "type": "string",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": "",
+    "source": "native_definition"
+   }
+  },
+  "toolchange_ordering": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "cyclic",
+    "default"
+   ],
+   "default": {
+    "value": "default",
+    "source": "native_definition"
+   }
+  },
   "top_bottom_infill_wall_overlap": {
    "status": "source_literal",
    "native_type": "coPercent",
@@ -10101,6 +11653,41 @@
    "ratio_over": "inner_wall_line_width",
    "default": {
     "value": 25,
+    "source": "native_definition"
+   }
+  },
+  "top_color_penetration_layers": {
+   "status": "source_literal",
+   "native_type": "coInt",
+   "type": "integer",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "layers",
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "top_layer_direction": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "\u00b0",
+   "minimum": -1,
+   "maximum": 360,
+   "default": {
+    "value": -1,
     "source": "native_definition"
    }
   },
@@ -10140,37 +11727,31 @@
   },
   "top_solid_infill_flow_ratio": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "minimum": 0,
    "maximum": 2,
-   "default": {
-    "value": 1,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "top_surface_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2",
    "minimum": 0,
-   "default": {
-    "value": 500,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "top_surface_density": {
    "status": "source_literal",
@@ -10187,6 +11768,61 @@
    "maximum": 100,
    "default": {
     "value": 100,
+    "source": "native_definition"
+   }
+  },
+  "top_surface_expansion": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "default": {
+    "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "top_surface_expansion_direction": {
+   "status": "source_literal",
+   "native_type": "coEnum",
+   "type": "enum",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "choices": [
+    "inward",
+    "inward_and_outward",
+    "outward"
+   ],
+   "default": {
+    "value": "inward_and_outward",
+    "source": "native_definition"
+   }
+  },
+  "top_surface_expansion_margin": {
+   "status": "source_literal",
+   "native_type": "coFloat",
+   "type": "number",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm",
+   "minimum": 0,
+   "maximum": 10,
+   "default": {
+    "value": 0,
     "source": "native_definition"
    }
   },
@@ -10207,22 +11843,24 @@
     "source": "native_definition"
    }
   },
+  "top_surface_fill_order": {
+   "status": "unknown",
+   "applicability": "unknown",
+   "reason": "dynamic_or_missing_definition"
+  },
   "top_surface_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
+   "nullable": true,
    "unit": "mm/s",
-   "minimum": 0,
-   "default": {
-    "value": 9,
-    "source": "native_definition"
-   }
+   "minimum": 0
   },
   "top_surface_line_width": {
    "status": "source_literal",
@@ -10253,54 +11891,45 @@
   },
   "top_surface_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 100,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "travel_acceleration": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s\u00b2",
    "minimum": 0,
-   "default": {
-    "value": 10000,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "travel_jerk": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 12,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "travel_slope": {
    "status": "source_literal",
@@ -10324,37 +11953,31 @@
   },
   "travel_speed": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 1,
-   "default": {
-    "value": 120,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "travel_speed_z": {
    "status": "source_literal",
-   "native_type": "coFloat",
+   "native_type": "coFloats",
    "type": "number",
-   "vector": false,
+   "vector": true,
    "source": "src/libslic3r/PrintConfig.cpp",
    "applicability": "unknown",
    "unknown_fields": [
-    "nullable"
+    "default"
    ],
    "unit": "mm/s",
    "minimum": 0,
-   "default": {
-    "value": 0,
-    "source": "native_definition"
-   }
+   "nullable": true
   },
   "tree_support_angle_slow": {
    "status": "source_literal",
@@ -10583,6 +12206,21 @@
     "source": "native_definition"
    }
   },
+  "unsupported_wall_last": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
   "upward_compatible_machine": {
    "status": "source_literal",
    "native_type": "coStrings",
@@ -10654,6 +12292,21 @@
     "value": [
      ""
     ],
+    "source": "native_definition"
+   }
+  },
+  "wait_for_temp_on_wipe_tower": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },
@@ -10887,6 +12540,43 @@
     "source": "native_definition"
    }
   },
+  "wipe_inward": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
+    "source": "native_definition"
+   }
+  },
+  "wipe_inward_distance": {
+   "status": "source_literal",
+   "native_type": "coFloatOrPercent",
+   "type": "number_or_percent",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "unit": "mm or %",
+   "ratio_over": "outer_wall_line_width",
+   "minimum": 0,
+   "maximum": 100,
+   "default": {
+    "value": {
+     "value": 50,
+     "percent": true
+    },
+    "source": "native_definition"
+   }
+  },
   "wipe_on_loops": {
    "status": "source_literal",
    "native_type": "coBool",
@@ -11105,6 +12795,21 @@
    "unit": "\u00b0",
    "default": {
     "value": 0,
+    "source": "native_definition"
+   }
+  },
+  "wipe_tower_sparse_layers_combination": {
+   "status": "source_literal",
+   "native_type": "coBool",
+   "type": "boolean",
+   "vector": false,
+   "source": "src/libslic3r/PrintConfig.cpp",
+   "applicability": "unknown",
+   "unknown_fields": [
+    "nullable"
+   ],
+   "default": {
+    "value": false,
     "source": "native_definition"
    }
   },

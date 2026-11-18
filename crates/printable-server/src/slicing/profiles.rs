@@ -129,17 +129,21 @@ const IDENTITY: &[&str] = &[
     "compatible_prints_condition",
 ];
 
-/// Settings slicing never needs: printer upload connections and credentials,
-/// post-processing programs, and files read from the slicer host.
+/// Settings that callers cannot use to configure host files, printer connections,
+/// post-processing programs, or OrcaSlicer plugins.
 const UNAVAILABLE: &[&str] = &[
     "bbl_use_printhost",
     "bed_custom_model",
     "bed_custom_texture",
+    "filament_plugin_config_overrides",
     "host_type",
+    "plugins",
     "post_process",
     "print_host",
     "print_host_webui",
+    "print_plugin_config_overrides",
     "printer_agent",
+    "printer_plugin_config_overrides",
     "printhost_apikey",
     "printhost_authorization_type",
     "printhost_cafile",
@@ -147,6 +151,7 @@ const UNAVAILABLE: &[&str] = &[
     "printhost_port",
     "printhost_ssl_ignore_revoke",
     "printhost_user",
+    "slicing_pipeline_plugin",
 ];
 
 fn refusal(key: &str) -> Option<&'static str> {
@@ -154,7 +159,7 @@ fn refusal(key: &str) -> Option<&'static str> {
         Some("profile identity and compatibility require selecting the matching profile")
     } else if UNAVAILABLE.contains(&key) {
         Some(
-            "printer connection, post-processing and host file settings are not available for slicing",
+            "printer connection, post-processing, host file and plugin settings are not available for slicing",
         )
     } else {
         None
@@ -205,7 +210,7 @@ impl OrcaSettings {
 
 pub struct Profiles {
     entries: BTreeMap<Category, BTreeMap<String, Map<String, Value>>>,
-    /// Filament parents from Orca's shared filament library, used only to resolve inheritance.
+    /// Shared filament profiles used to resolve inheritance.
     library: BTreeMap<String, Map<String, Value>>,
     keys: BTreeMap<Category, BTreeSet<String>>,
     definitions: BTreeMap<String, super::definitions::Definition>,
@@ -244,12 +249,23 @@ fn load_category(
         if profile.get("type").and_then(Value::as_str) != Some(category.directory()) {
             continue;
         }
-        let name = profile
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("bundled profile has no name"))?
-            .to_owned();
-        if entries.insert(name, profile).is_some() {
+        let Some(name) = profile.get("name").and_then(Value::as_str) else {
+            // Orca places these non-preset resources beside its BBL filament presets.
+            if category == Category::Filament
+                && matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(
+                        "filament_id_map.json"
+                            | "filament_name_map.json"
+                            | "support_recommended_params.json"
+                    )
+                )
+            {
+                continue;
+            }
+            return Err(invalid("bundled profile has no name"));
+        };
+        if entries.insert(name.to_owned(), profile).is_some() {
             return Err(invalid("bundled profile names are ambiguous"));
         }
     }
@@ -318,6 +334,7 @@ impl Profiles {
 
     /// Loads a vendor profile directory, including its subfolders. Filament parents the
     /// vendor lacks are read from Orca's shared library beside it, when present.
+    /// Shared presets that explicitly list a vendor printer are selectable too.
     pub fn load(root: &Path) -> Result<Self, ToolError> {
         let mut entries = BTreeMap::new();
         for category in [Category::Printer, Category::Process, Category::Filament] {
@@ -335,6 +352,29 @@ impl Profiles {
             Some(directory) if directory.is_dir() => load_category(&directory, Category::Filament)?,
             _ => BTreeMap::new(),
         };
+        let printers = &entries[&Category::Printer];
+        let shared_selections = library.iter().filter(|(_, profile)| {
+            profile.get("instantiation").and_then(Value::as_str) == Some("true")
+                && profile
+                    .get("compatible_printers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|names| {
+                        names.iter().filter_map(Value::as_str).any(|name| {
+                            printers.get(name).is_some_and(|printer| {
+                                printer.get("instantiation").and_then(Value::as_str) == Some("true")
+                            })
+                        })
+                    })
+        });
+        let shared_selections: Vec<_> = shared_selections.collect();
+        let filaments = entries
+            .get_mut(&Category::Filament)
+            .expect("filament category");
+        for (name, profile) in shared_selections {
+            filaments
+                .entry(name.clone())
+                .or_insert_with(|| profile.clone());
+        }
         let settings = OrcaSettings::bundled()?;
         let keys = BTreeMap::from([
             (Category::Printer, settings.printer),
@@ -660,6 +700,7 @@ mod tests {
                 "agent",
                 "post_process",
                 "bed_custom",
+                "plugin",
             ]
             .iter()
             .any(|part| key.contains(part))
@@ -786,6 +827,10 @@ mod tests {
             json!({"name":"fdm_filament_common","type":"filament","filament_type":["PLA"]}),
         );
         write_profile(
+            &vendor.join("filament/filament_id_map.json"),
+            json!({"type":"filament","GF01":"Bambu PLA Basic"}),
+        );
+        write_profile(
             &vendor.join("filament/Vendor/child.json"),
             json!({"name":"Vendor PLA @BBL X1C","type":"filament","inherits":"Vendor PLA @base",
                 "instantiation":"true","compatible_printers":["printer"]}),
@@ -803,6 +848,11 @@ mod tests {
             &library.join("generic.json"),
             json!({"name":"Generic PLA @System","type":"filament","instantiation":"true"}),
         );
+        write_profile(
+            &library.join("Vendor/selectable.json"),
+            json!({"name":"Shared PLA @printer","type":"filament","inherits":"Vendor PLA @base",
+                "compatible_printers":["printer"],"instantiation":"true"}),
+        );
         let profiles = Profiles::load(&vendor).unwrap();
         let child = ProfileSelection {
             name: "Vendor PLA @BBL X1C".into(),
@@ -819,8 +869,19 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        assert_eq!(found["total"], 1);
-        assert_eq!(found["profiles"][0]["name"], "Vendor PLA @BBL X1C");
+        assert_eq!(found["total"], 2);
+        assert_eq!(found["profiles"][0]["name"], "Shared PLA @printer");
+        assert_eq!(found["profiles"][1]["name"], "Vendor PLA @BBL X1C");
+        let shared = profiles
+            .resolve(
+                Category::Filament,
+                &ProfileSelection {
+                    name: "Shared PLA @printer".into(),
+                    overrides: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(shared["nozzle_temperature"], json!(["215"]));
         for name in ["Vendor PLA @base", "Generic PLA @System"] {
             let selection = ProfileSelection {
                 name: name.into(),
@@ -828,6 +889,11 @@ mod tests {
             };
             assert!(profiles.resolve(Category::Filament, &selection).is_err());
         }
+        write_profile(
+            &vendor.join("filament/broken.json"),
+            json!({"type":"filament"}),
+        );
+        assert!(Profiles::load(&vendor).is_err());
     }
 
     #[test]
@@ -878,6 +944,22 @@ mod tests {
                 "unknown process override",
             ),
             (Category::Process, "post_process", "not available"),
+            (
+                Category::Process,
+                "slicing_pipeline_plugin",
+                "not available",
+            ),
+            (Category::Process, "plugins", "not available"),
+            (
+                Category::Printer,
+                "printer_plugin_config_overrides",
+                "not available",
+            ),
+            (
+                Category::Filament,
+                "filament_plugin_config_overrides",
+                "not available",
+            ),
             (Category::Printer, "printhost_apikey", "not available"),
             (Category::Printer, "printer_technology", "identity"),
             (

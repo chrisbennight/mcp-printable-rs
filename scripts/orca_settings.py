@@ -4,7 +4,7 @@
 The slicer worker accepts profile overrides only for these names. Regenerate the
 list whenever the packaged Orca release changes:
 
-    python3 scripts/orca_settings.py ORCA_CHECKOUT --engine-version 2.4.2 \\
+    python3 scripts/orca_settings.py ORCA_CHECKOUT --engine-version 2.5.1 \\
         --source-revision FULL_COMMIT_SHA \\
         --output crates/printable-server/src/slicing/orca-settings.json
 """
@@ -84,7 +84,7 @@ def verify_source(root, revision):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("orca", type=Path, help="OrcaSlicer source checkout")
-    parser.add_argument("--engine-version", required=True, help="packaged Orca version, such as 2.4.2")
+    parser.add_argument("--engine-version", required=True, help="packaged Orca version, such as 2.5.1")
     parser.add_argument("--source-revision", required=True, help="full commit SHA of the checkout")
     parser.add_argument("--output", type=Path, required=True, help="JSON file to write")
     args = parser.parse_args(argv)

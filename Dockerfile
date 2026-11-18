@@ -91,21 +91,33 @@ RUN apt-get update && apt-get upgrade -y \
  && rm -rf /var/lib/apt/lists/*
 # Extracted modes depend on the AppImage runtime embedded in each build, so the
 # bundle is made readable and traversable for the unprivileged worker explicitly.
-# OrcaSlicer local-2.4.2-63c97a1.
+# OrcaSlicer local-2.5.1-6320f72.
 RUN curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
       --header 'Accept: application/octet-stream' \
-      --output /tmp/orca.AppImage https://api.github.com/repos/chrisbennight/OrcaSlicer/releases/assets/752504181 \
- && echo '00e1875000f8bd97f2e4395b592cb8fba6454726be0da15d64f7f20cc5d6ca77  /tmp/orca.AppImage' | sha256sum --check \
+      --output /tmp/orca.AppImage https://api.github.com/repos/chrisbennight/OrcaSlicer/releases/assets/764632245 \
+ && echo 'b4c4fd90cd0fc7ec364373883ead5d7f7eafc68d7378445de4d831fddc3fdf0d  /tmp/orca.AppImage' | sha256sum --check --strict \
  && chmod 0755 /tmp/orca.AppImage && cd /opt && /tmp/orca.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root orca && rm /tmp/orca.AppImage \
  && rm -rf /opt/orca/resources/web \
  && chmod -R u=rwX,go=rX /opt/orca \
  && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+# Orca loads its bundled OPC caches. The worker resolves overrides against the
+# JSON presets from the same source revision in a separate directory.
+RUN orca_source=6320f7282263ac81d5a133c47e77e08191b409a2 \
+ && curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output /tmp/orca-source.tar.gz "https://github.com/chrisbennight/OrcaSlicer/archive/${orca_source}.tar.gz" \
+ && echo '955543783b0527a0d65c78437a1d6ec483ce140748c0cf3e2094074a2d7c5e21  /tmp/orca-source.tar.gz' | sha256sum --check --strict \
+ && install -d /opt/orca-worker-profiles \
+ && tar -xzf /tmp/orca-source.tar.gz -C /opt/orca-worker-profiles --strip-components=3 \
+      "OrcaSlicer-${orca_source}/resources/profiles/BBL" \
+      "OrcaSlicer-${orca_source}/resources/profiles/OrcaFilamentLibrary" \
+ && rm /tmp/orca-source.tar.gz
 COPY --from=build /app/target/release/printable-slicer-worker /usr/local/bin/printable-slicer-worker
 COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY release/notices/orca /opt/orca/licenses
 COPY --chmod=0755 scripts/orca-headless /usr/local/bin/orca-headless
-ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless
+ENV PRINTABLE_SLICER_BIN=/usr/local/bin/orca-headless \
+    PRINTABLE_SLICER_PROFILES=/opt/orca-worker-profiles/BBL
 COPY LICENSE /usr/share/doc/printable/LICENSE
 # Declared here so the per-commit revision leaves earlier layers cacheable.
 ARG SOURCE_REVISION

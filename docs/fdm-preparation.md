@@ -110,7 +110,7 @@ unknown identity or normalization cannot establish placement preservation.
 
 [Orca's tower documentation](https://github.com/OrcaSlicer/OrcaSlicer/wiki/multimaterial_settings_prime_tower)
 distinguishes Type 1 and Type 2 controls. Bambu uses Type 1. The packaged fork's
-[shared integration](https://github.com/chrisbennight/OrcaSlicer/blob/63c97a10eab70d6f4af73c29807dddbcab889273/src/libslic3r/GCode.hpp)
+[shared integration](https://github.com/chrisbennight/OrcaSlicer/blob/6320f7282263ac81d5a133c47e77e08191b409a2/src/libslic3r/GCode.hpp)
 also consumes tower rotation; verify its generated paths instead of treating
 upstream type labels as complete applicability evidence. Cone stabilization
 and rotation are not universal stability fixes. Tower bed attachment, structural
@@ -147,11 +147,12 @@ and [failure despite strong bed attachment](https://www.reddit.com/r/BambuLab/co
 motivate distinct diagnostic branches. They are anecdotes, not verified causes
 or universal remedies. The guidance does not claim physical validation.
 
-Upstream documentation changes independently of the packaged engine. The shipped
-setting catalog is the authority for exposed names; verify native behavior before
-advertising a control or a clearance check. For example,
-[later upstream collision-volume features](https://github.com/OrcaSlicer/OrcaSlicer/wiki/release_2_5_0_beta)
-are not established capabilities of the packaged Orca 2.4.2 worker.
+Upstream documentation changes independently of the packaged engine. Use the
+shipped 2.5.1 setting catalog for exposed names and verify native behavior before
+advertising a control or a clearance check. Printable's collision evidence
+covers the checks described above. The upstream desktop
+[collision-volume features](https://github.com/OrcaSlicer/OrcaSlicer/wiki/release_2_5_0_beta)
+have no verified equivalent in Printable's headless workflow.
 
 The worker retains request and resolved profile settings, source/output hashes
 and provenance; completed slices may also have a compact summary. Use
