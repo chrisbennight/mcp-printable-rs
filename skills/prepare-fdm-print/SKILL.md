@@ -139,7 +139,8 @@ style and settings; do not adopt a blanket prohibition from one experiment.
 ### OrcaSlicer 2.5 overrides
 
 Use these trials only when `slice.settings` lists the required keys and choices
-for the selected profiles and packaged engine. Prepare the unchanged baseline
+for the selected profiles and packaged engine. Skip these examples on a release
+whose settings catalog lacks the keys. Prepare the unchanged baseline
 and each trial into separate output directories with the same source, layout,
 build surface and material assignments. Apply the settings as process overrides.
 
@@ -153,15 +154,17 @@ build surface and material assignments. Apply the settings as process overrides.
   `small_support_perimeter_threshold` on a model with short support paths.
   Discover the settings' per-nozzle values. A speed of `80%` uses the applicable
   support or support-interface speed as its reference. Set a nonzero perimeter
-  length threshold in millimeters and compare the resulting support paths and
+  length threshold in millimeters. Use the support preview to find short paths,
+  then check their commanded feed rates in the retained G-code. Compare the
   estimated duration.
 - **Cyclic tool changes.** On a multi-material project, try
   `toolchange_ordering: "cyclic"`. If needed, set `toolchange_cyclic_order`
   to a comma-separated sequence of the project's one-based filament slots.
   Keep the normal first-layer behavior unless the trial specifically requires
-  changing `toolchange_cyclic_first_layer`. Check the actual material transitions,
-  purge paths, and time and material estimates. Cooling and surface finish
-  require a physical test.
+  changing `toolchange_cyclic_first_layer`. Check the retained G-code's explicit
+  tool selections in layer order, using the selected printer's G-code dialect.
+  Compare purge paths and time and material estimates. Cooling and surface
+  finish require a physical test.
 
 Use `slice.review` on the retained G-code and `slice.compare` to retain the trial
 and baseline evidence. Workspace capture shows model placement and estimated
