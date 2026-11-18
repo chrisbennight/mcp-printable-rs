@@ -264,9 +264,19 @@ struct SliceOutputs {
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum SettingsSubstitutions {
-    Reported { keys: Vec<String>, truncated: bool },
-    Unavailable { reason: SettingsReportIssue },
+    Reported {
+        #[schemars(length(max = 32))]
+        keys: Vec<SettingName>,
+        truncated: bool,
+    },
+    Unavailable {
+        reason: SettingsReportIssue,
+    },
 }
+
+#[derive(Serialize, JsonSchema)]
+#[serde(transparent)]
+pub(crate) struct SettingName(#[schemars(regex(pattern = "^[A-Za-z0-9_]{1,128}$"))] String);
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1440,12 +1450,17 @@ fn settings_substitutions(warnings: &[Value]) -> SettingsSubstitutions {
 
     // Native diagnostics can contain user values and staging paths. Only project
     // the affected option name from each substitution.
-    let substitutions = warnings
-        .iter()
-        .filter(|warning| warning["class"] == "config_value_substituted");
     let mut keys = BTreeSet::new();
     let mut omitted_keys = false;
-    for warning in substitutions {
+    for warning in warnings {
+        match warning["class"].as_str() {
+            Some("config_value_substituted") => {}
+            Some(class) if !class.is_empty() => continue,
+            _ => {
+                omitted_keys = true;
+                continue;
+            }
+        }
         if let Some(key) = warning["key"].as_str().filter(|key| {
             !key.is_empty()
                 && key.len() <= 128
@@ -1463,7 +1478,7 @@ fn settings_substitutions(warnings: &[Value]) -> SettingsSubstitutions {
         keys: keys
             .into_iter()
             .take(MAX_INLINE_KEYS)
-            .map(str::to_owned)
+            .map(|key| SettingName(key.to_owned()))
             .collect(),
     }
 }

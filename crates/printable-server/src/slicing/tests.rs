@@ -125,6 +125,11 @@ fn settings_substitution_summary_distinguishes_empty_missing_and_truncated_repor
         json!(invalid_key),
         json!({"state":"reported","keys":[],"truncated":true})
     );
+    let invalid_class = settings_substitutions(&[json!({})]);
+    assert_eq!(
+        json!(invalid_class),
+        json!({"state":"reported","keys":[],"truncated":true})
+    );
 }
 
 #[tokio::test]
@@ -230,6 +235,8 @@ shutil.copyfile(root/'fixture.gcode',output/'plate_1.gcode')
     assert!(jsonschema::is_valid(&schema, &state));
     let mut invalid_state = state.clone();
     invalid_state["settings_substitutions"]["keys"] = json!("ironing_type");
+    assert!(!jsonschema::is_valid(&schema, &invalid_state));
+    invalid_state["settings_substitutions"]["keys"] = json!(["invalid/path"]);
     assert!(!jsonschema::is_valid(&schema, &invalid_state));
     assert_eq!(
         worker.status(handle(), false).await.unwrap()["preflight"],
