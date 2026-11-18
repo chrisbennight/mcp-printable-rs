@@ -18,6 +18,7 @@ use tokio::{io::AsyncReadExt, process::Command};
 use tokio_util::sync::CancellationToken;
 
 const TIME_LIMIT: Duration = Duration::from_secs(60);
+const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_INLINE_VOLUMES: usize = 32;
 
@@ -34,6 +35,7 @@ pub struct PaintInspection {
     source: String,
     source_sha256: String,
     summary: PaintSummary,
+    categories: PaintCategories,
     painted_volumes: Vec<PaintedVolume>,
     painted_volumes_truncated: bool,
 }
@@ -45,6 +47,14 @@ struct PaintSummary {
     volumes_with_paint: u64,
     /// Sum of facet assignments across paint layers.
     painted_facets_total: u64,
+}
+
+#[derive(Default, Serialize, JsonSchema)]
+struct PaintCategories {
+    supports: bool,
+    seam: bool,
+    material: bool,
+    fuzzy_skin: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -140,7 +150,9 @@ impl NativeInspection {
             ));
         }
         let mut painted_volumes = Vec::new();
-        let mut volumes = self
+        let mut categories = PaintCategories::default();
+        let mut painted_volumes_truncated = false;
+        let volumes = self
             .objects
             .into_iter()
             .flat_map(|object| {
@@ -150,13 +162,21 @@ impl NativeInspection {
                     .map(move |volume| (object.index, volume))
             })
             .filter(|(_, volume)| volume.painted_facets_total > 0);
-        for (object, volume) in volumes.by_ref().take(MAX_INLINE_VOLUMES) {
+        for (object, volume) in volumes {
+            let paints = volume.paints;
+            categories.supports |= !paints.supports.states.is_empty();
+            categories.seam |= !paints.seam.states.is_empty();
+            categories.material |= !paints.mmu_segmentation.states.is_empty();
+            categories.fuzzy_skin |= !paints.fuzzy_skin.states.is_empty();
+            if painted_volumes.len() == MAX_INLINE_VOLUMES {
+                painted_volumes_truncated = true;
+                continue;
+            }
             let index = |value: u64| {
                 value
                     .checked_add(1)
                     .ok_or_else(|| slice_error("native paint inspection returned an invalid index"))
             };
-            let paints = volume.paints;
             let material = paints
                 .mmu_segmentation
                 .states
@@ -191,8 +211,9 @@ impl NativeInspection {
             source,
             source_sha256,
             summary: self.summary,
+            categories,
             painted_volumes,
-            painted_volumes_truncated: volumes.next().is_some(),
+            painted_volumes_truncated,
         })
     }
 }
@@ -227,10 +248,9 @@ impl SliceWorker {
         source: String,
         limit: ProcessingLimit,
     ) -> Result<PaintInspection, ToolError> {
-        let admission = Arc::new(
-            self.admit("slicer is busy; retry paint inspection later")
-                .await?,
-        );
+        let admission = self
+            .admit("slicer is busy; retry paint inspection later")
+            .await?;
         let mut help = Command::new(&self.binary);
         help.arg("--help");
         if !probe_native(help)
@@ -243,43 +263,40 @@ impl SliceWorker {
         }
         limit.check()?;
 
-        let staging = Arc::new(self.workspace.scratch(
-            self.workspace.stat_artifact(&source)?.size_bytes,
-            "orca-paint",
-        )?);
-        let local_source = staging.path().join("source.3mf");
         let workspace = Arc::clone(&self.workspace);
-        let copy_from = source.clone();
-        let owners = (Arc::clone(&admission), Arc::clone(&staging));
+        let snapshot_source = source.clone();
         let copy_limit = limit.clone();
-        let source_hash = tokio::task::spawn_blocking(move || -> Result<String, ToolError> {
-            let (_admission, staging) = owners;
+        let (snapshot, source_hash, admission) = tokio::task::spawn_blocking(move || {
             copy_limit.check()?;
-            let mut destination = std::fs::File::create(staging.path().join("source.3mf"))?;
-            let (_, hash) = workspace.with_artifact_reader(&copy_from, |reader| {
-                copy_and_hash(reader, &mut destination, &copy_limit)
-            })?;
-            Ok(hash)
+            let snapshot =
+                workspace.snapshot_artifact_bounded(&snapshot_source, MAX_SOURCE_BYTES)?;
+            let mut input = std::fs::File::open(snapshot.path())?;
+            let hash = copy_and_hash(&mut input, &mut sink(), &copy_limit)?;
+            Ok::<_, ToolError>((snapshot, hash, admission))
         })
         .await
         .map_err(|_| slice_error("paint inspection input snapshot task failed"))??;
         limit.check()?;
 
+        let local_source = snapshot.path();
+        let working_directory = local_source.parent().expect("confined snapshot directory");
         let mut command = Command::new(&self.binary);
         command
             .arg("--inspect-paint")
-            .arg(&local_source)
-            .current_dir(staging.path())
+            .arg(local_source)
+            .current_dir(working_directory)
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .env("HOME", staging.path())
+            .env("HOME", working_directory)
             .env("OMP_NUM_THREADS", "2")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
         command.as_std_mut().process_group(0);
-        staging.retain_for_command(command.as_std_mut())?;
+        snapshot
+            .child_lease()?
+            .retain_for_command(command.as_std_mut())?;
         let mut child = command.spawn()?;
         let group = ProcessGroup(child.id().expect("spawned paint inspection process"));
         let mut output = Vec::new();
@@ -303,17 +320,17 @@ impl SliceWorker {
             )));
         }
         tokio::task::spawn_blocking(move || {
-            let _owners = (admission, staging);
-            let mut snapshot = std::fs::OpenOptions::new()
+            let _admission = admission;
+            let mut input = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(local_source)?;
-            if !snapshot.metadata()?.is_file() {
+                .open(snapshot.path())?;
+            if !input.metadata()?.is_file() {
                 return Err(slice_error(
                     "native paint inspection changed its input snapshot",
                 ));
             }
-            if copy_and_hash(&mut snapshot, &mut sink(), &limit)? != source_hash {
+            if copy_and_hash(&mut input, &mut sink(), &limit)? != source_hash {
                 return Err(slice_error(
                     "native paint inspection changed its input snapshot",
                 ));
@@ -333,6 +350,42 @@ mod tests {
     use super::*;
     use crate::{provenance, slicing::tests::fixture, tools::output};
     use serde_json::json;
+
+    #[test]
+    fn project_categories_include_paint_beyond_inline_volume_limit() {
+        let volumes: Vec<_> = (0..=MAX_INLINE_VOLUMES)
+            .map(|index| {
+                let (supports, fuzzy_skin) = if index == MAX_INLINE_VOLUMES {
+                    (
+                        json!({}),
+                        json!({"states":[{"state":"FUZZY_SKIN","facets":1}]}),
+                    )
+                } else {
+                    (
+                        json!({"states":[{"state":"ENFORCER","facets":1}]}),
+                        json!({}),
+                    )
+                };
+                json!({"index": index, "painted_facets_total":1, "paints":{
+                    "supports":supports,"seam":{},"mmu_segmentation":{},"fuzzy_skin":fuzzy_skin
+                }})
+            })
+            .collect();
+        let count = volumes.len();
+        let native: NativeInspection = serde_json::from_value(json!({
+            "frame":"mesh_local","summary":{"objects":1,"volumes":count,
+                "volumes_with_paint":count,"painted_facets_total":count},
+            "objects":[{"index":0,"volumes":volumes}]
+        }))
+        .unwrap();
+        let result = native
+            .summarize("part.3mf".into(), "fixture-digest".into())
+            .unwrap();
+        assert_eq!(result.painted_volumes.len(), MAX_INLINE_VOLUMES);
+        assert!(result.painted_volumes_truncated);
+        assert!(result.categories.supports);
+        assert!(result.categories.fuzzy_skin);
+    }
 
     #[tokio::test]
     async fn worker_projects_paint_assignments_and_preserves_input() {
@@ -386,7 +439,11 @@ print(json.dumps({"frame":"mesh_local","sources":[str(source)],"summary":{
                 "seam":{"enforcer_facets":0,"blocker_facets":1},
                 "material":[{"filament":2,"facets":2}],"fuzzy_skin_facets":1})
         );
-        assert!(!painted.to_string().contains("source.3mf"));
+        assert!(!painted.to_string().contains("/payload/"));
+        assert_eq!(
+            painted["categories"],
+            json!({"supports":true,"seam":true,"material":true,"fuzzy_skin":true})
+        );
         let schema = output::schema("slice");
         assert!(jsonschema::is_valid(&json!(schema.as_ref()), &painted));
         let schema = output::action_schema("slice", "inspect_paint").unwrap();

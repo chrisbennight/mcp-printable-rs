@@ -133,10 +133,11 @@ work as interrupted; it never silently resumes or replays it.
 
 `inspect_paint` accepts a project-relative 3MF and returns its source hash and
 the support, seam, material and fuzzy-skin paint reported by OrcaSlicer.
-Painted volumes use one-based object and volume indices. Counts describe facet
-assignments across paint layers, so a facet can contribute to more than one
-count. Large results return summary counts with a bounded volume list and a
-truncation flag. Inspection uses a private snapshot and leaves the source
+Painted volumes use one-based object and volume indices. The category flags
+describe the full project, including volumes omitted from the response. A facet
+can contribute to the count for more than one paint layer. Large results return
+summary counts with a bounded volume list and a truncation flag. Inspection
+accepts files up to 128 MiB, uses a private snapshot, and leaves the source
 unchanged. It requires an engine with `--inspect-paint` support.
 
 `inspect_layout` accepts an authored project-relative 3MF, a new output directory
