@@ -5410,6 +5410,8 @@ fn worker_error_code(code: &str) -> &'static str {
         "validation" => "validation",
         "invalid_assembly_part" => "invalid_assembly_part",
         "geometry_worker_io" => "geometry_worker_io",
+        "storage_budget_exceeded" => "storage_budget_exceeded",
+        "storage_accounting_incomplete" => "storage_accounting_incomplete",
         _ => "geometry",
     }
 }

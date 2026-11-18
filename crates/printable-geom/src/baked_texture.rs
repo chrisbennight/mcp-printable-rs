@@ -28,11 +28,15 @@ pub struct TextureReport {
 /// first image row maps to maximum Y. Black leaves the surface at its old Z.
 pub fn bake_texture_stl(
     source: &[u8],
-    region: TextureRegion,
+    mut region: TextureRegion,
     depth_mm: f64,
     [width, height]: [usize; 2],
     samples: &[u16],
 ) -> Result<(Vec<u8>, TextureReport), GeometryError> {
+    // The source STL stores its positions in single precision.
+    region.x_mm = region.x_mm.map(|value| f64::from(value as f32));
+    region.y_mm = region.y_mm.map(|value| f64::from(value as f32));
+    region.surface_z_mm = f64::from(region.surface_z_mm as f32);
     let [left, right] = region.x_mm;
     let [front, back] = region.y_mm;
     let surface = region.surface_z_mm;
@@ -88,13 +92,16 @@ pub fn bake_texture_stl(
     // Give the brush a small overlap across the original surface. A solid
     // probe on either side confirms the footprint is supported and clear.
     let overlap = 0.001_f64.max(surface.abs() * f64::from(f32::EPSILON) * 4.0);
-    let lower = surface + extreme.min(0.0) - overlap;
     let upper = surface + extreme.max(0.0) + overlap;
     let box_between = |bottom, top| {
         Manifold::cube(right - left, back - front, top - bottom, false)
             .translate(left, front, bottom)
     };
-    let below = box_between(lower, surface);
+    let below = if depth_mm.is_sign_positive() {
+        box_between(surface - overlap, surface)
+    } else {
+        height_field(region, depth_mm, [0.0, -overlap], width, height, samples)?
+    };
     let above = box_between(surface, upper);
     let missing = below.difference(&solid);
     let blocked = solid.intersection(&above);
@@ -104,7 +111,19 @@ pub fn bake_texture_stl(
         ));
     }
 
-    let brush = height_field(region, depth_mm, overlap, width, height, samples)?;
+    let fixed_offset = if depth_mm.is_sign_positive() {
+        -overlap
+    } else {
+        overlap
+    };
+    let brush = height_field(
+        region,
+        depth_mm,
+        [fixed_offset, 0.0],
+        width,
+        height,
+        samples,
+    )?;
     let textured = if depth_mm.is_sign_positive() {
         solid.union(&brush)
     } else {
@@ -137,7 +156,7 @@ pub fn bake_texture_stl(
 fn height_field(
     region: TextureRegion,
     depth: f64,
-    overlap: f64,
+    [fixed_offset, relief_offset]: [f64; 2],
     width: usize,
     height: usize,
     samples: &[u16],
@@ -155,11 +174,12 @@ fn height_field(
                 let x = left + (right - left) * column as f64 / (width - 1) as f64;
                 let sample = samples[(height - 1 - row) * width + column];
                 let relief = depth * f64::from(sample) / f64::from(u16::MAX);
-                let z = match (depth.is_sign_positive(), top) {
-                    (true, false) => surface - overlap,
-                    (false, true) => surface + overlap,
-                    _ => surface + relief,
-                };
+                let z = surface
+                    + if top == depth.is_sign_positive() {
+                        relief + relief_offset
+                    } else {
+                        fixed_offset
+                    };
                 vertices.extend([x, y, z]);
             }
         }
@@ -270,5 +290,25 @@ mod tests {
                 Err(GeometryError::InvalidOptions(_))
             ));
         }
+    }
+
+    #[test]
+    fn a_recess_checks_stock_under_the_local_depth_on_a_decimal_surface() {
+        let height = 3.2;
+        let mut mesh = crate::bust::mesh_from(&Manifold::cube(10.0, 10.0, height, false));
+        for point in &mut mesh.vertices {
+            if point[0] == 10.0 && point[2] == 0.0 {
+                point[2] = height - 0.5;
+            }
+        }
+        let region = TextureRegion {
+            surface_z_mm: height,
+            ..REGION
+        };
+        let stl = bust_stl(&mesh);
+        let (_, report) =
+            bake_texture_stl(&stl, region, -1.7, [2, 2], &[u16::MAX, 0, u16::MAX, 0]).unwrap();
+        assert!(report.volume_change_mm3 < 0.0);
+        assert!(bake_texture_stl(&stl, region, -1.7, [2, 2], &[u16::MAX; 4]).is_err());
     }
 }

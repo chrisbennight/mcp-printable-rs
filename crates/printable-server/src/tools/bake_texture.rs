@@ -5,9 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use image::{ColorType, ImageFormat, ImageReader};
+use image::{ColorType, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use printable_geom::{TextureRegion, TextureReport, bake_texture_stl};
-use printable_workspace::Workspace;
+use printable_workspace::{Workspace, WsError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -53,6 +53,9 @@ struct WorkerRequest {
     height_map: PathBuf,
     region: TextureRegion,
     depth_mm: f64,
+    geometry_memory_bytes: u64,
+    workspace_root: PathBuf,
+    scratch_id: String,
 }
 
 pub(super) async fn bake(
@@ -70,9 +73,13 @@ pub(super) async fn bake(
         let height_map = workspace.snapshot_artifact(&params.height_map_path)?;
         let source_sha256 = hash_file(source.path())?;
         let height_map_sha256 = hash_file(height_map.path())?;
-        let staging = tempfile::Builder::new()
-            .prefix("printable-bake-texture-")
-            .tempdir()?;
+        let workspace_root = workspace.root_path().ok_or(WsError::Unconfined)?;
+        let staging = workspace.scratch(0, "bake-texture")?;
+        let scratch_id = staging
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("workspace scratch IDs contain only ASCII hexadecimal digits");
         let request = staging.path().join("request.json");
         let output = staging.path().join("textured.stl");
         fs::write(
@@ -86,6 +93,9 @@ pub(super) async fn bake(
                     surface_z_mm: params.region.surface_z_mm,
                 },
                 depth_mm: params.depth_mm,
+                geometry_memory_bytes: memory_bytes,
+                workspace_root: workspace_root.into(),
+                scratch_id: scratch_id.into(),
             })?,
         )?;
         let report = run_geometry_worker_process(
@@ -109,16 +119,37 @@ pub(super) async fn bake(
 /// Run in the disposable geometry worker over server-owned snapshot paths.
 pub fn worker_run(request: &Path, output: &Path) -> Result<TextureReport, ToolError> {
     let request: WorkerRequest = serde_json::from_slice(&fs::read(request)?)?;
+    let workspace = Workspace::open(Some(&request.workspace_root), None)?;
+    let staging = workspace.retain_scratch(&request.scratch_id)?;
+    if output != staging.path().join("textured.stl") {
+        return Err(ToolError::Validation(
+            "texture worker output must use its workspace scratch directory".into(),
+        ));
+    }
     let invalid_png =
         || ToolError::Validation("height map must be an 8-bit or 16-bit grayscale PNG".into());
     let file = BufReader::new(fs::File::open(&request.height_map)?);
-    let image = ImageReader::with_format(file, ImageFormat::Png)
-        .decode()
+    let decoder = ImageReader::with_format(file, ImageFormat::Png)
+        .into_decoder()
         .map_err(|_| invalid_png())?;
-    if !matches!(image.color(), ColorType::L8 | ColorType::L16) {
+    if !matches!(decoder.color_type(), ColorType::L8 | ColorType::L16) {
         return Err(invalid_png());
     }
-    let map = image.into_luma16();
+    let (width, height) = decoder.dimensions();
+    // An interior sample contributes two XYZ vertices and four triangles with
+    // 64-bit indices before allocating the kernel's own mesh data.
+    let bytes_per_sample = 6 * size_of::<f64>() + 12 * size_of::<u64>();
+    if (u64::from(width) * u64::from(height))
+        .checked_mul(bytes_per_sample as u64)
+        .is_none_or(|bytes| bytes >= request.geometry_memory_bytes)
+    {
+        return Err(ToolError::Validation(format!(
+            "{width} × {height} is too large for the geometry worker's memory budget; resample the height map"
+        )));
+    }
+    let map = DynamicImage::from_decoder(decoder)
+        .map_err(|_| invalid_png())?
+        .into_luma16();
     let (stl, report) = bake_texture_stl(
         &fs::read(request.source)?,
         request.region,
@@ -126,6 +157,7 @@ pub fn worker_run(request: &Path, output: &Path) -> Result<TextureReport, ToolEr
         [map.width() as usize, map.height() as usize],
         map.as_raw(),
     )?;
+    let _storage = staging.admit_growth(stl.len() as u64)?;
     fs::write(output, stl)?;
     Ok(report)
 }

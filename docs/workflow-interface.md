@@ -109,7 +109,8 @@ white applies the full signed depth. Use a black border for a texture that
 meets the surrounding surface at its original height. The result includes
 the snapshot hashes of both inputs and the hash of the new STL. Slice the
 output and inspect toolpaths to see which details resolve at the chosen line
-width and layer height.
+width and layer height. Resample large maps at the resolution the printed
+surface can use if they exceed the geometry worker's memory budget.
 
 For example, a concise object search is:
 

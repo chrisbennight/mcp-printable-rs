@@ -142,6 +142,13 @@ impl Workspace {
         self.confined.is_some()
     }
 
+    /// Canonical root used by a cooperating native worker.
+    pub fn root_path(&self) -> Option<&Path> {
+        self.confined
+            .as_ref()
+            .map(|confined| confined.root.as_path())
+    }
+
     pub fn ready(&self) -> bool {
         let Some(confined) = &self.confined else {
             return false;

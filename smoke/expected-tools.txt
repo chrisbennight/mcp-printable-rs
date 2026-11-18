@@ -13,6 +13,7 @@ render
 compare_renders
 validate_mesh
 analyze_assembly
+bake_texture
 job
 project
 catalog
