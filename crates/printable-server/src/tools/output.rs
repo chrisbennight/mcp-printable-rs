@@ -886,6 +886,27 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             }),
             &["fixed_artifact", "moving_artifact", "units", "report"],
         ),
+        "bake_texture" => {
+            let digest = json!({"type": "string", "pattern": "^[a-f0-9]{64}$"});
+            object(
+                json!({
+                    "artifact": artifact(), "sha256": digest,
+                    "source_artifact": artifact(), "source_sha256": digest,
+                    "height_map_artifact": artifact(), "height_map_sha256": digest,
+                    "units": {"const": "millimetres"}, "report": {"type": "object"}
+                }),
+                &[
+                    "artifact",
+                    "sha256",
+                    "source_artifact",
+                    "source_sha256",
+                    "height_map_artifact",
+                    "height_map_sha256",
+                    "units",
+                    "report",
+                ],
+            )
+        }
         "job" => json!({"type": "object", "anyOf": [
             object(json!({
                 "job_id": {"type": "string"},

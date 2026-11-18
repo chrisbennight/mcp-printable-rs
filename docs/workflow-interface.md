@@ -22,7 +22,7 @@ from the advertised tool schemas and include only their reachable definitions.
 
 `tools/list` carries an output schema only for tools that take their
 parameters directly: `status`, `blender_execute`, `compare_renders`,
-`validate_mesh` and `analyze_assembly`. A combined tool's output schema is in
+`validate_mesh`, `analyze_assembly` and `bake_texture`. A combined tool's output schema is in
 its action contract. The response identifies its output schema scope:
 `action` when the contract describes that action's results alone, which is
 the case for every `printer`, `print` and `catalog` action, CAD `inspect` and
@@ -70,6 +70,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `compare_renders` | Existing direct image-comparison parameters |
 | `validate_mesh` | Existing direct mesh-validation parameters |
 | `analyze_assembly` | Existing direct assembly-analysis parameters |
+| `bake_texture` | Source STL, grayscale PNG, planar region, signed depth and new output STL |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `reindex`, `revise`, `revision`, `export_files`, `export_blender`, `family_put`, `family`, `families`, `family_select` |
 | `catalog` | `search`, `card`, `status` (read-only search of the user's own [project library](project-library.md); designs on model sites are found with `library`) |
@@ -83,6 +84,32 @@ Existing handler-level range, state, and file checks still run before mutation.
 Mesh reports from `validate_mesh` and `scad_build` include a scoped
 `assessment`. See [mesh assessment](mesh-assessment.md) for checked criteria,
 unmeasured requirements, and migration from the legacy `printable` boolean.
+
+### Bake a printable surface texture
+
+`bake_texture` raises or recesses real geometry inside an upward-facing,
+rectangular patch of a watertight STL. Coordinates and depth use millimetres.
+Open the source in the intended print orientation and use its coordinates for
+the rectangle and surface height. The entire region needs a flat surface with
+enough material underneath. Select a separate, unused path for the output.
+
+```json
+{
+  "source_path": "parts/plain.stl",
+  "height_map_path": "parts/detail.png",
+  "output_path": "parts/textured.stl",
+  "region": {"x_mm": [2, 8], "y_mm": [2, 8], "surface_z_mm": 3},
+  "depth_mm": -0.8
+}
+```
+
+The 8-bit or 16-bit grayscale PNG fills the rectangle. Its top row maps to
+the larger Y coordinate. Black leaves the surface at its original height and
+white applies the full signed depth. Use a black border for a texture that
+meets the surrounding surface at its original height. The result includes
+the snapshot hashes of both inputs and the hash of the new STL. Slice the
+output and inspect toolpaths to see which details resolve at the chosen line
+width and layer height.
 
 For example, a concise object search is:
 

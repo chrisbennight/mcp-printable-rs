@@ -991,6 +991,7 @@ mod tests {
         ("compare_renders", 900, 1_300),
         ("validate_mesh", 7_000, 14_500),
         ("analyze_assembly", 2_400, 1_600),
+        ("bake_texture", 2_900, 3_500),
         ("job", 9_600, 0),
         ("project", 15_100, 0),
         ("catalog", 4_000, 0),

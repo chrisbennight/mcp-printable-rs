@@ -5,6 +5,8 @@
 //! schema string). Public discovery uses [`workflows`]; [`TOOLS`] names internal
 //! operations. Responses use compact JSON and structured MCP content.
 
+#[doc(hidden)]
+pub mod bake_texture;
 mod head;
 mod native;
 pub mod output;
@@ -1900,6 +1902,12 @@ pub const TOOLS: &[ToolDef] = &[
         annotations: read_only_idempotent,
     },
     ToolDef {
+        name: "printable_bake_texture",
+        description: "Bake a grayscale PNG height map into a rectangular planar patch of an STL and write a new solid STL in millimetres.",
+        schema: schema_of::<bake_texture::BakeTextureParams>,
+        annotations: write_annotations,
+    },
+    ToolDef {
         name: "printable_scad_compile",
         description: "Compile confined OpenSCAD source to an STL workspace artifact with optional typed definitions, a reserved product variant, and the generic product_v1 FDM design kit driven by an explicit millimetre profile. Literal imports are immutable snapshots. The response validates the final mesh using the profile's actual +Z overhang policy and reports measured versus not-certified manufacturing evidence honestly; the caller controls a positive subprocess budget with no configured maximum.",
         schema: schema_of::<ScadCompileParams>,
@@ -2451,6 +2459,9 @@ async fn dispatch_value(
         "printable_analyze_assembly" => {
             let p: AnalyzeAssemblyParams = de(args)?;
             analyze_assembly_artifacts(Arc::clone(workspace), p, settings).await
+        }
+        "printable_bake_texture" => {
+            bake_texture::bake(Arc::clone(workspace), settings, de(args)?).await
         }
         "printable_scad_compile" => {
             let p: ScadCompileParams = de(args)?;
