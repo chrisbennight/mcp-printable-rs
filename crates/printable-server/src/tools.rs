@@ -5276,6 +5276,7 @@ pub(crate) fn run_geometry_worker_files(
             moving_path.as_os_str(),
             options_path.as_os_str(),
         ],
+        None,
     )
 }
 
@@ -5285,12 +5286,13 @@ fn run_geometry_worker_process(
     worker_bin: &std::path::Path,
     memory_bytes: u64,
     args: &[&std::ffi::OsStr],
+    input: Option<std::fs::File>,
 ) -> Result<Value, ToolError> {
     let mut stdout = tempfile::tempfile()?;
     let mut command = Command::new(worker_bin);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(stdout.try_clone()?)
         .stderr(Stdio::null());
     set_worker_memory_limit(&mut command, memory_bytes)?;
@@ -5410,6 +5412,7 @@ fn worker_error_code(code: &str) -> &'static str {
         "validation" => "validation",
         "invalid_assembly_part" => "invalid_assembly_part",
         "geometry_worker_io" => "geometry_worker_io",
+        "changed_while_reading" => "changed_while_reading",
         "storage_budget_exceeded" => "storage_budget_exceeded",
         "storage_accounting_incomplete" => "storage_accounting_incomplete",
         _ => "geometry",
@@ -6580,6 +6583,7 @@ mod visual_contract_tests {
                 std::path::Path::new("/bin/sleep"),
                 1024 * 1024 * 1024,
                 &[std::ffi::OsStr::new("30")],
+                None,
             )
         })
         .await;

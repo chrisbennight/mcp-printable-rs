@@ -114,14 +114,12 @@ fn run() -> Result<Value, WorkerFailure> {
         return run_bust(&second, &third);
     }
     if first == bake_texture::FLAG {
-        let report =
-            bake_texture::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {
-                WorkerFailure {
-                    code: error.code(),
-                    message: error.to_string(),
-                }
-            })?;
-        return Ok(json!(report));
+        return bake_texture::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {
+            WorkerFailure {
+                code: error.code(),
+                message: error.to_string(),
+            }
+        });
     }
     run_assembly(&first, &second, &third)
 }

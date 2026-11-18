@@ -140,7 +140,13 @@ pub fn bake_texture_stl(
     // Check the actual exported mesh after coordinates are rounded for STL.
     let checked = analyze_stl(&stl, ValidationOptions::default())?;
     let delta = checked.signed_volume_mm3 - prepared.report.signed_volume_mm3;
-    if !checked.solid_geometry || delta * depth_mm <= 0.0 {
+    if !checked.solid_geometry
+        || checked
+            .issues
+            .iter()
+            .any(|issue| issue.code == "intersecting_shells")
+        || delta * depth_mm <= 0.0
+    {
         return Err(GeometryError::Kernel("baked texture did not produce a valid solid with the requested volume change in STL precision".into()));
     }
     Ok((
