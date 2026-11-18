@@ -69,7 +69,15 @@ pub fn bake_texture_stl(
         ));
     }
 
-    let source = decode_stl(source)?;
+    let mut source = decode_stl(source)?;
+    // Estimate clearance in a coordinate frame local to the chosen surface.
+    for vertex in &mut source.vertices {
+        vertex[2] -= surface;
+    }
+    let local_region = TextureRegion {
+        surface_z_mm: 0.0,
+        ..region
+    };
     let prepared = prepare_mesh(
         &source,
         ValidationOptions::default(),
@@ -91,20 +99,34 @@ pub fn bake_texture_stl(
 
     // Give the brush a small overlap across the original surface. A solid
     // probe on either side confirms the footprint is supported and clear.
-    let overlap = 0.001_f64.max(surface.abs() * f64::from(f32::EPSILON) * 4.0);
+    let overlap = 0.001;
     let box_between = |bottom, top| {
         Manifold::cube(right - left, back - front, top - bottom, false)
             .translate(left, front, bottom)
     };
     let below = if depth_mm.is_sign_positive() {
-        box_between(surface - overlap, surface)
+        box_between(-overlap, 0.0)
     } else {
-        height_field(region, depth_mm, [0.0, -overlap], width, height, samples)?
+        height_field(
+            local_region,
+            depth_mm,
+            [0.0, -overlap],
+            width,
+            height,
+            samples,
+        )?
     };
     let above = if depth_mm.is_sign_positive() {
-        height_field(region, depth_mm, [0.0, overlap], width, height, samples)?
+        height_field(
+            local_region,
+            depth_mm,
+            [0.0, overlap],
+            width,
+            height,
+            samples,
+        )?
     } else {
-        box_between(surface, surface + overlap)
+        box_between(0.0, overlap)
     };
     let missing = below.difference(&solid);
     let blocked = solid.intersection(&above);
@@ -120,7 +142,7 @@ pub fn bake_texture_stl(
         overlap
     };
     let brush = height_field(
-        region,
+        local_region,
         depth_mm,
         [fixed_offset, 0.0],
         width,
@@ -135,7 +157,10 @@ pub fn bake_texture_stl(
     textured
         .status()
         .map_err(|error| GeometryError::Kernel(format!("texture bake failed: {error}")))?;
-    let mesh = crate::bust::mesh_from(&textured);
+    let mut mesh = crate::bust::mesh_from(&textured);
+    for vertex in &mut mesh.vertices {
+        vertex[2] += surface;
+    }
     let stl = bust_stl(&mesh);
     // Check the actual exported mesh after coordinates are rounded for STL.
     let checked = analyze_stl(&stl, ValidationOptions::default())?;
@@ -251,6 +276,8 @@ mod tests {
     fn raised_and_recessed_maps_export_closed_geometry_with_the_same_outline() {
         let source = source();
         let map = [0, 0, 0, 0, u16::MAX, 0, 0, 0, 0];
+        let box_around_patch = Manifold::cube(6.0, 6.0, 6.0, false).translate(2.0, 2.0, -1.0);
+        let outside_patch = Manifold::cube(10.0, 10.0, 3.0, false).difference(&box_around_patch);
         for depth in [0.8_f64, -0.8] {
             let (stl, report) = bake_texture_stl(&source, REGION, depth, [3, 3], &map).unwrap();
             assert_eq!(report.applied_extreme_mm, depth);
@@ -262,15 +289,29 @@ mod tests {
                 .find(|point| point[0] == 5.0 && point[1] == 5.0)
                 .unwrap();
             assert!((center[2] - (3.0 + depth)).abs() < 1e-6);
-            for point in &mesh.vertices {
-                if !(2.0..=8.0).contains(&point[0]) || !(2.0..=8.0).contains(&point[1]) {
-                    assert!(point[2] == 0.0 || point[2] == 3.0);
-                }
-            }
-            for edge in [[0.0, 0.0, 3.0], [10.0, 10.0, 3.0], [10.0, 0.0, 0.0]] {
-                assert!(mesh.vertices.contains(&edge));
-            }
+            let prepared = prepare_mesh(
+                &mesh,
+                ValidationOptions::default(),
+                crate::thickness::Precision::Single,
+            )
+            .unwrap();
+            let baked_outside = prepared.manifold.unwrap().difference(&box_around_patch);
+            assert!(outside_patch.difference(&baked_outside).is_empty());
+            assert!(baked_outside.difference(&outside_patch).is_empty());
         }
+    }
+
+    #[test]
+    fn a_translated_thin_plate_keeps_its_recess_clearance() {
+        let surface = 1_000_000.0;
+        let plate = Manifold::cube(10.0, 10.0, 0.75, false).translate(0.0, 0.0, surface - 0.75);
+        let stl = bust_stl(&crate::bust::mesh_from(&plate));
+        let region = TextureRegion {
+            surface_z_mm: surface,
+            ..REGION
+        };
+        let (_, report) = bake_texture_stl(&stl, region, -0.5, [2, 2], &[u16::MAX; 4]).unwrap();
+        assert!((report.volume_change_mm3 + 18.0).abs() < 1e-6);
     }
 
     #[test]

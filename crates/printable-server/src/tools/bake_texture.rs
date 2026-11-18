@@ -81,6 +81,11 @@ pub(super) async fn bake(
     validate_blender_artifact(&workspace, &params.source_path, ".stl", true)?;
     validate_blender_artifact(&workspace, &params.height_map_path, ".png", true)?;
     validate_blender_artifact(&workspace, &params.output_path, ".stl", false)?;
+    match workspace.stat_artifact(&params.output_path) {
+        Ok(_) => return Err(WsError::AlreadyExists(params.output_path).into()),
+        Err(WsError::NotFound(_)) => (),
+        Err(error) => return Err(error.into()),
+    }
     let worker_bin = geometry_worker_path(settings)?;
     let memory_bytes = settings.geometry_worker_memory_bytes;
     geometry_blocking(move || -> Result<Value, ToolError> {
@@ -106,15 +111,15 @@ pub(super) async fn bake(
             memory_bytes,
         )?;
         let request = WorkerRequest {
-                source,
-                height_map,
-                region: TextureRegion {
-                    x_mm: params.region.x_mm,
-                    y_mm: params.region.y_mm,
-                    surface_z_mm: params.region.surface_z_mm,
-                },
-                depth_mm: params.depth_mm,
-                geometry_memory_bytes: memory_bytes,
+            source,
+            height_map,
+            region: TextureRegion {
+                x_mm: params.region.x_mm,
+                y_mm: params.region.y_mm,
+                surface_z_mm: params.region.surface_z_mm,
+            },
+            depth_mm: params.depth_mm,
+            geometry_memory_bytes: memory_bytes,
         };
         // Keep the worker instructions outside the shared workspace.
         let mut input = tempfile::tempfile()?;

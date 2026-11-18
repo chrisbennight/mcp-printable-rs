@@ -2941,11 +2941,20 @@ async fn bake_texture_exports_with_input_provenance_and_rejects_replacement() {
             .is_valid(&report)
     );
 
+    let mut unavailable = config;
+    unavailable.geometry_worker_bin = Some(temp.path().join("missing-worker"));
     for path in ["part/plain.stl", "part/textured.stl"] {
         let bake = request(path);
-        let error = dispatch(&ws, &upload, &backend, &config, bake.name, bake.arguments)
-            .await
-            .unwrap_err();
+        let error = dispatch(
+            &ws,
+            &upload,
+            &backend,
+            &unavailable,
+            bake.name,
+            bake.arguments,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.code(), "already_exists");
     }
     assert_eq!(ws.read_generated_bytes("part/plain.stl").unwrap().1, plain);
