@@ -262,16 +262,7 @@ impl Client {
         file_id: &str,
         limit: u64,
     ) -> Result<FileStream, LibraryError> {
-        let file = model
-            .files
-            .iter()
-            .find(|file| file.file_id == file_id)
-            .ok_or_else(|| {
-                LibraryError::InvalidRequest(format!(
-                    "{} model {} lists no file {file_id}",
-                    model.site, model.model_id
-                ))
-            })?;
+        let file = model.download_file(file_id)?;
         let site = model.site;
         let url = match site {
             Site::MakerWorld => makerworld::file_url(self, file).await?,
@@ -397,6 +388,12 @@ impl Client {
                 return Err(self
                     .refusal(site, response, sent.is_some(), "file download")
                     .await);
+            }
+            if site == Site::MakerWorld && status == StatusCode::PARTIAL_CONTENT {
+                return Err(LibraryError::UnexpectedReply {
+                    site,
+                    detail: format!("file download returned HTTP {status} for a full file request"),
+                });
             }
             if response.content_length().is_some_and(|size| size > limit) {
                 return Err(LibraryError::FileTooLarge { limit });
@@ -548,10 +545,6 @@ impl Exchange {
                     .is_some_and(|(cookie, value)| cookie == name && !value.is_empty())
             })
     }
-
-    pub(crate) fn reason(&self) -> Option<String> {
-        refusal_reason(&self.body)
-    }
 }
 
 /// A file body being received, bounded by the caller's byte limit.
@@ -584,7 +577,7 @@ impl FileStream {
     /// # Errors
     ///
     /// Returns an error when the transfer fails, exceeds the limit, or
-    /// completes without file contents for a MakerWorld print profile.
+    /// returns an invalid archive header for a MakerWorld print profile.
     pub async fn chunk(&mut self) -> Result<Option<bytes::Bytes>, LibraryError> {
         let site = self.site;
         let chunk = self
@@ -592,20 +585,39 @@ impl FileStream {
             .chunk()
             .await
             .map_err(|_| LibraryError::Interrupted { site })?;
+        if site == Site::MakerWorld {
+            self.validate_profile_header(chunk.as_deref())?;
+        }
         if let Some(chunk) = &chunk {
             self.received = self.received.saturating_add(chunk.len() as u64);
             if self.received > self.limit {
                 return Err(LibraryError::FileTooLarge { limit: self.limit });
             }
         }
-        if site == Site::MakerWorld && chunk.is_none() && self.received == 0 {
-            let status = self.response.status();
-            return Err(LibraryError::UnexpectedReply {
-                site,
-                detail: format!("file download returned HTTP {status} without file contents"),
-            });
-        }
         Ok(chunk)
+    }
+
+    fn validate_profile_header(&self, chunk: Option<&[u8]>) -> Result<(), LibraryError> {
+        // A 3MF archive starts with a ZIP local file header, possibly split
+        // across several response chunks.
+        const ZIP_HEADER: &[u8] = b"PK\x03\x04";
+        if self.received >= ZIP_HEADER.len() as u64 {
+            return Ok(());
+        }
+        let remaining = &ZIP_HEADER[self.received as usize..];
+        let problem = match chunk {
+            Some(bytes) if remaining.starts_with(&bytes[..bytes.len().min(remaining.len())]) => {
+                return Ok(());
+            }
+            Some(_) => "with an invalid 3MF archive header",
+            None if self.received == 0 => "without file contents",
+            None => "with an incomplete 3MF archive header",
+        };
+        let status = self.response.status();
+        Err(LibraryError::UnexpectedReply {
+            site: self.site,
+            detail: format!("file download returned HTTP {status} {problem}"),
+        })
     }
 }
 

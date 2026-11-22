@@ -351,7 +351,7 @@ impl Client {
             exchange.status,
             Credential::NotApplicable,
             exchange.challenged(),
-            &exchange.body,
+            &[],
         ))
     }
 
@@ -484,23 +484,14 @@ fn rejected(reason: &str) -> LibraryError {
     }
 }
 
-/// Classify a refused sign-in step, keeping the site's own reason.
+/// Classify a refused sign-in step without returning upstream text that may contain credentials.
 fn sign_in_refusal(exchange: &Exchange, default: &str) -> LibraryError {
     if exchange.challenged() {
         return LibraryError::Challenged { site: SITE };
     }
     match exchange.status.as_u16() {
-        400 | 401 | 403 => LibraryError::SignInRejected {
-            site: SITE,
-            reason: exchange.reason().unwrap_or_else(|| default.into()),
-        },
-        _ => classify(
-            SITE,
-            exchange.status,
-            Credential::NotApplicable,
-            false,
-            &exchange.body,
-        ),
+        400 | 401 | 403 | 422 => rejected(default),
+        _ => classify(SITE, exchange.status, Credential::NotApplicable, false, &[]),
     }
 }
 

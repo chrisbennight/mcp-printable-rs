@@ -261,7 +261,8 @@ async fn refused_passwords_and_captchas_are_reported() {
     let refused = MockServer::start().await;
     password_login(
         &refused,
-        ResponseTemplate::new(400).set_body_json(json!({"code": 3, "error": "Incorrect password"})),
+        ResponseTemplate::new(400)
+            .set_body_json(json!({"code": 3, "error": "Incorrect password: correct horse"})),
     )
     .await;
     assert_eq!(
@@ -271,7 +272,7 @@ async fn refused_passwords_and_captchas_are_reported() {
             .unwrap_err(),
         LibraryError::SignInRejected {
             site: Site::MakerWorld,
-            reason: "Incorrect password".into()
+            reason: "Bambu Lab refused the account email address or password".into()
         }
     );
     let captcha = MockServer::start().await;

@@ -8,6 +8,8 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::LibraryError;
+
 /// A supported public model repository.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -169,4 +171,33 @@ pub struct ModelDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paid: Option<bool>,
     pub files: Vec<RemoteFile>,
+}
+
+impl ModelDetail {
+    /// Resolve a listed file and check that it has the metadata needed for download.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unlisted file or a MakerWorld profile without a usable instance ID.
+    pub fn download_file(&self, file_id: &str) -> Result<&RemoteFile, LibraryError> {
+        let site = self.site;
+        let file = self
+            .files
+            .iter()
+            .find(|file| file.file_id == file_id)
+            .ok_or_else(|| {
+                LibraryError::InvalidRequest(format!(
+                    "{site} model {} lists no file {file_id}; use the file_id values from get",
+                    self.model_id
+                ))
+            })?;
+        if site == Site::MakerWorld && file.location.is_none() {
+            return Err(LibraryError::UnexpectedReply {
+                site,
+                detail: "model lookup did not return a valid instance ID for this print profile"
+                    .into(),
+            });
+        }
+        Ok(file)
+    }
 }

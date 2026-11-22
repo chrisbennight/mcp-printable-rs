@@ -318,15 +318,7 @@ impl LibraryService {
         let mut names = BTreeSet::from([MANIFEST.to_owned()]);
         let mut plan = Vec::with_capacity(file_ids.len());
         for file_id in &file_ids {
-            let file = detail
-                .files
-                .iter()
-                .find(|file| &file.file_id == file_id)
-                .ok_or_else(|| {
-                    ToolError::Validation(format!(
-                        "{site} model {model_id} lists no file {file_id}; use the file_id values from get"
-                    ))
-                })?;
+            let file = detail.download_file(file_id)?;
             let name = unique_name(local_name(&file.name)?, file_id, &mut names);
             plan.push((file, resolve(&name)?));
         }

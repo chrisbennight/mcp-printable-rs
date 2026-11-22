@@ -1189,29 +1189,58 @@ async fn serve_chunked(body: Vec<u8>) -> String {
 }
 
 #[tokio::test]
-async fn a_makerworld_download_with_an_empty_chunked_body_fails() {
-    let fixture = fixture_with(
-        &[Site::MakerWorld],
-        &[("PRINTABLE_MAKERWORLD_TOKEN", "AAB_fixture".into())],
-    )
-    .await;
-    let url = serve_chunked(Vec::new()).await;
+async fn an_unusable_makerworld_profile_fails_before_sign_in() {
+    let fixture = fixture_with(&[Site::MakerWorld], &account_settings(&[])).await;
     Mock::given(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 42, "title": "Bowl", "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
+            "id": 42, "title": "Bowl", "instances": [{"id": "", "profileId": 77}]
         })))
         .mount(&fixture.site)
         .await;
-    Mock::given(path("/makerworld/v1/design-service/instance/88/f3mf"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"url": url})))
+    Mock::given(path(LOGIN))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&fixture.site)
         .await;
+
     let result = call(&fixture.server, "library", download_bowl()).await;
     assert_eq!(structured(&result)["error"]["code"], "library_incompatible");
     assert_eq!(
         structured(&result)["error"]["message"],
-        "MakerWorld file download returned HTTP 200 OK without file contents"
+        "MakerWorld model lookup did not return a valid instance ID for this print profile"
     );
+}
+
+#[tokio::test]
+async fn makerworld_downloads_require_a_3mf_archive_header() {
+    for (bytes, expected) in [
+        (b"".as_slice(), "without file contents"),
+        (b"<html>error</html>", "with an invalid 3MF archive header"),
+        (b"PK", "with an incomplete 3MF archive header"),
+    ] {
+        let fixture = fixture_with(
+            &[Site::MakerWorld],
+            &[("PRINTABLE_MAKERWORLD_TOKEN", "AAB_fixture".into())],
+        )
+        .await;
+        let url = serve_chunked(bytes.to_vec()).await;
+        Mock::given(path("/makerworld/v1/design-service/design/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 42, "title": "Bowl", "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
+            })))
+            .mount(&fixture.site)
+            .await;
+        Mock::given(path("/makerworld/v1/design-service/instance/88/f3mf"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"url": url})))
+            .mount(&fixture.site)
+            .await;
+        let result = call(&fixture.server, "library", download_bowl()).await;
+        assert_eq!(structured(&result)["error"]["code"], "library_incompatible");
+        assert_eq!(
+            structured(&result)["error"]["message"],
+            format!("MakerWorld file download returned HTTP 200 OK {expected}")
+        );
+    }
 }
 
 #[tokio::test]
