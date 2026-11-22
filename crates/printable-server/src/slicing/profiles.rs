@@ -279,6 +279,21 @@ fn load_category(
 }
 
 impl Profiles {
+    pub(super) fn native_numeric_default(&self, key: &str) -> Result<Value, ToolError> {
+        let definition = self
+            .definitions
+            .get(key)
+            .ok_or_else(|| invalid("packaged Orca setting definition is missing"))?;
+        let number = definition
+            .default
+            .as_ref()
+            .and_then(|default| default.value.as_number())
+            .ok_or_else(|| invalid("packaged Orca numeric default is missing"))?;
+        let value = json!(number.to_string());
+        definition.validate(key, &value)?;
+        Ok(value)
+    }
+
     pub fn counts(&self) -> crate::worker_health::ProfileCounts {
         crate::worker_health::ProfileCounts {
             printer: self.entries[&Category::Printer].len(),
