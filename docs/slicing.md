@@ -9,6 +9,9 @@ printer. The packaged worker uses OrcaSlicer 2.5.1 and its BBL profile collectio
 Profile availability is not a claim of compatibility with every printer.
 The worker lets OrcaSlicer attempt to slice 3MF projects saved by newer slicer
 versions. OrcaSlicer can still reject project features it cannot process.
+When a 3MF requests Bambu Studio's automatic first-layer support expansion,
+the worker uses the selected Orca process value or Orca's default. The source
+file stays intact, and `settings.json` records the value passed to Orca.
 
 ## Why Printable maintains an OrcaSlicer fork
 

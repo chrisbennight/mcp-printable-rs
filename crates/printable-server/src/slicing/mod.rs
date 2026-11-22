@@ -720,7 +720,7 @@ impl SliceWorker {
         let source_path = projects::resolve(&self.workspace, &params.project_id, &params.source)?;
         let output = slice_directory(&self.workspace, &params.project_id, &params.output_dir)?;
         let printer = self.profiles.resolve(Category::Printer, &params.printer)?;
-        let process = self.profiles.resolve(Category::Process, &params.process)?;
+        let mut process = self.profiles.resolve(Category::Process, &params.process)?;
         let filaments = params
             .filaments
             .iter()
@@ -761,11 +761,16 @@ impl SliceWorker {
         let copy_to = local_source.clone();
         let source_path_for_evidence = source_path.clone();
         let staging_owner = Arc::clone(&staging);
-        let source_hash = tokio::task::spawn_blocking(move || {
+        let needs_raft_default =
+            extension == "3mf" && process.get(package::RAFT_FIRST_LAYER_EXPANSION).is_none();
+        let (source_hash, auto_raft_expansion) = tokio::task::spawn_blocking(move || {
             let _staging_owner = staging_owner;
             let snapshot = workspace.snapshot_artifact(&source_path)?;
             std::fs::copy(snapshot.path(), &copy_to)?;
-            hash_file(&copy_to)
+            let source_hash = hash_file(&copy_to)?;
+            let auto_raft_expansion =
+                needs_raft_default && package::requests_auto_raft_expansion(&copy_to)?;
+            Ok::<_, ToolError>((source_hash, auto_raft_expansion))
         })
         .await
         .map_err(|_| slice_error("source snapshot task failed"))??;
@@ -777,6 +782,10 @@ impl SliceWorker {
             return Err(invalid(
                 "source changed since layout selection; inspect the current source before preparing placements",
             ));
+        }
+        if auto_raft_expansion {
+            let key = package::RAFT_FIRST_LAYER_EXPANSION;
+            process[key] = self.profiles.native_numeric_default(key)?;
         }
         let design_evidence = provenance::design_evidence(
             &self.workspace,

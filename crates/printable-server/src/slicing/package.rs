@@ -15,6 +15,8 @@ const MAX_FILAMENTS: usize = 64;
 pub const MAX_THUMBNAIL_BYTES: u64 = 16 * 1024 * 1024;
 const SETTINGS_ENTRY: &str = "Metadata/project_settings.config";
 
+pub(super) const RAFT_FIRST_LAYER_EXPANSION: &str = "raft_first_layer_expansion";
+
 /// Facts read from a sliced package without trusting its sizes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PackageFacts {
@@ -72,6 +74,21 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str, max: u64) -> Result<Ve
         return Err(invalid(&format!("entry {name} exceeds {max} bytes")));
     }
     Ok(bytes)
+}
+
+pub(super) fn requests_auto_raft_expansion(path: &Path) -> Result<bool, ToolError> {
+    let mut archive = open(path)?;
+    if archive.index_for_name(SETTINGS_ENTRY).is_none() {
+        return Ok(false);
+    }
+    let settings = read_entry(&mut archive, SETTINGS_ENTRY, MAX_SETTINGS_BYTES)?;
+    let Ok(settings) = serde_json::from_slice::<Value>(&settings) else {
+        // Orca reports malformed native project settings during import.
+        return Ok(false);
+    };
+    // Bambu Studio uses -1 for automatic first-layer expansion.
+    let value = &settings[RAFT_FIRST_LAYER_EXPANSION];
+    Ok(value.as_f64().or_else(|| value.as_str()?.parse().ok()) == Some(-1.0))
 }
 
 fn text(value: &Value) -> Option<String> {
