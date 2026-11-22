@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -327,6 +328,11 @@ with tempfile.TemporaryDirectory() as directory:
             before_first_layer, separator, _ = executable.partition("; CHANGE_LAYER")
             assert separator, "missing first layer marker"
             assert expected.splitlines()[0] in before_first_layer.splitlines(), printer
+            # Keep tray selection commands in order and ignore optional nozzle arguments.
+            routing = re.findall(r"^[ \t]*(M62[01] S\d+A|T-?\d+)(?=[ \t;]|$)",
+                                 before_first_layer, re.MULTILINE)
+            assert re.search(r"(?:^|\n)M620 S(\d+)A\nT\1\nM621 S\1A(?:\n|$)",
+                             "\n".join(routing)), f"missing AMS startup sequence for {printer}"
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
         verify_paint(project, project / "capture-template/model.gcode.3mf")
