@@ -362,9 +362,10 @@ Use the completed summary for package, plate and material identity, and retained
 `settings.json` for full resolved profile settings.
 
 If Orca rejects a Bambu Studio 3MF with `raft_first_layer_expansion: -1`,
-Bambu's `-1` means auto. Get the resolved Orca process value from `slice.settings`
-(Orca 2.5.1 defaults to 2 mm). If the failed run's `settings.json` lacked that
-value, retry with it as a string in `process.overrides.raft_first_layer_expansion`.
+Bambu's `-1` means auto. Query the selected process with `slice.settings`. If
+the setting's `value` is null, use `definition.default.value` (2 mm in Orca
+2.5.1). If the failed run's `settings.json` lacked that value, retry with it as a
+string in `process.overrides.raft_first_layer_expansion`.
 If the run already used that value or the same error recurs, use a separate 3MF
 copy with only that embedded setting replaced. Use a new output directory and
 keep `auto_arrange` and `auto_orient` off to preserve the saved layout. Review
