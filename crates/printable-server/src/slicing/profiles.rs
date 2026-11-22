@@ -745,7 +745,7 @@ mod tests {
         for (name, values) in [
             (
                 "base",
-                json!({"machine_start_gcode":"base","machine_end_gcode":"base"}),
+                json!({"machine_start_gcode":"base","machine_end_gcode":"base","machine_pause_gcode":"base pause"}),
             ),
             (
                 "first",
@@ -773,7 +773,11 @@ mod tests {
             shared_selections: BTreeSet::new(),
             keys: BTreeMap::from([(
                 Category::Printer,
-                BTreeSet::from(["machine_start_gcode".into(), "machine_end_gcode".into()]),
+                BTreeSet::from([
+                    "machine_start_gcode".into(),
+                    "machine_end_gcode".into(),
+                    "machine_pause_gcode".into(),
+                ]),
             )]),
             definitions: BTreeMap::new(),
         };
@@ -788,6 +792,8 @@ mod tests {
         assert_eq!(resolved["machine_start_gcode"], "second");
         assert_eq!(sources["machine_start_gcode"], "second");
         assert_eq!(resolved["machine_end_gcode"], "printer");
+        assert_eq!(resolved["machine_pause_gcode"], "base pause");
+        assert_eq!(sources["machine_pause_gcode"], "base");
         assert!(resolved.get("include").is_none());
         selection
             .overrides

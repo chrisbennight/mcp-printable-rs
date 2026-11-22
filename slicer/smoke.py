@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -307,24 +308,23 @@ with tempfile.TemporaryDirectory() as directory:
             assert (root / review["image"]["path"]).read_bytes().startswith(b"\x89PNG")
             settings = json.loads((project / model / "settings.json").read_text())
             assert settings["printer"]["name"] == printer
-            assert settings["printer"]["machine_start_gcode"]
-            if model in ("a1", "x1c"):
-                startup = request("settings", {
-                    "category": "printer", "profile": {"name": printer},
-                    "query": "machine_start_gcode",
-                })["settings"][0]
-                assert startup["value"] == settings["printer"]["machine_start_gcode"]
-                assert startup["value_source"]["profile"] == f"{printer} template machine_start_gcode"
-                with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
-                    plate = package.read("Metadata/plate_1.gcode").decode()
-                before_first_layer, separator, _ = plate.partition("; CHANGE_LAYER")
-                assert separator, "missing first layer marker"
-                machine = "A1" if model == "a1" else "X1-0.4"
-                assert f";===== machine: {machine} " in before_first_layer
-                commands = [line.partition(";")[0].strip() for line in before_first_layer.splitlines()]
-                load = commands.index("M620 S0A")
-                select = commands.index("T0", load)
-                commands.index("M621 S0A", select)
+            template = f"{printer} template machine_start_gcode"
+            expected = json.loads((software_profile_root / "machine" / f"{template}.json").read_text())[
+                "machine_start_gcode"]
+            startup = request("settings", {
+                "category": "printer", "profile": {"name": printer},
+                "query": "machine_start_gcode",
+            })["settings"][0]
+            assert startup["value"] == settings["printer"]["machine_start_gcode"] == expected, printer
+            assert startup["value_source"]["profile"] == template
+            with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
+                plate = package.read("Metadata/plate_1.gcode").decode()
+            before_first_layer, separator, _ = plate.partition("; CHANGE_LAYER")
+            assert separator, "missing first layer marker"
+            assert expected.splitlines()[0] in before_first_layer, printer
+            commands = "\n".join(line.partition(";")[0].strip() for line in before_first_layer.splitlines())
+            assert re.search(r"^M620 S(\d+)A(?: |$).*?^T\1(?: |$).*?^M621 S\1A(?: |$)",
+                             commands, re.MULTILINE | re.DOTALL), f"missing AMS load sequence for {printer}"
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
         verify_paint(project, project / "capture-template/model.gcode.3mf")
