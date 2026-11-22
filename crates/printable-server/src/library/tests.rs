@@ -574,12 +574,12 @@ async fn mount_makerworld_model(fixture: &Fixture, token: &str) {
         .and(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": 42, "modelId": "US2b", "title": "Bowl",
-            "instances": [{"profileId": 77, "title": "Default"}]
+            "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
         })))
         .mount(&fixture.site)
         .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
         .and(wiremock::matchers::header(
             "authorization",
             format!("Bearer {token}").as_str(),
@@ -591,7 +591,10 @@ async fn mount_makerworld_model(fixture: &Fixture, token: &str) {
         .await;
     Mock::given(method("GET"))
         .and(path("/files/bowl.3mf"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PK\x03\x04bowl".to_vec()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes([b"PK\x03\x04".as_slice(), &[0; 26]].concat()),
+        )
         .mount(&fixture.files)
         .await;
 }
@@ -764,7 +767,7 @@ async fn a_rejected_token_is_replaced_by_signing_in_again() {
     )
     .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer AAB_old",
@@ -1186,6 +1189,61 @@ async fn serve_chunked(body: Vec<u8>) -> String {
         socket.write_all(b"0\r\n\r\n").await.unwrap();
     });
     format!("http://{address}/bowl.stl")
+}
+
+#[tokio::test]
+async fn an_unusable_makerworld_profile_fails_before_sign_in() {
+    let fixture = fixture_with(&[Site::MakerWorld], &account_settings(&[])).await;
+    Mock::given(path("/makerworld/v1/design-service/design/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 42, "title": "Bowl", "instances": [{"id": "", "profileId": 77}]
+        })))
+        .mount(&fixture.site)
+        .await;
+    Mock::given(path(LOGIN))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&fixture.site)
+        .await;
+
+    let result = call(&fixture.server, "library", download_bowl()).await;
+    assert_eq!(structured(&result)["error"]["code"], "library_incompatible");
+    assert_eq!(
+        structured(&result)["error"]["message"],
+        "MakerWorld model lookup did not return a valid instance ID for this print profile"
+    );
+}
+
+#[tokio::test]
+async fn makerworld_downloads_require_a_3mf_archive_header() {
+    for (bytes, expected) in [
+        (b"".as_slice(), "without file contents"),
+        (b"<html>error</html>", "with an invalid 3MF archive header"),
+        (b"PK\x03\x04", "with an incomplete 3MF archive header"),
+    ] {
+        let fixture = fixture_with(
+            &[Site::MakerWorld],
+            &[("PRINTABLE_MAKERWORLD_TOKEN", "AAB_fixture".into())],
+        )
+        .await;
+        let url = serve_chunked(bytes.to_vec()).await;
+        Mock::given(path("/makerworld/v1/design-service/design/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 42, "title": "Bowl", "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
+            })))
+            .mount(&fixture.site)
+            .await;
+        Mock::given(path("/makerworld/v1/design-service/instance/88/f3mf"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"url": url})))
+            .mount(&fixture.site)
+            .await;
+        let result = call(&fixture.server, "library", download_bowl()).await;
+        assert_eq!(structured(&result)["error"]["code"], "library_incompatible");
+        assert_eq!(
+            structured(&result)["error"]["message"],
+            format!("MakerWorld file download returned HTTP 200 OK {expected}")
+        );
+    }
 }
 
 #[tokio::test]

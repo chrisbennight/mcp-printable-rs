@@ -262,19 +262,10 @@ impl Client {
         file_id: &str,
         limit: u64,
     ) -> Result<FileStream, LibraryError> {
-        let file = model
-            .files
-            .iter()
-            .find(|file| file.file_id == file_id)
-            .ok_or_else(|| {
-                LibraryError::InvalidRequest(format!(
-                    "{} model {} lists no file {file_id}",
-                    model.site, model.model_id
-                ))
-            })?;
+        let file = model.download_file(file_id)?;
         let site = model.site;
         let url = match site {
-            Site::MakerWorld => makerworld::file_url(self, model, file).await?,
+            Site::MakerWorld => makerworld::file_url(self, file).await?,
             Site::Printables => printables::file_url(self, model, file).await?,
             Site::Thingiverse => thingiverse::file_url(file)?,
         };
@@ -326,6 +317,7 @@ impl Client {
         site: Site,
         request: RequestBuilder,
         authenticated: bool,
+        operation: &'static str,
     ) -> Result<T, LibraryError> {
         let response = request
             .send()
@@ -333,10 +325,20 @@ impl Client {
             .map_err(|_| LibraryError::Unavailable { site })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(self.refusal(site, response, authenticated).await);
+            return Err(self.refusal(site, response, authenticated, operation).await);
         }
         let body = read_bounded(site, response).await?;
-        serde_json::from_slice(&body).map_err(|_| LibraryError::IncompatibleResponse { site })
+        serde_json::from_slice(&body).map_err(|error| {
+            let problem = match error.classify() {
+                serde_json::error::Category::Data => "missing or incorrectly typed JSON fields",
+                serde_json::error::Category::Eof => "empty or incomplete JSON",
+                _ => "invalid JSON",
+            };
+            LibraryError::UnexpectedReply {
+                site,
+                detail: format!("{operation} returned HTTP {status} with {problem}"),
+            }
+        })
     }
 
     async fn download(
@@ -371,14 +373,27 @@ impl Client {
                     .headers()
                     .get(header::LOCATION)
                     .and_then(|value| value.to_str().ok())
-                    .ok_or(LibraryError::IncompatibleResponse { site })?;
+                    .ok_or_else(|| LibraryError::UnexpectedReply { site, detail: format!("file download returned HTTP {status} without a readable redirect location") })?;
                 url = url
                     .join(location)
-                    .map_err(|_| LibraryError::IncompatibleResponse { site })?;
+                    .map_err(|_| LibraryError::UnexpectedReply {
+                        site,
+                        detail: format!(
+                            "file download returned HTTP {status} with an invalid redirect location"
+                        ),
+                    })?;
                 continue;
             }
             if !status.is_success() {
-                return Err(self.refusal(site, response, sent.is_some()).await);
+                return Err(self
+                    .refusal(site, response, sent.is_some(), "file download")
+                    .await);
+            }
+            if site == Site::MakerWorld && status == StatusCode::PARTIAL_CONTENT {
+                return Err(LibraryError::UnexpectedReply {
+                    site,
+                    detail: format!("file download returned HTTP {status} for a full file request"),
+                });
             }
             if response.content_length().is_some_and(|size| size > limit) {
                 return Err(LibraryError::FileTooLarge { limit });
@@ -390,7 +405,10 @@ impl Client {
                 received: 0,
             });
         }
-        Err(LibraryError::IncompatibleResponse { site })
+        Err(LibraryError::UnexpectedReply {
+            site,
+            detail: format!("file download exceeded the limit of {MAXIMUM_REDIRECTS} redirects"),
+        })
     }
 
     fn file_host_allowed(&self, site: Site, url: &Url) -> bool {
@@ -418,13 +436,24 @@ impl Client {
 
     /// Classify an unsuccessful response, keeping only a bounded site reason.
     /// `sent` records whether this request carried the site's token.
-    async fn refusal(&self, site: Site, response: reqwest::Response, sent: bool) -> LibraryError {
+    async fn refusal(
+        &self,
+        site: Site,
+        response: reqwest::Response,
+        sent: bool,
+        operation: &'static str,
+    ) -> LibraryError {
         let status = response.status();
         let challenged = response
             .headers()
             .get("cf-mitigated")
             .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"challenge"));
-        let body = read_bounded(site, response).await.unwrap_or_default();
+        // MakerWorld errors can echo a bearer token or the signed file URL.
+        let body = if site == Site::MakerWorld {
+            Vec::new()
+        } else {
+            read_bounded(site, response).await.unwrap_or_default()
+        };
         let credentials = if sent {
             Credential::Sent
         } else if site == Site::Printables || self.token(site).is_some() {
@@ -432,7 +461,19 @@ impl Client {
         } else {
             Credential::Missing
         };
-        classify(site, status, credentials, challenged, &body)
+        match classify(site, status, credentials, challenged, &body) {
+            LibraryError::Forbidden { .. } if site == Site::MakerWorld => LibraryError::Forbidden {
+                site,
+                reason: format!("{operation} returned HTTP {status}"),
+            },
+            LibraryError::IncompatibleResponse { .. } => LibraryError::UnexpectedReply {
+                site,
+                detail: format!(
+                    "{operation} returned HTTP {status} without a recognized error response"
+                ),
+            },
+            error => error,
+        }
     }
 }
 
@@ -504,10 +545,6 @@ impl Exchange {
                     .is_some_and(|(cookie, value)| cookie == name && !value.is_empty())
             })
     }
-
-    pub(crate) fn reason(&self) -> Option<String> {
-        refusal_reason(&self.body)
-    }
 }
 
 /// A file body being received, bounded by the caller's byte limit.
@@ -539,7 +576,8 @@ impl FileStream {
     ///
     /// # Errors
     ///
-    /// Returns an error when the transfer fails or exceeds the limit.
+    /// Returns an error when the transfer fails, exceeds the limit, or
+    /// returns an invalid archive header for a MakerWorld print profile.
     pub async fn chunk(&mut self) -> Result<Option<bytes::Bytes>, LibraryError> {
         let site = self.site;
         let chunk = self
@@ -547,6 +585,9 @@ impl FileStream {
             .chunk()
             .await
             .map_err(|_| LibraryError::Interrupted { site })?;
+        if site == Site::MakerWorld {
+            self.validate_profile_header(chunk.as_deref())?;
+        }
         if let Some(chunk) = &chunk {
             self.received = self.received.saturating_add(chunk.len() as u64);
             if self.received > self.limit {
@@ -554,6 +595,32 @@ impl FileStream {
             }
         }
         Ok(chunk)
+    }
+
+    fn validate_profile_header(&self, chunk: Option<&[u8]>) -> Result<(), LibraryError> {
+        // A 3MF archive starts with a ZIP local file header, possibly split
+        // across several response chunks.
+        const ZIP_SIGNATURE: &[u8] = b"PK\x03\x04";
+        const ZIP_FIXED_HEADER_BYTES: u64 = 30;
+        if self.received >= ZIP_FIXED_HEADER_BYTES {
+            return Ok(());
+        }
+        let remaining = ZIP_SIGNATURE
+            .get(self.received as usize..)
+            .unwrap_or_default();
+        let problem = match chunk {
+            Some(bytes) if remaining.starts_with(&bytes[..bytes.len().min(remaining.len())]) => {
+                return Ok(());
+            }
+            Some(_) => "with an invalid 3MF archive header",
+            None if self.received == 0 => "without file contents",
+            None => "with an incomplete 3MF archive header",
+        };
+        let status = self.response.status();
+        Err(LibraryError::UnexpectedReply {
+            site: self.site,
+            detail: format!("file download returned HTTP {status} {problem}"),
+        })
     }
 }
 

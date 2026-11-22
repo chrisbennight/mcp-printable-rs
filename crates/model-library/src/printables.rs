@@ -164,7 +164,7 @@ async fn query<T: serde::de::DeserializeOwned>(
 ) -> Result<Answer<T>, LibraryError> {
     let body = json!({"operationName": operation, "query": document, "variables": variables});
     let request = client.api_post(client.endpoints.api(SITE).clone(), &body);
-    let response: Response<T> = client.json(SITE, request, false).await?;
+    let response: Response<T> = client.json(SITE, request, false, "GraphQL request").await?;
     let error = response
         .errors
         .iter()
@@ -279,7 +279,6 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
         image_url: image_url(print.image.as_ref()),
         paid: None,
         files,
-        download_key: None,
         model_id: print.id.0,
     })
 }

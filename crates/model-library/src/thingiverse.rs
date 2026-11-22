@@ -73,7 +73,7 @@ async fn read<T: serde::de::DeserializeOwned>(
 ) -> Result<T, LibraryError> {
     let token = client.required_token(SITE)?;
     let request = client.api_get(url).bearer_auth(token.expose());
-    client.json(SITE, request, true).await
+    client.json(SITE, request, true, "API request").await
 }
 
 pub(crate) async fn search(
@@ -169,7 +169,6 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
         image_url: text::web_url(thing.thumbnail.as_deref()),
         paid: None,
         files,
-        download_key: None,
         model_id: thing.id.0,
     })
 }
