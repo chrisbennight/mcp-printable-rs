@@ -308,6 +308,23 @@ with tempfile.TemporaryDirectory() as directory:
             settings = json.loads((project / model / "settings.json").read_text())
             assert settings["printer"]["name"] == printer
             assert settings["printer"]["machine_start_gcode"]
+            if model in ("a1", "x1c"):
+                startup = request("settings", {
+                    "category": "printer", "profile": {"name": printer},
+                    "query": "machine_start_gcode",
+                })["settings"][0]
+                assert startup["value"] == settings["printer"]["machine_start_gcode"]
+                assert startup["value_source"]["profile"] == f"{printer} template machine_start_gcode"
+                with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
+                    plate = package.read("Metadata/plate_1.gcode").decode()
+                before_first_layer, separator, _ = plate.partition("; CHANGE_LAYER")
+                assert separator, "missing first layer marker"
+                machine = "A1" if model == "a1" else "X1-0.4"
+                assert f";===== machine: {machine} " in before_first_layer
+                commands = [line.partition(";")[0].strip() for line in before_first_layer.splitlines()]
+                load = commands.index("M620 S0A")
+                select = commands.index("T0", load)
+                commands.index("M621 S0A", select)
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
         verify_paint(project, project / "capture-template/model.gcode.3mf")

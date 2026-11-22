@@ -70,8 +70,10 @@ presets such as `AliZ PLA @P1-X1` can be selected when they explicitly support
 a printer in the vendor collection.
 
 The engine reads the preset caches (OPC files) bundled in the AppImage.
-Printable reads JSON presets from the same source revision to resolve inheritance
-and apply overrides. The worker passes the resolved overrides to Orca as JSON.
+Printable reads JSON presets from the same source revision. It resolves inherited
+settings, applies the included templates in their listed order, then applies the
+selected preset's own settings and any caller overrides. The worker passes the
+resolved settings to Orca as JSON.
 Orca 2.5.1 represents `enable_arc_fitting` with an enum. Existing string
 overrides of `0` or `false` resolve to `disabled`. Values of `1` or `true`
 resolve to `enabled`. Discovery shows the current enum choices.

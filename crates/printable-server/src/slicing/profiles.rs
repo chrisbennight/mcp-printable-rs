@@ -222,6 +222,8 @@ pub struct Profiles {
     definitions: BTreeMap<String, super::definitions::Definition>,
 }
 
+type ProfileValues<'a> = BTreeMap<&'a str, (&'a Value, &'a str)>;
+
 fn json_files(directory: &Path) -> Result<Vec<PathBuf>, ToolError> {
     let mut pending = vec![directory.to_path_buf()];
     let mut files = Vec::new();
@@ -419,50 +421,21 @@ impl Profiles {
         category: Category,
         selection: &ProfileSelection,
     ) -> Result<(Value, BTreeMap<String, String>), ToolError> {
-        let entries = &self.entries[&category];
         let shared_selection =
             category == Category::Filament && self.shared_selections.contains(&selection.name);
-        let mut chain = Vec::new();
-        let mut name = selection.name.as_str();
-        let mut seen = BTreeSet::new();
-        loop {
-            if !seen.insert(name.to_owned()) {
-                return Err(invalid("profile inheritance is cyclic"));
-            }
-            let inherited = !chain.is_empty() && category == Category::Filament;
-            let vendor = entries.get(name);
-            let shared = inherited.then(|| self.library.get(name)).flatten();
-            let profile = if shared_selection {
-                shared.or(vendor)
-            } else {
-                vendor.or(shared)
-            }
-            .ok_or_else(|| {
-                invalid(&format!(
-                    "unresolved {} profile: {name}",
-                    category.directory()
-                ))
-            })?;
-            chain.push(profile);
-            match profile
-                .get("inherits")
-                .and_then(Value::as_str)
-                .filter(|x| !x.is_empty())
-            {
-                Some(parent) => name = parent,
-                None => break,
-            }
-        }
+        let values = self.profile_values(
+            category,
+            &selection.name,
+            shared_selection,
+            false,
+            &mut BTreeSet::new(),
+        )?;
         let mut result = Map::new();
         let mut sources = BTreeMap::new();
-        for profile in chain.into_iter().rev() {
-            let source = profile.get("name").and_then(Value::as_str).unwrap_or("");
-            for key in profile.keys() {
-                sources.insert(key.clone(), source.to_owned());
-            }
-            result.extend(profile.clone());
+        for (key, (value, source)) in values {
+            result.insert(key.to_owned(), value.clone());
+            sources.insert(key.to_owned(), source.to_owned());
         }
-        result.remove("inherits");
         for (key, value) in &selection.overrides {
             if let Some(reason) = refusal(key) {
                 return Err(invalid(reason));
@@ -508,6 +481,67 @@ impl Profiles {
         }
         result.insert("from".into(), json!("system"));
         Ok((Value::Object(result), sources))
+    }
+
+    fn profile_values<'a>(
+        &'a self,
+        category: Category,
+        name: &str,
+        prefer_shared: bool,
+        include: bool,
+        active: &mut BTreeSet<&'a str>,
+    ) -> Result<ProfileValues<'a>, ToolError> {
+        let vendor = self.entries[&category].get_key_value(name);
+        let shared = (category == Category::Filament && !active.is_empty())
+            .then(|| self.library.get_key_value(name))
+            .flatten();
+        let (name, profile) = if prefer_shared {
+            shared.or(vendor)
+        } else {
+            vendor.or(shared)
+        }
+        .ok_or_else(|| {
+            let reference = if include { "include" } else { "profile" };
+            invalid(&format!(
+                "unresolved {} {reference}: {name}",
+                category.directory()
+            ))
+        })?;
+        if !active.insert(name.as_str()) {
+            return Err(invalid(&format!("cyclic profile reference: {name}")));
+        }
+        let mut values = match profile
+            .get("inherits")
+            .and_then(Value::as_str)
+            .filter(|parent| !parent.is_empty())
+        {
+            Some(parent) => self.profile_values(category, parent, prefer_shared, false, active)?,
+            None => BTreeMap::new(),
+        };
+        if let Some(includes) = profile.get("include") {
+            let includes = includes
+                .as_array()
+                .map_or_else(|| std::slice::from_ref(includes), Vec::as_slice);
+            for template in includes {
+                let template = template
+                    .as_str()
+                    .ok_or_else(|| invalid(&format!("invalid profile include in {name}")))?;
+                let settings =
+                    self.profile_values(category, template, prefer_shared, true, active)?;
+                values.extend(
+                    settings
+                        .into_iter()
+                        .filter(|(key, _)| self.keys[&category].contains(*key)),
+                );
+            }
+        }
+        for (key, value) in profile {
+            if !matches!(key.as_str(), "inherits" | "include") {
+                values.insert(key, (value, name));
+            }
+        }
+        active.remove(name.as_str());
+        Ok(values)
     }
 
     pub fn discover(&self, query: ProfileQuery) -> Result<Value, ToolError> {
@@ -703,6 +737,73 @@ mod tests {
         assert!(profiles.resolve(Category::Process, &selection).is_err());
         selection.name = "missing".into();
         assert!(profiles.resolve(Category::Process, &selection).is_err());
+    }
+
+    #[test]
+    fn resolves_preset_includes_in_order_and_tracks_setting_sources() {
+        let mut entries = BTreeMap::new();
+        for (name, values) in [
+            (
+                "base",
+                json!({"machine_start_gcode":"base","machine_end_gcode":"base"}),
+            ),
+            (
+                "first",
+                json!({"machine_start_gcode":"first","machine_end_gcode":"first","from":"template"}),
+            ),
+            (
+                "second",
+                json!({"machine_start_gcode":"second","machine_end_gcode":"second"}),
+            ),
+            (
+                "printer",
+                json!({"inherits":"base","include":["first","second"],"machine_end_gcode":"printer"}),
+            ),
+            ("missing", json!({"include":"absent"})),
+            ("cycle", json!({"include":"cyclic-template"})),
+            ("cyclic-template", json!({"inherits":"cycle"})),
+        ] {
+            let mut profile = values.as_object().unwrap().clone();
+            profile.insert("name".into(), json!(name));
+            entries.insert(name.into(), profile);
+        }
+        let profiles = Profiles {
+            entries: BTreeMap::from([(Category::Printer, entries)]),
+            library: BTreeMap::new(),
+            shared_selections: BTreeSet::new(),
+            keys: BTreeMap::from([(
+                Category::Printer,
+                BTreeSet::from(["machine_start_gcode".into(), "machine_end_gcode".into()]),
+            )]),
+            definitions: BTreeMap::new(),
+        };
+        let mut selection = ProfileSelection {
+            name: "printer".into(),
+            overrides: BTreeMap::new(),
+        };
+        let (resolved, sources) = profiles
+            .resolve_with_sources(Category::Printer, &selection)
+            .unwrap();
+        assert_eq!(resolved["name"], "printer");
+        assert_eq!(resolved["machine_start_gcode"], "second");
+        assert_eq!(sources["machine_start_gcode"], "second");
+        assert_eq!(resolved["machine_end_gcode"], "printer");
+        assert!(resolved.get("include").is_none());
+        selection
+            .overrides
+            .insert("machine_start_gcode".into(), json!("caller"));
+        assert_eq!(
+            profiles.resolve(Category::Printer, &selection).unwrap()["machine_start_gcode"],
+            "caller"
+        );
+        for (name, message) in [
+            ("missing", "unresolved machine include: absent"),
+            ("cycle", "cyclic profile reference: cycle"),
+        ] {
+            selection.name = name.into();
+            let error = profiles.resolve(Category::Printer, &selection).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     #[test]
