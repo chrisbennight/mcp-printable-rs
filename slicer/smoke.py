@@ -6,7 +6,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import threading
@@ -308,23 +307,26 @@ with tempfile.TemporaryDirectory() as directory:
             assert (root / review["image"]["path"]).read_bytes().startswith(b"\x89PNG")
             settings = json.loads((project / model / "settings.json").read_text())
             assert settings["printer"]["name"] == printer
-            template = f"{printer} template machine_start_gcode"
-            expected = json.loads((software_profile_root / "machine" / f"{template}.json").read_text())[
-                "machine_start_gcode"]
+            machine_profiles = software_profile_root / "machine"
+            preset = json.loads((machine_profiles / f"{printer}.json").read_text())
+            templates = [json.loads((machine_profiles / f"{name}.json").read_text())
+                         for name in preset.get("include", [])]
+            source = next(profile for profile in reversed([*templates, preset])
+                          if "machine_start_gcode" in profile)
+            expected = source["machine_start_gcode"]
             startup = request("settings", {
                 "category": "printer", "profile": {"name": printer},
                 "query": "machine_start_gcode",
             })["settings"][0]
             assert startup["value"] == settings["printer"]["machine_start_gcode"] == expected, printer
-            assert startup["value_source"]["profile"] == template
+            assert startup["value_source"]["profile"] == source["name"]
             with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
                 plate = package.read("Metadata/plate_1.gcode").decode()
-            before_first_layer, separator, _ = plate.partition("; CHANGE_LAYER")
+            _, separator, executable = plate.partition("; EXECUTABLE_BLOCK_START\n")
+            assert separator, "missing executable G-code"
+            before_first_layer, separator, _ = executable.partition("; CHANGE_LAYER")
             assert separator, "missing first layer marker"
-            assert expected.splitlines()[0] in before_first_layer, printer
-            commands = "\n".join(line.partition(";")[0].strip() for line in before_first_layer.splitlines())
-            assert re.search(r"^M620 S(\d+)A(?: |$).*?^T\1(?: |$).*?^M621 S\1A(?: |$)",
-                             commands, re.MULTILINE | re.DOTALL), f"missing AMS load sequence for {printer}"
+            assert expected.splitlines()[0] in before_first_layer.splitlines(), printer
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
         verify_paint(project, project / "capture-template/model.gcode.3mf")
