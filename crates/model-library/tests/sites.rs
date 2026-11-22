@@ -310,13 +310,13 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
         .and(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": 42, "modelId": "US2bb73b106683e5", "title": "Part",
-            "instances": [{"profileId": 77, "title": "Default"}]
+            "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
         })))
         .mount(&site)
         .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
-        .and(query_param("model_id", "US2bb73b106683e5"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
+        .and(query_param("type", "download"))
         .and(header("authorization", "Bearer AAB_fixture"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "url": format!("{}/bucket/part.3mf?{signed_query}", storage.uri()), "name": "part.3mf"
@@ -347,6 +347,60 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
 }
 
 #[tokio::test]
+async fn makerworld_profile_errors_identify_the_exchange_without_exposing_the_body() {
+    for (status, body, expected) in [
+        (
+            200,
+            r#"{"url":""}"#,
+            "did not provide a download link for this print profile",
+        ),
+        (
+            200,
+            r#"{"url":{"secret":"private"}}"#,
+            "profile download link request returned HTTP 200 OK with missing or incorrectly typed JSON fields",
+        ),
+        (
+            200,
+            "<html>private</html>",
+            "profile download link request returned HTTP 200 OK with invalid JSON",
+        ),
+        (
+            302,
+            "",
+            "profile download link request returned HTTP 302 Found without a recognized error response",
+        ),
+    ] {
+        let site = MockServer::start().await;
+        Mock::given(path("/makerworld/v1/design-service/design/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 42, "modelId": "US1", "title": "Part", "instances": [{"id": 88, "profileId": 77}]
+            })))
+            .mount(&site)
+            .await;
+        Mock::given(path("/makerworld/v1/design-service/instance/88/f3mf"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&site)
+            .await;
+        let client = client(
+            &site,
+            Credentials {
+                makerworld: token("fixture"),
+                thingiverse: None,
+            },
+        );
+        let model = client.model(Site::MakerWorld, "42").await.unwrap();
+        assert_eq!(
+            client
+                .open_file(&model, "77", 1024)
+                .await
+                .unwrap_err()
+                .to_string(),
+            format!("MakerWorld {expected}")
+        );
+    }
+}
+
+#[tokio::test]
 async fn makerworld_refusals_are_classified() {
     let site = MockServer::start().await;
     Mock::given(method("GET"))
@@ -360,12 +414,12 @@ async fn makerworld_refusals_are_classified() {
     Mock::given(method("GET"))
         .and(path("/makerworld/v1/design-service/design/2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 2, "modelId": "US1", "title": "Points", "instances": [{"profileId": 3}]
+            "id": 2, "modelId": "US1", "title": "Points", "instances": [{"id": 4, "profileId": 3}]
         })))
         .mount(&site)
         .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/3"))
+        .and(path("/makerworld/v1/design-service/instance/4/f3mf"))
         .respond_with(
             ResponseTemplate::new(403).set_body_json(json!({"error": "Redeem points to download"})),
         )
@@ -575,7 +629,11 @@ async fn downloads_refuse_foreign_hosts_redirect_loops_and_oversized_bodies() {
     );
     assert_eq!(
         client.open_file(&model, "2", 1024).await.unwrap_err(),
-        LibraryError::IncompatibleResponse {
+        LibraryError::UnexpectedReply {
+            detail: format!(
+                "file download exceeded the limit of {} redirects",
+                model_library::MAXIMUM_REDIRECTS
+            ),
             site: Site::Thingiverse
         }
     );
@@ -648,12 +706,12 @@ async fn a_file_host_cannot_redirect_the_token_back_to_the_api() {
     Mock::given(method("GET"))
         .and(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 42, "modelId": "US2b", "title": "Part", "instances": [{"profileId": 77}]
+            "id": 42, "modelId": "US2b", "title": "Part", "instances": [{"id": 88, "profileId": 77}]
         })))
         .mount(&site)
         .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
         .and(header("authorization", "Bearer AAB_fixture"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "url": format!("{}/bucket/part.3mf", storage.uri())

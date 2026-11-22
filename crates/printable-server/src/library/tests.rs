@@ -574,12 +574,12 @@ async fn mount_makerworld_model(fixture: &Fixture, token: &str) {
         .and(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": 42, "modelId": "US2b", "title": "Bowl",
-            "instances": [{"profileId": 77, "title": "Default"}]
+            "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
         })))
         .mount(&fixture.site)
         .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
         .and(wiremock::matchers::header(
             "authorization",
             format!("Bearer {token}").as_str(),
@@ -764,7 +764,7 @@ async fn a_rejected_token_is_replaced_by_signing_in_again() {
     )
     .await;
     Mock::given(method("GET"))
-        .and(path("/makerworld/v1/iot-service/api/user/profile/77"))
+        .and(path("/makerworld/v1/design-service/instance/88/f3mf"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer AAB_old",

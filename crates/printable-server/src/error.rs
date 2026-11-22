@@ -152,6 +152,7 @@ fn library_code(error: &model_library::LibraryError) -> &'static str {
             "library_unavailable"
         }
         LibraryError::IncompatibleResponse { .. }
+        | LibraryError::UnexpectedReply { .. }
         | LibraryError::RequestRejected { .. }
         | LibraryError::ResponseTooLarge { .. } => "library_incompatible",
         LibraryError::FileTooLarge { .. } => "library_file_too_large",

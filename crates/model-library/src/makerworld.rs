@@ -62,7 +62,6 @@ struct Creator {
 #[serde(rename_all = "camelCase")]
 struct Design {
     id: wire::Id,
-    model_id: Option<String>,
     slug: Option<String>,
     title: String,
     summary: Option<String>,
@@ -76,6 +75,7 @@ struct Design {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Instance {
+    id: Option<wire::Id>,
     profile_id: wire::Id,
     title: Option<String>,
     // The upstream field name is spelled this way.
@@ -101,7 +101,7 @@ struct Compatibility {
 
 #[derive(Deserialize)]
 struct ProfileDownload {
-    url: String,
+    url: Option<String>,
 }
 
 fn api(client: &Client, segments: &[&str]) -> Url {
@@ -133,7 +133,9 @@ pub(crate) async fn search(
         .append_pair("limit", &query.limit.to_string())
         .append_pair("offset", &offset.to_string())
         .append_pair("orderBy", order);
-    let result: SearchResult = client.json(SITE, client.api_get(url), false).await?;
+    let result: SearchResult = client
+        .json(SITE, client.api_get(url), false, "model search")
+        .await?;
     let models: Vec<_> = result
         .hits
         .into_iter()
@@ -169,7 +171,9 @@ pub(crate) async fn search(
 
 pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, LibraryError> {
     let url = api(client, &["v1", "design-service", "design", id]);
-    let design: Design = client.json(SITE, client.api_get(url), false).await?;
+    let design: Design = client
+        .json(SITE, client.api_get(url), false, "model lookup")
+        .await?;
     let files = design
         .instances
         .iter()
@@ -190,7 +194,11 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
                         text::optional(compatibility.dev_product_name.as_deref(), text::SHORT_TEXT)
                     })
                     .map(|printer| format!("print profile for {printer}")),
-                location: None,
+                location: instance
+                    .id
+                    .as_ref()
+                    .map(|id| id.0.clone())
+                    .filter(|id| reference::numeric(id)),
             }
         })
         .collect();
@@ -213,34 +221,41 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
         image_url: text::web_url(design.cover_url.as_deref()),
         paid: None,
         files,
-        download_key: design
-            .model_id
-            .filter(|key| !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_alphanumeric())),
         model_id: design.id.0,
     })
 }
 
-pub(crate) async fn file_url(
-    client: &Client,
-    model: &ModelDetail,
-    file: &RemoteFile,
-) -> Result<Url, LibraryError> {
+pub(crate) async fn file_url(client: &Client, file: &RemoteFile) -> Result<Url, LibraryError> {
     let token = client.required_token(SITE)?;
-    let key = model
-        .download_key
+    // The download endpoint uses the instance ID. Callers select the file
+    // using the separately published profile ID.
+    let instance_id = file
+        .location
         .as_deref()
-        .ok_or(LibraryError::IncompatibleResponse { site: SITE })?;
-    if !reference::numeric(&file.file_id) {
-        return Err(LibraryError::IncompatibleResponse { site: SITE });
-    }
+        .ok_or_else(|| LibraryError::UnexpectedReply {
+            site: SITE,
+            detail: "model lookup did not return a valid instance ID for this print profile".into(),
+        })?;
     let mut url = api(
         client,
-        &["v1", "iot-service", "api", "user", "profile", &file.file_id],
+        &["v1", "design-service", "instance", instance_id, "f3mf"],
     );
-    url.query_pairs_mut().append_pair("model_id", key);
+    url.query_pairs_mut().append_pair("type", "download");
     let request = client.api_get(url).bearer_auth(token.expose());
-    let download: ProfileDownload = client.json(SITE, request, true).await?;
-    Url::parse(&download.url).map_err(|_| LibraryError::IncompatibleResponse { site: SITE })
+    let download: ProfileDownload = client
+        .json(SITE, request, true, "profile download link request")
+        .await?;
+    let url = download
+        .url
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| LibraryError::UnexpectedReply {
+            site: SITE,
+            detail: "did not provide a download link for this print profile".into(),
+        })?;
+    Url::parse(&url).map_err(|_| LibraryError::UnexpectedReply {
+        site: SITE,
+        detail: "profile download response contained an invalid URL".into(),
+    })
 }
 
 fn page_url(id: &str, slug: Option<&str>) -> String {

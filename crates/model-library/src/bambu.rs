@@ -276,8 +276,14 @@ impl Client {
                 "Bambu Lab refused the account email address or password",
             ));
         }
-        let login: Login = serde_json::from_slice(&exchange.body)
-            .map_err(|_| LibraryError::IncompatibleResponse { site: SITE })?;
+        let login: Login =
+            serde_json::from_slice(&exchange.body).map_err(|_| LibraryError::UnexpectedReply {
+                site: SITE,
+                detail: format!(
+                    "sign-in returned unexpected login data (HTTP {})",
+                    exchange.status
+                ),
+            })?;
         if let Some(session) = session(&login) {
             return Ok(SignIn::Complete(session));
         }
@@ -290,7 +296,13 @@ impl Client {
                 source: CodeSource::Authenticator,
                 tfa_key: Some(Zeroizing::new(login.tfa_key)),
             })),
-            _ => Err(LibraryError::IncompatibleResponse { site: SITE }),
+            _ => Err(LibraryError::UnexpectedReply {
+                site: SITE,
+                detail: format!(
+                    "sign-in returned neither a session nor a supported challenge (HTTP {})",
+                    exchange.status
+                ),
+            }),
         }
     }
 
@@ -368,11 +380,23 @@ impl Client {
                 "Bambu Lab did not accept the code",
             ));
         }
-        let login: Login = serde_json::from_slice(&exchange.body)
-            .map_err(|_| LibraryError::IncompatibleResponse { site: SITE })?;
+        let login: Login =
+            serde_json::from_slice(&exchange.body).map_err(|_| LibraryError::UnexpectedReply {
+                site: SITE,
+                detail: format!(
+                    "email verification returned unexpected login data (HTTP {})",
+                    exchange.status
+                ),
+            })?;
         session(&login)
             .map(SignIn::Complete)
-            .ok_or(LibraryError::IncompatibleResponse { site: SITE })
+            .ok_or_else(|| LibraryError::UnexpectedReply {
+                site: SITE,
+                detail: format!(
+                    "email verification returned no access token (HTTP {})",
+                    exchange.status
+                ),
+            })
     }
 
     async fn submit_authenticator_code(
@@ -421,7 +445,13 @@ impl Client {
         let token = exchange
             .cookie("token")
             .and_then(|token| Token::new(token).ok())
-            .ok_or(LibraryError::IncompatibleResponse { site: SITE })?;
+            .ok_or_else(|| LibraryError::UnexpectedReply {
+                site: SITE,
+                detail: format!(
+                    "authenticator verification returned no access token (HTTP {})",
+                    exchange.status
+                ),
+            })?;
         let mut session = Session::from_token(token);
         if session.expires_at_unix.is_none() {
             session.expires_at_unix = exchange

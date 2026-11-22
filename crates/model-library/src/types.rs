@@ -135,8 +135,7 @@ pub struct RemoteFile {
     /// Folder or print-profile details the site shows beside the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Site-provided download location, checked against the site's allowed
-    /// file hosts before use; never shown to callers.
+    /// Site-provided download URL or instance ID, never shown to callers.
     #[serde(skip)]
     #[schemars(skip)]
     pub(crate) location: Option<String>,
@@ -170,8 +169,4 @@ pub struct ModelDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paid: Option<bool>,
     pub files: Vec<RemoteFile>,
-    /// Site-specific value needed to request downloads; never shown to callers.
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub(crate) download_key: Option<String>,
 }

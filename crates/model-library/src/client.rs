@@ -274,7 +274,7 @@ impl Client {
             })?;
         let site = model.site;
         let url = match site {
-            Site::MakerWorld => makerworld::file_url(self, model, file).await?,
+            Site::MakerWorld => makerworld::file_url(self, file).await?,
             Site::Printables => printables::file_url(self, model, file).await?,
             Site::Thingiverse => thingiverse::file_url(file)?,
         };
@@ -326,6 +326,7 @@ impl Client {
         site: Site,
         request: RequestBuilder,
         authenticated: bool,
+        operation: &'static str,
     ) -> Result<T, LibraryError> {
         let response = request
             .send()
@@ -333,10 +334,20 @@ impl Client {
             .map_err(|_| LibraryError::Unavailable { site })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(self.refusal(site, response, authenticated).await);
+            return Err(self.refusal(site, response, authenticated, operation).await);
         }
         let body = read_bounded(site, response).await?;
-        serde_json::from_slice(&body).map_err(|_| LibraryError::IncompatibleResponse { site })
+        serde_json::from_slice(&body).map_err(|error| {
+            let problem = match error.classify() {
+                serde_json::error::Category::Data => "missing or incorrectly typed JSON fields",
+                serde_json::error::Category::Eof => "empty or incomplete JSON",
+                _ => "invalid JSON",
+            };
+            LibraryError::UnexpectedReply {
+                site,
+                detail: format!("{operation} returned HTTP {status} with {problem}"),
+            }
+        })
     }
 
     async fn download(
@@ -371,14 +382,21 @@ impl Client {
                     .headers()
                     .get(header::LOCATION)
                     .and_then(|value| value.to_str().ok())
-                    .ok_or(LibraryError::IncompatibleResponse { site })?;
+                    .ok_or_else(|| LibraryError::UnexpectedReply { site, detail: format!("file download returned HTTP {status} without a readable redirect location") })?;
                 url = url
                     .join(location)
-                    .map_err(|_| LibraryError::IncompatibleResponse { site })?;
+                    .map_err(|_| LibraryError::UnexpectedReply {
+                        site,
+                        detail: format!(
+                            "file download returned HTTP {status} with an invalid redirect location"
+                        ),
+                    })?;
                 continue;
             }
             if !status.is_success() {
-                return Err(self.refusal(site, response, sent.is_some()).await);
+                return Err(self
+                    .refusal(site, response, sent.is_some(), "file download")
+                    .await);
             }
             if response.content_length().is_some_and(|size| size > limit) {
                 return Err(LibraryError::FileTooLarge { limit });
@@ -390,7 +408,10 @@ impl Client {
                 received: 0,
             });
         }
-        Err(LibraryError::IncompatibleResponse { site })
+        Err(LibraryError::UnexpectedReply {
+            site,
+            detail: format!("file download exceeded the limit of {MAXIMUM_REDIRECTS} redirects"),
+        })
     }
 
     fn file_host_allowed(&self, site: Site, url: &Url) -> bool {
@@ -418,7 +439,13 @@ impl Client {
 
     /// Classify an unsuccessful response, keeping only a bounded site reason.
     /// `sent` records whether this request carried the site's token.
-    async fn refusal(&self, site: Site, response: reqwest::Response, sent: bool) -> LibraryError {
+    async fn refusal(
+        &self,
+        site: Site,
+        response: reqwest::Response,
+        sent: bool,
+        operation: &'static str,
+    ) -> LibraryError {
         let status = response.status();
         let challenged = response
             .headers()
@@ -432,7 +459,15 @@ impl Client {
         } else {
             Credential::Missing
         };
-        classify(site, status, credentials, challenged, &body)
+        match classify(site, status, credentials, challenged, &body) {
+            LibraryError::IncompatibleResponse { .. } => LibraryError::UnexpectedReply {
+                site,
+                detail: format!(
+                    "{operation} returned HTTP {status} without a recognized error response"
+                ),
+            },
+            error => error,
+        }
     }
 }
 

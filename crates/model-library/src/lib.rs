@@ -95,6 +95,8 @@ pub enum LibraryError {
     Unavailable { site: Site },
     #[error("{site} returned a response this client does not understand")]
     IncompatibleResponse { site: Site },
+    #[error("{site} {detail}")]
+    UnexpectedReply { site: Site, detail: String },
     #[error("{site} rejected this client's request: {reason}")]
     RequestRejected { site: Site, reason: String },
     #[error("{site} returned a response larger than this client accepts")]
