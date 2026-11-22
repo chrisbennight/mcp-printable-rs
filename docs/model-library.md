@@ -123,7 +123,8 @@ its files:
 
 Each file has a `file_id`, name, kind (`model`, `print_profile`, `sliced` or
 `other`), and its size when the site reports it. MakerWorld files are print
-profiles: 3MF projects with the designer's printer settings.
+profiles: 3MF projects with the designer's printer settings. Printable lists
+profiles that MakerWorld identifies for download.
 `downloads_available` reports whether this server can download from the site.
 
 `download` saves selected files into a project:

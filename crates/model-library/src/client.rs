@@ -398,12 +398,6 @@ impl Client {
                     .refusal(site, response, sent.is_some(), "file download")
                     .await);
             }
-            if status == StatusCode::NO_CONTENT || response.content_length() == Some(0) {
-                return Err(LibraryError::UnexpectedReply {
-                    site,
-                    detail: format!("file download returned HTTP {status} without file contents"),
-                });
-            }
             if response.content_length().is_some_and(|size| size > limit) {
                 return Err(LibraryError::FileTooLarge { limit });
             }
@@ -589,7 +583,8 @@ impl FileStream {
     ///
     /// # Errors
     ///
-    /// Returns an error when the transfer fails or exceeds the limit.
+    /// Returns an error when the transfer fails, exceeds the limit, or
+    /// completes without file contents for a MakerWorld print profile.
     pub async fn chunk(&mut self) -> Result<Option<bytes::Bytes>, LibraryError> {
         let site = self.site;
         let chunk = self
@@ -602,6 +597,13 @@ impl FileStream {
             if self.received > self.limit {
                 return Err(LibraryError::FileTooLarge { limit: self.limit });
             }
+        }
+        if site == Site::MakerWorld && chunk.is_none() && self.received == 0 {
+            let status = self.response.status();
+            return Err(LibraryError::UnexpectedReply {
+                site,
+                detail: format!("file download returned HTTP {status} without file contents"),
+            });
         }
         Ok(chunk)
     }

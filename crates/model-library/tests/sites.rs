@@ -363,20 +363,10 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
     let model = client.model(Site::MakerWorld, "42").await.unwrap();
     let stream = client.open_file(&model, "77", 1024).await.unwrap();
     assert_eq!(body(stream).await.unwrap(), b"PK\x03\x04");
+    assert!(model.files.iter().all(|file| file.file_id != "78"));
+    let mut empty = client.open_file(&model, "79", 1024).await.unwrap();
     assert_eq!(
-        client
-            .open_file(&model, "78", 1024)
-            .await
-            .unwrap_err()
-            .to_string(),
-        "MakerWorld model lookup did not return a valid instance ID for this print profile"
-    );
-    assert_eq!(
-        client
-            .open_file(&model, "79", 1024)
-            .await
-            .unwrap_err()
-            .to_string(),
+        empty.chunk().await.unwrap_err().to_string(),
         "MakerWorld file download returned HTTP 204 No Content without file contents"
     );
 }

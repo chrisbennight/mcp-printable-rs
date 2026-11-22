@@ -1189,6 +1189,32 @@ async fn serve_chunked(body: Vec<u8>) -> String {
 }
 
 #[tokio::test]
+async fn a_makerworld_download_with_an_empty_chunked_body_fails() {
+    let fixture = fixture_with(
+        &[Site::MakerWorld],
+        &[("PRINTABLE_MAKERWORLD_TOKEN", "AAB_fixture".into())],
+    )
+    .await;
+    let url = serve_chunked(Vec::new()).await;
+    Mock::given(path("/makerworld/v1/design-service/design/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 42, "title": "Bowl", "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
+        })))
+        .mount(&fixture.site)
+        .await;
+    Mock::given(path("/makerworld/v1/design-service/instance/88/f3mf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"url": url})))
+        .mount(&fixture.site)
+        .await;
+    let result = call(&fixture.server, "library", download_bowl()).await;
+    assert_eq!(structured(&result)["error"]["code"], "library_incompatible");
+    assert_eq!(
+        structured(&result)["error"]["message"],
+        "MakerWorld file download returned HTTP 200 OK without file contents"
+    );
+}
+
+#[tokio::test]
 async fn a_file_of_undeclared_size_is_charged_for_what_arrives() {
     let fixture = fixture(&[Site::Printables]).await;
     Workspace::open(Some(fixture._workspace.path()), None)

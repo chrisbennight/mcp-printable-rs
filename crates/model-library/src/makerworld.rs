@@ -177,15 +177,16 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
     let files = design
         .instances
         .iter()
-        .map(|instance| {
-            let title = text::optional(instance.title.as_deref(), text::SHORT_TEXT)
-                .unwrap_or_else(|| format!("profile-{}", instance.profile_id.0));
+        .filter_map(|instance| {
             let instance_id = match instance.id.as_ref() {
                 Some(serde_json::Value::String(id)) => Some(id.clone()),
                 Some(serde_json::Value::Number(id)) => id.as_u64().map(|id| id.to_string()),
                 _ => None,
             };
-            RemoteFile {
+            let instance_id = instance_id.filter(|id| reference::numeric(id))?;
+            let title = text::optional(instance.title.as_deref(), text::SHORT_TEXT)
+                .unwrap_or_else(|| format!("profile-{}", instance.profile_id.0));
+            Some(RemoteFile {
                 file_id: instance.profile_id.0.clone(),
                 name: format!("{title}.3mf"),
                 kind: FileKind::PrintProfile,
@@ -199,8 +200,8 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
                         text::optional(compatibility.dev_product_name.as_deref(), text::SHORT_TEXT)
                     })
                     .map(|printer| format!("print profile for {printer}")),
-                location: instance_id.filter(|id| reference::numeric(id)),
-            }
+                location: Some(instance_id),
+            })
         })
         .collect();
     Ok(ModelDetail {
