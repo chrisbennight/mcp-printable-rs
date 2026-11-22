@@ -125,7 +125,7 @@ Each file has a `file_id`, name, kind (`model`, `print_profile`, `sliced` or
 `other`), and its size when the site reports it. MakerWorld files are print
 profiles: 3MF projects with the designer's printer settings. Downloading a
 profile requires MakerWorld to supply its instance ID and a file beginning with
-a valid ZIP archive header.
+a ZIP signature and enough bytes for the fixed header.
 `downloads_available` reports whether this server can download from the site.
 
 `download` saves selected files into a project:

@@ -192,7 +192,7 @@ async fn an_authenticator_code_is_answered_on_the_website_with_its_csrf_cookie()
             ResponseTemplate::new(204)
                 .insert_header("set-cookie", "bbl_csrf_token=csrf-1; Path=/; HttpOnly"),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -204,6 +204,16 @@ async fn an_authenticator_code_is_answered_on_the_website_with_its_csrf_cookie()
             "set-cookie",
             format!("token={}; Path=/; Secure", jwt(1_950_000_000)),
         ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/bambu-web/api/sign-in/tfa"))
+        .and(body_json(json!({"tfaKey": "key-1", "tfaCode": "123456"})))
+        .respond_with(
+            ResponseTemplate::new(422).set_body_json(json!({"error": "Unexpected code 123456"})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -222,6 +232,16 @@ async fn an_authenticator_code_is_answered_on_the_website_with_its_csrf_cookie()
         panic!("expected a token");
     };
     assert_eq!(session.expires_at_unix, Some(1_950_000_000));
+    assert_eq!(
+        client
+            .bambu_submit_code(&account(), &challenge, "123456")
+            .await
+            .unwrap_err(),
+        LibraryError::RequestRejected {
+            site: Site::MakerWorld,
+            reason: "Bambu Lab refused the sign-in request (HTTP 422 Unprocessable Entity)".into(),
+        }
+    );
 }
 
 #[tokio::test]

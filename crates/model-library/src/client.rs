@@ -600,11 +600,14 @@ impl FileStream {
     fn validate_profile_header(&self, chunk: Option<&[u8]>) -> Result<(), LibraryError> {
         // A 3MF archive starts with a ZIP local file header, possibly split
         // across several response chunks.
-        const ZIP_HEADER: &[u8] = b"PK\x03\x04";
-        if self.received >= ZIP_HEADER.len() as u64 {
+        const ZIP_SIGNATURE: &[u8] = b"PK\x03\x04";
+        const ZIP_FIXED_HEADER_BYTES: u64 = 30;
+        if self.received >= ZIP_FIXED_HEADER_BYTES {
             return Ok(());
         }
-        let remaining = &ZIP_HEADER[self.received as usize..];
+        let remaining = ZIP_SIGNATURE
+            .get(self.received as usize..)
+            .unwrap_or_default();
         let problem = match chunk {
             Some(bytes) if remaining.starts_with(&bytes[..bytes.len().min(remaining.len())]) => {
                 return Ok(());

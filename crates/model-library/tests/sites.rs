@@ -343,12 +343,13 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
         .mount(&storage)
         .await;
 
+    let archive_header = [b"PK\x03\x04".as_slice(), &[0; 26]].concat();
     let expected = signed_query.to_owned();
     Mock::given(method("GET"))
         .and(path("/bucket/part.3mf"))
         .and(no_authorization)
         .and(move |request: &Request| request.url.query() == Some(expected.as_str()))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PK\x03\x04".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive_header.clone()))
         .expect(1)
         .mount(&storage)
         .await;
@@ -362,7 +363,7 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
     );
     let model = client.model(Site::MakerWorld, "42").await.unwrap();
     let stream = client.open_file(&model, "77", 1024).await.unwrap();
-    assert_eq!(body(stream).await.unwrap(), b"PK\x03\x04");
+    assert_eq!(body(stream).await.unwrap(), archive_header);
     assert_eq!(
         model.download_file("78").unwrap_err().to_string(),
         "MakerWorld model lookup did not return a valid instance ID for this print profile"

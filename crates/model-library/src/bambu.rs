@@ -490,7 +490,14 @@ fn sign_in_refusal(exchange: &Exchange, default: &str) -> LibraryError {
         return LibraryError::Challenged { site: SITE };
     }
     match exchange.status.as_u16() {
-        400 | 401 | 403 | 422 => rejected(default),
+        400 | 401 | 403 => rejected(default),
+        422 => LibraryError::RequestRejected {
+            site: SITE,
+            reason: format!(
+                "Bambu Lab refused the sign-in request (HTTP {})",
+                exchange.status
+            ),
+        },
         _ => classify(SITE, exchange.status, Credential::NotApplicable, false, &[]),
     }
 }

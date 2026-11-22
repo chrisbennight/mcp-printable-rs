@@ -591,7 +591,10 @@ async fn mount_makerworld_model(fixture: &Fixture, token: &str) {
         .await;
     Mock::given(method("GET"))
         .and(path("/files/bowl.3mf"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PK\x03\x04bowl".to_vec()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes([b"PK\x03\x04".as_slice(), &[0; 26]].concat()),
+        )
         .mount(&fixture.files)
         .await;
 }
@@ -1216,7 +1219,7 @@ async fn makerworld_downloads_require_a_3mf_archive_header() {
     for (bytes, expected) in [
         (b"".as_slice(), "without file contents"),
         (b"<html>error</html>", "with an invalid 3MF archive header"),
-        (b"PK", "with an incomplete 3MF archive header"),
+        (b"PK\x03\x04", "with an incomplete 3MF archive header"),
     ] {
         let fixture = fixture_with(
             &[Site::MakerWorld],
