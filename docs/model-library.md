@@ -192,12 +192,12 @@ secrets.
 | `library_authentication` | The site rejected the token; it may have expired |
 | `library_sign_in_required` | MakerWorld needs a code from the user; the message says which code and how to submit it |
 | `library_sign_in_rejected` | Bambu Lab refused the password or code; for an expired emailed code, Bambu Lab has sent a new one |
-| `library_forbidden` | The site refused the model or file, for example because it is paid, Club-only, needs points or needs an account this server does not use; the site's reason is included when it gives one |
+| `library_forbidden` | The site refused the model or file, for example because it is paid, Club-only, needs points or needs an account this server does not use; the message can include the site's reason. For MakerWorld API and file requests it reports the operation and HTTP status |
 | `library_not_found` | No such model or file |
 | `library_challenged` | The site asked for a CAPTCHA; wait before trying again, or download the file in a browser and upload it with `artifact` |
 | `library_rate_limited` | The site is limiting requests; wait before trying again |
 | `library_unavailable` | The site could not be reached, failed, or the transfer was interrupted |
-| `library_incompatible` | The site rejected this version's request, with the site's reason when it gives one, or returned a response this version does not understand or that exceeds the size limit. For unexpected MakerWorld replies, the message identifies the operation and includes the HTTP status when available |
+| `library_incompatible` | The site rejected this version's request, with the site's reason when it gives one, or returned a response this version does not understand or that exceeds the size limit. MakerWorld errors identify missing or invalid download links. Unexpected HTTP statuses and JSON decoding errors also include the HTTP status |
 | `library_file_too_large` | The file exceeds `PRINTABLE_FILE_UPLOAD_MAX_MIB` |
 | `library_disallowed_host` | A download redirected outside the site's file hosts |
 | `library_incomplete` | Committing failed after some files were saved |

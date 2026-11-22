@@ -75,7 +75,7 @@ struct Design {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Instance {
-    id: Option<wire::Id>,
+    id: Option<serde_json::Value>,
     profile_id: wire::Id,
     title: Option<String>,
     // The upstream field name is spelled this way.
@@ -180,6 +180,11 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
         .map(|instance| {
             let title = text::optional(instance.title.as_deref(), text::SHORT_TEXT)
                 .unwrap_or_else(|| format!("profile-{}", instance.profile_id.0));
+            let instance_id = match instance.id.as_ref() {
+                Some(serde_json::Value::String(id)) => Some(id.clone()),
+                Some(serde_json::Value::Number(id)) => id.as_u64().map(|id| id.to_string()),
+                _ => None,
+            };
             RemoteFile {
                 file_id: instance.profile_id.0.clone(),
                 name: format!("{title}.3mf"),
@@ -194,11 +199,7 @@ pub(crate) async fn model(client: &Client, id: &str) -> Result<ModelDetail, Libr
                         text::optional(compatibility.dev_product_name.as_deref(), text::SHORT_TEXT)
                     })
                     .map(|printer| format!("print profile for {printer}")),
-                location: instance
-                    .id
-                    .as_ref()
-                    .map(|id| id.0.clone())
-                    .filter(|id| reference::numeric(id)),
+                location: instance_id.filter(|id| reference::numeric(id)),
             }
         })
         .collect();

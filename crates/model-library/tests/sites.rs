@@ -310,7 +310,11 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
         .and(path("/makerworld/v1/design-service/design/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": 42, "modelId": "US2bb73b106683e5", "title": "Part",
-            "instances": [{"id": 88, "profileId": 77, "title": "Default"}]
+            "instances": [
+                {"id": 88, "profileId": 77, "title": "Default"},
+                {"id": "", "profileId": 78},
+                {"id": 89, "profileId": 79}
+            ]
         })))
         .mount(&site)
         .await;
@@ -324,6 +328,21 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
         .expect(1)
         .mount(&site)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/makerworld/v1/design-service/instance/89/f3mf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "url": format!("{}/empty.3mf", storage.uri())
+        })))
+        .expect(1)
+        .mount(&site)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/empty.3mf"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&storage)
+        .await;
+
     let expected = signed_query.to_owned();
     Mock::given(method("GET"))
         .and(path("/bucket/part.3mf"))
@@ -344,6 +363,22 @@ async fn makerworld_signed_links_keep_their_exact_query_and_never_receive_the_to
     let model = client.model(Site::MakerWorld, "42").await.unwrap();
     let stream = client.open_file(&model, "77", 1024).await.unwrap();
     assert_eq!(body(stream).await.unwrap(), b"PK\x03\x04");
+    assert_eq!(
+        client
+            .open_file(&model, "78", 1024)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "MakerWorld model lookup did not return a valid instance ID for this print profile"
+    );
+    assert_eq!(
+        client
+            .open_file(&model, "79", 1024)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "MakerWorld file download returned HTTP 204 No Content without file contents"
+    );
 }
 
 #[tokio::test]
@@ -421,7 +456,8 @@ async fn makerworld_refusals_are_classified() {
     Mock::given(method("GET"))
         .and(path("/makerworld/v1/design-service/instance/4/f3mf"))
         .respond_with(
-            ResponseTemplate::new(403).set_body_json(json!({"error": "Redeem points to download"})),
+            ResponseTemplate::new(403)
+                .set_body_json(json!({"error": "Cannot download with token AAB_fixture"})),
         )
         .mount(&site)
         .await;
@@ -448,7 +484,7 @@ async fn makerworld_refusals_are_classified() {
         client.open_file(&model, "3", 1024).await.unwrap_err(),
         LibraryError::Forbidden {
             site: Site::MakerWorld,
-            reason: "Redeem points to download".into()
+            reason: "profile download link request returned HTTP 403 Forbidden".into()
         }
     );
     assert_eq!(

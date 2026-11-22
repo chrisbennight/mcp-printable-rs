@@ -398,6 +398,12 @@ impl Client {
                     .refusal(site, response, sent.is_some(), "file download")
                     .await);
             }
+            if status == StatusCode::NO_CONTENT || response.content_length() == Some(0) {
+                return Err(LibraryError::UnexpectedReply {
+                    site,
+                    detail: format!("file download returned HTTP {status} without file contents"),
+                });
+            }
             if response.content_length().is_some_and(|size| size > limit) {
                 return Err(LibraryError::FileTooLarge { limit });
             }
@@ -451,7 +457,12 @@ impl Client {
             .headers()
             .get("cf-mitigated")
             .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"challenge"));
-        let body = read_bounded(site, response).await.unwrap_or_default();
+        // MakerWorld errors can echo a bearer token or the signed file URL.
+        let body = if site == Site::MakerWorld {
+            Vec::new()
+        } else {
+            read_bounded(site, response).await.unwrap_or_default()
+        };
         let credentials = if sent {
             Credential::Sent
         } else if site == Site::Printables || self.token(site).is_some() {
@@ -460,6 +471,10 @@ impl Client {
             Credential::Missing
         };
         match classify(site, status, credentials, challenged, &body) {
+            LibraryError::Forbidden { .. } if site == Site::MakerWorld => LibraryError::Forbidden {
+                site,
+                reason: format!("{operation} returned HTTP {status}"),
+            },
             LibraryError::IncompatibleResponse { .. } => LibraryError::UnexpectedReply {
                 site,
                 detail: format!(
