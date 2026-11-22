@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -307,7 +308,31 @@ with tempfile.TemporaryDirectory() as directory:
             assert (root / review["image"]["path"]).read_bytes().startswith(b"\x89PNG")
             settings = json.loads((project / model / "settings.json").read_text())
             assert settings["printer"]["name"] == printer
-            assert settings["printer"]["machine_start_gcode"]
+            machine_profiles = software_profile_root / "machine"
+            preset = json.loads((machine_profiles / f"{printer}.json").read_text())
+            templates = [json.loads((machine_profiles / f"{name}.json").read_text())
+                         for name in preset.get("include", [])]
+            source = next(profile for profile in reversed([*templates, preset])
+                          if "machine_start_gcode" in profile)
+            expected = source["machine_start_gcode"]
+            startup = request("settings", {
+                "category": "printer", "profile": {"name": printer},
+                "query": "machine_start_gcode",
+            })["settings"][0]
+            assert startup["value"] == settings["printer"]["machine_start_gcode"] == expected, printer
+            assert startup["value_source"]["profile"] == source["name"]
+            with zipfile.ZipFile(project / model / "model.gcode.3mf") as package:
+                plate = package.read("Metadata/plate_1.gcode").decode()
+            _, separator, executable = plate.partition("; EXECUTABLE_BLOCK_START\n")
+            assert separator, "missing executable G-code"
+            before_first_layer, separator, _ = executable.partition("; CHANGE_LAYER")
+            assert separator, "missing first layer marker"
+            assert expected.splitlines()[0] in before_first_layer.splitlines(), printer
+            # Keep tray selection commands in order and ignore optional nozzle arguments.
+            routing = re.findall(r"^[ \t]*(M62[01] S\d+A|T-?\d+)(?=[ \t;]|$)",
+                                 before_first_layer, re.MULTILINE)
+            assert re.search(r"(?:^|\n)M620 S(\d+)A\nT\1\nM621 S\1A(?:\n|$)",
+                             "\n".join(routing)), f"missing AMS startup sequence for {printer}"
             assert all("inherits" not in profile for profile in [settings["printer"], settings["process"], *settings["filaments"]])
             handles.append(handle)
         verify_paint(project, project / "capture-template/model.gcode.3mf")
@@ -786,7 +811,9 @@ with tempfile.TemporaryDirectory() as directory:
             toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
             lines = (project / name / toolpath).read_text().splitlines()
             assert {"; filament_type = PLA;PETG", "; filament_map = 2,1",
-                    "; filament_nozzle_map = 1,0", "T0", "T1"} <= set(lines), name
+                    "; filament_nozzle_map = 1,0"} <= set(lines), name
+            tool_commands = {line.split(maxsplit=1)[0] for line in lines if line.startswith("T")}
+            assert {"T0", "T1"} <= tool_commands, (name, tool_commands)
             prefix = "; flush_volumes_matrix = "
             used_purge = [float(value) for line in lines if line.startswith(prefix)
                           for value in line.removeprefix(prefix).split(",")]
