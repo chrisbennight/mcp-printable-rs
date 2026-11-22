@@ -7,6 +7,8 @@ The `slice` workflow uses a separate, credential-free OrcaSlicer worker. It shar
 the project workspace with the server and other engines, but cannot control a
 printer. The packaged worker uses OrcaSlicer 2.5.1 and its BBL profile collection.
 Profile availability is not a claim of compatibility with every printer.
+The worker lets OrcaSlicer attempt to slice 3MF projects saved by newer slicer
+versions. OrcaSlicer can still reject project features it cannot process.
 
 ## Why Printable maintains an OrcaSlicer fork
 

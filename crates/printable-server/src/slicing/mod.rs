@@ -1045,6 +1045,7 @@ impl SliceWorker {
                 params.build_plate.native_name(),
                 "--slice",
                 &params.plate.to_string(),
+                "--allow-newer-file",
                 "--export-3mf",
                 "model.gcode.3mf",
                 "--outputdir",
