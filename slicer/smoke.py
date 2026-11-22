@@ -811,7 +811,9 @@ with tempfile.TemporaryDirectory() as directory:
             toolpath = next(key for key in state["artifacts"] if key.endswith(".gcode"))
             lines = (project / name / toolpath).read_text().splitlines()
             assert {"; filament_type = PLA;PETG", "; filament_map = 2,1",
-                    "; filament_nozzle_map = 1,0", "T0", "T1"} <= set(lines), name
+                    "; filament_nozzle_map = 1,0"} <= set(lines), name
+            tool_commands = {line.split(maxsplit=1)[0] for line in lines if line.startswith("T")}
+            assert {"T0", "T1"} <= tool_commands, (name, tool_commands)
             prefix = "; flush_volumes_matrix = "
             used_purge = [float(value) for line in lines if line.startswith(prefix)
                           for value in line.removeprefix(prefix).split(",")]
