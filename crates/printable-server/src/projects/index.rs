@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use printable_workspace::{Workspace, WsError};
+use printable_workspace::Workspace;
 use rusqlite::{
     Connection, OptionalExtension, TransactionBehavior, params, params_from_iter,
     types::Value as Sql,
@@ -465,6 +465,9 @@ pub struct SearchFilters {
     /// A file format shown on the card, such as stl, step or gcode.3mf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// A collection_id: only projects in that collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -503,6 +506,21 @@ pub struct SearchParams {
     /// method's score.
     #[serde(default)]
     pub detail: Detail,
+    /// Projects the search may return, already resolved by a caller that
+    /// shows the same collections beside the results, so both come from one
+    /// reading. Not part of the public request.
+    #[serde(skip)]
+    pub(crate) scope: Option<Scope>,
+}
+
+/// Which projects a search may return, resolved from the collections when
+/// the search starts.
+#[derive(Debug, Default)]
+pub(crate) enum Scope {
+    #[default]
+    All,
+    Only(Vec<String>),
+    Except(Vec<String>),
 }
 
 impl SearchParams {
@@ -734,21 +752,7 @@ fn clipped(message: &str) -> &str {
 
 /// Project IDs with a record, in ID order.
 fn project_ids(workspace: &Workspace) -> Result<Vec<String>, ToolError> {
-    let files = match workspace.list_artifacts(".printable/projects", usize::MAX) {
-        Ok(files) => files,
-        Err(WsError::NotFound(_)) => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    Ok(files
-        .into_iter()
-        .filter_map(|file| {
-            file.path
-                .strip_prefix(".printable/projects/")
-                .and_then(|name| name.strip_suffix(".json"))
-                .filter(|id| super::validate_id(id).is_ok())
-                .map(str::to_owned)
-        })
-        .collect())
+    super::ids(workspace)
 }
 
 /// Everything stored for one indexed project.
@@ -1052,7 +1056,7 @@ struct Scored {
 }
 
 impl Query {
-    fn new(params: SearchParams) -> Result<Self, ToolError> {
+    fn new(params: SearchParams, scope: Scope) -> Result<Self, ToolError> {
         if !(1..=MAX_LIMIT).contains(&params.limit) {
             return Err(invalid(format!("limit must be between 1 and {MAX_LIMIT}")));
         }
@@ -1115,6 +1119,8 @@ impl Query {
             source,
             license,
             format,
+            // Resolved into `scope` before the query is built.
+            collection: _,
         } = params.filters;
         let mut filters: Vec<(&'static str, Vec<Sql>)> = Vec::new();
         for (column, flag) in [("p.printed = ?", printed), ("p.has_3mf = ?", has_3mf)] {
@@ -1142,6 +1148,17 @@ impl Query {
                 "EXISTS (SELECT 1 FROM facets f WHERE f.kind = ? AND f.value = ? AND f.project = p.id)",
                 vec![Sql::Text(kind.into()), Sql::Text(value)],
             ));
+        }
+        match scope {
+            Scope::All => {}
+            Scope::Only(ids) => filters.push((
+                "p.project_id IN (SELECT value FROM json_each(?))",
+                vec![Sql::Text(serde_json::to_string(&ids)?)],
+            )),
+            Scope::Except(ids) => filters.push((
+                "p.project_id NOT IN (SELECT value FROM json_each(?))",
+                vec![Sql::Text(serde_json::to_string(&ids)?)],
+            )),
         }
         Ok(Self {
             text: text.filter(|_| !words.is_empty()),
@@ -2267,6 +2284,43 @@ impl ProjectIndex {
         work(connection.as_mut().expect("opened above"))
     }
 
+    /// Up to `per` indexed cards with a picture for each collection, newest
+    /// first, from a map of project ID to collection ID. Projects not yet
+    /// indexed are left out. Blocks on the index; call from blocking work.
+    pub(crate) fn collection_pictures(
+        &self,
+        memberships: &std::collections::BTreeMap<String, String>,
+        per: usize,
+    ) -> Result<Vec<(String, CompactCard)>, ToolError> {
+        let memberships = serde_json::to_string(memberships)?;
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT collection, card FROM (
+                     SELECT m.value AS collection, p.card AS card,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY m.value
+                             ORDER BY p.created_unix_ms DESC, p.name_folded, p.project_id
+                         ) AS place
+                     FROM json_each(?1) m JOIN projects p ON p.project_id = m.key
+                     WHERE p.card IS NOT NULL
+                         AND (json_extract(p.card, '$.picture') IS NOT NULL
+                             OR json_extract(p.card, '$.cover_path') IS NOT NULL))
+                 WHERE place <= ?2
+                 ORDER BY collection, place",
+            )?;
+            let cards = statement
+                .query_map(params![memberships, sql_int(per as u64)], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .map(|row| {
+                    let (collection, card) = row?;
+                    Ok((collection, parse_card(&card)?))
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(cards)
+        })
+    }
+
     /// Run index statements on the blocking pool.
     async fn db<T: Send + 'static>(
         self: &Arc<Self>,
@@ -3122,16 +3176,41 @@ impl ProjectIndex {
         note(Capability::Rerank, reason(error), Some(detail))
     }
 
+    /// The projects a search may return: the caller's resolved scope, or
+    /// the current members of the requested collection.
+    async fn scope(
+        workspace: &Arc<Workspace>,
+        params: &mut SearchParams,
+        permits: &Arc<Semaphore>,
+    ) -> Result<Scope, ToolError> {
+        if let Some(scope) = params.scope.take() {
+            return Ok(scope);
+        }
+        let Some(collection) = params.filters.collection.clone() else {
+            return Ok(Scope::All);
+        };
+        let workspace = Arc::clone(workspace);
+        blocking_with(permits, move || {
+            let index = super::collections::read(&workspace)?;
+            Ok::<_, ToolError>(Scope::Only(super::collections::members_of(
+                &index,
+                &collection,
+            )?))
+        })
+        .await
+    }
+
     /// Search the index. `permits` bounds its blocking index reads, so a
     /// caller with its own pool does not use the MCP tools' workspace
     /// operations.
     pub async fn search(
         self: &Arc<Self>,
         workspace: &Arc<Workspace>,
-        params: SearchParams,
+        mut params: SearchParams,
         permits: &Arc<Semaphore>,
     ) -> Result<SearchResponse, ToolError> {
-        let query = Arc::new(Query::new(params)?);
+        let scope = Self::scope(workspace, &mut params, permits).await?;
+        let query = Arc::new(Query::new(params, scope)?);
         let index = Arc::clone(self);
         let identity = blocking_with(permits, move || {
             index.with_connection(|connection| Ok(read_identity(connection)?))
@@ -3736,6 +3815,85 @@ mod tests {
     fn validator() -> jsonschema::Validator {
         let schema = Value::Object(crate::tools::output::schema("catalog").as_ref().clone());
         jsonschema::validator_for(&schema).unwrap()
+    }
+
+    #[test]
+    fn collection_filters_follow_current_membership_without_reindexing() {
+        let (_root, workspace, index) = indexed();
+        let group = |action: &str, params: Value| {
+            super::super::collections::dispatch(
+                &workspace,
+                serde_json::from_value(json!({"action": action, "params": params})).unwrap(),
+            )
+            .unwrap()
+        };
+        group(
+            "create",
+            json!({"collection_id": "desk-things", "name": "Desk things",
+                   "project_ids": ["clip", "desk"]}),
+        );
+        let members = json!({"filters": {"collection": "desk-things"}, "sort": "name"});
+        assert_eq!(
+            ids(&search(&index, &workspace, members.clone())),
+            ["clip", "desk"]
+        );
+        assert_eq!(
+            ids(&search(
+                &index,
+                &workspace,
+                json!({"text": "drawers", "filters": {"collection": "desk-things"}})
+            )),
+            ["desk"]
+        );
+        let browse = |index: &Arc<ProjectIndex>| {
+            let mut params: SearchParams = serde_json::from_value(json!({"sort": "name"})).unwrap();
+            let grouped = super::super::collections::read(&workspace)
+                .unwrap()
+                .grouped();
+            params.scope = Some(Scope::Except(grouped));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(index.search(&workspace, params, &Arc::new(Semaphore::new(4))))
+                .unwrap()
+        };
+        assert_eq!(ids(&browse(&index)), ["vase", "hook"]);
+        // Moving a project shows at once; the index itself is unchanged.
+        group(
+            "remove_projects",
+            json!({"collection_id": "desk-things", "project_ids": ["clip"]}),
+        );
+        assert_eq!(ids(&search(&index, &workspace, members)), ["desk"]);
+        assert_eq!(ids(&browse(&index)), ["clip", "vase", "hook"]);
+        let unknown = try_search(
+            &index,
+            &workspace,
+            json!({"filters": {"collection": "missing"}}),
+        )
+        .unwrap_err();
+        assert!(unknown.to_string().contains("no collection"), "{unknown}");
+        // Only pictured members count, at most `per` for each collection.
+        let memberships = std::collections::BTreeMap::from([
+            ("desk".to_owned(), "a".to_owned()),
+            ("clip".to_owned(), "a".to_owned()),
+            ("ghost".to_owned(), "a".to_owned()),
+            ("vase".to_owned(), "b".to_owned()),
+        ]);
+        let pictured: Vec<(String, String)> = index
+            .collection_pictures(&memberships, 1)
+            .unwrap()
+            .into_iter()
+            .map(|(collection, card)| (collection, card.project_id))
+            .collect();
+        let expected: Vec<(String, String)> = index
+            .collection_pictures(&memberships, 50)
+            .unwrap()
+            .into_iter()
+            .map(|(collection, card)| (collection, card.project_id))
+            .collect();
+        assert!(pictured.len() <= 2);
+        assert!(pictured.iter().all(|entry| expected.contains(entry)));
     }
 
     #[test]
@@ -5345,8 +5503,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             earlier.probe.reverse();
-            let query =
-                Query::new(serde_json::from_value(json!({"text": "vase"})).unwrap()).unwrap();
+            let query = Query::new(
+                serde_json::from_value(json!({"text": "vase"})).unwrap(),
+                Scope::All,
+            )
+            .unwrap();
             let vectors = QueryVectors {
                 meaning: Some(vec![0.0; earlier.dimensions]),
                 picture: None,

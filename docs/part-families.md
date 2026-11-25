@@ -1,9 +1,10 @@
 # Part families and variants
 
 Part families organize existing files without making every size or export a
-separate project. A project acts as a collection; within it, families describe
-recognizable designs, variants name supported choices, and file sets offer the
-applicable exports. Ordinary projects work without any family records.
+separate project. Within a project, families describe recognizable designs,
+variants name supported choices, and file sets offer the applicable exports.
+Ordinary projects work without any family records. To group separate projects,
+use [project collections](project-collections.md) instead.
 
 A bracket family might offer length and mounting pattern. An enclosure family
 could offer board type and a boolean vent option. Attributes belong to each
@@ -123,9 +124,9 @@ catalog keeps its existing project cards. On the project page, families appear
 before the ordinary files, and classified model files are kept within their
 family rather than repeated as a flat list. Unclassified files remain accessible.
 
-The project page presents family categories as collections with representative
-pictures. Collection links open a filtered thumbnail grid; search and pagination
-retain the selected collection. Family cards use the supplied family preview,
+The project page presents family categories under "Categories" with
+representative pictures. Category links open a filtered thumbnail grid; search
+and pagination retain the selected category. Family cards use the supplied family preview,
 and families without one remain accessible with a labeled placeholder. Prepare
 previews explicitly during authoring or ingestion; page visits never render a
 model or modify records.

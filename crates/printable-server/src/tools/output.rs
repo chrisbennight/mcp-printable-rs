@@ -610,7 +610,13 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
         ("catalog", "search") => typed::<SearchView>(name),
         ("catalog", "card") => typed::<Card>(name),
         ("catalog", "status") => typed::<index::IndexStatus>(name),
-        ("project", "update" | "cover") => typed::<Project>(name),
+        ("project", "create" | "get" | "update") => typed::<crate::projects::ProjectView>(name),
+        ("project", "cover") => typed::<Project>(name),
+        ("collection", "create" | "update" | "add_projects" | "remove_projects" | "delete") => {
+            typed::<crate::projects::collections::ChangeResponse>(name)
+        }
+        ("collection", "get") => typed::<crate::projects::collections::GetResponse>(name),
+        ("collection", "list") => typed::<crate::projects::collections::ListResponse>(name),
         ("project", "reindex") => typed::<index::PassReport>(name),
         ("project", "family_put" | "family") => typed::<crate::projects::families::Response>(name),
         ("project", "families") => typed::<crate::projects::families::Listing>(name),
@@ -932,19 +938,27 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             let mut generator = schemars::SchemaGenerator::default();
             let revision = generator.subschema_for::<crate::projects::revisions::Response>();
             let project = generator.subschema_for::<crate::projects::Project>();
+            let view = generator.subschema_for::<crate::projects::ProjectView>();
             let pass = generator.subschema_for::<crate::projects::index::PassReport>();
             let family = generator.subschema_for::<crate::projects::families::Response>();
             let families = generator.subschema_for::<crate::projects::families::Listing>();
             let selection = generator.subschema_for::<crate::projects::families::Selection>();
             json!({"type":"object","anyOf":[
             revision,
-            project,
+            project, view,
             pass, family, families, selection,
             object(json!({"projects":{"type":"array","items":{"type":"object"}},"limit_reached":{"type":"boolean"}}), &["projects","limit_reached"]),
             object(json!({"project_id":{"type":"string"},"path":{"type":"string"}}), &["project_id","path"]),
             object(json!({"project_id":{"type":"string"},"entries":{"type":"array","items":artifact()},"limit_reached":{"type":"boolean"}}), &["project_id","entries","limit_reached"]),
             selected_bundle(), native_bundle()
         ],"$defs":generator.take_definitions(true)})
+        }
+        "collection" => {
+            let mut generator = schemars::SchemaGenerator::default();
+            let change = generator.subschema_for::<crate::projects::collections::ChangeResponse>();
+            let get = generator.subschema_for::<crate::projects::collections::GetResponse>();
+            let list = generator.subschema_for::<crate::projects::collections::ListResponse>();
+            json!({"type":"object","anyOf":[change, get, list],"$defs":generator.take_definitions(true)})
         }
         "library" => {
             let mut generator = schemars::SchemaGenerator::default();

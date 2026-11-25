@@ -1054,6 +1054,7 @@ pub(crate) mod tests {
                 name: name.into(),
                 description: description.into(),
                 adopt_existing: false,
+                collection_id: None,
             }),
         )
         .unwrap();

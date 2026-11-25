@@ -16,6 +16,7 @@ analyze_assembly
 bake_texture
 job
 project
+collection
 catalog
 artifact
 printer

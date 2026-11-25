@@ -460,6 +460,7 @@ mod tests {
                 name: "Desk".into(),
                 description: String::new(),
                 adopt_existing: false,
+                collection_id: None,
             }),
         )
         .unwrap();
