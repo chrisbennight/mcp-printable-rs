@@ -684,7 +684,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "collection",
-        description: "Group the user's projects into collections, like folders: a project is in at most one. create, get, list, update and delete collections; add_projects places existing projects, all or none, and move takes them from another collection; remove_projects leaves them ungrouped. Changes accept expected_revision. Projects and files are never moved or deleted. project list and catalog search filter by collection.",
+        description: "Group the user's projects into collections, like folders: a project is in at most one. create, get, list, update and delete collections; add_projects places existing projects, all or none, and move takes them from another collection; remove_projects leaves them ungrouped. update, add_projects, remove_projects and delete accept expected_revision. Projects and files are never moved or deleted. project list and catalog search filter by collection.",
         schema: workflow_schema_of::<crate::projects::collections::CollectionRequest>,
         annotations: write_annotations,
     },
