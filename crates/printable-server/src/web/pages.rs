@@ -440,10 +440,6 @@ fn picture_kind(card: &CompactCard) -> Option<PictureKind> {
         .or(card.cover_path.as_ref().map(|_| PictureKind::Cover))
 }
 
-pub(super) fn has_picture(card: &CompactCard) -> bool {
-    picture_kind(card).is_some()
-}
-
 /// The address of a card's picture, if it has one.
 fn picture_src(paths: &Paths, card: &CompactCard) -> Option<String> {
     let project = paths.link(&format!("projects/{}", card.project_id));

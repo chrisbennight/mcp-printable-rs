@@ -100,6 +100,11 @@ impl Index {
             .collect()
     }
 
+    /// Project ID to collection ID for every grouped project.
+    pub fn memberships(&self) -> &BTreeMap<String, String> {
+        &self.memberships
+    }
+
     /// Every project that belongs to some collection.
     pub fn grouped(&self) -> Vec<String> {
         self.memberships.keys().cloned().collect()
@@ -761,8 +766,6 @@ fn remove_projects(
     params: RemoveParams,
 ) -> Result<ChangeResponse, ToolError> {
     check_id(&params.collection_id)?;
-    // Removal checks only the ID's form, so a project whose record no longer
-    // exists can still leave its collection.
     let projects = distinct(params.project_ids)?;
     for project in &projects {
         super::validate_id(project)?;
@@ -777,6 +780,28 @@ fn remove_projects(
             return Err(invalid(format!(
                 "these projects are in another collection, not {id:?}: {}",
                 listed(&elsewhere)
+            )));
+        }
+        // A member can always leave, even when its record no longer exists;
+        // any other ID must name an existing project, so a mistyped ID
+        // refuses the request.
+        let mut unknown_projects = Vec::new();
+        for project in projects
+            .iter()
+            .filter(|p| !index.memberships.contains_key(*p))
+        {
+            match super::get(workspace, project) {
+                Ok(_) => {}
+                Err(ToolError::Workspace(WsError::NotFound(_))) => {
+                    unknown_projects.push(project.as_str());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !unknown_projects.is_empty() {
+            return Err(invalid(format!(
+                "no project has these IDs: {}",
+                listed(&unknown_projects)
             )));
         }
         let removed: Vec<String> = projects
@@ -844,7 +869,8 @@ pub(super) fn create_project(
     create: impl FnOnce() -> Result<super::Project, ToolError>,
 ) -> Result<(super::Project, CollectionRef), ToolError> {
     check_id(collection_id)?;
-    let (index, project) = change(workspace, None, |index| {
+    let created = std::cell::Cell::new(false);
+    let outcome = change(workspace, None, |index| {
         if !index.collections.contains_key(collection_id) {
             return Err(unknown(collection_id));
         }
@@ -856,6 +882,7 @@ pub(super) fn create_project(
             )));
         }
         let project = create()?;
+        created.set(true);
         let placed = place(
             index,
             collection_id,
@@ -866,6 +893,18 @@ pub(super) fn create_project(
             touch(index, [collection_id.to_owned()]);
         }
         Ok(project)
+    });
+    // The project and the collections are separate files. If storing the
+    // collections fails after the project was written, say so: repeating the
+    // request returns the project and places it.
+    let (index, project) = outcome.map_err(|error| {
+        if created.get() {
+            invalid(format!(
+                "project {project_id:?} was created but not placed in collection {collection_id:?} ({error}); repeat the request to place it"
+            ))
+        } else {
+            error
+        }
     })?;
     let collection = index
         .membership(project_id)
@@ -1119,6 +1158,10 @@ mod tests {
             (
                 "remove_projects",
                 json!({"collection_id": "none", "project_ids": ["clip"]}),
+            ),
+            (
+                "remove_projects",
+                json!({"collection_id": "desk", "project_ids": ["clip", "clpi"]}),
             ),
         ] {
             assert!(

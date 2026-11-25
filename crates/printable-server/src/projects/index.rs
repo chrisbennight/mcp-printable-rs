@@ -506,11 +506,11 @@ pub struct SearchParams {
     /// method's score.
     #[serde(default)]
     pub detail: Detail,
-    /// Leave out projects that belong to a collection. The library page sets
-    /// this when it shows collections as their own cards; it is not part of
-    /// the public request.
+    /// Projects the search may return, already resolved by a caller that
+    /// shows the same collections beside the results, so both come from one
+    /// reading. Not part of the public request.
     #[serde(skip)]
-    pub(crate) ungrouped_only: bool,
+    pub(crate) scope: Option<Scope>,
 }
 
 /// Which projects a search may return, resolved from the collections when
@@ -2284,19 +2284,38 @@ impl ProjectIndex {
         work(connection.as_mut().expect("opened above"))
     }
 
-    /// The indexed cards of these projects, newest first. Projects not yet
+    /// Up to `per` indexed cards with a picture for each collection, newest
+    /// first, from a map of project ID to collection ID. Projects not yet
     /// indexed are left out. Blocks on the index; call from blocking work.
-    pub(crate) fn cards(&self, ids: &[String]) -> Result<Vec<CompactCard>, ToolError> {
-        let ids = serde_json::to_string(ids)?;
+    pub(crate) fn collection_pictures(
+        &self,
+        memberships: &std::collections::BTreeMap<String, String>,
+        per: usize,
+    ) -> Result<Vec<(String, CompactCard)>, ToolError> {
+        let memberships = serde_json::to_string(memberships)?;
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT card FROM projects
-                 WHERE card IS NOT NULL AND project_id IN (SELECT value FROM json_each(?))
-                 ORDER BY created_unix_ms DESC, name_folded, project_id",
+                "SELECT collection, card FROM (
+                     SELECT m.value AS collection, p.card AS card,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY m.value
+                             ORDER BY p.created_unix_ms DESC, p.name_folded, p.project_id
+                         ) AS place
+                     FROM json_each(?1) m JOIN projects p ON p.project_id = m.key
+                     WHERE p.card IS NOT NULL
+                         AND (json_extract(p.card, '$.picture') IS NOT NULL
+                             OR json_extract(p.card, '$.cover_path') IS NOT NULL))
+                 WHERE place <= ?2
+                 ORDER BY collection, place",
             )?;
             let cards = statement
-                .query_map([ids], |row| row.get::<_, String>(0))?
-                .map(|card| parse_card(&card?))
+                .query_map(params![memberships, sql_int(per as u64)], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .map(|row| {
+                    let (collection, card) = row?;
+                    Ok((collection, parse_card(&card)?))
+                })
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(cards)
         })
@@ -3157,23 +3176,26 @@ impl ProjectIndex {
         note(Capability::Rerank, reason(error), Some(detail))
     }
 
-    /// The projects a search may return, from the current collections.
+    /// The projects a search may return: the caller's resolved scope, or
+    /// the current members of the requested collection.
     async fn scope(
         workspace: &Arc<Workspace>,
-        params: &SearchParams,
+        params: &mut SearchParams,
         permits: &Arc<Semaphore>,
     ) -> Result<Scope, ToolError> {
-        let collection = params.filters.collection.clone();
-        if collection.is_none() && !params.ungrouped_only {
-            return Ok(Scope::All);
+        if let Some(scope) = params.scope.take() {
+            return Ok(scope);
         }
+        let Some(collection) = params.filters.collection.clone() else {
+            return Ok(Scope::All);
+        };
         let workspace = Arc::clone(workspace);
         blocking_with(permits, move || {
             let index = super::collections::read(&workspace)?;
-            Ok::<_, ToolError>(match collection {
-                Some(id) => Scope::Only(super::collections::members_of(&index, &id)?),
-                None => Scope::Except(index.grouped()),
-            })
+            Ok::<_, ToolError>(Scope::Only(super::collections::members_of(
+                &index,
+                &collection,
+            )?))
         })
         .await
     }
@@ -3184,10 +3206,10 @@ impl ProjectIndex {
     pub async fn search(
         self: &Arc<Self>,
         workspace: &Arc<Workspace>,
-        params: SearchParams,
+        mut params: SearchParams,
         permits: &Arc<Semaphore>,
     ) -> Result<SearchResponse, ToolError> {
-        let scope = Self::scope(workspace, &params, permits).await?;
+        let scope = Self::scope(workspace, &mut params, permits).await?;
         let query = Arc::new(Query::new(params, scope)?);
         let index = Arc::clone(self);
         let identity = blocking_with(permits, move || {
@@ -3825,7 +3847,10 @@ mod tests {
         );
         let browse = |index: &Arc<ProjectIndex>| {
             let mut params: SearchParams = serde_json::from_value(json!({"sort": "name"})).unwrap();
-            params.ungrouped_only = true;
+            let grouped = super::super::collections::read(&workspace)
+                .unwrap()
+                .grouped();
+            params.scope = Some(Scope::Except(grouped));
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -3848,13 +3873,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(unknown.to_string().contains("no collection"), "{unknown}");
-        let cards: Vec<String> = index
-            .cards(&["desk".to_owned(), "clip".to_owned(), "ghost".to_owned()])
+        // Only pictured members count, at most `per` for each collection.
+        let memberships = std::collections::BTreeMap::from([
+            ("desk".to_owned(), "a".to_owned()),
+            ("clip".to_owned(), "a".to_owned()),
+            ("ghost".to_owned(), "a".to_owned()),
+            ("vase".to_owned(), "b".to_owned()),
+        ]);
+        let pictured: Vec<(String, String)> = index
+            .collection_pictures(&memberships, 1)
             .unwrap()
             .into_iter()
-            .map(|card| card.project_id)
+            .map(|(collection, card)| (collection, card.project_id))
             .collect();
-        assert_eq!(cards, ["desk", "clip"]);
+        let expected: Vec<(String, String)> = index
+            .collection_pictures(&memberships, 50)
+            .unwrap()
+            .into_iter()
+            .map(|(collection, card)| (collection, card.project_id))
+            .collect();
+        assert!(pictured.len() <= 2);
+        assert!(pictured.iter().all(|entry| expected.contains(entry)));
     }
 
     #[test]

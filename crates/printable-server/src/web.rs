@@ -39,7 +39,7 @@ use crate::{
         card::{self, Card},
         collections::{self, CollectionRef},
         cover,
-        index::{MAX_OFFSET, ProjectIndex, SearchFilters, SearchParams, SearchSort},
+        index::{MAX_OFFSET, ProjectIndex, Scope, SearchFilters, SearchParams, SearchSort},
         pictures,
     },
 };
@@ -561,7 +561,7 @@ impl LibraryForm {
             picture: None,
             combine: Default::default(),
             detail: Default::default(),
-            ungrouped_only: false,
+            scope: None,
         }
     }
 
@@ -631,13 +631,16 @@ pub(super) struct CollectionCard {
 /// Pictures shown on a collection card.
 const COLLECTION_PICTURES: usize = 4;
 
-/// Every collection as a card, by name. Reads the collections and the
-/// indexed cards of their projects; call from blocking work.
+/// Every collection as a card, by name, from one reading of the
+/// collections. Pictures are looked up only when `pictures` is set, because
+/// the cards are shown only on the first page. Blocks on the index; call
+/// from blocking work.
 fn collection_cards(
-    workspace: &Workspace,
+    collections: &collections::Index,
     index: &ProjectIndex,
+    pictures: bool,
 ) -> Result<Vec<CollectionCard>, ToolError> {
-    let collections = collections::read(workspace)?;
+    let counts = collections.counts();
     let mut cards: std::collections::BTreeMap<&str, CollectionCard> = collections
         .collections()
         .iter()
@@ -648,26 +651,19 @@ fn collection_cards(
                     id: id.clone(),
                     name: collection.name.clone(),
                     description: collection.description.clone(),
-                    projects: 0,
+                    projects: counts.get(id.as_str()).copied().unwrap_or(0),
                     pictured: Vec::new(),
                 },
             )
         })
         .collect();
-    for (id, count) in collections.counts() {
-        if let Some(card) = cards.get_mut(id) {
-            card.projects = count;
-        }
-    }
-    for member in index.cards(&collections.grouped())? {
-        let Some(group) = collections.membership(&member.project_id) else {
-            continue;
-        };
-        if let Some(card) = cards.get_mut(group.collection_id.as_str())
-            && card.pictured.len() < COLLECTION_PICTURES
-            && pages::has_picture(&member)
+    if pictures {
+        for (collection, member) in
+            index.collection_pictures(collections.memberships(), COLLECTION_PICTURES)?
         {
-            card.pictured.push(member);
+            if let Some(card) = cards.get_mut(collection.as_str()) {
+                card.pictured.push(member);
+            }
         }
     }
     let mut cards: Vec<CollectionCard> = cards.into_values().collect();
@@ -689,16 +685,23 @@ async fn library(State(web): State<Web>, uri: Uri) -> Response {
     let mut params = form.search_params();
     // Browsing shows each collection as one card and leaves its projects out
     // of the grid; a search or filter looks through every project.
-    let browsing = form.is_blank();
-    params.ungrouped_only = browsing;
-    let shelf = if browsing {
+    // The cards and the grid come from one reading of the collections.
+    let shelf = if form.is_blank() {
         let workspace = Arc::clone(&web.workspace);
         let index = Arc::clone(&web.index);
+        let pictures = form.page == 1;
         match web
-            .blocking(move || collection_cards(&workspace, &index))
+            .blocking(move || {
+                let collections = collections::read(&workspace)?;
+                let cards = collection_cards(&collections, &index, pictures)?;
+                Ok((cards, collections.grouped()))
+            })
             .await
         {
-            Ok(cards) => cards,
+            Ok((cards, grouped)) => {
+                params.scope = Some(Scope::Except(grouped));
+                cards
+            }
             Err(error) => return failure(&paths, &error),
         }
     } else {
@@ -744,20 +747,25 @@ async fn collection(
         Err(message) => return page(&paths, StatusCode::BAD_REQUEST, "Cannot search", &message),
     };
     let workspace = Arc::clone(&web.workspace);
-    let id = collection_id.clone();
-    let header = match web
+    let id = collection_id;
+    let (header, members) = match web
         .blocking(move || {
             let index = collections::read(&workspace)?;
-            Ok(index.collection(&id).map(|collection| CollectionHeader {
-                projects: index.members(&id).len(),
-                name: collection.name.clone(),
-                id,
-                description: collection.description.clone(),
+            // The header and the results come from one reading.
+            Ok(index.collection(&id).map(|collection| {
+                let members = index.members(&id);
+                let header = CollectionHeader {
+                    projects: members.len(),
+                    name: collection.name.clone(),
+                    id,
+                    description: collection.description.clone(),
+                };
+                (header, members)
             }))
         })
         .await
     {
-        Ok(Some(header)) => header,
+        Ok(Some(found)) => found,
         Ok(None) => {
             return page(
                 &paths,
@@ -769,7 +777,7 @@ async fn collection(
         Err(error) => return failure(&paths, &error),
     };
     let mut params = form.search_params();
-    params.filters.collection = Some(collection_id);
+    params.scope = Some(Scope::Only(members));
     match web.index.search(&web.workspace, params, &web.reads).await {
         Ok(response) => html(
             StatusCode::OK,
