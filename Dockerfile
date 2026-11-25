@@ -96,7 +96,7 @@ RUN install -D /usr/local/bin/python3.12 /orca-python/bin/python3.12 \
  && rm -f /orca-python/lib/python3.12/lib-dynload/_tkinter*.so \
  && test -s /orca-python/lib/python3.12/LICENSE.txt
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS slicer-runtime
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS slicer-runtime
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates locales tini libopengl0 libglu1-mesa libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkit2gtk-4.1-0 libsecret-1-0 libmspack0 libsm6 xvfb xauth libgl1-mesa-dri \
       libbz2-1.0 libcrypt1 libdb5.3t64 libffi8 libgdbm6t64 liblzma5 libncursesw6 libreadline8t64 libsqlite3-0 libssl3t64 libuuid1 libzstd1 zlib1g \
@@ -147,7 +147,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/printable-slicer-worker", "--healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-slicer-worker"]
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cad-runtime
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS cad-runtime
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libgl1 libxrender1 libglib2.0-0 libgomp1 tini ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
@@ -181,7 +181,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-cad-worker"]
 # OpenCV for the reconstruction worker, built from the hash-pinned
 # opencv-python source with core and image processing only. Published OpenCV
 # wheels bundle FFmpeg and other media libraries the worker never uses.
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-opencv
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS recon-opencv
 ARG OPENCV_SOURCE_URL=https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz
 ARG OPENCV_SOURCE_SHA256=b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c
 RUN apt-get update && apt-get upgrade -y \
@@ -209,7 +209,7 @@ RUN curl --fail --location --output /tmp/opencv.tar.gz "${OPENCV_SOURCE_URL}" \
  && cmake --install /tmp/opencv-build \
  && install -m 0644 /tmp/opencv/opencv/LICENSE /opt/opencv-python/LICENSE-OpenCV
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS recon-base
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS recon-base
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends python3-venv libegl1 libgles2 libglib2.0-0 libgomp1 tini ca-certificates curl \
@@ -313,7 +313,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/printable-recon-worker"]
 # wrapper; tini reaps the xvfb-run/Xvfb grandchildren OpenSCAD spawns.
 # libstdc++ (for the manifold3d code linked into the binary) arrives
 # transitively with openscad.
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS runtime
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
