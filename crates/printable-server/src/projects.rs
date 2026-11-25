@@ -218,15 +218,15 @@ impl ProjectView {
     }
 }
 
-/// Every project ID with a record, in order. Other files beside the
-/// records, such as update locks, are not projects.
+/// Every project ID with a record, in record file name order. Other files
+/// beside the records are not projects.
 pub(crate) fn ids(workspace: &Workspace) -> Result<Vec<String>, ToolError> {
     let files = match workspace.list_artifacts(".printable/projects", usize::MAX) {
         Ok(files) => files,
         Err(WsError::NotFound(_)) => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
-    let mut ids: Vec<String> = files
+    Ok(files
         .into_iter()
         .filter_map(|file| {
             file.path
@@ -235,9 +235,7 @@ pub(crate) fn ids(workspace: &Workspace) -> Result<Vec<String>, ToolError> {
                 .filter(|id| validate_id(id).is_ok())
                 .map(str::to_owned)
         })
-        .collect();
-    ids.sort();
-    Ok(ids)
+        .collect())
 }
 
 pub(crate) fn unix_ms() -> u64 {

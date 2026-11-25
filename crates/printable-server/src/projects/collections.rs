@@ -418,6 +418,14 @@ pub struct Member {
     pub missing: bool,
 }
 
+/// A project named on a collection card: its ID and name only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Sample {
+    pub project_id: String,
+    /// Null when the project's record no longer exists or cannot be read.
+    pub name: Option<String>,
+}
+
 /// A collection as a card shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Summary {
@@ -426,7 +434,7 @@ pub struct Summary {
     pub description: String,
     pub project_count: usize,
     /// Up to four member projects, by project ID.
-    pub sample_projects: Vec<Member>,
+    pub sample_projects: Vec<Sample>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -518,7 +526,13 @@ fn summary(
         .members(id)
         .iter()
         .take(SAMPLE_PROJECTS)
-        .map(|project| member(workspace, project))
+        .map(|project| {
+            let member = member(workspace, project);
+            Sample {
+                project_id: member.project_id,
+                name: member.name,
+            }
+        })
         .collect();
     Ok(Summary {
         collection_id: id.to_owned(),
@@ -586,8 +600,14 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<ChangeResponse,
     let id = params.collection_id;
     let (index, (added, moved)) = change(workspace, None, |index| {
         match index.collections.get(&id) {
+            // A repeated creation returns the collection unchanged. Its
+            // projects were placed when it was first created, and placing
+            // them again could undo a later change by someone else.
             Some(existing)
-                if existing.name == params.name && existing.description == params.description => {}
+                if existing.name == params.name && existing.description == params.description =>
+            {
+                return Ok((Vec::new(), Vec::new()));
+            }
             Some(_) => {
                 return Err(invalid(
                     "collection_id already exists with a different name or description; use update or choose another ID",
@@ -1074,6 +1094,16 @@ mod tests {
             moved["moved"],
             json!([{"project_id": "mount-b", "from": "makera-z1"}])
         );
+        // Repeating the original creation does not undo the move.
+        let repeated = call(
+            &workspace,
+            "create",
+            json!({"collection_id": "makera-z1", "name": "Makera Z1 Multiboard",
+                   "project_ids": ["mount-a", "mount-b"]}),
+        )
+        .unwrap();
+        assert_eq!(repeated["added"], json!([]));
+        assert_eq!(repeated["revision"], moved["revision"]);
 
         let members = project(&workspace, "list", json!({"collection_id": "makera-z1"})).unwrap();
         assert_eq!(listed_ids(&members), ["mount-a"]);

@@ -32,7 +32,8 @@ Create a collection and place projects in it in one request:
 128 characters. Collection IDs and project IDs are separate, so a collection may
 share an ID with a project. Names are 1 to 256 characters without control
 characters; descriptions are optional, up to 4096 characters. Repeating the same
-`create` returns the existing collection; the same ID with a different name or
+`create` returns the existing collection unchanged, so its `project_ids` apply
+only when the collection is first created; the same ID with a different name or
 description is refused. A workspace can have up to 1000 collections.
 
 Add more projects later with `add_projects`, up to 500 per request:
@@ -60,7 +61,7 @@ never deletes a project.
 ## Read collections
 
 `list` returns one entry per collection, sorted by name: its ID, name,
-description, project count, up to four sample projects and times. It also
+description, project count, up to four sample projects by ID and name, and times. It also
 reports how many projects are in no collection. `get` returns one collection and
 its projects in project ID order, up to `limit` (100 by default).
 
