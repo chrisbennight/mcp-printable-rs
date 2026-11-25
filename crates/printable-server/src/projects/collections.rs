@@ -912,7 +912,24 @@ pub(super) fn create_project(
                 "project {project_id:?} already belongs to collection {other:?}; use the collection tool to move it"
             )));
         }
+        // Repeating a creation returns the existing project. It is placed
+        // only when it is new: an existing project outside the collection
+        // may have been moved or ungrouped since, and placing it again
+        // would undo that.
+        let existed = match super::get(workspace, project_id) {
+            Ok(_) => true,
+            Err(ToolError::Workspace(WsError::NotFound(_))) => false,
+            Err(error) => return Err(error),
+        };
         let project = create()?;
+        if existed {
+            if index.memberships.get(project_id).map(String::as_str) != Some(collection_id) {
+                return Err(invalid(format!(
+                    "project {project_id:?} already exists outside collection {collection_id:?}; use add_projects to add it"
+                )));
+            }
+            return Ok(project);
+        }
         created.set(true);
         let placed = place(
             index,
@@ -1325,7 +1342,26 @@ mod tests {
         let created = project(&workspace, "create", params.clone()).unwrap();
         assert_eq!(created["collection"]["collection_id"], "desk");
         // Repeating the request returns the same project in the same collection.
-        assert_eq!(project(&workspace, "create", params).unwrap(), created);
+        assert_eq!(
+            project(&workspace, "create", params.clone()).unwrap(),
+            created
+        );
+        // Once ungrouped, a repeated request is refused instead of undoing that.
+        call(
+            &workspace,
+            "remove_projects",
+            json!({"collection_id": "desk", "project_ids": ["hook"]}),
+        )
+        .unwrap();
+        let replay = project(&workspace, "create", params).unwrap_err();
+        assert!(replay.to_string().contains("add_projects"), "{replay}");
+        assert_eq!(read(&workspace).unwrap().membership("hook"), None);
+        call(
+            &workspace,
+            "add_projects",
+            json!({"collection_id": "desk", "project_ids": ["hook"]}),
+        )
+        .unwrap();
         let missing = project(
             &workspace,
             "create",
