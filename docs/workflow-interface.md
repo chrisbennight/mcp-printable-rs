@@ -73,6 +73,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `bake_texture` | Source STL, grayscale PNG, planar region, signed depth and new output STL |
 | `job` | `submit`, `get`, `list`, `artifacts`, `cancel` |
 | `project` | `create`, `get`, `list`, `resolve`, `files`, `update`, `cover`, `reindex`, `revise`, `revision`, `export_files`, `export_blender`, `family_put`, `family`, `families`, `family_select` |
+| `collection` | `create`, `get`, `list`, `update`, `add_projects`, `remove_projects`, `delete` (group projects into [collections](project-collections.md), like folders; a project is in at most one) |
 | `catalog` | `search`, `card`, `status` (read-only search of the user's own [project library](project-library.md); designs on model sites are found with `library`) |
 | `head` | `models`, `create`, `update`, `export`, `prepare_print`, plus `reconstruct` and `photo_to_bust` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
 | `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), and retained object-job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, or retained job history; offers the available generation actions and job management |
@@ -423,6 +424,10 @@ relative artifact `path`, for example `source/enclosure.scad`, and returns the
 workspace path accepted by artifact, OpenSCAD, and Blender tools. The `files`
 action lists a project's artifacts. Listings are bounded and report when the
 result limit is reached; get/resolve remain available by identifier.
+
+Use the `collection` tool to group related projects, and `project list` with
+`collection_id` or `ungrouped` to list them. Collections never move project
+files; see [project collections](project-collections.md).
 
 Project metadata is server-owned under `.printable/projects`. Existing files
 outside projects remain available. Projects organize shared storage; they do not

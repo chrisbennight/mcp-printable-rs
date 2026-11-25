@@ -166,9 +166,9 @@ pub(super) async fn listing(
         nav.breadcrumbs aria-label="Breadcrumb" { a href=(paths.root()) {"Library"} span {"/"} a href=(paths.link(&format!("projects/{project}"))) {"Project"} span {"/"} span {"Part families"} }
         h1 {(category.as_deref().map(category_name).unwrap_or("Part families"))}
         @if category.is_none() && text.is_empty() && page_offset==0 {
-            section {h2 {"Collections"} (collections(&paths,&project,&all_families))}
+            section {h2 {"Categories"} (collections(&paths,&project,&all_families))}
         }
-        nav.collection-nav aria-label="Collections" {
+        nav.collection-nav aria-label="Categories" {
             a href=(paths.link(&browse_url(&project,None,&text,0))) aria-current=[category.is_none().then_some("page")] {"All families"}
             @for name in categories {
                 a href=(paths.link(&browse_url(&project,Some(name),&text,0))) aria-current=[(category.as_deref()==Some(name)).then_some("page")] {(category_name(name))}

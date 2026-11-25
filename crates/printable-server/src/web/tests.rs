@@ -461,6 +461,51 @@ async fn project_pages_show_the_full_card() {
 }
 
 #[tokio::test]
+async fn collections_show_as_cards_while_browsing_and_open_their_own_page() {
+    let library = Library::new();
+    projects::collections::dispatch(
+        &library.workspace,
+        serde_json::from_value(json!({"action": "create", "params": {
+            "collection_id": "office", "name": "Office <things>",
+            "description": "Desk stuff", "project_ids": ["desk"]}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let grid = library.page("/").await;
+    for expected in [
+        "class=\"card collection-card\" href=\"./collections/office\"",
+        "Office &lt;things&gt;",
+        "Collection · 1 project",
+        "src=\"./projects/desk/cover\"",
+        "1 project outside collections",
+    ] {
+        assert!(grid.contains(expected), "{expected}");
+    }
+    assert!(!grid.contains("title=\"Desk organizer\""));
+    assert_self_contained(&grid);
+    // A search looks through every project and shows no collection cards.
+    let words = library.page("/?q=drawers").await;
+    assert!(words.contains("title=\"Desk organizer\""));
+    assert!(!words.contains("collection-card"));
+    let page = library.page("/collections/office").await;
+    for expected in [
+        "<h1>Office &lt;things&gt;</h1>",
+        "Desk stuff",
+        "title=\"Desk organizer\"",
+        "1 matching project",
+    ] {
+        assert!(page.contains(expected), "{expected}");
+    }
+    assert_eq!(page.matches("<article class=\"card\">").count(), 1);
+    assert_self_contained(&page);
+    let project = library.page("/projects/desk").await;
+    assert!(project.contains("In the collection <a href=\"../collections/office\">"));
+    let (status, headers, _) = library.get("/collections/missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_secure(&headers);
+}
+
+#[tokio::test]
 async fn covers_are_served_as_stored_with_their_media_type() {
     let library = Library::new();
     let cover = projects::get(&library.workspace, "desk")

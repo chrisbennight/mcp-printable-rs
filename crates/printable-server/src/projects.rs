@@ -9,6 +9,7 @@ use crate::error::ToolError;
 
 pub mod card;
 pub mod catalog;
+pub mod collections;
 pub mod cover;
 mod embeddings;
 mod export;
@@ -36,6 +37,9 @@ pub struct CreateParams {
     /// Deliberately use files already present under the project directory.
     #[serde(default)]
     pub adopt_existing: bool,
+    /// An existing collection to place the project in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -50,6 +54,12 @@ pub struct ListParams {
     #[serde(default = "default_limit")]
     #[schemars(range(min = 1))]
     pub limit: usize,
+    /// Only projects in this collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
+    /// Only projects in no collection. Cannot be combined with collection_id.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungrouped: bool,
 }
 
 fn default_limit() -> usize {
@@ -187,6 +197,47 @@ impl Project {
         };
         identity && fields
     }
+}
+
+/// A project as the project tool reports it: the stored record and the
+/// collection it belongs to. The collection is not part of the record.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct ProjectView {
+    #[serde(flatten)]
+    pub project: Project,
+    /// The collection the project belongs to; null when it is in none.
+    pub collection: Option<collections::CollectionRef>,
+}
+
+impl ProjectView {
+    fn of(project: Project, index: &collections::Index) -> Self {
+        Self {
+            collection: index.membership(&project.project_id),
+            project,
+        }
+    }
+}
+
+/// Every project ID with a record, in order. Other files beside the
+/// records, such as update locks, are not projects.
+pub(crate) fn ids(workspace: &Workspace) -> Result<Vec<String>, ToolError> {
+    let files = match workspace.list_artifacts(".printable/projects", usize::MAX) {
+        Ok(files) => files,
+        Err(WsError::NotFound(_)) => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut ids: Vec<String> = files
+        .into_iter()
+        .filter_map(|file| {
+            file.path
+                .strip_prefix(".printable/projects/")
+                .and_then(|name| name.strip_suffix(".json"))
+                .filter(|id| validate_id(id).is_ok())
+                .map(str::to_owned)
+        })
+        .collect();
+    ids.sort();
+    Ok(ids)
 }
 
 pub(crate) fn unix_ms() -> u64 {
@@ -395,6 +446,85 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolEr
     }
 }
 
+/// Create a project and, when asked, place it in an existing collection.
+/// The collection and any other membership are checked before the project
+/// is created, so a refused request creates nothing.
+fn create_in_collection(
+    workspace: &Workspace,
+    mut params: CreateParams,
+) -> Result<ProjectView, ToolError> {
+    let Some(collection_id) = params.collection_id.take() else {
+        let project = create(workspace, params)?;
+        let index = collections::read(workspace)?;
+        return Ok(ProjectView::of(project, &index));
+    };
+    collections::require(workspace, &collection_id)?;
+    validate_id(&params.project_id)?;
+    if let Some(other) = collections::read(workspace)?.membership(&params.project_id)
+        && other.collection_id != collection_id
+    {
+        return Err(ToolError::Validation(format!(
+            "project {:?} already belongs to collection {:?}; use the collection tool to move it",
+            params.project_id, other.collection_id
+        )));
+    }
+    let project = create(workspace, params)?;
+    let collection = collections::place_new_project(workspace, &collection_id, &project.project_id)
+        .map_err(|error| {
+            ToolError::Validation(format!(
+                "project {:?} was created but not placed in collection {collection_id:?}: {error}",
+                project.project_id
+            ))
+        })?;
+    Ok(ProjectView {
+        project,
+        collection: Some(collection),
+    })
+}
+
+/// List projects in ID order, optionally only one collection's or only
+/// ungrouped ones. The filter applies before the limit.
+fn list(workspace: &Workspace, params: ListParams) -> Result<Value, ToolError> {
+    if params.limit == 0 {
+        return Err(WsError::InvalidLimit.into());
+    }
+    if params.collection_id.is_some() && params.ungrouped {
+        return Err(ToolError::Validation(
+            "choose collection_id or ungrouped, not both".into(),
+        ));
+    }
+    let index = collections::read(workspace)?;
+    let members = params
+        .collection_id
+        .as_deref()
+        .map(|id| collections::members_of(&index, id))
+        .transpose()?
+        .map(|members| {
+            members
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+    let mut projects = Vec::new();
+    for id in ids(workspace)? {
+        if projects.len() == params.limit {
+            break;
+        }
+        let wanted = match &members {
+            Some(members) => members.contains(&id),
+            None => !params.ungrouped || index.membership(&id).is_none(),
+        };
+        if wanted {
+            projects.push(ProjectView::of(get(workspace, &id)?, &index));
+        }
+    }
+    Ok(json!({
+        "requested_limit": params.limit,
+        "returned": projects.len(),
+        "projects": projects,
+        "limit_reached": projects.len() == params.limit,
+    }))
+}
+
 fn existing_project(
     workspace: &Workspace,
     requested: &Project,
@@ -437,42 +567,26 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
         ProjectRequest::Reindex(_) => Err(ToolError::Validation(
             "reindexing requires the server's project index".into(),
         )),
-        ProjectRequest::Update(params) => Ok(serde_json::to_value(update(workspace, params)?)?),
+        ProjectRequest::Update(params) => {
+            let project = update(workspace, params)?;
+            let index = collections::read(workspace)?;
+            Ok(serde_json::to_value(ProjectView::of(project, &index))?)
+        }
         ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(
             workspace, params,
         )?)?),
-        ProjectRequest::Create(params) => Ok(serde_json::to_value(create(workspace, params)?)?),
+        ProjectRequest::Create(params) => Ok(serde_json::to_value(create_in_collection(
+            workspace, params,
+        )?)?),
         ProjectRequest::Get(params) => {
-            Ok(serde_json::to_value(get(workspace, &params.project_id)?)?)
+            let project = get(workspace, &params.project_id)?;
+            let index = collections::read(workspace)?;
+            Ok(serde_json::to_value(ProjectView::of(project, &index))?)
         }
         ProjectRequest::Resolve(params) => Ok(
             json!({"project_id":params.project_id,"path":resolve(workspace, &params.project_id, &params.path)?}),
         ),
-        ProjectRequest::List(params) => {
-            if params.limit == 0 {
-                return Err(WsError::InvalidLimit.into());
-            }
-            let files = match workspace.list_artifacts(".printable/projects", params.limit) {
-                Ok(files) => files,
-                Err(WsError::NotFound(_)) => Vec::new(),
-                Err(error) => return Err(error.into()),
-            };
-            let limit_reached = files.len() == params.limit;
-            let mut projects = Vec::with_capacity(files.len());
-            for file in files {
-                let id = file
-                    .path
-                    .strip_prefix(".printable/projects/")
-                    .and_then(|name| name.strip_suffix(".json"))
-                    .ok_or_else(|| {
-                        ToolError::Validation("unexpected project metadata path".into())
-                    })?;
-                projects.push(get(workspace, id)?);
-            }
-            Ok(
-                json!({"requested_limit":params.limit,"returned":projects.len(),"projects":projects,"limit_reached":limit_reached}),
-            )
-        }
+        ProjectRequest::List(params) => list(workspace, params),
         ProjectRequest::Files(params) => {
             if params.limit == 0 {
                 return Err(WsError::InvalidLimit.into());
@@ -506,6 +620,7 @@ mod tests {
                     name: format!("Project {index}"),
                     description: String::new(),
                     adopt_existing: false,
+                    collection_id: None,
                 },
             )
             .unwrap();
@@ -520,7 +635,11 @@ mod tests {
         for (requested, returned) in [(100, 100), (1500, 1101), (usize::MAX, 1101)] {
             for (request, collection) in [
                 (
-                    ProjectRequest::List(ListParams { limit: requested }),
+                    ProjectRequest::List(ListParams {
+                        limit: requested,
+                        collection_id: None,
+                        ungrouped: false,
+                    }),
                     "projects",
                 ),
                 (
@@ -551,7 +670,11 @@ mod tests {
             100
         );
         for request in [
-            ProjectRequest::List(ListParams { limit: 0 }),
+            ProjectRequest::List(ListParams {
+                limit: 0,
+                collection_id: None,
+                ungrouped: false,
+            }),
             ProjectRequest::Files(FilesParams {
                 project_id: "project-0".into(),
                 limit: 0,
@@ -573,6 +696,7 @@ mod tests {
             name: "n".repeat(257),
             description: "d".repeat(4097),
             adopt_existing: false,
+            collection_id: None,
         };
         let created = create(&workspace, params.clone()).unwrap();
         assert_eq!(get(&workspace, &params.project_id).unwrap(), created);
@@ -588,6 +712,7 @@ mod tests {
                 name: id.into(),
                 description: String::new(),
                 adopt_existing: false,
+                collection_id: None,
             };
             let project = create(&workspace, params.clone()).unwrap();
             assert_eq!(create(&workspace, params).unwrap(), project);
@@ -618,7 +743,21 @@ mod tests {
             files["entries"][0]["path"],
             "projects/sensor/source/design.scad"
         );
-        assert_eq!(dispatch(&workspace,ProjectRequest::List(ListParams {limit:100})).unwrap()["projects"].as_array().unwrap().len(),2);
+        assert_eq!(
+            dispatch(
+                &workspace,
+                ProjectRequest::List(ListParams {
+                    limit: 100,
+                    collection_id: None,
+                    ungrouped: false
+                })
+            )
+            .unwrap()["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         for path in [
             "../housing/model.stl",
             "/model.stl",
@@ -641,6 +780,7 @@ mod tests {
                     name: "different".into(),
                     description: String::new(),
                     adopt_existing: false,
+                    collection_id: None,
                 }
             )
             .is_err()
@@ -663,6 +803,7 @@ mod adoption_tests {
             name: "Sensor".into(),
             description: String::new(),
             adopt_existing: false,
+            collection_id: None,
         };
         assert!(create(&workspace, params.clone()).is_err());
         assert!(get(&workspace, "sensor").is_err());
@@ -731,10 +872,10 @@ mod record_tests {
         assert_eq!(edited["created_unix_ms"], json!(read.created_unix_ms));
         assert_eq!(edited["tags"], json!(["desk", "storage"]));
         assert_eq!(edited["description"], "Old");
-        assert_eq!(
-            serde_json::to_value(get(&workspace, "bracket").unwrap()).unwrap(),
-            edited
-        );
+        // The update response is the stored record and the project's collection.
+        let mut stored = serde_json::to_value(get(&workspace, "bracket").unwrap()).unwrap();
+        stored["collection"] = Value::Null;
+        assert_eq!(stored, edited);
     }
 
     #[test]
@@ -775,6 +916,7 @@ mod record_tests {
             name: "Desk".into(),
             description: "Organizer".into(),
             adopt_existing: false,
+            collection_id: None,
         };
         let created = create(&workspace, params.clone()).unwrap();
         assert_eq!((created.format_version, created.record_version), (2, 1));

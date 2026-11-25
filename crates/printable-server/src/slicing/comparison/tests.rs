@@ -10,6 +10,7 @@ fn workspace(root: &std::path::Path) -> Workspace {
             name: "Part".into(),
             description: String::new(),
             adopt_existing: false,
+            collection_id: None,
         }),
     )
     .unwrap();

@@ -57,12 +57,17 @@ person browse covers, search/filter projects, and download files without an MCP
 client. It has a separate authenticated listener and cannot edit a project,
 slice, or start a print. Its address and access come from the operator.
 
+Group related projects with the `collection` tool, for example every mount for
+one machine. The web library then shows one card per collection, and
+`catalog search` can filter by collection. See
+[project collections](../project-collections.md).
+
 ## Keep size and part choices together
 
 [Part families](../part-families.md) group explicit variants and alternative file
 sets within a project. A bracket family can offer supported widths and hole
 patterns, each pointing to its own files and optional preview. The web browser
-lets you browse collections, narrow choices, and download an exact variant.
+lets you browse family categories, narrow choices, and download an exact variant.
 
 Family selection does not generate a missing combination or establish that
 related parts fit together. Keep the chosen revision, file identities, and

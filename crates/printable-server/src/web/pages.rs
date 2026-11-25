@@ -5,7 +5,10 @@
 
 use maud::{DOCTYPE, Markup, html};
 
-use super::{FileEntry, LibraryForm, MAX_PAGE, PAGE_SIZE, Paths, ProjectView, TEXT_FILTERS};
+use super::{
+    CollectionCard, CollectionHeader, FileEntry, LibraryForm, MAX_PAGE, PAGE_SIZE, Paths,
+    ProjectView, TEXT_FILTERS,
+};
 use crate::projects::{
     card::{CompactCard, Dates, PictureKind, civil_date, utc_date},
     index::{MatchKind, SearchResponse, SearchSort},
@@ -143,9 +146,9 @@ fn sort_label(sort: SearchSort) -> &'static str {
     }
 }
 
-fn summary(form: &LibraryForm, response: &SearchResponse) -> String {
+fn summary(form: &LibraryForm, response: &SearchResponse, noun: (&str, &str)) -> String {
     let coverage = response.coverage;
-    let mut text = plural(response.total, "matching project", "matching projects");
+    let mut text = plural(response.total, noun.0, noun.1);
     if response.total > 0 {
         let pages = response.total.div_ceil(PAGE_SIZE).min(MAX_PAGE);
         text.push_str(&format!(" · page {} of {pages}", form.page));
@@ -186,20 +189,23 @@ fn pager(form: &LibraryForm, response: &SearchResponse) -> Markup {
     }
 }
 
-/// The library grid, or the form with the reason a search was refused.
-pub(super) fn library(
+/// A search's status line, project grid and pages. `empty` is shown when
+/// nothing matches at all.
+fn results(
     paths: &Paths,
     form: &LibraryForm,
     outcome: Result<&SearchResponse, &str>,
+    noun: (&str, &str),
+    empty: &str,
 ) -> Markup {
-    let content = html! {
+    html! {
         @match outcome {
             Err(reason) => {
                 main.notice { p.error { (reason) } }
             }
             Ok(response) => {
                 div.status {
-                    p.meta { (summary(form, response)) }
+                    p.meta { (summary(form, response, noun)) }
                     @if !response.degraded.is_empty() {
                         ul.notes {
                             @for note in &response.degraded { li { (note.message) } }
@@ -212,10 +218,8 @@ pub(super) fn library(
                             @if response.total > 0 {
                                 "This page is past the last page of results. "
                                 a href=(form.query(1)) { "Go to the first page" } "."
-                            } @else if form.is_blank() {
-                                "No projects are indexed yet."
                             } @else {
-                                "No projects match this search."
+                                (empty)
                             }
                         }
                     }
@@ -229,8 +233,104 @@ pub(super) fn library(
                 (pager(form, response))
             }
         }
+    }
+}
+
+/// One card for a collection, with up to four of its projects' pictures.
+fn collection_card(paths: &Paths, card: &CollectionCard) -> Markup {
+    html! {
+        a.card.collection-card href=(paths.link(&format!("collections/{}", card.id))) {
+            div.collection-pictures.single[card.pictured.len() < 2] {
+                @for member in &card.pictured {
+                    @if let Some(src) = picture_src(paths, member) {
+                        img src=(src) alt="" loading="lazy";
+                    }
+                }
+                @if card.pictured.is_empty() { span.none { "No pictures yet" } }
+            }
+            div.body {
+                span.title { (card.name) }
+                span.meta { "Collection · " (plural(card.projects, "project", "projects")) }
+                @if !card.description.is_empty() { p.desc { (card.description) } }
+            }
+        }
+    }
+}
+
+/// The library grid, or the form with the reason a search was refused.
+/// While browsing, collections come first as their own cards and the grid
+/// holds the projects outside them.
+pub(super) fn library(
+    paths: &Paths,
+    form: &LibraryForm,
+    outcome: Result<&SearchResponse, &str>,
+    shelf: &[CollectionCard],
+) -> Markup {
+    let browsing = form.is_blank();
+    let grouped = browsing && !shelf.is_empty();
+    let (noun, empty) = if grouped {
+        (
+            (
+                "project outside collections",
+                "projects outside collections",
+            ),
+            "Every project is in a collection.",
+        )
+    } else if browsing {
+        (
+            ("matching project", "matching projects"),
+            "No projects are indexed yet.",
+        )
+    } else {
+        (
+            ("matching project", "matching projects"),
+            "No projects match this search.",
+        )
+    };
+    let content = html! {
+        @if grouped && form.page == 1 {
+            section.shelf aria-label="Collections" {
+                h2 { "Collections" }
+                div.grid.collections {
+                    @for card in shelf { (collection_card(paths, card)) }
+                }
+                h2 { "Projects" }
+            }
+        }
+        (results(paths, form, outcome, noun, empty))
     };
     layout(paths, "Printable library", form, content)
+}
+
+/// One collection's projects, searchable and sorted like the library.
+pub(super) fn collection(
+    paths: &Paths,
+    form: &LibraryForm,
+    header: &CollectionHeader,
+    outcome: Result<&SearchResponse, &str>,
+) -> Markup {
+    let empty = if form.is_blank() {
+        "This collection has no indexed projects yet."
+    } else {
+        "No projects in this collection match this search."
+    };
+    let content = html! {
+        div.collection-head {
+            nav.breadcrumbs aria-label="Breadcrumb" {
+                a href=(paths.root()) { "Library" } span { "/" } span { "Collections" }
+            }
+            h1 { (header.name) }
+            p.meta { "Collection · " (plural(header.projects, "project", "projects")) }
+            @if !header.description.is_empty() { p.description { (header.description) } }
+        }
+        (results(paths, form, outcome, ("matching project", "matching projects"), empty))
+    };
+    layout(
+        paths,
+        &format!("{} · Printable library", header.name),
+        form,
+        content,
+    )
 }
 
 /// The badge class and text for a project's print state.
@@ -321,25 +421,35 @@ fn last_printed(dates: &Dates) -> Markup {
     }
 }
 
+/// The picture a card shows: the cover, then a render, then a plate.
+fn picture_kind(card: &CompactCard) -> Option<PictureKind> {
+    card.picture
+        .or(card.cover_path.as_ref().map(|_| PictureKind::Cover))
+}
+
+pub(super) fn has_picture(card: &CompactCard) -> bool {
+    picture_kind(card).is_some()
+}
+
+/// The address of a card's picture, if it has one.
+fn picture_src(paths: &Paths, card: &CompactCard) -> Option<String> {
+    let project = paths.link(&format!("projects/{}", card.project_id));
+    Some(match picture_kind(card)? {
+        PictureKind::Cover => format!("{project}/cover"),
+        PictureKind::Render => format!("{project}/pictures/render"),
+        PictureKind::Plate => format!("{project}/pictures/plate"),
+    })
+}
+
 fn compact(paths: &Paths, card: &CompactCard, matched: Option<MatchKind>) -> Markup {
     let project = paths.link(&format!("projects/{}", card.project_id));
     let (state, state_text) = print_state(card.printed, card.last_outcome.as_deref());
     html! {
         article.card {
             a.pic href=(project) tabindex="-1" aria-hidden="true" {
-                @match card.picture.or(card.cover_path.as_ref().map(|_| PictureKind::Cover)) {
-                    Some(PictureKind::Cover) => {
-                        img src={ (project) "/cover" } alt="" loading="lazy";
-                    }
-                    Some(PictureKind::Render) => {
-                        img src={ (project) "/pictures/render" } alt="" loading="lazy";
-                    }
-                    Some(PictureKind::Plate) => {
-                        img src={ (project) "/pictures/plate" } alt="" loading="lazy";
-                    }
-                    None => {
-                        span.none { "No picture yet" }
-                    }
+                @match picture_src(paths, card) {
+                    Some(src) => { img src=(src) alt="" loading="lazy"; }
+                    None => { span.none { "No picture yet" } }
                 }
                 div.over {
                     span.badge.(state) { (state_text) }
@@ -664,6 +774,14 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                 }
                 div.summary {
                     h1 { (card.name) }
+                    @if let Some(collection) = &view.collection {
+                        p.meta {
+                            "In the collection "
+                            a href=(paths.link(&format!("collections/{}", collection.collection_id))) {
+                                (collection.name)
+                            }
+                        }
+                    }
                     p.badges {
                         span.badge.(state) { (state_text) }
                         @for format in &card.formats {
@@ -712,7 +830,7 @@ pub(super) fn project(paths: &Paths, view: &ProjectView) -> Markup {
                 }
             }
             @if view.family_counts.families>0 {section {
-                h2 {"Collections"}
+                h2 {"Categories"}
                 (super::families::collections(paths,&card.project_id,&view.families))
                 h2 {"Part families"}
                 p {(view.family_counts.families) " families · " (view.family_counts.variants) " variants"}

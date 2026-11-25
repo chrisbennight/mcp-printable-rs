@@ -39,7 +39,8 @@ own Linux NVIDIA host; your client provides the assistant and conversation.
 - [Tool and action reference](workflow-interface.md), [native CAD](cad-build.md),
   [mesh measurements](mesh-assessment.md), and [slicing](slicing.md).
 - [Projects and scene switching](project-scenes.md), [design revisions](project-revisions.md),
-  [library records](project-library.md), and [part families](part-families.md).
+  [library records](project-library.md), [collections](project-collections.md),
+  and [part families](part-families.md).
 - [Blender modeling guidance](../crates/printable-server/resources/blender-modeling-v1.md),
   [scene state](scene-state.md), and [render recovery](render-worker.md).
 - [Printer setup](printer-integration.md), [printing instructions](../crates/printable-server/resources/printing-workflow-v1.md),

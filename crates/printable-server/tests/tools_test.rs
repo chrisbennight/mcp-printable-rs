@@ -2192,6 +2192,7 @@ async fn project_scene_dispatch_confines_paths_and_preserves_observed_identity()
                 name: id.into(),
                 description: String::new(),
                 adopt_existing: false,
+                collection_id: None,
             }),
         )
         .unwrap();
@@ -3505,6 +3506,71 @@ async fn artifact_stat_resolves_project_paths_without_calling_blender() {
             Some(true)
         );
     }
+}
+
+#[tokio::test]
+async fn collections_group_projects_through_the_mcp_tools() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(tmp.path()));
+    let server = PrintableServer::new(
+        Arc::clone(&ws),
+        Arc::new(client("127.0.0.1", 9)),
+        Arc::new(settings("127.0.0.1", 9)),
+    );
+    let call = |tool: &'static str, arguments: Value| {
+        let server = &server;
+        async move {
+            server
+                .invoke_tool(
+                    CallToolRequestParams::new(tool)
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    for id in ["z1-drill-holder", "z1-bit-tray", "vase"] {
+        let created = call(
+            "project",
+            json!({"action": "create", "params": {"project_id": id, "name": id}}),
+        )
+        .await;
+        assert_eq!(created.is_error, Some(false));
+    }
+    let grouped = call(
+        "collection",
+        json!({"action": "create", "params": {
+            "collection_id": "makera-z1", "name": "Makera Z1 Multiboard",
+            "project_ids": ["z1-drill-holder", "z1-bit-tray"]}}),
+    )
+    .await;
+    assert_eq!(grouped.is_error, Some(false));
+    let grouped = grouped.structured_content.unwrap();
+    assert_eq!(grouped["collection"]["project_count"], 2);
+    let members = call(
+        "project",
+        json!({"action": "list", "params": {"collection_id": "makera-z1"}}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    let ids: Vec<&str> = members["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["project_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["z1-bit-tray", "z1-drill-holder"]);
+    assert_eq!(
+        members["projects"][0]["collection"]["name"],
+        "Makera Z1 Multiboard"
+    );
+    let refused = call(
+        "collection",
+        json!({"action": "delete", "params": {"collection_id": "makera-z1"}}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
 }
 
 #[tokio::test]

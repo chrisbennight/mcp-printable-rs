@@ -12,6 +12,9 @@ optional read-only [web page](#web-page) shows the cards to people. Read
 `printable://contracts/catalog/card` and `printable://contracts/catalog/search`
 for the typed requests and results.
 
+Related projects can be grouped into [collections](project-collections.md),
+which the web page shows as one card each.
+
 `catalog` finds only the user's own Printable projects. Use the
 [model library](model-library.md) to find designs on MakerWorld, Printables or
 Thingiverse.
@@ -266,6 +269,7 @@ Every filter given must match.
 | `source` | A download site: `makerworld`, `printables` or `thingiverse` |
 | `license` | A license name from a download record |
 | `format` | A format from the card, such as `stl` or `gcode.3mf` |
+| `collection` | A collection ID: only projects currently in that [collection](project-collections.md) |
 
 Text filters are 1 to 128 characters and compare whole values without regard
 to letter case. They use the
@@ -531,7 +535,10 @@ its description, filament colours and materials, printers, tags, and when it
 was created and last printed. A page holds 24 cards, and like `catalog search` the
 pages reach only the first 1008 results; add words or filters to narrow a
 larger search. The coverage and every unavailable search capability are shown
-above the grid.
+above the grid. Without a search or filter, the page first shows each
+[collection](project-collections.md#web-page) as one card and the grid holds
+only projects outside collections; a collection's card opens its own page of
+projects.
 
 A project page shows the full card: the cover or else the generated Blender or plate
 picture, the description, tags and dates,
@@ -669,7 +676,8 @@ server's port 8080 is not published.
 ## Storage and backups
 
 The project record, its update lock and its covers live under the reserved
-`.printable` directory and cannot be written as ordinary artifacts. Back up
+`.printable` directory and cannot be written as ordinary artifacts. So do the
+[collections](project-collections.md#storage-and-backups). Back up
 `.printable` together with the `projects` directory. Generated pictures in
 `.printable/pictures` are made again when they are missing, so they need no
 backup.

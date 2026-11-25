@@ -375,6 +375,10 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
             }
             request => ResolvedCall::new("printable_project", request),
         },
+        "collection" => ResolvedCall::new(
+            "printable_collection",
+            de::<crate::projects::collections::CollectionRequest>(arguments)?,
+        ),
         CATALOG => match de::<crate::projects::CatalogRequest>(arguments)? {
             crate::projects::CatalogRequest::Search(params) => {
                 ResolvedCall::new("printable_project_search", params)
@@ -676,6 +680,12 @@ pub const TOOLS: &[ToolDef] = &[
         name: "project",
         description: "Manage projects and part families: create, get, list, resolve shared paths and list files; family_put retains explicit variants, family reads a revision, families searches and counts parts, family_select narrows supported choices; update descriptions and tags, set the cover and reindex the library search; keep design requirements and immutable source revisions; export selected files or a native Blender bundle. Edits need the expected record or revision. Use catalog to search the user's projects or read a project's card.",
         schema: workflow_schema_of::<crate::projects::ProjectRequest>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: "collection",
+        description: "Group the user's projects into collections, like folders: a project is in at most one. create, get, list, update and delete collections; add_projects places existing projects, all or none, and move takes them from another collection; remove_projects leaves them ungrouped. Changes accept expected_revision. Projects and files are never moved or deleted. project list and catalog search filter by collection.",
+        schema: workflow_schema_of::<crate::projects::collections::CollectionRequest>,
         annotations: write_annotations,
     },
     ToolDef {
@@ -1008,6 +1018,7 @@ mod tests {
                 "bake_texture",
                 "job",
                 "project",
+                "collection",
                 "catalog",
                 "head",
                 "photo",

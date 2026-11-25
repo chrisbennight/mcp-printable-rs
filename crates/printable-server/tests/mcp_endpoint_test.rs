@@ -851,6 +851,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "bake_texture",
             "job",
             "project",
+            "collection",
             "catalog",
             "artifact",
             "printer",

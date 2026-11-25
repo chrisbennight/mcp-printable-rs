@@ -383,6 +383,26 @@ impl PrintableServer {
             });
         }
 
+        if operation == "printable_collection" {
+            let workspace = Arc::clone(&self.workspace);
+            let result = tokio::task::spawn_blocking(move || {
+                let request = serde_json::from_value(args)
+                    .map_err(|error| ToolError::Validation(error.to_string()))?;
+                crate::projects::collections::dispatch(&workspace, request)
+            })
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            return Ok(match result {
+                Ok(value) => {
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                    result.structured_content = Some(value);
+                    result
+                }
+                Err(error) => error_result(&params.name, &error),
+            });
+        }
+
         if operation == "printable_project" {
             let workspace = Arc::clone(&self.workspace);
             let result = tokio::task::spawn_blocking(move || {
@@ -993,7 +1013,8 @@ mod tests {
         ("analyze_assembly", 2_400, 1_600),
         ("bake_texture", 2_900, 3_500),
         ("job", 9_600, 0),
-        ("project", 15_100, 0),
+        ("project", 15_300, 0),
+        ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
         ("photo", 4_900, 0),
@@ -1004,7 +1025,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 191_600;
+    const CATALOG_BUDGET: usize = 197_000;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {
