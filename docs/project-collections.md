@@ -32,8 +32,9 @@ Create a collection and place projects in it in one request:
 128 characters. Collection IDs and project IDs are separate, so a collection may
 share an ID with a project. Names are 1 to 256 characters without control
 characters; descriptions are optional, up to 4096 characters. Repeating the same
-`create` returns the existing collection unchanged, so its `project_ids` apply
-only when the collection is first created; the same ID with a different name or
+`create` returns the existing collection unchanged while its `project_ids` are
+all still members; if any is not, it is refused, so use `add_projects` to add
+projects to an existing collection. The same ID with a different name or
 description is refused. A workspace can have up to 1000 collections.
 
 Add more projects later with `add_projects`, up to 500 per request:

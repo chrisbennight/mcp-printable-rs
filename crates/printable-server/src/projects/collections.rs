@@ -600,12 +600,23 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<ChangeResponse,
     let id = params.collection_id;
     let (index, (added, moved)) = change(workspace, None, |index| {
         match index.collections.get(&id) {
-            // A repeated creation returns the collection unchanged. Its
-            // projects were placed when it was first created, and placing
-            // them again could undo a later change by someone else.
+            // A repeated creation returns the collection unchanged when its
+            // projects are all still members. Placing them again could undo a
+            // later change by someone else, so anything else is refused.
             Some(existing)
                 if existing.name == params.name && existing.description == params.description =>
             {
+                let absent: Vec<&str> = projects
+                    .iter()
+                    .filter(|project| index.memberships.get(*project) != Some(&id))
+                    .map(String::as_str)
+                    .collect();
+                if !absent.is_empty() {
+                    return Err(invalid(format!(
+                        "collection {id:?} already exists without these projects; use add_projects to add them: {}",
+                        listed(&absent)
+                    )));
+                }
                 return Ok((Vec::new(), Vec::new()));
             }
             Some(_) => {
@@ -1094,16 +1105,26 @@ mod tests {
             moved["moved"],
             json!([{"project_id": "mount-b", "from": "makera-z1"}])
         );
-        // Repeating the original creation does not undo the move.
+        // Repeating the original creation cannot undo the move: it is
+        // refused, and the move stands.
+        let before = stored(&workspace);
         let repeated = call(
             &workspace,
             "create",
             json!({"collection_id": "makera-z1", "name": "Makera Z1 Multiboard",
                    "project_ids": ["mount-a", "mount-b"]}),
         )
+        .unwrap_err();
+        assert!(repeated.to_string().contains("add_projects"), "{repeated}");
+        assert_eq!(stored(&workspace), before);
+        let replay = call(
+            &workspace,
+            "create",
+            json!({"collection_id": "makera-z1", "name": "Makera Z1 Multiboard",
+                   "project_ids": ["mount-a"]}),
+        )
         .unwrap();
-        assert_eq!(repeated["added"], json!([]));
-        assert_eq!(repeated["revision"], moved["revision"]);
+        assert_eq!(replay["revision"], moved["revision"]);
 
         let members = project(&workspace, "list", json!({"collection_id": "makera-z1"})).unwrap();
         assert_eq!(listed_ids(&members), ["mount-a"]);

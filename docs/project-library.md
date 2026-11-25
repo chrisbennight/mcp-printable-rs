@@ -272,7 +272,7 @@ Every filter given must match.
 | `collection` | A collection ID: only projects currently in that [collection](project-collections.md) |
 
 Text filters are 1 to 128 characters and compare whole values without regard
-to letter case. They use the
+to letter case. `collection` is an exact collection ID instead. They use the
 values shown on the card, so a project with more than 16 printers, materials or
 colours can be filtered only by the first 16 in alphabetical order.
 

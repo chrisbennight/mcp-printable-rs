@@ -286,7 +286,7 @@ pub(super) fn library(
                 "project outside collections",
                 "projects outside collections",
             ),
-            "Every project is in a collection.",
+            "No projects outside collections are indexed yet.",
         )
     } else if browsing {
         (
