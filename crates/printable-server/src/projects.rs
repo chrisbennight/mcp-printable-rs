@@ -404,6 +404,15 @@ pub fn resolve(workspace: &Workspace, id: &str, path: &str) -> Result<String, To
 }
 
 fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolError> {
+    create_reporting(workspace, params).map(|(project, _)| project)
+}
+
+/// Create a project, or return the existing one with the same metadata. The
+/// flag is true only when this call wrote the record.
+fn create_reporting(
+    workspace: &Workspace,
+    params: CreateParams,
+) -> Result<(Project, bool), ToolError> {
     validate_id(&params.project_id)?;
     if params.name.trim().is_empty() || params.name.chars().any(char::is_control) {
         return Err(ToolError::Validation(
@@ -425,21 +434,25 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolEr
         cover: None,
     };
     if let Some(existing) = existing_project(workspace, &project)? {
-        return Ok(existing);
+        return Ok((existing, false));
     }
     if !workspace.create_public_directory(&project.root)? && !params.adopt_existing {
-        return existing_project(workspace, &project)?.ok_or_else(|| ToolError::Validation(
-            "project directory already exists; set adopt_existing to use its files, or choose another project_id".into(),
-        ));
+        return existing_project(workspace, &project)?
+            .map(|existing| (existing, false))
+            .ok_or_else(|| ToolError::Validation(
+                "project directory already exists; set adopt_existing to use its files, or choose another project_id".into(),
+            ));
     }
     let path = manifest_path(&project.project_id);
     match workspace.write_reserved_artifact(&path, &serde_json::to_vec(&project)?, false) {
-        Ok(_) => Ok(project),
-        Err(WsError::AlreadyExists(_)) => existing_project(workspace, &project)?.ok_or_else(|| {
-            ToolError::Validation(
-                "project metadata changed during creation; inspect before retrying".into(),
-            )
-        }),
+        Ok(_) => Ok((project, true)),
+        Err(WsError::AlreadyExists(_)) => existing_project(workspace, &project)?
+            .map(|existing| (existing, false))
+            .ok_or_else(|| {
+                ToolError::Validation(
+                    "project metadata changed during creation; inspect before retrying".into(),
+                )
+            }),
         Err(error) => Err(error.into()),
     }
 }
@@ -461,7 +474,7 @@ fn create_in_collection(
     let project_id = params.project_id.clone();
     let (project, collection) =
         collections::create_project(workspace, &collection_id, &project_id, || {
-            create(workspace, params)
+            create_reporting(workspace, params)
         })?;
     Ok(ProjectView {
         project,

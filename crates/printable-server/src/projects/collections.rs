@@ -897,7 +897,7 @@ pub(super) fn create_project(
     workspace: &Workspace,
     collection_id: &str,
     project_id: &str,
-    create: impl FnOnce() -> Result<super::Project, ToolError>,
+    create: impl FnOnce() -> Result<(super::Project, bool), ToolError>,
 ) -> Result<(super::Project, CollectionRef), ToolError> {
     check_id(collection_id)?;
     let created = std::cell::Cell::new(false);
@@ -913,16 +913,11 @@ pub(super) fn create_project(
             )));
         }
         // Repeating a creation returns the existing project. It is placed
-        // only when it is new: an existing project outside the collection
-        // may have been moved or ungrouped since, and placing it again
-        // would undo that.
-        let existed = match super::get(workspace, project_id) {
-            Ok(_) => true,
-            Err(ToolError::Workspace(WsError::NotFound(_))) => false,
-            Err(error) => return Err(error),
-        };
-        let project = create()?;
-        if existed {
+        // only when this call wrote it: an existing project outside the
+        // collection may have been moved or ungrouped since, and placing it
+        // again would undo that.
+        let (project, written) = create()?;
+        if !written {
             if index.memberships.get(project_id).map(String::as_str) != Some(collection_id) {
                 return Err(invalid(format!(
                     "project {project_id:?} already exists outside collection {collection_id:?}; use add_projects to add it"
@@ -943,12 +938,12 @@ pub(super) fn create_project(
         Ok(project)
     });
     // The project and the collections are separate files. If storing the
-    // collections fails after the project was written, say so: repeating the
-    // request returns the project and places it.
+    // collections fails after the project was written, say so, and that
+    // add_projects places it.
     let (index, project) = outcome.map_err(|error| {
         if created.get() {
             invalid(format!(
-                "project {project_id:?} was created but not placed in collection {collection_id:?} ({error}); repeat the request to place it"
+                "project {project_id:?} was created but not placed in collection {collection_id:?} ({error}); use add_projects to place it"
             ))
         } else {
             error
