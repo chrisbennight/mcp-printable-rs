@@ -171,12 +171,22 @@ fn check_text(collection: &Collection) -> Result<(), ToolError> {
     check_description(&collection.description)
 }
 
+/// Reads of a file that a change replaced while it was being read.
+const READ_ATTEMPTS: usize = 3;
+
 /// Read the collections. A workspace without the file has none.
+///
+/// Each change replaces the file, which can make a concurrent read report
+/// that it changed while reading; such a read is tried again a few times.
 pub fn read(workspace: &Workspace) -> Result<Index, ToolError> {
-    let bytes = match workspace.read_generated_bytes(INDEX_PATH) {
-        Ok((_, bytes)) => bytes,
-        Err(WsError::NotFound(_)) => return Ok(Index::default()),
-        Err(error) => return Err(error.into()),
+    let mut attempt = 1;
+    let bytes = loop {
+        match workspace.read_generated_bytes(INDEX_PATH) {
+            Ok((_, bytes)) => break bytes,
+            Err(WsError::NotFound(_)) => return Ok(Index::default()),
+            Err(WsError::ChangedWhileReading) if attempt < READ_ATTEMPTS => attempt += 1,
+            Err(error) => return Err(error.into()),
+        }
     };
     let index: Index = serde_json::from_slice(&bytes)
         .map_err(|_| invalid("the collections file is unreadable or from a newer version"))?;
@@ -395,7 +405,7 @@ pub enum CollectionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Member {
     pub project_id: String,
-    /// Null when the project's record no longer exists.
+    /// Null when the project's record no longer exists or cannot be read.
     pub name: Option<String>,
     pub description: Option<String>,
     /// True when the project's record no longer exists; remove_projects
@@ -463,21 +473,32 @@ pub struct ListResponse {
     pub limit_reached: bool,
 }
 
-fn member(workspace: &Workspace, project_id: &str) -> Result<Member, ToolError> {
+/// A member as responses name it. Reading a member's record never fails a
+/// response: a change has already been stored when its response is built, so
+/// an unreadable record is reported with a null name and logged.
+fn member(workspace: &Workspace, project_id: &str) -> Member {
+    let unnamed = |missing| Member {
+        project_id: project_id.to_owned(),
+        name: None,
+        description: None,
+        missing,
+    };
     match super::get(workspace, project_id) {
-        Ok(project) => Ok(Member {
+        Ok(project) => Member {
             project_id: project.project_id,
             name: Some(project.name),
             description: Some(project.description),
             missing: false,
-        }),
-        Err(ToolError::Workspace(WsError::NotFound(_))) => Ok(Member {
-            project_id: project_id.to_owned(),
-            name: None,
-            description: None,
-            missing: true,
-        }),
-        Err(error) => Err(error),
+        },
+        Err(ToolError::Workspace(WsError::NotFound(_))) => unnamed(true),
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                code = error.code(),
+                "a collection member's record could not be read"
+            );
+            unnamed(false)
+        }
     }
 }
 
@@ -493,7 +514,7 @@ fn summary(
         .iter()
         .take(SAMPLE_PROJECTS)
         .map(|project| member(workspace, project))
-        .collect::<Result<_, _>>()?;
+        .collect();
     Ok(Summary {
         collection_id: id.to_owned(),
         name: collection.name.clone(),
@@ -614,7 +635,7 @@ fn get(workspace: &Workspace, params: GetParams) -> Result<GetResponse, ToolErro
         .iter()
         .take(params.limit)
         .map(|project| member(workspace, project))
-        .collect::<Result<_, _>>()?;
+        .collect();
     Ok(GetResponse {
         revision: index.revision,
         collection,
@@ -810,14 +831,20 @@ fn delete(workspace: &Workspace, params: DeleteParams) -> Result<ChangeResponse,
     })
 }
 
-/// Place a newly created project in a collection. A project already in that
-/// collection is accepted, so repeating a creation request succeeds.
-pub(super) fn place_new_project(
+/// Create a project in a collection while holding the collections lock.
+///
+/// The collection and any other membership of `project_id` are checked under
+/// the lock before `create` runs, so a refused request creates nothing and no
+/// concurrent change can delete the collection in between. A project already
+/// in that collection is accepted, so repeating a creation request succeeds.
+pub(super) fn create_project(
     workspace: &Workspace,
     collection_id: &str,
     project_id: &str,
-) -> Result<CollectionRef, ToolError> {
-    let (index, _) = change(workspace, None, |index| {
+    create: impl FnOnce() -> Result<super::Project, ToolError>,
+) -> Result<(super::Project, CollectionRef), ToolError> {
+    check_id(collection_id)?;
+    let (index, project) = change(workspace, None, |index| {
         if !index.collections.contains_key(collection_id) {
             return Err(unknown(collection_id));
         }
@@ -828,25 +855,22 @@ pub(super) fn place_new_project(
                 "project {project_id:?} already belongs to collection {other:?}; use the collection tool to move it"
             )));
         }
-        let placed = place(index, collection_id, &[project_id.to_owned()], false)?;
+        let project = create()?;
+        let placed = place(
+            index,
+            collection_id,
+            std::slice::from_ref(&project.project_id),
+            false,
+        )?;
         if !placed.0.is_empty() {
             touch(index, [collection_id.to_owned()]);
         }
-        Ok(())
+        Ok(project)
     })?;
-    index
+    let collection = index
         .membership(project_id)
-        .ok_or_else(|| invalid("the project was not placed in the collection"))
-}
-
-/// Check that a collection exists before anything that depends on it.
-pub(super) fn require(workspace: &Workspace, collection_id: &str) -> Result<(), ToolError> {
-    check_id(collection_id)?;
-    if read(workspace)?.collections.contains_key(collection_id) {
-        Ok(())
-    } else {
-        Err(unknown(collection_id))
-    }
+        .ok_or_else(|| invalid("the project was not placed in the collection"))?;
+    Ok((project, collection))
 }
 
 /// The members of a collection, refusing an unknown collection.
@@ -1232,6 +1256,22 @@ mod tests {
             json!({"project_id": "hook", "name": "Hook", "collection_id": "other"}),
         )
         .unwrap_err();
+        // A concurrent collection change refuses the request before the
+        // project is written.
+        let held = workspace.try_lock_reserved(LOCK_PATH).unwrap();
+        let busy = project(
+            &workspace,
+            "create",
+            json!({"project_id": "shelf", "name": "Shelf", "collection_id": "desk"}),
+        )
+        .unwrap_err();
+        assert!(busy.to_string().contains("another request"), "{busy}");
+        assert!(
+            workspace
+                .read_generated_bytes(".printable/projects/shelf.json")
+                .is_err()
+        );
+        drop(held);
         assert!(
             elsewhere.to_string().contains("already belongs"),
             "{elsewhere}"

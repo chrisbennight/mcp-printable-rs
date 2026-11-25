@@ -27,6 +27,18 @@ const MAX_CARD_FORMATS: usize = 4;
 const MAX_CARD_TAGS: usize = 6;
 
 fn layout(paths: &Paths, title: &str, form: &LibraryForm, content: Markup) -> Markup {
+    layout_searching(paths, paths.root(), title, form, content)
+}
+
+/// A page whose search form submits to `action`, so a collection page keeps
+/// its scope when the sort, words or filters change.
+fn layout_searching(
+    paths: &Paths,
+    action: &str,
+    title: &str,
+    form: &LibraryForm,
+    content: Markup,
+) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -37,7 +49,7 @@ fn layout(paths: &Paths, title: &str, form: &LibraryForm, content: Markup) -> Ma
                 link rel="stylesheet" href=(paths.link("static/app.css"));
             }
             body {
-                header { (search_form(paths, form)) }
+                header { (search_form(paths, action, form)) }
                 (content)
             }
         }
@@ -76,10 +88,10 @@ fn sort_value(sort: Option<SearchSort>) -> &'static str {
     }
 }
 
-fn search_form(paths: &Paths, form: &LibraryForm) -> Markup {
+fn search_form(paths: &Paths, action: &str, form: &LibraryForm) -> Markup {
     let sort = sort_value(form.sort);
     html! {
-        form method="get" action=(paths.root()) {
+        form method="get" action=(action) {
             div.bar {
                 a.home href=(paths.root()) { "Library" }
                 label.search {
@@ -325,8 +337,9 @@ pub(super) fn collection(
         }
         (results(paths, form, outcome, ("matching project", "matching projects"), empty))
     };
-    layout(
+    layout_searching(
         paths,
+        &paths.link(&format!("collections/{}", header.id)),
         &format!("{} · Printable library", header.name),
         form,
         content,

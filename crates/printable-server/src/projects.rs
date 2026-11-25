@@ -447,34 +447,23 @@ fn create(workspace: &Workspace, params: CreateParams) -> Result<Project, ToolEr
 }
 
 /// Create a project and, when asked, place it in an existing collection.
-/// The collection and any other membership are checked before the project
-/// is created, so a refused request creates nothing.
+/// The collections are read, or the collection and any other membership are
+/// checked under the collections lock, before the project is written, so a
+/// refused request creates nothing.
 fn create_in_collection(
     workspace: &Workspace,
     mut params: CreateParams,
 ) -> Result<ProjectView, ToolError> {
     let Some(collection_id) = params.collection_id.take() else {
-        let project = create(workspace, params)?;
         let index = collections::read(workspace)?;
+        let project = create(workspace, params)?;
         return Ok(ProjectView::of(project, &index));
     };
-    collections::require(workspace, &collection_id)?;
     validate_id(&params.project_id)?;
-    if let Some(other) = collections::read(workspace)?.membership(&params.project_id)
-        && other.collection_id != collection_id
-    {
-        return Err(ToolError::Validation(format!(
-            "project {:?} already belongs to collection {:?}; use the collection tool to move it",
-            params.project_id, other.collection_id
-        )));
-    }
-    let project = create(workspace, params)?;
-    let collection = collections::place_new_project(workspace, &collection_id, &project.project_id)
-        .map_err(|error| {
-            ToolError::Validation(format!(
-                "project {:?} was created but not placed in collection {collection_id:?}: {error}",
-                project.project_id
-            ))
+    let project_id = params.project_id.clone();
+    let (project, collection) =
+        collections::create_project(workspace, &collection_id, &project_id, || {
+            create(workspace, params)
         })?;
     Ok(ProjectView {
         project,
@@ -568,8 +557,10 @@ pub fn dispatch(workspace: &Workspace, request: ProjectRequest) -> Result<Value,
             "reindexing requires the server's project index".into(),
         )),
         ProjectRequest::Update(params) => {
-            let project = update(workspace, params)?;
+            // Read first, so an unreadable collections file refuses the
+            // update instead of failing after it was saved.
             let index = collections::read(workspace)?;
+            let project = update(workspace, params)?;
             Ok(serde_json::to_value(ProjectView::of(project, &index))?)
         }
         ProjectRequest::ExportFiles(params) => Ok(serde_json::to_value(export::export_files(

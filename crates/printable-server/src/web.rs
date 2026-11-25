@@ -719,6 +719,7 @@ async fn library(State(web): State<Web>, uri: Uri) -> Response {
 
 /// A collection's header on its own page.
 pub(super) struct CollectionHeader {
+    id: String,
     name: String,
     description: String,
     projects: usize,
@@ -750,6 +751,7 @@ async fn collection(
             Ok(index.collection(&id).map(|collection| CollectionHeader {
                 projects: index.members(&id).len(),
                 name: collection.name.clone(),
+                id,
                 description: collection.description.clone(),
             }))
         })

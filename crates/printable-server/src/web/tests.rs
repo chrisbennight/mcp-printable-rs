@@ -497,6 +497,18 @@ async fn collections_show_as_cards_while_browsing_and_open_their_own_page() {
         assert!(page.contains(expected), "{expected}");
     }
     assert_eq!(page.matches("<article class=\"card\">").count(), 1);
+    // The page's search keeps the collection scope.
+    assert!(page.contains("<form method=\"get\" action=\"../collections/office\">"));
+    let scoped = library
+        .page("/collections/office?q=drawers&sort=name")
+        .await;
+    assert!(scoped.contains("title=\"Desk organizer\""));
+    assert!(
+        library
+            .page("/collections/office?q=nomatch")
+            .await
+            .contains("No projects in this collection match")
+    );
     assert_self_contained(&page);
     let project = library.page("/projects/desk").await;
     assert!(project.contains("In the collection <a href=\"../collections/office\">"));

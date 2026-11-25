@@ -79,8 +79,10 @@ collection without waiting for the search index.
 ## Changes from several clients
 
 Every change returns the collections' `revision`, which increases with each
-accepted change. Pass the revision you read as `expected_revision` to refuse a
-change when someone else changed the collections in the meantime. Changes that
+accepted change. `update`, `add_projects`, `remove_projects` and `delete`
+accept the revision you read as `expected_revision`, and refuse the change when
+someone else changed the collections in the meantime. `create` takes no
+revision; repeating it is safe. Changes that
 would not change anything keep the revision. When two changes arrive at once,
 one is refused with a "being changed by another request" error; read the
 collections again before retrying.
@@ -110,7 +112,8 @@ If the file is damaged, or names a collection that does not exist, the server
 reports an error rather than guessing. Restore it from a backup, or remove it to
 start again with every project ungrouped. If a project's record is removed by
 hand while it is in a collection, `get` marks it `missing`, and `remove_projects`
-takes it out of the collection.
+takes it out of the collection. A member whose record cannot be read is listed
+with a null name.
 
 Public request and response schemas are available at
 `printable://contracts/collection/create`, `printable://contracts/collection/get`,
