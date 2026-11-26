@@ -270,6 +270,41 @@ RUN mkdir /notices \
  && cp /src/flexgemm/LICENSE /notices/FlexGEMM-MIT.txt \
  && cp /src/trellis2/o-voxel/third_party/eigen/COPYING.* /notices/
 
+# Photograph geometry model code at the revisions the depth benchmark measured
+# (evidence/depth-benchmark.md). The worker imports it as plain code from
+# /opt/printable/recon/vendor; weights are prepared at run time. MoGe-3 needs a
+# newer, Triton-only FlexGEMM than TRELLIS.2, so that copy has its own directory.
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS recon-geometry-code
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ARG MOGE_REVISION=74fbce054ebed49800de42d0ad0e83495065719a
+ARG UTILS3D_MOGE_REVISION=62f09d58509485564e24d5d9f6aac9ee9ebc0c37
+ARG MOGE_FLEXGEMM_REVISION=b2fadb29d41846c7981ade6801ffc689fae119cf
+ARG DEPTH_PRO_2_REVISION=aa389cbb0b74341664ed663a0966c859905cd6c0
+ARG DEPTH_ANYTHING_3_REVISION=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4
+COPY recon/depth-pro-2-optional-imports.patch /tmp/depth-pro-2-optional-imports.patch
+RUN set -e; fetch() { git init -q "$1" && git -C "$1" fetch -q --depth 1 "$2" "$3" \
+      && git -C "$1" checkout -q FETCH_HEAD && test "$(git -C "$1" rev-parse HEAD)" = "$3"; } \
+ && mkdir /src && cd /src \
+ && fetch moge https://github.com/microsoft/MoGe "${MOGE_REVISION}" \
+ && fetch utils3d-moge https://github.com/EasternJournalist/utils3d-moge "${UTILS3D_MOGE_REVISION}" \
+ && fetch flexgemm https://github.com/JeffreyXiang/FlexGEMM "${MOGE_FLEXGEMM_REVISION}" \
+ && fetch depth-pro-2 https://github.com/apple-aiml-research/ml-depth-pro-2 "${DEPTH_PRO_2_REVISION}" \
+ && fetch depth-anything-3 https://github.com/ByteDance-Seed/Depth-Anything-3 "${DEPTH_ANYTHING_3_REVISION}" \
+ && git -C depth-pro-2 apply /tmp/depth-pro-2-optional-imports.patch \
+ && mkdir -p /vendor/moge /vendor/moge-flex-gemm /vendor/depth-pro-2 /vendor/depth-anything-3 /notices \
+ && cp -r moge/moge utils3d-moge/utils3d_moge /vendor/moge/ \
+ && cp -r flexgemm/flex_gemm /vendor/moge-flex-gemm/ \
+ && cp -r depth-pro-2/src/depth_pro_2 /vendor/depth-pro-2/ \
+ && cp -r depth-anything-3/src/depth_anything_3 /vendor/depth-anything-3/ \
+ && cp moge/LICENSE /notices/MoGe-MIT.txt \
+ && cp utils3d-moge/LICENSE /notices/utils3d-moge-MIT.txt \
+ && cp flexgemm/LICENSE /notices/FlexGEMM-MoGe-MIT.txt \
+ && cp depth-pro-2/LICENSE /notices/DepthPro2-code.txt \
+ && cp depth-pro-2/LICENSE_MODEL /notices/DepthPro2-model.txt \
+ && cp depth-anything-3/LICENSE /notices/DepthAnything3-Apache-2.0.txt
+
 FROM recon-base AS recon-runtime
 # Triton compiles its pinned kernel launchers for the installed GPU at first use.
 RUN apt-get update \
@@ -288,9 +323,19 @@ COPY --from=recon-trellis-build /src/trellis2/trellis2 /opt/printable/recon/vend
 COPY --from=recon-trellis-build /src/flexgemm/autotune_cache.json /opt/printable/recon/vendor/flex-gemm-autotune.json
 COPY --from=recon-trellis-build /notices /usr/share/doc/printable/trellis
 COPY recon/licenses /usr/share/doc/printable/trellis
-COPY recon/reconstruct.py recon/estimate_depth.py recon/convert_marigold.py recon/generate_object.py recon/generate_trellis.py /opt/printable/recon/
+COPY --from=recon-geometry-code /vendor /opt/printable/recon/vendor
+COPY --from=recon-geometry-code /notices /usr/share/doc/printable/geometry
+COPY recon/reconstruct.py recon/estimate_depth.py recon/estimate_geometry.py recon/convert_marigold.py recon/generate_object.py recon/generate_trellis.py /opt/printable/recon/
 COPY recon/models /opt/printable/recon/models
 COPY recon/printable_recon /opt/printable/recon/printable_recon
+# Every geometry model's code imports with the packages installed above.
+# MoGe-3's FlexGEMM reads the GPU when imported, so only its source is
+# compiled here; it runs only on CUDA.
+RUN cd /opt/printable/recon/vendor && /opt/recon/bin/python -I -c "import sys; \
+sys.path[:0] = ['moge', 'depth-pro-2', 'depth-anything-3']; \
+import moge.model.v2, depth_pro_2, depth_anything_3.cfg, depth_anything_3.model, \
+depth_anything_3.utils.io.input_processor, depth_anything_3.utils.io.output_processor" \
+ && /opt/recon/bin/python -I -m compileall -q moge/moge/model/v3.py moge-flex-gemm/flex_gemm
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
