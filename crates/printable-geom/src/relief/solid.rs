@@ -46,6 +46,7 @@ impl ReliefSolid {
     }
 
     /// The triangles of the top surface.
+    #[cfg(test)]
     pub(super) fn top_triangles(&self) -> &[[u32; 3]] {
         &self.mesh.triangles[..2 * (self.columns - 1) * (self.rows - 1)]
     }

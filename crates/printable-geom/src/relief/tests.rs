@@ -811,38 +811,16 @@ fn detail_narrower_than_the_nozzle_is_reported() {
 }
 
 #[test]
-fn relief_height_limits_and_mould_release_are_checked() {
+fn relief_height_limits_are_checked() {
     let relief = map(12, 12, 0.5, |x, y| {
         ((x as f64 - 5.5).powi(2) + (y as f64 - 5.5).powi(2)).sqrt() * 0.1
     });
     let mould = relief_solid(&relief, &SolidOptions::mould()).unwrap();
-    let options = PrintabilityOptions {
-        release: Some(Release {
-            pull_direction: [0.0, 0.0, 1.0],
-            minimum_draft_degrees: 1.0,
-        }),
-        ..PrintabilityOptions::default()
-    };
-    let check = check_relief(&relief, &mould, &options).unwrap();
-    assert!(check.passed);
-    let draft = check.draft.unwrap();
-    assert_eq!(draft.undercut.faces, 0);
-    // Only the cavity's surface is cast against; the outer walls, parallel
-    // to the pull, and the bottom are not counted.
-    assert_eq!(draft.shallow.faces, 0);
-    let counted =
-        draft.base.faces + draft.released.faces + draft.shallow.faces + draft.undercut.faces;
-    assert_eq!(counted, 2 * 11 * 11);
-    // A sideways pull finds the cavity's far slopes undercut.
-    let sideways = PrintabilityOptions {
-        release: Some(Release {
-            pull_direction: [1.0, 0.0, 0.0],
-            minimum_draft_degrees: 1.0,
-        }),
-        ..PrintabilityOptions::default()
-    };
-    let check = check_relief(&relief, &mould, &sideways).unwrap();
-    assert!(check.draft.unwrap().undercut.faces > 0 && !check.passed);
+    assert!(
+        check_relief(&relief, &mould, &PrintabilityOptions::default())
+            .unwrap()
+            .passed
+    );
 
     let too_tall = PrintabilityOptions {
         maximum_relief_mm: Some(0.5),

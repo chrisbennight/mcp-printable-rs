@@ -183,8 +183,10 @@ and writes no files. It runs in four stages.
 
    Neighbouring pixels whose depths imply a slope steeper than
    `max_jump_slope` (default 10, about 84 degrees from facing the camera)
-   lie on two sides of an occlusion. They are integrated separately, and
-   the depth sets each side's level. Without a focal length, the longest
+   lie on two sides of an occlusion. Anchored integration solves each side
+   separately and the depth sets each side's level; the Frankot-Chellappa
+   preview only removes the slope across the step and solves the whole
+   image together. Without a focal length, the longest
    image side in pixels stands in for it. Analyses larger than `max_pixels`
    (default 2048 x 2048) are refused with the `relief_too_large` error code.
 2. **Compression** (`compress`). Steps at the subject's outline and at depth
@@ -211,10 +213,11 @@ and writes no files. It runs in four stages.
    the largest reliefs. The relief's height range is compared with a
    minimum (default one 0.2 mm layer) and an optional maximum. Ridges and grooves narrower
    than the nozzle (default 0.4 mm) are reported where they would lose more
-   than one layer of height. With a release direction, the draft and
-   undercuts of the relief's top surface are reported; the outer walls and
-   bottom are not cast against. For a mould, pass the inverted relief, as
-   the `relief` example does, so the narrow detail is that of the cavity.
+   than one layer of height; detail finer than the sample spacing is not
+   assessed. A relief is a height field, so a mould made from it releases
+   along the relief's axis without undercuts. For a mould, pass the inverted
+   relief, as the `relief` example does, so the narrow detail is that of the
+   cavity.
 
 ### Try it on saved maps
 

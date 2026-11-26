@@ -1,4 +1,4 @@
-//! Whether a relief solid can be printed, and released from a mould.
+//! Whether a relief solid can be printed.
 //!
 //! A relief solid is closed, manifold, consistently oriented and free of
 //! self-intersections by construction (see [`relief_solid`]), so its
@@ -13,31 +13,20 @@
 //! peak the disc cannot fit inside loses the height that the opening
 //! removes, and a groove or pit the disc cannot fit into loses the depth
 //! the closing fills. Losses smaller than one layer are not counted, since
-//! a layer is the finest height a printer forms. A mould is checked for
-//! draft and undercuts along the direction it releases, over the relief's
-//! top surface only: the outer walls and the bottom are not cast against.
+//! a layer is the finest height a printer forms. Detail finer than the
+//! sample spacing is not assessed. A relief is a height field, so a mould made
+//! from it releases along the relief's axis without undercuts by construction.
 //!
 //! [`relief_solid`]: super::relief_solid
 
 use serde::Serialize;
 
 use super::{ReliefError, ReliefMap, ReliefSolid, positive};
-use crate::{DraftOptions, DraftReport, TriangleMesh, draft, limit, normalized_direction};
+use crate::{TriangleMesh, limit};
 
 /// A disc this many samples across, or more, is refused: the check would
 /// cost more than the relief it measures. Resample the relief more coarsely.
 const MAX_DISC_RADIUS: usize = 64;
-
-/// How a mould releases the relief.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Release {
-    /// Direction the cast part, or the mould, moves away; +Z lifts a cast
-    /// out of an upward-facing cavity.
-    pub pull_direction: [f64; 3],
-    /// Faces leaning less than this, in degrees, are reported as shallow;
-    /// at least 0 and below 90.
-    pub minimum_draft_degrees: f64,
-}
 
 /// Printer and mould limits for [`check_relief`].
 #[derive(Debug, Clone, PartialEq)]
@@ -49,8 +38,6 @@ pub struct PrintabilityOptions {
     pub minimum_relief_mm: Option<f64>,
     /// The relief must rise no further than this.
     pub maximum_relief_mm: Option<f64>,
-    /// Check draft and undercuts along a mould's release.
-    pub release: Option<Release>,
 }
 
 impl Default for PrintabilityOptions {
@@ -60,7 +47,6 @@ impl Default for PrintabilityOptions {
             layer_mm: 0.2,
             minimum_relief_mm: None,
             maximum_relief_mm: None,
-            release: None,
         }
     }
 }
@@ -92,11 +78,8 @@ pub struct ReliefPrintability {
     pub narrow_ridges: NarrowDetail,
     /// Grooves and pits narrower than the nozzle.
     pub narrow_grooves: NarrowDetail,
-    /// Draft of the relief's top surface along the release.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub draft: Option<DraftReport>,
-    /// Whether the solid is sound, its height within limits and, for a
-    /// mould, free of undercuts. Narrow detail prints but loses fidelity,
+    /// Whether the solid is sound and its height within limits. Narrow
+    /// detail prints but loses fidelity,
     /// so it is reported without failing the check.
     pub passed: bool,
 }
@@ -127,19 +110,6 @@ pub fn check_relief(
             "spacing_mm must be finite positive numbers".to_string(),
         ));
     }
-    let pull = options
-        .release
-        .map(|release| {
-            if !(0.0..90.0).contains(&release.minimum_draft_degrees) {
-                return Err(ReliefError::InvalidOptions(
-                    "minimum_draft_degrees must be at least 0 and below 90".to_string(),
-                ));
-            }
-            normalized_direction(release.pull_direction, "pull_direction")
-                .map_err(ReliefError::from)
-        })
-        .transpose()?;
-
     let heights = map.heights_mm.values();
     let low = heights.iter().copied().fold(f64::INFINITY, f64::min);
     let high = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -152,22 +122,6 @@ pub fn check_relief(
 
     let volume_mm3 = sound(solid)?.then(|| signed_volume(solid.mesh()));
     let solid_ok = volume_mm3.is_some_and(|volume| volume > 0.0);
-    let draft = options.release.zip(pull).map(|(release, pull)| {
-        let top = TriangleMesh {
-            vertices: solid.top_vertices().to_vec(),
-            triangles: solid.top_triangles().to_vec(),
-        };
-        draft::analyze(
-            &top,
-            pull,
-            DraftOptions {
-                pull_direction: release.pull_direction,
-                minimum_draft_degrees: release.minimum_draft_degrees,
-                parting_offset_mm: None,
-            },
-        )
-    });
-    let undercut_free = draft.as_ref().is_none_or(|draft| draft.undercut.faces == 0);
     Ok(ReliefPrintability {
         solid: solid_ok,
         volume_mm3,
@@ -177,8 +131,7 @@ pub fn check_relief(
         relief_height_within_limits,
         narrow_ridges,
         narrow_grooves,
-        draft,
-        passed: solid_ok && relief_height_within_limits && undercut_free,
+        passed: solid_ok && relief_height_within_limits,
     })
 }
 
@@ -233,8 +186,8 @@ fn narrow_detail(
         area_mm2: 0.0,
         maximum_loss_mm: 0.0,
     };
-    // A disc within one sample of a point fits inside any detail the
-    // samples can show.
+    // Detail finer than the sample spacing is not assessed: a disc within
+    // one sample of a point fits between any two samples.
     if radius_x < 1.0 && radius_y < 1.0 {
         return Ok([none(), none()]);
     }

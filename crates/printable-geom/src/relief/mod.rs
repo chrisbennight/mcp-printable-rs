@@ -13,7 +13,7 @@
 //!    base on Z = 0, the relief facing +Z, an optional border, and optional
 //!    mirrored or inverted output for moulds.
 //! 4. [`check_relief`] checks the solid and its relief against what a
-//!    printer and a mould release can reproduce.
+//!    printer can reproduce.
 //!
 //! Every stage bounds its memory by the input's pixel count and its work by
 //! iteration limits, and stops at the geometry work limit applied to its
@@ -32,9 +32,7 @@ pub use compress::{
 };
 pub use heightfield::{Analysis, DEFAULT_MAX_PIXELS, Grid, HeightField};
 pub use integrate::{IntegrationMethod, IntegrationOptions, IntegrationReport, integrate};
-pub use printability::{
-    NarrowDetail, PrintabilityOptions, Release, ReliefPrintability, check_relief,
-};
+pub use printability::{NarrowDetail, PrintabilityOptions, ReliefPrintability, check_relief};
 pub use solid::{ReliefSolid, SolidOptions, relief_solid};
 
 use crate::GeometryError;
