@@ -99,7 +99,7 @@ def main(argv):
         seen.add(key)
         budget = next((o.get("gpu_peak_mib") for route in registry["routes"].values() for o in route
                        if (o["entry"], o["device"], o["side"]) == key), None)
-        tier = "cpu" if option["device"] == "cpu" else ("budget" if budget and budget <= 3072 else "gpu")
+        tier = "cpu" if option["device"] == "cpu" else ("budget" if budget and budget <= 4224 else "gpu")
         if option["device"] == "cuda" and os.environ.get("CHECK_GPU_BUDGET_MIB"):
             budget = int(os.environ["CHECK_GPU_BUDGET_MIB"])
         for image in sorted(inputs.glob("*.png")):

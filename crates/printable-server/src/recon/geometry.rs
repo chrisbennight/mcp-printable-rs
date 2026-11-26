@@ -73,7 +73,7 @@ impl GeometryConfig {
                 .unwrap_or_else(|| "/opt/printable/recon/analyze_photo.py".into())
                 .into(),
             cache: cache.into(),
-            gpu_budget_mib: number("PRINTABLE_RECON_GPU_BUDGET_MIB", 3072, 256..=262144)?,
+            gpu_budget_mib: number("PRINTABLE_RECON_GPU_BUDGET_MIB", 8192, 256..=262144)?,
             ram_budget_mib,
             timeout: Duration::from_secs(number(
                 "PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS",
@@ -381,7 +381,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
             _ => None,
         };
         let config = GeometryConfig::configure(&get).unwrap().unwrap();
-        assert_eq!(config.gpu_budget_mib, 3072);
+        assert_eq!(config.gpu_budget_mib, 8192);
         assert_eq!(config.ram_budget_mib, None);
         assert_eq!(config.timeout, Duration::from_secs(900));
         assert_eq!(config.preparation_timeout, Duration::from_secs(86400));
