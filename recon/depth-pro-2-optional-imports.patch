@@ -1,0 +1,30 @@
+diff --git a/src/depth_pro_2/utils.py b/src/depth_pro_2/utils.py
+index 3cf788d..8baa54c 100644
+--- a/src/depth_pro_2/utils.py
++++ b/src/depth_pro_2/utils.py
+@@ -7,14 +7,22 @@ from __future__ import annotations
+ 
+ import numbers
+ from pathlib import Path
++from typing import TYPE_CHECKING
+ 
+-import av
+ import numpy as np
+-import pillow_heif
+ import torch
+ from PIL import ExifTags, Image, ImageOps
+ 
+-pillow_heif.register_heif_opener()
++if TYPE_CHECKING:
++    import av
++
++# Video and HEIF decoding are optional, so the model loads without them.
++try:
++    import pillow_heif
++except ImportError:
++    pillow_heif = None
++else:
++    pillow_heif.register_heif_opener()
+ 
+ 
+ def default_device() -> torch.device:
