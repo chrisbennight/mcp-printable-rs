@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -90,8 +91,8 @@ class ModelFile:
             raise ValueError("model file size must be a positive integer")
         _relative(self.directory)
         _relative(self.filename)
-        if self.filename.endswith(PARTIAL_SUFFIX):
-            raise ValueError("model file names must not end in .partial, which names downloads in progress")
+        if any(part.endswith(PARTIAL_SUFFIX) for part in self.relative_path.split("/")):
+            raise ValueError("model file paths must not end in .partial, which names downloads in progress")
 
     @property
     def relative_path(self) -> str:
@@ -229,7 +230,7 @@ def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.o
     target.parent.mkdir(parents=True, exist_ok=True)
     offset = partial.stat().st_size if partial.is_file() else 0
     # A partial longer than pinned, or one sharing its data with another file, starts again.
-    if offset > item.bytes or (offset and partial.stat().st_nlink > 1):
+    if offset > item.bytes or (partial.is_file() and partial.stat().st_nlink > 1):
         partial.unlink()
         offset = 0
     if offset < item.bytes:
@@ -252,7 +253,7 @@ def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.o
             raise PreparationError(
                 f"model download failed for {item.relative_path} (HTTP {error.code}); check network access"
             ) from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError):
             raise PreparationError(
                 f"model download failed for {item.relative_path}; check network access and retry"
             ) from None
