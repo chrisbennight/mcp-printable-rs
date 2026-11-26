@@ -59,8 +59,10 @@ fits; the `cpu` tier's three-scene means are in the JSON.
 
 ## Combining depth and normals
 
-Fusion takes broad shape from a depth map and detail from integrated normals,
-without integrating across depth jumps; sigma is the blur, in pixels,
+Fusion takes broad shape from a depth map and detail from integrated normals;
+near depth jumps it uses the depth map's own gradients instead of the normals,
+but one integration still spans the whole image, so the two sides of an
+occlusion are not fully separated; sigma is the blur, in pixels,
 separating the two. "Normals dominate" is the widest blur: it keeps the depth
 map's mean level, its per-pixel scale and its gradients at depth jumps, and
 takes everything else from the normals, so it still depends on the depth model.

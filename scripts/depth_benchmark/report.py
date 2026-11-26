@@ -194,6 +194,7 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
     focal = None if focal_run is None else focal_run.get("focal_px")
     if not focal:
         return rows
+    baselines = set()  # each depth model's depth-only row is scored once per scene
     for depth_model, normal_model in FUSIONS:
         d, n = load_run(tier, depth_model, f"gt-{scene}"), load_run(tier, normal_model, f"gt-{scene}")
         if d is None or n is None or "normals" not in n:
@@ -201,7 +202,8 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
         base = model_units(d)
         if base is None:
             continue
-        candidates = [("depth only", None, base)]
+        candidates = [] if depth_model in baselines else [("depth only", None, base)]
+        baselines.add(depth_model)
         candidates += [("fused", s, fuse(base, n["normals"], focal, s)) for s in FUSION_SIGMAS]
         for label, sigma, z in candidates:
             # Scored like a relief the user scales: one scale and offset, then compared with the truth.
