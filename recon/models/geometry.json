@@ -1,0 +1,378 @@
+{
+  "format": "printable-geometry 1",
+  "measured": "evidence/depth-benchmark.md: median seconds per image and peak allocated memory over every input, one model at a time, on an RTX 4090 and a 32-thread CPU",
+  "entries": {
+    "da3-mono-large": {
+      "model": "Depth Anything 3 mono large",
+      "outputs": {
+        "depth": "relative"
+      },
+      "files": [
+        {
+          "repo": "depth-anything/DA3MONO-LARGE",
+          "revision": "f465978e618db8cc79c83b8bbf24964857db1875",
+          "directory": "da3-mono-large",
+          "filename": "config.json",
+          "sha256": "649809acdfe99631293430bfb8bcd85620a1bba47bb4e27689bd204c645a4204",
+          "bytes": 845
+        },
+        {
+          "repo": "depth-anything/DA3MONO-LARGE",
+          "revision": "f465978e618db8cc79c83b8bbf24964857db1875",
+          "directory": "da3-mono-large",
+          "filename": "model.safetensors",
+          "sha256": "7a799a7f95eb8d4c404c2ca8be3dc3276b350a417ddc4420db72ba850cc0e960",
+          "bytes": 1336734448
+        }
+      ]
+    },
+    "dp2-h": {
+      "model": "Depth Pro 2 H+",
+      "outputs": {
+        "depth": "metric",
+        "focal": "pixels"
+      },
+      "files": [
+        {
+          "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-h-eivtm5w7m5.pt",
+          "directory": "depthpro2",
+          "filename": "depthpro2-h-eivtm5w7m5.pt",
+          "sha256": "ae39cfb7b08539f84db4a1e550761716adffb570d5c9ac3aa43a84a818340a2a",
+          "bytes": 3488607459
+        },
+        {
+          "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-fov-ew55zg4kq7.pt",
+          "directory": "depthpro2",
+          "filename": "depthpro2-fov-ew55zg4kq7.pt",
+          "sha256": "37fd480f30883879bfed412716fc26e6f5fdd1dbc22fe7a3e37fa659a0a817c4",
+          "bytes": 93884773
+        }
+      ]
+    },
+    "dp2-l": {
+      "model": "Depth Pro 2 L",
+      "outputs": {
+        "depth": "metric",
+        "focal": "pixels"
+      },
+      "files": [
+        {
+          "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-l-tegstu7fim.pt",
+          "directory": "depthpro2",
+          "filename": "depthpro2-l-tegstu7fim.pt",
+          "sha256": "24d717ae51d75a14e3c4c15699c5453129d4e8907cdc53dd756d0d5265f3e769",
+          "bytes": 1335953363
+        },
+        {
+          "url": "https://ml-site.cdn-apple.com/models/depth-pro-2/depthpro2-fov-ew55zg4kq7.pt",
+          "directory": "depthpro2",
+          "filename": "depthpro2-fov-ew55zg4kq7.pt",
+          "sha256": "37fd480f30883879bfed412716fc26e6f5fdd1dbc22fe7a3e37fa659a0a817c4",
+          "bytes": 93884773
+        }
+      ]
+    },
+    "moge3-vitg": {
+      "model": "MoGe-3 ViT-g",
+      "outputs": {
+        "mask": "valid_pixels",
+        "depth": "metric",
+        "normals": "camera"
+      },
+      "files": [
+        {
+          "repo": "Ruicheng/moge-3-vitg",
+          "revision": "6ef26c5a4b4148dab5ccaacdb08b72dc66380475",
+          "directory": "moge3-vitg",
+          "filename": "model.pt",
+          "sha256": "ce7c15417e9105c2ace7b4272e2cc69e36940921211eb7fa05d4d0bb03f0a00c",
+          "bytes": 5003249242
+        }
+      ]
+    },
+    "moge3-vitl": {
+      "model": "MoGe-3 ViT-L",
+      "outputs": {
+        "mask": "valid_pixels",
+        "depth": "metric",
+        "normals": "camera"
+      },
+      "files": [
+        {
+          "repo": "Ruicheng/moge-3-vitl",
+          "revision": "184008f877d7ad1ad4c2cd2182a9bd1f63d0e5be",
+          "directory": "moge3-vitl",
+          "filename": "model.pt",
+          "sha256": "9b41b7b9f65ad80aab7ad686f5e9cc0d1fd33f1964022618dfbcd52fc1fb7925",
+          "bytes": 1481333394
+        }
+      ]
+    },
+    "moge2-vitl-normal": {
+      "model": "MoGe-2 ViT-L normal",
+      "outputs": {
+        "mask": "valid_pixels",
+        "depth": "metric",
+        "normals": "camera"
+      },
+      "files": [
+        {
+          "repo": "Ruicheng/moge-2-vitl-normal",
+          "revision": "cb0e8bbd6b1e243589717c78e750b1ba4c093acf",
+          "directory": "moge2-vitl-normal",
+          "filename": "model.pt",
+          "sha256": "280741fd09bc3f403ccff9967784c2a391b52d2c0742ae3efdb21d9f90cc1a01",
+          "bytes": 1323815904
+        }
+      ]
+    },
+    "marigold-v2": {
+      "model": "Marigold V2 normals",
+      "outputs": {
+        "normals": "camera"
+      },
+      "conversion": "marigold-v2",
+      "files": [
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/config.json",
+          "sha256": "247c94f9b923a7d6b6035ca76d27b556bd0efd1a8c7672f31f037644fcce340e",
+          "bytes": 339
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model.safetensors.index.json",
+          "sha256": "034f003b74493730e1c595b2e23232e99d9e28bcef3b4c10c56d1b53eee4b435",
+          "bytes": 198887
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model-00001-of-00005.safetensors",
+          "sha256": "784a8efc4dcea09ba20b534bbe9e5fae3367d929525031a4bd26c5ddb7eb18e5",
+          "bytes": 9973578592
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model-00002-of-00005.safetensors",
+          "sha256": "86ce21e5e3bdecfbeaa31aa587c03d0d1af6ab05d79c127149e8217f81e0247f",
+          "bytes": 9987326072
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model-00003-of-00005.safetensors",
+          "sha256": "c6a046daa991f3b32c3ae39ff95e6e7220455265fcbbb643e9f556bea8641d02",
+          "bytes": 9987307440
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model-00004-of-00005.safetensors",
+          "sha256": "c28bf871d5db0a6397843eca3987e58ba2c3013d287d5d4a1271d68e158ce7e8",
+          "bytes": 9930685712
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "transformer/diffusion_pytorch_model-00005-of-00005.safetensors",
+          "sha256": "dd2844e5cafb03b16bed9556aa29c15396a787e17c38a0eda7f5a1281497c76a",
+          "bytes": 982130472
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "vae/config.json",
+          "sha256": "c448160dba5ce79c965cb075ee02e18d1c42eb6424f787e5869790d577b56a65",
+          "bytes": 730
+        },
+        {
+          "repo": "Qwen/Qwen-Image-Edit-2509",
+          "revision": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+          "directory": "qwen-image-edit-2509",
+          "filename": "vae/diffusion_pytorch_model.safetensors",
+          "sha256": "0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344",
+          "bytes": 253806966
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "depth/Log-stage2/trainables.safetensors",
+          "sha256": "3edec69490ba8e8fdc8d63e130f93cb93f514360d415a22701250b2535056892",
+          "bytes": 1853909694
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "normals/trainables.safetensors",
+          "sha256": "b98dfcafa8cf86cf042d8a8e615b8b1a7d7f17c939f1716954c1b57b1b4af15a",
+          "bytes": 1853909694
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "qwen_text_embeddings/qwen_edit_2509_qwen_depth_realimg512_prompt_embeds.pt",
+          "sha256": "ba752b582571d990c75ad6aac2a2eeb0cf04c2fe01b233b1675028eabf342a6d",
+          "bytes": 19384278
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "qwen_text_embeddings/qwen_edit_2509_qwen_depth_realimg512_prompt_mask.pt",
+          "sha256": "80973a6521f21a5a6faf6402cae185dafef840d91e654efbeb1097914e634798",
+          "bytes": 23624
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "qwen_text_embeddings/qwen_edit_2509_qwen_normals_dummy512_prompt_embeds.pt",
+          "sha256": "411c502723f2aded4265bd9f3f7032bd9f861a317922628d2aaa82424f436217",
+          "bytes": 2538995
+        },
+        {
+          "repo": "huawei-bayerlab/marigold-v2-0",
+          "revision": "cdf9810fb690886391a63aec012b5f501064fb0d",
+          "directory": "marigold-v2-0",
+          "filename": "qwen_text_embeddings/qwen_edit_2509_qwen_normals_dummy512_prompt_mask.pt",
+          "sha256": "202dcf62ae9963730237226d8df893b0678338ece99a69ef0c9afa894524cd57",
+          "bytes": 4329
+        }
+      ]
+    }
+  },
+  "routes": {
+    "depth.shallow": [
+      {
+        "entry": "da3-mono-large",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.07,
+        "gpu_peak_mib": 2443,
+        "ram_peak_mib": 3388
+      },
+      {
+        "entry": "da3-mono-large",
+        "device": "cpu",
+        "side": 1024,
+        "seconds": 12.72,
+        "ram_peak_mib": 3850
+      }
+    ],
+    "depth.deep": [
+      {
+        "entry": "dp2-h",
+        "device": "cuda",
+        "side": 2048,
+        "seconds": 0.4,
+        "gpu_peak_mib": 10391,
+        "ram_peak_mib": 4328
+      },
+      {
+        "entry": "dp2-h",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.09,
+        "gpu_peak_mib": 5284,
+        "ram_peak_mib": 4331
+      },
+      {
+        "entry": "dp2-l",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.21,
+        "gpu_peak_mib": 2482,
+        "ram_peak_mib": 2272
+      },
+      {
+        "entry": "dp2-h",
+        "device": "cpu",
+        "side": 1024,
+        "seconds": 13.76,
+        "ram_peak_mib": 7547
+      }
+    ],
+    "mask": [
+      {
+        "entry": "moge3-vitg",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.56,
+        "gpu_peak_mib": 6815,
+        "ram_peak_mib": 10220
+      },
+      {
+        "entry": "moge3-vitl",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.27,
+        "gpu_peak_mib": 2733,
+        "ram_peak_mib": 3599
+      },
+      {
+        "entry": "moge2-vitl-normal",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.06,
+        "gpu_peak_mib": 2316,
+        "ram_peak_mib": 3397
+      },
+      {
+        "entry": "moge2-vitl-normal",
+        "device": "cpu",
+        "side": 1024,
+        "seconds": 7.29,
+        "ram_peak_mib": 3621
+      }
+    ],
+    "focal": [
+      {
+        "entry": "dp2-l",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 0.21,
+        "gpu_peak_mib": 2482,
+        "ram_peak_mib": 2272
+      },
+      {
+        "entry": "dp2-l",
+        "device": "cpu",
+        "side": 1024,
+        "seconds": 8.14,
+        "ram_peak_mib": 4362
+      }
+    ],
+    "normals": [
+      {
+        "entry": "marigold-v2",
+        "device": "cuda",
+        "side": 1024,
+        "seconds": 6.17,
+        "gpu_peak_mib": 2048,
+        "ram_peak_mib": 2253
+      },
+      {
+        "entry": "marigold-v2",
+        "device": "cpu",
+        "side": 1024,
+        "seconds": 303.11,
+        "ram_peak_mib": 4096
+      }
+    ]
+  }
+}
