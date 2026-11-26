@@ -144,7 +144,8 @@ Median per image, excluding model loading and one warm-up image; peak GPU
 memory is allocator memory. The GPU 2048 px column is the median and peak over
 three timing photographs, and the CPU 2048 px column is one photograph. Peaks
 over every 2048 px input, including the scenes, were measured on the GPU only;
-they are in the route summary below and in the JSON. Storage reads were zero because model files were
+the route summary below gives them for the chosen routes, and
+`side_2048_gpu.costs` in the JSON gives them for every model. Storage reads were zero because model files were
 already in the page cache; a cold Marigold V2 read is about 13 GB per map, as
 [the depth guide](../docs/photo-depth.md) states.
 
