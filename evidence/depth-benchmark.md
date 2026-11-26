@@ -151,7 +151,7 @@ already in the page cache; a cold Marigold V2 read is about 13 GB per map, as
 | MoGe-3 ViT-L | 0.26 s, 2.5 GB | 0.35 s, 2.5 GB | yes, both sizes | does not run | does not run |
 | MoGe-2 ViT-L normal | 0.06 s, 2.3 GB | 0.07 s, 2.3 GB | yes, both sizes | 7.3 s, 3.5 GB | 5.5 s, 3.5 GB |
 | Depth Pro 2 L | 0.05 s, 3.1 GB | 0.22 s, 6.5 GB | 1024 px only (2.4 GB) | 8.1 s, 4.3 GB | 29 s, 7.4 GB |
-| Depth Pro 2 H+ | 0.09 s, 5.2 GB | 0.40 s, 8.6 GB | no | 14 s, 7.4 GB | 47 s, 9.5 GB |
+| Depth Pro 2 H+ | 0.09 s, 5.2 GB | 0.40 s, 8.6 GB (10.1 GB on the 2048 x 1536 scenes) | no | 14 s, 7.4 GB | 47 s, 9.5 GB |
 | Depth Anything 3 mono large | 0.07 s, 2.4 GB | 0.35 s, 4.8 GB | 1024 px only | 13 s, 3.8 GB | 68 s, 6.2 GB |
 | Depth Anything 3 nested giant | 0.26 s, 8.7 GB | 1.3 s, 13.5 GB | no | 60 s, 13.4 GB | 282 s, 13.7 GB |
 | Marigold V2 (depth and normals) | 6.2 s, 2.0 GB | 12.4 s, 2.5 GB | 1024 px; one of three 2048 px photographs ran out | 303 s, 4.0 GB | 935 s, 5.8 GB |
@@ -182,10 +182,13 @@ Within 3 GB, Depth Pro 2 L depth scored 37.6 mm against 46.8 mm for MoGe-3
 ViT-L fused with its normals. On the CPU, Depth Pro 2 H+ scored 33.2 mm.
 Depth Pro 2 also supplies focal length from the same pass on these routes.
 
-Models run one at a time. The GPU routes peak at about 8.6 GB (Depth Pro 2 H+
-at 2048 pixels) for deep subjects and 2.4 GB for shallow ones; the 3 GB routes
-fit the cap at 1024 pixels. The CPU routes take under 20 seconds of inference
-per map, plus about 7 seconds for the mask. Peak GPU memory is measured after
+Models run one at a time, so a route's peak is its largest model's peak over
+every input. The GPU routes peak at 10.1 GB for deep subjects (Depth Pro 2 H+
+at 2048 pixels, on the 2048 x 1536 scenes) and 6.7 GB for shallow ones (the
+MoGe-3 ViT-g mask; the depth model needs 2.4 GB). The 3 GB routes peak at
+2.7 GB (the MoGe-3 ViT-L mask). The CPU routes take under 25 seconds of
+inference per map, plus about 8 seconds for the mask, and peak at 7.4 GB of
+resident memory (Depth Pro 2 H+). Peak GPU memory is measured after
 the model is loaded, so it includes the resident weights but not transient
 loading. Marigold V2's own normals remain the most accurate normal maps
 measured (4.0 degrees at 1024 pixels) and are kept for normal-map output; it

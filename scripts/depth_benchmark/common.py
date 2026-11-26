@@ -46,9 +46,13 @@ def input_side() -> int:
 def prepare_inputs() -> list[str]:
     """Write every photograph and rendered scene at one shared size, so all models see identical pixels.
 
-    Inputs are rewritten on every call, so a re-rendered scene or replaced photograph
-    never leaves a stale input behind.
+    Inputs are rewritten on every call and earlier inputs removed first, so a
+    re-rendered scene, replaced photograph or removed file never leaves a stale
+    input behind.
     """
+    for directory in (INPUTS, INPUTS_2048):
+        for old in directory.glob("*.png"):
+            old.unlink()
     INPUTS.mkdir(parents=True, exist_ok=True)
     side = input_side()
     names = []
