@@ -1,0 +1,122 @@
+[
+ {
+  "file": "01-portrait-elderly.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/a/a3/Elderly_Gambian_woman_face_portrait.jpg",
+  "sha1": "37748ad5808c3e77a7ac33fce726ed7979016798",
+  "license": "CC BY-SA 2.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Elderly_Gambian_woman_face_portrait.jpg",
+  "challenge": "Real face photo: wrinkles and skin detail; portrait relief"
+ },
+ {
+  "file": "02-dog-fur.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/6/65/Dog_portrait_Budapest.jpg",
+  "sha1": "0465b3954b9640740c1167ee7d3e296dd0eec03b",
+  "license": "CC BY 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Dog_portrait_Budapest.jpg",
+  "challenge": "Pet portrait: fur, out-of-focus background, partial second subject"
+ },
+ {
+  "file": "03-marble-bust.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Philip_II_of_Macedon_Ny_Carlsberg_Glyptotek_IN2263.jpg",
+  "sha1": "7dc0f0d82a3b84b2d17e93792c783d0bb264342b",
+  "license": "Public domain (photograph CC BY 4.0)",
+  "page": "https://commons.wikimedia.org/wiki/File:Philip_II_of_Macedon_Ny_Carlsberg_Glyptotek_IN2263.jpg",
+  "challenge": "Museum bust, clean background"
+ },
+ {
+  "file": "04-bust-in-gallery.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/0/06/Bust_of_a_woman%2C_Roman%2C_marble_-_Galleria_Borghese_-_Rome%2C_Italy_-_DSC04976.jpg",
+  "sha1": "0d75233dbd47c5d930ee12d137647305fce93b3e",
+  "license": "CC0",
+  "page": "https://commons.wikimedia.org/wiki/File:Bust_of_a_woman,_Roman,_marble_-_Galleria_Borghese_-_Rome,_Italy_-_DSC04976.jpg",
+  "challenge": "Bust on an inscribed plinth in a busy gallery: subject selection and clutter"
+ },
+ {
+  "file": "05-porcelain-figurine.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/3/31/Song_Porcelain_Figurine.jpg",
+  "sha1": "5c21c8ff1d903bccf8f632b18dbd2b63ac5277e1",
+  "license": "CC0",
+  "page": "https://commons.wikimedia.org/wiki/File:Song_Porcelain_Figurine.jpg",
+  "challenge": "Small figurine on a clear acrylic stand"
+ },
+ {
+  "file": "06-lego-minifigure.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/d/d0/TF2_Engineer_Lego_Minifigure.jpg",
+  "sha1": "97eb7cf8c14251d8ced740baa47fe0a017c6a1d9",
+  "license": "CC BY 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:TF2_Engineer_Lego_Minifigure.jpg",
+  "challenge": "Blurry phone photo of a toy"
+ },
+ {
+  "file": "07-coin-silver.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/Obverse_2022_Somalia_1_oz_Silver_coin_Leopard.jpg",
+  "sha1": "a9e0c30aee159bb635117ff833037d2a40ee334e",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Obverse_2022_Somalia_1_oz_Silver_coin_Leopard.jpg",
+  "challenge": "Shiny silver coin: existing low relief and fine detail"
+ },
+ {
+  "file": "08-stone-relief.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/4/41/Relief_of_a_devil%27s_head_with_golden_horns_and_sharp_teeth_in_Rue_du_Grand_Hospice_Brussels_Belgium.jpg",
+  "sha1": "d860831af76e5a015dab74296448d054c72f2445",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Relief_of_a_devil%27s_head_with_golden_horns_and_sharp_teeth_in_Rue_du_Grand_Hospice_Brussels_Belgium.jpg",
+  "challenge": "Photograph of a carved relief with a deep cavity"
+ },
+ {
+  "file": "09-glossy-teapot.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/d/d1/Meissen_Porcelain_Factory_%28German%29_-_Teapot_-_2009.105.a_-_Cleveland_Museum_of_Art.jpg",
+  "sha1": "bceb4561fdd6d4c1f5a796227447d4d20fd99149",
+  "license": "CC0",
+  "page": "https://commons.wikimedia.org/wiki/File:Meissen_Porcelain_Factory_(German)_-_Teapot_-_2009.105.a_-_Cleveland_Museum_of_Art.jpg",
+  "challenge": "Glossy porcelain: reflections and smooth curves"
+ },
+ {
+  "file": "10-glass-transparent.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/c/cb/Wine_Glass_MET_DP236486.jpg",
+  "sha1": "29d86cc96fcd0289fd919fec258025773beb88be",
+  "license": "CC0",
+  "page": "https://commons.wikimedia.org/wiki/File:Wine_Glass_MET_DP236486.jpg",
+  "challenge": "Transparent wine glass: expected failure"
+ },
+ {
+  "file": "11-dandelion-thin.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/a/a6/Dandelion_seed_head_%28Taraxacum_officinale%29.jpg",
+  "sha1": "7c408e0bbe8c9015b5d8c30d57a2fb83927be1bf",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Dandelion_seed_head_(Taraxacum_officinale).jpg",
+  "challenge": "Extremely thin structures"
+ },
+ {
+  "file": "12-bicycle-spokes.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/f/f9/Safety_Bicycle_ca._1890_side_view.jpg",
+  "sha1": "0b419886fde83677c862ab71cc60077ec1b7b700",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Safety_Bicycle_ca._1890_side_view.jpg",
+  "challenge": "Thin spokes and see-through holes"
+ },
+ {
+  "file": "13-sneaker-product.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/f/f0/Reebok_Royal_Glide_Ripple_Clip_shoe.jpg",
+  "sha1": "fe57e10d0e95291a327d9b7ed88e2d449da93fc7",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Reebok_Royal_Glide_Ripple_Clip_shoe.jpg",
+  "challenge": "Product photo on a dark backdrop"
+ },
+ {
+  "file": "14-chess-clutter.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/4/4e/Chess_pieces_close_up.jpg",
+  "sha1": "92fa79f5e7c5d0e3861292efee6aca1f58e432d9",
+  "license": "CC BY-SA 4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Chess_pieces_close_up.jpg",
+  "challenge": "Clutter, occlusion and shallow depth of field"
+ },
+ {
+  "file": "15-painting-flat.jpg",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Vermeer-Portrait_of_a_Young_Woman.jpg",
+  "sha1": "20838a5baa981e857e5a1742ee98d1018e96c3ef",
+  "license": "Public domain",
+  "page": "https://commons.wikimedia.org/wiki/File:Vermeer-Portrait_of_a_Young_Woman.jpg",
+  "challenge": "Flat painting: tests invented depth"
+ }
+]
