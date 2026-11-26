@@ -123,7 +123,8 @@ def main(argv):
                     row.update({k: result.get(k) for k in ("seconds", "load_seconds", "gpu_peak_allocated_mib",
                                                           "gpu_peak_reserved_mib", "valid_fraction", "focal_px")})
                     reference = results / tier / key[0] / f"{image.stem}.npz"
-                    if reference.exists():
+                    # The benchmark's 2048 px maps came from larger originals, so only same-size maps compare.
+                    if reference.exists() and option["side"] == 1024:
                         row.update(compare(read_outputs(work, result), numpy.load(reference)))
                 else:
                     row["error"] = printed["error"]
