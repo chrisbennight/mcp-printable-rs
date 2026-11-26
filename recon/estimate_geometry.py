@@ -92,7 +92,9 @@ def main(argv: list[str]) -> int:
     if geometry.depth is not None and "depth" in targets:
         import numpy
 
-        numpy.save(targets["depth"], geometry.depth, allow_pickle=False)
+        # Through a file object, so the requested name is kept without an added .npy suffix.
+        with targets["depth"].open("wb") as sink:
+            numpy.save(sink, geometry.depth, allow_pickle=False)
         result["depth_kind"] = geometry.depth_kind
         result["outputs"].append("depth")
     if geometry.valid is not None and "valid" in targets:
