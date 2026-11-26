@@ -125,8 +125,10 @@ models worse:
   seven relief scenes the change includes zero (Depth Pro 2 H+ -1.9 mm,
   -5.8 to +0.1).
 
-Depth and normals are therefore computed at 1024 pixels on the longest side;
+Shallow subjects are therefore processed at 1024 pixels on the longest side;
 larger photographs are reduced first and the result scaled to the output.
+Deep subjects on a GPU use Depth Pro 2 H+ at 2048 pixels, the best height
+measured on the head scene.
 
 ## Focal length
 
@@ -162,27 +164,32 @@ at 2048 pixels.
 
 Routes depend on the subject: shallow subjects (reliefs, coins, lettering,
 artwork) need surface direction; deep subjects (objects, figures) need overall
-height.
+height. The deep-subject route rests on one scene, the head, and is
+provisional until more deep scenes are measured.
 
 | Role | GPU | Within 3 GB of GPU memory | CPU only |
 | --- | --- | --- | --- |
-| Shallow subjects | Depth Anything 3 mono large depth | the same | the same (13 s per map) |
-| Deep subjects | MoGe-3 ViT-g, fused with its own normals at sigma 4 | MoGe-3 ViT-L, fused with its own normals at sigma 4 | Depth Pro 2 L depth |
+| Shallow subjects (1024 px) | Depth Anything 3 mono large depth | the same | the same (13 s per map) |
+| Deep subjects | Depth Pro 2 H+ depth at 2048 px | Depth Pro 2 L depth at 1024 px | Depth Pro 2 H+ depth at 1024 px (14 s per map) |
 | Subject mask | MoGe-3 ViT-g | MoGe-3 ViT-L | MoGe-2 ViT-L normal |
-| Focal length | Depth Pro 2 field-of-view estimator | the same, on a reduced copy above 1024 pixels | the same |
-| Normal-map output (optional) | Marigold V2 | Marigold V2 | none |
+| Focal length | Depth Pro 2 field-of-view estimator | the same | the same |
+| Normal-map output (optional) | Marigold V2 at 1024 px | the same | none |
 
-All routes process at 1024 pixels. Models run one at a time; the GPU route
-peaks at about 6.7 GB (MoGe-3 ViT-g) and takes under a second per model,
-plus loading. The 3 GB route gives up about 2 degrees of surface direction on
-deep subjects; at 1024 pixels every model in it fits the cap. The full Depth
-Pro 2 L model ran out of memory under the cap at 2048 pixels, so focal length
-there must come from a reduced copy (field of view does not depend on
-resolution); that reduced-copy estimate has not been measured. The CPU routes
-take under 20 seconds of inference per map, plus about 7 seconds for the
-mask. Marigold V2's own normals remain the most accurate normal maps measured
-(4.0 degrees at 1024 pixels) and are kept for normal-map output; it is not
-needed for depth.
+On the head scene, height error was 21.1 mm for Depth Pro 2 H+ at 2048
+pixels, against 34.5 mm at 1024 pixels and 34.6 mm for MoGe-3 ViT-g depth;
+fusing normals made deep height worse (MoGe-3 ViT-g at sigma 4: 37.3 mm).
+Within 3 GB, Depth Pro 2 L depth scored 37.6 mm against 46.8 mm for MoGe-3
+ViT-L fused with its normals. On the CPU, Depth Pro 2 H+ scored 33.2 mm.
+Depth Pro 2 also supplies focal length from the same pass on these routes.
+
+Models run one at a time. The GPU routes peak at about 8.6 GB (Depth Pro 2 H+
+at 2048 pixels) for deep subjects and 2.4 GB for shallow ones; the 3 GB routes
+fit the cap at 1024 pixels. The CPU routes take under 20 seconds of inference
+per map, plus about 7 seconds for the mask. Peak GPU memory is measured after
+the model is loaded, so it includes the resident weights but not transient
+loading. Marigold V2's own normals remain the most accurate normal maps
+measured (4.0 degrees at 1024 pixels) and are kept for normal-map output; it
+is not needed for depth.
 
 The subject-mask choice is provisional: masks are saved with each prediction
 but not yet scored, and will be measured when `photo.analyze` is built.
@@ -194,7 +201,9 @@ but not yet scored, and will be measured when `photo.analyze` is built.
   combinations.
 - The CPU tier scores three scenes per model.
 - The 2048-pixel comparison covers the GPU tier only; its scenes are separate
-  renders of the same geometry.
+  renders of the same geometry. `compare_sides.py` reproduces it from the two
+  runs' `metrics.json` files.
+- One deep scene: the deep-subject route is provisional.
 - The engraved coin (1 mm engraving) was poorly recovered by every model.
 - Photographs were judged visually except for focal length.
 - One run per image; DSINE was not measured because its weights are published

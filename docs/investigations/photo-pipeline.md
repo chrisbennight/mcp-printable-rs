@@ -157,10 +157,10 @@ should be expected to need a solid rebuild.
    [Evaluation results](#evaluation-results) and the
    [depth benchmark](../../evidence/depth-benchmark.md). Choose by subject:
    Depth Anything 3 mono large depth for shallow subjects (reliefs, coins,
-   artwork) on every host; MoGe-3 (ViT-g on the GPU, ViT-L within 3 GB) or
-   Depth Pro 2 L on CPU-only hosts for deep subjects; MoGe-3 for the
-   valid-pixel mask; the Depth Pro 2 field-of-view estimator for focal length.
-   Process at 1024 pixels: 2048 pixels gave no measured gain. Keep Marigold V2 as an option for the finest
+   artwork) on every host at 1024 pixels; Depth Pro 2 depth for deep subjects
+   (H+ at 2048 pixels on the GPU, L within 3 GB, H+ on CPU-only hosts);
+   MoGe-3 for the valid-pixel mask; the Depth Pro 2 field-of-view estimator
+   for focal length. Keep Marigold V2 as an option for the finest
    normal maps. Keep the relative map for compatibility.
 2. **Depth and normal fusion.** Produce one height field that takes large-scale
    shape from depth and fine detail from integrated model normals, without
@@ -385,12 +385,12 @@ three execution tiers) replaces this section's model choices; its routes are:
 
 - Shallow subjects: Depth Anything 3 mono large depth, the best surface
   direction measured, on GPU, within 3 GB or on CPU (about 13 seconds).
-- Deep subjects: MoGe-3 ViT-g depth fused with its own normals on the GPU
-  (about 6.7 GB); MoGe-3 ViT-L, the same way, within 3 GB; Depth Pro 2 L depth
-  on CPU-only hosts. Marigold V2's own depth fused with its normals scored
-  worse once fusion stopped using ground truth.
-- Process at 1024 pixels; 2048 pixels gave no measured quality gain and made
-  Marigold V2's normals worse.
+- Deep subjects (provisional, one scene): Depth Pro 2 H+ depth at 2048 pixels
+  on the GPU (about 8.6 GB), Depth Pro 2 L at 1024 pixels within 3 GB, Depth
+  Pro 2 H+ at 1024 pixels on CPU-only hosts. Fusing normals made deep height
+  worse.
+- Shallow subjects at 1024 pixels: 2048 pixels gave no measured gain there and
+  made Marigold V2's normals worse.
 - Marigold V2 normals as an option for normal-map output: still the most
   accurate normal maps measured.
 - The same MoGe model for the subject mask, MoGe-2 ViT-L on CPU (provisional

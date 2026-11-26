@@ -34,14 +34,23 @@ time, for example `run.sh ~/depth-benchmark report`.
 | `BENCH_SIDE` | Scene render size and input size in pixels (default 1024); use a separate data directory for each size |
 
 The `cpu` tier runs with no GPU visible. Every model scores the same three
-scenes there; faster models also run two photographs. Each model has a time
-limit per image. A model that fails, exits with an error or reaches its time
+scenes there; faster models also run two photographs. Each CPU model process
+has one time limit, scaled by its number of images; GPU tiers have none. A model that fails, exits with an error or reaches its time
 limit is recorded as a failure, and a stage that cannot run at all (scenes,
 inputs or report) stops the run with a non-zero status. Running a tier replaces
 that tier's earlier results.
 
 Model weights are fetched at pinned revisions and checked against SHA-256
 digests in `checkpoints.py` before they are loaded.
+
+To compare input sizes, run the GPU tier again at 2048 pixels in its own data
+directory and compare the two reports scene by scene:
+
+```sh
+BENCH_SIDE=2048 scripts/depth_benchmark/run.sh ~/depth-benchmark-2048 fetch build scenes inputs gpu report
+python3 scripts/depth_benchmark/compare_sides.py \
+  ~/depth-benchmark/results/metrics.json ~/depth-benchmark-2048/results/metrics.json
+```
 
 ## What is measured
 
