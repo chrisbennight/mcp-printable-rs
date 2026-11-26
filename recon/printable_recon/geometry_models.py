@@ -60,7 +60,7 @@ Runner = Callable[[numpy.ndarray], Geometry]
 
 
 def load(entry: str, snapshot: Path, device) -> Runner:
-    """The runner for a registry entry, with its weights read from `snapshot`.
+    """The runner for a model in models/geometry.json, with its weights read from `snapshot`.
 
     For marigold-v2, `snapshot` is the directory convert_marigold.py wrote
     from the downloaded files.
