@@ -160,6 +160,8 @@ class UrlFileTests(unittest.TestCase):
             ModelFile("example/model", "a" * 40, "weights", "model.pt", "a" * 64, 1, url=self.item.url)
         with self.assertRaisesRegex(ValueError, "must not end in .partial"):
             ModelFile("example/model", "a" * 40, "weights", "model.pt.partial", "a" * 64, 1)
+        with self.assertRaisesRegex(ValueError, "must not end in .partial"):
+            ModelFile("example/model", "a" * 40, "weights", "model.pt.partial/inner.pt", "a" * 64, 1)
 
     def test_hub_manifest_identifiers_are_unchanged(self):
         published = Manifest.read(MODELS / "trellis2.json")
@@ -243,16 +245,33 @@ class UrlFileTests(unittest.TestCase):
         self.assertFalse((self.directory / "model.pt.partial").exists())
 
     def test_a_hard_linked_partial_file_is_not_written_through(self):
-        other = self.directory / "other.pt"
-        other.write_bytes(self.content[:5])
-        (self.directory / "model.pt.partial").hardlink_to(other)
+        class Response(io.BytesIO):
+            status = 200
+
+        for existing in (self.content[:5], b""):
+            other = self.directory / "other.pt"
+            other.write_bytes(existing)
+            (self.directory / "model.pt.partial").hardlink_to(other)
+            path = model_cache._download_url(self.item, self.directory, lambda r, timeout: Response(self.content))
+            self.assertEqual(path.read_bytes(), self.content)
+            self.assertEqual(other.read_bytes(), existing)
+            path.unlink()
+            other.unlink()
+
+    def test_a_response_that_breaks_off_keeps_its_bytes_and_reports_a_download_failure(self):
+        import http.client
 
         class Response(io.BytesIO):
             status = 200
 
-        path = model_cache._download_url(self.item, self.directory, lambda r, timeout: Response(self.content))
-        self.assertEqual(path.read_bytes(), self.content)
-        self.assertEqual(other.read_bytes(), self.content[:5])
+            def read(self, size=-1):
+                if self.tell():
+                    raise http.client.IncompleteRead(b"")
+                return super().read(5)
+
+        with self.assertRaisesRegex(PreparationError, "check network access and retry"):
+            model_cache._download_url(self.item, self.directory, lambda r, timeout: Response(self.content))
+        self.assertEqual((self.directory / "model.pt.partial").read_bytes(), self.content[:5])
 
     def test_redirects_away_from_https_are_refused(self):
         handler = model_cache._HttpsRedirects()
