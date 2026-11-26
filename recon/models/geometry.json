@@ -76,7 +76,8 @@
       "outputs": {
         "mask": "valid_pixels",
         "depth": "metric",
-        "normals": "camera"
+        "normals": "camera",
+        "focal": "pixels"
       },
       "files": [
         {
@@ -94,7 +95,8 @@
       "outputs": {
         "mask": "valid_pixels",
         "depth": "metric",
-        "normals": "camera"
+        "normals": "camera",
+        "focal": "pixels"
       },
       "files": [
         {
@@ -112,7 +114,8 @@
       "outputs": {
         "mask": "valid_pixels",
         "depth": "metric",
-        "normals": "camera"
+        "normals": "camera",
+        "focal": "pixels"
       },
       "files": [
         {

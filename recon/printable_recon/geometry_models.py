@@ -125,6 +125,8 @@ def _depth_anything_3(directory: Path, device) -> Runner:
         stored = load_file(str(directory / "model.safetensors"))
         state = {key.removeprefix("model."): value for key, value in stored.items()}
         network.load_state_dict(state, strict=True)
+    except torch.cuda.OutOfMemoryError:
+        raise
     except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
         raise ModelLoadError(f"Depth Anything 3 could not be loaded: {error}") from error
     network = network.to(device).eval()
@@ -133,7 +135,9 @@ def _depth_anything_3(directory: Path, device) -> Runner:
     @torch.inference_mode()
     def run(rgb: numpy.ndarray) -> Geometry:
         height, width = rgb.shape[:2]
-        pixels, _, _ = inputs([rgb], None, None, DA3_PROCESS_SIDE, "upper_bound_resize", num_workers=1)
+        # Up to 1024 px the benchmark processed at 1008; above it, at the largest multiple of the patch.
+        side = DA3_PROCESS_SIDE if max(height, width) <= 1024 else 14 * (max(height, width) // 14)
+        pixels, _, _ = inputs([rgb], None, None, side, "upper_bound_resize", num_workers=1)
         pixels = pixels.to(device)[None].float()
         dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda"):
@@ -156,6 +160,8 @@ def _depth_pro_2(entry: str, directory: Path, device) -> Runner:
         config = replace(PRESETS[preset], checkpoint_uri=str(directory / checkpoint),
                          fov_checkpoint_uri=str(directory / DEPTH_PRO_2_FOV))
         model, transform = create_model_and_transforms(config, device=device)
+    except torch.cuda.OutOfMemoryError:
+        raise
     except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
         raise ModelLoadError(f"Depth Pro 2 could not be loaded: {error}") from error
 
@@ -171,6 +177,8 @@ def _depth_pro_2(entry: str, directory: Path, device) -> Runner:
 def _moge(version: int, checkpoint: Path, device) -> Runner:
     import torch
 
+    if version == 3 and device.type != "cuda":
+        raise ModelLoadError("MoGe-3 runs only on a CUDA GPU; use moge2-vitl-normal on the processor")
     _vendor("moge", *(["moge-flex-gemm"] if version == 3 else []))
     try:
         if version == 3:
@@ -178,6 +186,8 @@ def _moge(version: int, checkpoint: Path, device) -> Runner:
         else:
             from moge.model.v2 import MoGeModel
         model = MoGeModel.from_pretrained(checkpoint).to(device).eval()
+    except torch.cuda.OutOfMemoryError:
+        raise
     except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
         raise ModelLoadError(f"MoGe could not be loaded: {error}") from error
 

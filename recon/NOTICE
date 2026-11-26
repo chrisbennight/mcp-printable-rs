@@ -87,3 +87,13 @@ No TRELLIS.2, DINOv3 or BiRefNet weights are packaged for this optional
 generator. On first use the worker downloads pinned, hash-verified model
 data to an operator-mapped persistent volume. DINOv3 weights are subject
 to the publisher's separate model license and access requirements.
+
+Photograph geometry uses model code copied unmodified from these repositories
+at the revisions pinned in Dockerfile, except that Depth Pro 2's video and
+HEIF imports are made optional by recon/depth-pro-2-optional-imports.patch:
+MoGe (MIT), utils3d-moge (MIT), FlexGEMM (MIT), Depth Pro 2 (Apple's sample
+code licence; its weights are under Apple's model licence) and Depth Anything 3
+(Apache-2.0). Their license files are installed in
+/usr/share/doc/printable/geometry/. The model weights are downloaded at run
+time from the pinned sources in recon/models/geometry.json and are not part of
+the image.

@@ -7,7 +7,8 @@ from this branch (`docker build --target recon-runtime`).
 `scripts/depth_benchmark/check_worker.py` ran `recon/estimate_geometry.py` once
 per photograph, each in its own process as the worker starts it, on the 24
 benchmark inputs at 1024 px. It compared every output with the benchmark's
-saved maps for the same model. "Depth" is the largest per-image median relative
+saved maps for the same model, where the benchmark saved one; "Photographs
+run" counts every run, including those without a saved map to compare. "Depth" is the largest per-image median relative
 difference, after a scale fit for relative depth. "Mask" is the smallest
 intersection over union with the benchmark mask. "Focal" is the largest
 relative difference in focal length. "Normals" is the largest median angle.
