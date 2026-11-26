@@ -98,17 +98,30 @@ class Registry:
             raise RegistryError(f"roles without options: {', '.join(missing)}")
         return cls(entries, routes)
 
-    def select(self, role: str, host: Host) -> Selection:
-        """The best option for `role` that this host can run."""
+    def select(self, role: str, host: Host, fastest: bool = False) -> Selection:
+        """The best option for `role` that this host can run.
+
+        With `fastest`, the option with the shortest measured time among those
+        that fit, the earlier on a tie; every better option passed over is
+        reported with the reason, including being slower.
+        """
         if role not in self.routes:
             raise NoRoute(f"no analysis role named {role!r}")
-        rejected = []
-        for rank, option in enumerate(self.routes[role]):
-            reason = _unfit(option, host)
-            if reason is None:
-                return Selection(role, option, rank, tuple(rejected))
-            rejected.append(f"{option.entry} on {option.device} at {option.side} px: {reason}")
-        raise NoRoute(f"no {role} model fits this worker: " + "; ".join(rejected))
+        reasons = [_unfit(option, host) for option in self.routes[role]]
+        fitting = [rank for rank, reason in enumerate(reasons) if reason is None]
+        if not fitting:
+            raise NoRoute(f"no {role} model fits this worker: "
+                          + "; ".join(_describe(option, reason) for option, reason in zip(self.routes[role], reasons)))
+        options = self.routes[role]
+        rank = min(fitting, key=lambda index: (options[index].seconds, index)) if fastest else fitting[0]
+        rejected = tuple(_describe(options[index], reasons[index] or
+                                   f"measured {options[index].seconds:g} s, slower than the chosen option")
+                         for index in range(rank))
+        return Selection(role, options[rank], rank, rejected)
+
+
+def _describe(option: Option, reason: str) -> str:
+    return f"{option.entry} on {option.device} at {option.side} px: {reason}"
 
 
 def _unfit(option: Option, host: Host) -> str | None:

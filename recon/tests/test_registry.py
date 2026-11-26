@@ -68,6 +68,14 @@ class SelectionTests(unittest.TestCase):
         selection = self.registry.select("depth.shallow", Host(gpu_budget_mib=24000, ram_budget_mib=3500))
         self.assertEqual((selection.option.entry, selection.option.device), ("small", "cuda"))
 
+    def test_the_fastest_fitting_option_can_be_chosen_instead(self):
+        selection = self.registry.select("depth.deep", Host(gpu_budget_mib=24000), fastest=True)
+        self.assertEqual((selection.option.entry, selection.option.device), ("small", "cuda"))
+        self.assertIn("slower than the chosen option", selection.rejected[0])
+        selection = self.registry.select("depth.deep", Host(gpu_budget_mib=None), fastest=True)
+        self.assertEqual(selection.option.device, "cpu")
+        self.assertIn("no GPU is available", selection.rejected[0])
+
     def test_unknown_roles_are_refused(self):
         with self.assertRaises(NoRoute):
             self.registry.select("albedo", Host(gpu_budget_mib=24000))
