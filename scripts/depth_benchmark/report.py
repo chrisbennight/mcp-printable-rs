@@ -28,7 +28,7 @@ CPU_LIMIT_SECONDS = 15 * 60
 FUSIONS = [(d, n) for d in ("marigold-v2", "moge3-vitg", "moge3-vitl", "moge2-vitl-normal", "dp2-h", "dp2-l",
                             "da3-nested-giant")
            for n in ("marigold-v2", "moge3-vitg", "moge3-vitl")]
-FUSION_SIGMAS = [4.0, 16.0, 64.0, 256.0]  # 256 means normals only, levelled by the mean depth
+FUSION_SIGMAS = [4.0, 16.0, 64.0, 256.0]  # 256: normals dominate; depth keeps its mean, per-pixel scale and jump gradients
 # Fusion uses no ground truth: each model's own depth units and this model's focal-length estimate.
 FUSION_FOCAL_MODEL = "dp2-l"
 
@@ -295,10 +295,13 @@ def cost_table() -> list[dict]:
         timing = _costs(common.log_set(tier, True), "_2048")
         for model in sorted(set(quality) | set(timing)):
             row = {"tier": tier, "model": model, **quality.get(model, {}), **timing.get(model, {})}
-            within = bool(row.get("complete")) and row["max_s"] <= CPU_LIMIT_SECONDS
-            if "expected_2048" in row:  # a 2048-pixel run that stopped early or failed does not pass
-                within = within and bool(row["complete_2048"]) and row["max_s_2048"] <= CPU_LIMIT_SECONDS
-            row["within_15_min"] = within
+            # Unknown (None) until both sizes have run; a run that stopped early or failed does not pass.
+            if not row.get("complete") or ("expected_2048" in row and not row["complete_2048"]):
+                row["within_15_min"] = False
+            elif "expected_2048" not in row:
+                row["within_15_min"] = None
+            else:
+                row["within_15_min"] = max(row["max_s"], row["max_s_2048"]) <= CPU_LIMIT_SECONDS
             rows.append(row)
     return rows
 
@@ -436,6 +439,29 @@ def summary(rows: list[dict], tier: str) -> list[dict]:
     return out
 
 
+def fusion_summary(rows: list[dict]) -> list[dict]:
+    """Per tier, depth model, normal model and sigma: means over scenes with 95 % bootstrap intervals."""
+    groups = defaultdict(list)
+    for r in rows:
+        groups[(r["tier"], r["depth"], r["normals"], r["sigma"])].append(r)
+    out = [{"tier": t, "depth": d, "normals": n, "sigma": s, "scenes": len(g),
+            "normal_deg": interval([x["normal_deg"] for x in g]),
+            "relief_rmse_mm": interval([x["relief_rmse_mm"] for x in g])}
+           for (t, d, n, s), g in groups.items()]
+    return sorted(out, key=lambda r: (common.TIERS.index(r["tier"]), scoring.bootstrap_mean(
+        [x["normal_deg"] for x in groups[(r["tier"], r["depth"], r["normals"], r["sigma"])]]).mean))
+
+
+def focal_summary(rows: list[dict]) -> list[dict]:
+    """Mean absolute focal error against EXIF per tier and model."""
+    groups = defaultdict(list)
+    for r in rows:
+        if r.get("focal_error_pct") is not None:
+            groups[(r["tier"], r["model"])].append(abs(r["focal_error_pct"]))
+    return [{"tier": t, "model": m, "focal_abs_pct": interval(v), "photos": len(v)}
+            for (t, m), v in sorted(groups.items(), key=lambda kv: (common.TIERS.index(kv[0][0]), kv[0][1]))]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=common.RESULTS)
@@ -495,10 +521,16 @@ def main():
         ("Scale error %", "scale_error_pct"), ("Focal error %", "focal_error_pct")]), ""]
     md += ["## Depth and normal fusion", "", "Each depth model's own units and the focal length estimated by "
            f"{FUSION_FOCAL_MODEL}; sigma is the blur, in pixels, separating broad shape from detail; "
-           "256 means normals only.", "", table(fusion_rows, [
+           "256 keeps only the depth map's mean, its per-pixel scale and its gradients at depth jumps.", "",
+           "Means over scenes with 95 % bootstrap intervals:", "", table(fusion_summary(fusion_rows), [
+               ("Tier", "tier"), ("Depth", "depth"), ("Normals", "normals"), ("Sigma", "sigma"),
+               ("Surface error deg", "normal_deg"), ("Height error mm", "relief_rmse_mm"), ("Scenes", "scenes")]),
+           "", "Per scene:", "", table(fusion_rows, [
                ("Tier", "tier"), ("Scene", "scene"), ("Depth", "depth"), ("Normals", "normals"),
                ("Sigma", "sigma"), ("Relief RMSE mm", "relief_rmse_mm"), ("Normal error deg", "normal_deg")]), ""]
-    md += ["## Photographs", "", table(photo_rows, [
+    md += ["## Photographs", "", "Mean absolute focal error against EXIF:", "", table(focal_summary(photo_rows), [
+        ("Tier", "tier"), ("Model", "model"), ("Focal error %", "focal_abs_pct"), ("Photographs", "photos")]),
+        "", table(photo_rows, [
         ("Tier", "tier"), ("Image", "image"), ("Model", "model"), ("Focal error % vs EXIF", "focal_error_pct"),
         ("Invented depth %", "non_planar_pct"), ("Median distance m", "median_depth_m")]), ""]
     (args.out / "report.md").write_text("\n".join(md))

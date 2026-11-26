@@ -385,7 +385,7 @@ three execution tiers) replaces this section's model choices; its routes are:
   MoGe-3 ViT-L, the same way, within 3 GB; Depth Pro 2 L depth on CPU-only
   hosts, under a minute per map at 2048 pixels. Marigold V2's own depth fused
   with its normals scored worse once fusion stopped using ground truth.
-- Marigold V2 normals as an option for normal maps and normals-only reliefs:
+- Marigold V2 normals as an option for normal maps and reliefs built mostly from normals:
   still the most accurate normals measured.
 - The same MoGe model for the subject mask, MoGe-2 ViT-L on CPU (provisional
   until masks are scored).

@@ -44,22 +44,23 @@ def input_side() -> int:
 
 
 def prepare_inputs() -> list[str]:
-    """Write every photograph and rendered scene at one shared size, so all models see identical pixels."""
+    """Write every photograph and rendered scene at one shared size, so all models see identical pixels.
+
+    Inputs are rewritten on every call, so a re-rendered scene or replaced photograph
+    never leaves a stale input behind.
+    """
     INPUTS.mkdir(parents=True, exist_ok=True)
     side = input_side()
     names = []
     for src in sorted(IMAGES.glob("*.jpg")) + sorted(GT.glob("*/rgb.png")):
         name = f"gt-{src.parent.name}" if src.name == "rgb.png" else src.stem
-        out = INPUTS / f"{name}.png"
-        if not out.exists():
-            _resized(src, side).save(out)
+        _resized(src, side).save(INPUTS / f"{name}.png")
         names.append(name)
     INPUTS_2048.mkdir(parents=True, exist_ok=True)
     for name in TIMING_IMAGES:
         src = IMAGES / f"{name}.jpg"
-        out = INPUTS_2048 / f"{name}.png"
-        if src.exists() and not out.exists():
-            _resized(src, 2048, upscale=True).save(out)
+        if src.exists():
+            _resized(src, 2048, upscale=True).save(INPUTS_2048 / f"{name}.png")
     return names
 
 
