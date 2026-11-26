@@ -160,6 +160,93 @@ guidance. In short:
 4. Save the calibrated heights with the skill's 16-bit decoding rule, then
    build, validate and slice the geometry as usual.
 
+## Relief geometry
+
+The `relief` module of the `printable-geom` crate turns an analysis into a
+printable relief solid. It is a library: no tool calls it yet, and it reads
+and writes no files. It runs in four stages.
+
+1. **Height field** (`integrate`). Depth alone is the default: each subject
+   pixel's height is its distance from the subject's farthest point. Two
+   other methods are available on request and are not yet measured against
+   depth alone on the benchmark scenes:
+   - `AnchoredNormals` takes fine detail from the normals and broad shape
+     from the depth. It needs normals and a focal length. Below about
+     `anchor_sigma_px` pixels (default 4) the normals decide the shape, and
+     above it the depth does. Each depth value is weighted by its
+     confidence, if one is given. The method follows bilateral normal
+     integration: neither side of a pixel is pulled across an edge it does
+     not continue over. It solves for log depth, so the depth map's unknown
+     scale does not matter.
+   - `FrankotChellappa` is a fast preview from the normals alone, with no
+     depth anchor. Without a focal length it assumes an orthographic camera.
+
+   Neighbouring pixels whose depths imply a slope steeper than
+   `max_jump_slope` (default 10, about 84 degrees from facing the camera)
+   lie on two sides of an occlusion. They are integrated separately, and
+   the depth sets each side's level. Without a focal length, the longest
+   image side in pixels stands in for it. Analyses larger than `max_pixels`
+   (default 2048 x 2048) are refused with the `relief_too_large` error code.
+2. **Compression** (`compress`). Steps at the subject's outline and at depth
+   jumps are removed. Slopes are divided by their mean, then compressed by
+   `ln(1 + compression * s) / (compression * s)`, where `s` is the slope
+   averaged over `detail_sigma_px` (default 4 pixels). Detail finer than
+   that is further multiplied by `detail_gain` (default 1). The slopes are
+   integrated again with the background held flat, and the result is scaled
+   to `relief_depth_mm` over the requested `width_mm` (and `height_mm`, or
+   square pixels). The default compression of 1 is a starting point, not a
+   measured optimum; 0 keeps slopes in proportion.
+3. **Solid** (`relief_solid`). The relief faces +Z on a flat base on Z = 0,
+   `base_mm` thick (default 2 mm). It can have a flat border, and it can be
+   mirrored and inverted to make a casting mould (`SolidOptions::mould`).
+   The image's top row is at the largest Y. Every edge joins exactly two
+   triangles, so the solid is watertight by construction.
+4. **Checks** (`check_relief`). The solid is run through the crate's mesh
+   analysis. The relief's height range is compared with a minimum (default
+   one 0.2 mm layer) and an optional maximum. Ridges and grooves narrower
+   than the nozzle (default 0.4 mm) are reported where they would lose more
+   than one layer of height. With a release direction, the mould's draft
+   and undercuts are reported.
+
+### Try it on saved maps
+
+The `relief` example reads raw little-endian arrays and writes the height
+field, the relief in millimetres and an STL:
+
+```sh
+cargo run --release -p printable-geom --example relief -- \
+    --size 1024 768 --depth depth.f32 --normals normals.f32 \
+    --mask mask.u8 --focal 1100 --method anchored --check \
+    --heights-out heights.f32 --relief-out relief.f32 --stl relief.stl
+```
+
+Write the inputs from NumPy with `array.astype("<f4").tofile(path)` and
+`mask.astype("u1").tofile(path)`. Normals are three floats per pixel, in the
+convention above. Add `--log-depth` for a map of log depth. `--method` also
+accepts `depth-only` (the default) and `frankot-chellappa`.
+
+### Measured cost
+
+`--synthetic 2048` runs the whole pipeline on a generated 2048 x 2048
+scene: a sphere in front of a wall, with 0.4 % depth noise. One run in
+release mode on an Apple M6 (arm64, macOS 27, single-threaded), measured
+with `/usr/bin/time -l`, including writing the STL:
+
+| Method | Height field | Compression | Total | Peak resident memory |
+| --- | --- | --- | --- | --- |
+| Depth alone | 0.04 s | 20.3 s | 20.6 s | 0.96 GB |
+| Frankot-Chellappa | 0.14 s | 27.0 s | 27.4 s | 1.08 GB |
+| Anchored normals | 1.9 s | 27.3 s | 29.5 s | 1.03 GB |
+
+Building the solid took 0.02 s for 8.4 million triangles; without
+writing the STL, the anchored run peaked at 0.67 GB. These numbers were
+not measured on the supported Linux/amd64 platform. The mesh analysis
+fully checked the same scene at 1024 x 1024 samples (2.1 million
+triangles) in 2.9 s. At 2048 x 2048 its self-intersection search stops at
+its budget, so `check_relief` reports the solid as unchecked rather than
+sound. For a fully checked solid, build the relief from at most about
+1024 x 1024 samples.
+
 ## Limits
 
 - The maps are learned estimates. Reflective, transparent and very dark
