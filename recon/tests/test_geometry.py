@@ -70,14 +70,20 @@ class RequestTests(unittest.TestCase):
             status, printed = self.run_request()
         self.assertEqual(status, 0, printed)
         result = printed["result"]
-        self.assertEqual((result["width"], result["height"]), (1024, 512))
+        self.assertEqual((result["width"], result["height"]), (400, 200))
         self.assertEqual(sorted(result["outputs"]), ["depth", "normals", "valid"])
         self.assertEqual((result["depth_kind"], result["focal_px"], result["valid_fraction"]), ("metric", 800.0, 1.0))
         self.assertEqual(load.call_args.args[0], "moge2-vitl-normal")
         depth = numpy.load(self.directory / "out-depth", allow_pickle=False)
-        self.assertEqual(depth.shape, (512, 1024))
+        self.assertEqual(depth.shape, (200, 400))
         with Image.open(self.directory / "out-valid") as valid:
-            self.assertEqual((valid.size, valid.mode), ((1024, 512), "L"))
+            self.assertEqual((valid.size, valid.mode), ((400, 200), "L"))
+
+    def test_small_photographs_are_enlarged_only_for_the_2048_routes(self):
+        small = Image.new("RGB", (400, 200))
+        self.assertEqual(estimate_geometry.scaled(small, 1024).shape, (200, 400, 3))
+        self.assertEqual(estimate_geometry.scaled(small, 2048).shape, (1024, 2048, 3))
+        self.assertEqual(estimate_geometry.scaled(Image.new("RGB", (3000, 1500)), 1024).shape, (512, 1024, 3))
 
     def test_outputs_a_model_does_not_produce_are_not_written(self):
         def runner(rgb):

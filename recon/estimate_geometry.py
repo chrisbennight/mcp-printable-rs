@@ -112,12 +112,17 @@ def main(argv: list[str]) -> int:
 
 
 def scaled(image, side: int):
-    """The photograph with its longest side at `side`, as the benchmark measured each route."""
+    """The photograph sized as the benchmark measured each route.
+
+    At 1024 px a larger photograph is scaled down and a smaller one is kept.
+    At 2048 px the photograph is scaled to that side either way: Depth Pro 2
+    measured more accurate on the upscaled scenes.
+    """
     import numpy
     from PIL import Image
 
     scale = side / max(image.size)
-    if scale != 1:
+    if scale < 1 or (scale > 1 and side == 2048):
         image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
     return numpy.asarray(image, dtype=numpy.uint8)
 

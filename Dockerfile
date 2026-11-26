@@ -329,10 +329,13 @@ COPY recon/reconstruct.py recon/estimate_depth.py recon/estimate_geometry.py rec
 COPY recon/models /opt/printable/recon/models
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 # Every geometry model's code imports with the packages installed above.
+# MoGe-3's FlexGEMM reads the GPU when imported, so only its source is
+# compiled here; it runs only on CUDA.
 RUN cd /opt/printable/recon/vendor && /opt/recon/bin/python -I -c "import sys; \
-sys.path[:0] = ['moge-flex-gemm', 'moge', 'depth-pro-2', 'depth-anything-3']; \
-import moge.model.v2, moge.model.v3, depth_pro_2, depth_anything_3.cfg, depth_anything_3.model, \
-depth_anything_3.utils.io.input_processor, depth_anything_3.utils.io.output_processor"
+sys.path[:0] = ['moge', 'depth-pro-2', 'depth-anything-3']; \
+import moge.model.v2, depth_pro_2, depth_anything_3.cfg, depth_anything_3.model, \
+depth_anything_3.utils.io.input_processor, depth_anything_3.utils.io.output_processor" \
+ && /opt/recon/bin/python -I -m compileall -q moge/moge/model/v3.py moge-flex-gemm/flex_gemm
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
