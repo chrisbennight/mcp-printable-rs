@@ -20,8 +20,12 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 use crate::error::ToolError;
 
+mod geometry;
 mod photo_jobs;
 mod trellis;
+pub use geometry::{
+    GeometryConfig, GeometryOutputs, GeometryReadiness, GeometryRun, RoleRoute, SelectedRoute,
+};
 use photo_jobs::{JobControl, Phase, PhotoJobs};
 pub use photo_jobs::{PhotoJobListRequest, PhotoJobRequest};
 pub use trellis::{PreparationState, PreparationStatus, TrellisConfig};
@@ -534,6 +538,10 @@ pub struct ReconConfig {
     pub object_timeout: Duration,
     /// Optional downloaded, disk-streamed TRELLIS.2 runtime.
     pub trellis: Option<TrellisConfig>,
+    /// Optional photograph geometry models, prepared on first use.
+    pub geometry: Option<GeometryConfig>,
+    /// CPU threads each photograph script may use for numerical work.
+    pub cpu_threads: u16,
     pub photo_queue_depth: usize,
 }
 
@@ -588,11 +596,12 @@ impl ReconWorker {
     /// absent files. Each job's check stands alone, so a check that fails
     /// withholds only its own job.
     pub async fn readiness(&self) -> (bool, Value) {
-        let (reconstruct, depth, object, preparation) = tokio::join!(
+        let (reconstruct, depth, object, preparation, geometry) = tokio::join!(
             self.missing_checkpoints(),
             self.missing_depth_files(),
             self.missing_object_files(),
-            self.preparation_status()
+            self.preparation_status(),
+            self.geometry_readiness()
         );
         let present = |check: &Result<Vec<String>, ToolError>| matches!(check, Ok(missing) if missing.is_empty());
         let describe = |check: Result<Vec<String>, ToolError>| match check {
@@ -611,12 +620,19 @@ impl ReconWorker {
                     .is_some_and(|config| config.available()),
             trellis2_preparation: preparation,
             photo_jobs: self.photo_jobs.has_history(),
+            geometry: geometry
+                .as_ref()
+                .and_then(|answer| answer.as_ref().ok())
+                .cloned(),
         };
-        let missing = json!({
+        let mut missing = json!({
             "reconstruct": describe(reconstruct),
             "depth": describe(depth),
             "object": describe(object),
         });
+        if let Some(answer) = geometry {
+            missing["geometry"] = describe(answer.map(|_| Vec::new()));
+        }
         let workspace_ready = self.workspace.ready();
         if workspace_ready
             && (capabilities.reconstruct
@@ -1032,7 +1048,7 @@ impl ReconWorker {
             .arg(script)
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .env("OMP_NUM_THREADS", "4")
+            .env("OMP_NUM_THREADS", self.config.cpu_threads.to_string())
             // Inference reads mounted files. Only the model preparation
             // command explicitly enables downloads with an allowlisted environment.
             .env("HF_HUB_OFFLINE", "1")
@@ -1047,6 +1063,26 @@ impl ReconWorker {
             }
         }
         command
+    }
+}
+
+/// Let a model preparation command download pinned files. Only the operator's
+/// Hub endpoint, token and transfer settings pass through, and no token stored
+/// on disk is read implicitly.
+fn allow_downloads(command: &mut Command) {
+    command
+        .env("HF_HUB_OFFLINE", "0")
+        .env("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1");
+    for name in [
+        "HF_ENDPOINT",
+        "HF_TOKEN",
+        "HF_HUB_DISABLE_XET",
+        "HF_HUB_DOWNLOAD_TIMEOUT",
+        "HF_HUB_ETAG_TIMEOUT",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
 }
 
@@ -1198,6 +1234,8 @@ print(json.dumps({"result": result}))
                 object_model: runtime.join("pixal3d"),
                 object_timeout: timeout,
                 trellis: None,
+                geometry: None,
+                cpu_threads: 4,
                 photo_queue_depth: 8,
             },
         );
@@ -1318,7 +1356,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": true, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false})
+            json!({"reconstruct": true, "depth": true, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false, "geometry": null})
         );
         // A depth check that cannot run withholds depth alone.
         let mut broken = worker.config.clone();
@@ -1328,7 +1366,7 @@ print(json.dumps({"result": result}))
         assert!(ready);
         assert_eq!(
             answer["capabilities"],
-            json!({"reconstruct": true, "depth": false, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false})
+            json!({"reconstruct": true, "depth": false, "object": true, "trellis2": false, "trellis2_preparation": null, "photo_jobs": false, "geometry": null})
         );
         assert!(answer["missing"]["depth"]["error"].is_string());
         // Without any job's files the worker is not ready and says why.
@@ -1802,7 +1840,7 @@ const READINESS_INTERVAL: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3660);
 
 /// Which of the photograph worker's jobs it last reported it can run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Readiness {
     /// Every reconstruction checkpoint is present.
     pub reconstruct: bool,
@@ -1822,6 +1860,10 @@ pub struct Readiness {
     /// Retained photograph jobs remain queryable even if model mounts change.
     #[serde(default)]
     pub photo_jobs: bool,
+    /// The geometry model each analysis role would run and how far each model
+    /// is prepared; absent when unconfigured or its check failed.
+    #[serde(default)]
+    pub geometry: Option<GeometryReadiness>,
 }
 
 /// The server's view of the reconstruction worker.
@@ -1896,6 +1938,10 @@ impl ReconClient {
         self.ready.borrow().trellis2_preparation
     }
 
+    pub fn geometry(&self) -> Option<GeometryReadiness> {
+        self.ready.borrow().geometry.clone()
+    }
+
     pub fn can_manage_photo_jobs(&self) -> bool {
         self.ready.borrow().photo_jobs
     }
@@ -1937,7 +1983,9 @@ impl ReconClient {
         };
         let changed = self.ready.send_if_modified(|current| {
             let changed = *current != ready;
-            *current = ready;
+            if changed {
+                *current = ready.clone();
+            }
             changed
         });
         if changed {

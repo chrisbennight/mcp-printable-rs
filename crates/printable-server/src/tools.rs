@@ -6264,6 +6264,11 @@ async fn status(
             "models": settings.recon.as_ref().map(|recon| recon.object_models()).unwrap_or_default(),
             "trellis2_preparation": settings.recon.as_ref().and_then(|recon| recon.trellis_preparation()),
         },
+        "photo_geometry": settings
+            .recon
+            .as_ref()
+            .and_then(|recon| recon.geometry())
+            .map_or_else(|| json!({"available": false}), |geometry| geometry.report()),
         "workspace": {
             "confined": ws.confined,
             "workspace_root": ws.root,
