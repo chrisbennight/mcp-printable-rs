@@ -3,7 +3,8 @@
 Measured with [the depth benchmark](../scripts/depth_benchmark/README.md) to
 choose the photograph worker's depth, normal, mask and focal-length models.
 Quality decides the default; memory and time decide only the fallbacks.
-Full numbers for every tier are in [depth-benchmark.json](depth-benchmark.json).
+Full numbers for every tier are in [depth-benchmark.json](depth-benchmark.json),
+where each table is stored as a list of columns and a list of rows.
 
 ## Environment
 
