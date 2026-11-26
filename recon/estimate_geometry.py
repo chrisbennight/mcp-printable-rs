@@ -3,9 +3,9 @@
 Usage: estimate_geometry.py <request.json>
        estimate_geometry.py --version
 
-The request names the photograph, the registry entry, the verified model
-snapshot, the device ("cuda" or "cpu"), the longest side to process at, the
-GPU memory budget in MiB for a CUDA run, and the files to write:
+The request names the photograph, the model ("entry", a name in
+models/geometry.json), its verified snapshot, the device ("cuda" or "cpu"),
+the longest side to process at, and the files to write:
 
 - "depth": a NumPy .npy file of float32 depth, H x W;
 - "valid": an 8-bit greyscale PNG, 255 where the depth is measured surface;
@@ -13,9 +13,8 @@ GPU memory budget in MiB for a CUDA run, and the files to write:
   y up, z towards the camera, each component c stored as (c + 1) / 2 * 65535.
 
 Outputs the model does not produce are not written. One JSON object is
-printed: {"result": ...} or {"error": {"code", "message"}}. A CUDA run is
-held to its budget: an allocation past it fails as resource_limit rather
-than taking memory another worker may be using.
+printed: {"result": ...} or {"error": {"code", "message"}}. The result
+reports peak GPU memory, so callers can see what a choice costs.
 """
 
 import json
@@ -41,7 +40,6 @@ def main(argv: list[str]) -> int:
         snapshot = Path(request["snapshot"])
         device_name = str(request["device"])
         side = int(request["side"])
-        budget = request.get("gpu_budget_mib")
         threads = request.get("threads")
         targets = {key: Path(request["outputs"][key]) for key in ("depth", "valid", "normals")
                    if request.get("outputs", {}).get(key)}
@@ -49,8 +47,6 @@ def main(argv: list[str]) -> int:
         return _fail("validation", f"the request is invalid: {error}")
     if device_name not in ("cuda", "cpu") or side not in SIDES:
         return _fail("validation", "device must be cuda or cpu and side one of 1024 or 2048")
-    if device_name == "cuda" and (isinstance(budget, bool) or not isinstance(budget, int) or budget < 1):
-        return _fail("validation", "a CUDA run needs a positive gpu_budget_mib")
     if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or threads < 1):
         return _fail("validation", "threads must be a positive integer")
 
@@ -65,8 +61,6 @@ def main(argv: list[str]) -> int:
     if device_name == "cuda":
         if not torch.cuda.is_available():
             return _fail("unavailable", "no CUDA GPU is available to this worker")
-        total = torch.cuda.get_device_properties(0).total_memory
-        torch.cuda.set_per_process_memory_fraction(min(1.0, budget * 2**20 / total))
     device = torch.device(device_name)
     try:
         rgb = scaled(_open(image_path), side)
@@ -81,7 +75,7 @@ def main(argv: list[str]) -> int:
     except geometry_models.ModelLoadError as error:
         return _fail("checkpoints", str(error))
     except torch.cuda.OutOfMemoryError:
-        return _fail("resource_limit", f"{entry} needs more than the {budget} MiB GPU budget at {side} px")
+        return _fail("resource_limit", f"the GPU ran out of memory running {entry} at {side} px")
     except MemoryError:
         return _fail("resource_limit", "the worker ran out of memory")
     finished = time.monotonic()

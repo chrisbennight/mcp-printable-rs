@@ -97,7 +97,6 @@ class RequestTests(unittest.TestCase):
 
     def test_invalid_requests_are_refused_before_loading_a_model(self):
         cases = [({"device": "mps"}, "device must be"), ({"side": 512}, "side one of"),
-                 ({"device": "cuda"}, "gpu_budget_mib"), ({"device": "cuda", "gpu_budget_mib": True}, "gpu_budget_mib"),
                  ({"threads": 0}, "threads")]
         for overrides, message in cases:
             with mock.patch.object(geometry_models, "load") as load:

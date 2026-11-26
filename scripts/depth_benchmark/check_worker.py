@@ -3,21 +3,18 @@
 Usage, inside the worker image:
   python check_worker.py <snapshot> <marigold> <inputs> <benchmark-results> <output.json> [entry:device:side ...]
 
-<snapshot> holds each registry entry's files under their registry directory;
+<snapshot> holds each model's files under their directory in models/geometry.json;
 <marigold> is the converted Marigold V2 directory; <inputs> holds the 1024 px
 benchmark inputs and <benchmark-results> the benchmark's results directory,
-with gpu, budget and cpu subdirectories. Each run is a separate
-estimate_geometry.py process with the GPU budget the route needs, as the
-worker would start it. For every input the outputs are compared with the
+with gpu and cpu subdirectories. Each run is a separate estimate_geometry.py
+process, as the worker would start it. For every input the outputs are compared with the
 benchmark's maps for the same model: median relative depth difference
 (after a scale fit for relative depth), valid-pixel agreement, focal length
-difference and median normal angle. The default is every route option in
-models/geometry.json. CHECK_GPU_BUDGET_MIB, when set, replaces each CUDA
-route's budget, so its true peak reserved memory can be measured.
+difference and median normal angle. The default is every model in
+models/geometry.json on CUDA at 1024 px.
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -84,29 +81,25 @@ def _read_png16(path: Path):
 
 def main(argv):
     snapshot, marigold, inputs, results, output = (Path(a) for a in argv[:5])
-    registry = json.loads((RECON / "models" / "geometry.json").read_text())
+    models = json.loads((RECON / "models" / "geometry.json").read_text())["models"]
     if argv[5:]:
         options = [dict(zip(("entry", "device", "side"), item.split(":"))) for item in argv[5:]]
         for option in options:
             option["side"] = int(option["side"])
     else:
-        options = [o for route in registry["routes"].values() for o in route]
+        options = [{"entry": name, "device": "cuda", "side": 1024} for name in models]
     seen, report = set(), []
     for option in options:
         key = (option["entry"], option["device"], option["side"])
         if key in seen:
             continue
         seen.add(key)
-        budget = next((o.get("gpu_peak_mib") for route in registry["routes"].values() for o in route
-                       if (o["entry"], o["device"], o["side"]) == key), None)
-        tier = "cpu" if option["device"] == "cpu" else ("budget" if budget and budget <= 4224 else "gpu")
-        if option["device"] == "cuda" and os.environ.get("CHECK_GPU_BUDGET_MIB"):
-            budget = int(os.environ["CHECK_GPU_BUDGET_MIB"])
+        tier = "cpu" if option["device"] == "cpu" else "gpu"
         for image in sorted(inputs.glob("*.png")):
             with tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
                 request = {"image": str(image), "entry": option["entry"], "device": option["device"],
-                           "side": option["side"], "gpu_budget_mib": budget,
+                           "side": option["side"],
                            "snapshot": str(marigold if option["entry"] == "marigold-v2" else snapshot),
                            "outputs": {"depth": str(work / "depth.npy"), "valid": str(work / "valid.png"),
                                        "normals": str(work / "normals.png")}}
@@ -117,7 +110,7 @@ def main(argv):
                     printed = json.loads(run.stdout.strip().splitlines()[-1])
                 except (IndexError, ValueError):
                     printed = {"error": {"code": "crash", "message": run.stderr[-2000:]}}
-                row = {"entry": key[0], "device": key[1], "side": key[2], "image": image.stem, "budget_mib": budget}
+                row = {"entry": key[0], "device": key[1], "side": key[2], "image": image.stem}
                 if "result" in printed:
                     result = printed["result"]
                     row.update({k: result.get(k) for k in ("seconds", "load_seconds", "gpu_peak_allocated_mib",
