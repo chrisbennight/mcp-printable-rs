@@ -228,7 +228,8 @@ def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.o
     partial = _inside(directory, item.filename + PARTIAL_SUFFIX)
     target.parent.mkdir(parents=True, exist_ok=True)
     offset = partial.stat().st_size if partial.is_file() else 0
-    if offset > item.bytes:
+    # A partial longer than pinned, or one sharing its data with another file, starts again.
+    if offset > item.bytes or (offset and partial.stat().st_nlink > 1):
         partial.unlink()
         offset = 0
     if offset < item.bytes:
@@ -246,6 +247,8 @@ def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.o
                             raise PreparationError(f"model download for {item.relative_path} is larger than pinned")
                         sink.write(chunk)
         except urllib.error.HTTPError as error:
+            if error.code == 416:
+                partial.unlink(missing_ok=True)  # the server refused the range; the next attempt starts again
             raise PreparationError(
                 f"model download failed for {item.relative_path} (HTTP {error.code}); check network access"
             ) from None

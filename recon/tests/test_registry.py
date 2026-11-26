@@ -85,6 +85,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_options_name_known_entries_with_that_output(self):
         self.assert_invalid(lambda d: d["routes"]["mask"][0].update(entry="missing"), "unknown entry")
+        self.assert_invalid(lambda d: d["routes"]["mask"][0].update(entry=["large"]), "unknown entry")
         self.assert_invalid(lambda d: d["entries"]["large"]["outputs"].pop("mask"), "has no mask output")
 
     def test_gpu_options_need_a_gpu_peak_and_cpu_options_none(self):
@@ -230,6 +231,28 @@ class UrlFileTests(unittest.TestCase):
         with self.assertRaisesRegex(PreparationError, "symbolic links"):
             model_cache._download_url(self.item, self.directory, lambda r, timeout: io.BytesIO(self.content))
         self.assertEqual(elsewhere.read_bytes(), b"keep")
+
+    def test_a_refused_range_starts_the_next_attempt_again(self):
+        (self.directory / "model.pt.partial").write_bytes(self.content[:5])
+
+        def refused(request, timeout):
+            raise urllib.error.HTTPError(self.item.url, 416, "range not satisfiable", {}, None)
+
+        with self.assertRaisesRegex(PreparationError, "HTTP 416"):
+            model_cache._download_url(self.item, self.directory, refused)
+        self.assertFalse((self.directory / "model.pt.partial").exists())
+
+    def test_a_hard_linked_partial_file_is_not_written_through(self):
+        other = self.directory / "other.pt"
+        other.write_bytes(self.content[:5])
+        (self.directory / "model.pt.partial").hardlink_to(other)
+
+        class Response(io.BytesIO):
+            status = 200
+
+        path = model_cache._download_url(self.item, self.directory, lambda r, timeout: Response(self.content))
+        self.assertEqual(path.read_bytes(), self.content)
+        self.assertEqual(other.read_bytes(), self.content[:5])
 
     def test_redirects_away_from_https_are_refused(self):
         handler = model_cache._HttpsRedirects()

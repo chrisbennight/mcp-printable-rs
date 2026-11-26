@@ -162,7 +162,8 @@ def _positive(value: object, number_type: type) -> bool:
 def _option(role: str, value: object, entries: dict[str, Entry]) -> Option:
     if not isinstance(value, dict):
         raise RegistryError(f"options for {role} must be objects")
-    entry = entries.get(value.get("entry"))
+    name = value.get("entry")
+    entry = entries.get(name) if isinstance(name, str) else None
     if entry is None:
         raise RegistryError(f"an option for {role} names an unknown entry")
     output = role.split(".")[0]
