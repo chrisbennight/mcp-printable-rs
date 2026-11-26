@@ -79,3 +79,20 @@ python3 scripts/depth_benchmark/compare_sides.py \
 Outputs follow one format (`common.py`): each model writes depth, its kind
 (metric, relative or log-relative), optional normals, focal length and
 valid-pixel mask per image, so new models need only a runner.
+
+## Check the photograph analysis
+
+`check_analysis.py` runs the worker's `analyze` action, one `analyze_photo.py`
+process per photograph, on the benchmark inputs inside the worker image. It
+reports each analysis's time, peak GPU memory, routes and scores, and the
+intersection over union of its subject mask with the benchmark's mask from the
+same model where the sizes match. Set `CHECK_GPU_BUDGET_MIB` to the worker's
+GPU budget (default 3072):
+
+```sh
+python check_analysis.py <snapshot> <marigold> <inputs> <benchmark-results> analysis.json \
+  '{"subject": "shallow"}' '{"subject": "deep", "quality": "fast"}'
+```
+
+Without settings arguments it checks shallow and deep subjects at both
+qualities, a physical shallow analysis and a shallow analysis with normals.
