@@ -12,8 +12,8 @@ The action runs in the optional photograph worker, the same service that
 reconstructs FLAME heads, on its GPU. The `depth` action is advertised only
 while the worker reports its converted Marigold V2 model present.
 The same worker can also prepare a separate set of
-[photograph geometry models](photo-geometry.md) chosen to fit its GPU and
-memory budgets.
+[photograph geometry models](photo-geometry.md), with measured
+recommendations for choosing among them.
 
 ## What it writes
 

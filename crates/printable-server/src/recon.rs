@@ -23,9 +23,7 @@ use crate::error::ToolError;
 mod geometry;
 mod photo_jobs;
 mod trellis;
-pub use geometry::{
-    GeometryConfig, GeometryOutputs, GeometryReadiness, GeometryRun, RoleRoute, SelectedRoute,
-};
+pub use geometry::{GeometryConfig, GeometryOutputs, GeometryReadiness, GeometryRun};
 use photo_jobs::{JobControl, Phase, PhotoJobs};
 pub use photo_jobs::{PhotoJobListRequest, PhotoJobRequest};
 pub use trellis::{PreparationState, PreparationStatus, TrellisConfig};
@@ -1860,8 +1858,8 @@ pub struct Readiness {
     /// Retained photograph jobs remain queryable even if model mounts change.
     #[serde(default)]
     pub photo_jobs: bool,
-    /// The geometry model each analysis role would run and how far each model
-    /// is prepared; absent when unconfigured or its check failed.
+    /// How far each geometry model is prepared; absent when the models are
+    /// not configured or their check failed.
     #[serde(default)]
     pub geometry: Option<GeometryReadiness>,
 }
