@@ -190,7 +190,7 @@ and writes no files. It runs in four stages.
 2. **Compression** (`compress`). Steps at the subject's outline and at depth
    jumps are removed. Slopes are divided by their mean, then compressed by
    `ln(1 + compression * s) / (compression * s)`, where `s` is the slope
-   averaged over `detail_sigma_px` (default 4 pixels). Detail finer than
+   averaged over `detail_sigma_px` (default 4 pixels, at most 64). Detail finer than
    that is further multiplied by `detail_gain` (default 1). The slopes are
    integrated again with the background held flat, and the result is scaled
    to `relief_depth_mm` over the requested `width_mm` (and `height_mm`, or
@@ -199,14 +199,22 @@ and writes no files. It runs in four stages.
 3. **Solid** (`relief_solid`). The relief faces +Z on a flat base on Z = 0,
    `base_mm` thick (default 2 mm). It can have a flat border, and it can be
    mirrored and inverted to make a casting mould (`SolidOptions::mould`).
-   The image's top row is at the largest Y. Every edge joins exactly two
+   The image's top row is at the largest Y. A mirrored relief is an exact
+   reflection of the unmirrored one. Every edge joins exactly two
    triangles, so the solid is watertight by construction.
-4. **Checks** (`check_relief`). The solid is run through the crate's mesh
-   analysis. The relief's height range is compared with a minimum (default
-   one 0.2 mm layer) and an optional maximum. Ridges and grooves narrower
+4. **Checks** (`check_relief`). The solid is a height field over a regular
+   grid, with vertical side walls and a flat bottom, so it is closed and
+   cannot intersect itself when its top lies above its bottom. The check
+   confirms that the top samples lie on a strictly increasing grid above
+   the bottom and that the volume is positive, instead of running the mesh
+   analysis's pairwise self-intersection search, which cannot finish on
+   the largest reliefs. The relief's height range is compared with a
+   minimum (default one 0.2 mm layer) and an optional maximum. Ridges and grooves narrower
    than the nozzle (default 0.4 mm) are reported where they would lose more
-   than one layer of height. With a release direction, the mould's draft
-   and undercuts are reported.
+   than one layer of height. With a release direction, the draft and
+   undercuts of the relief's top surface are reported; the outer walls and
+   bottom are not cast against. For a mould, pass the inverted relief, as
+   the `relief` example does, so the narrow detail is that of the cavity.
 
 ### Try it on saved maps
 
@@ -240,12 +248,10 @@ with `/usr/bin/time -l`, including writing the STL:
 
 Building the solid took 0.02 s for 8.4 million triangles; without
 writing the STL, the anchored run peaked at 0.67 GB. These numbers were
-not measured on the supported Linux/amd64 platform. The mesh analysis
-fully checked the same scene at 1024 x 1024 samples (2.1 million
-triangles) in 2.9 s. At 2048 x 2048 its self-intersection search stops at
-its budget, so `check_relief` reports the solid as unchecked rather than
-sound. For a fully checked solid, build the relief from at most about
-1024 x 1024 samples.
+not measured on the supported Linux/amd64 platform. `check_relief`
+certifies the solid from its construction, so it does not depend on the
+mesh analysis's self-intersection search, which stops at its budget on
+2048 x 2048 reliefs.
 
 ## Limits
 

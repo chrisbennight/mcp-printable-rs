@@ -27,13 +27,15 @@ mod printability;
 mod solid;
 mod solver;
 
-pub use compress::{CompressionOptions, CompressionReport, ReliefMap, compress};
+pub use compress::{
+    CompressionOptions, CompressionReport, MAX_DETAIL_SIGMA_PX, ReliefMap, compress,
+};
 pub use heightfield::{Analysis, DEFAULT_MAX_PIXELS, Grid, HeightField};
 pub use integrate::{IntegrationMethod, IntegrationOptions, IntegrationReport, integrate};
 pub use printability::{
     NarrowDetail, PrintabilityOptions, Release, ReliefPrintability, check_relief,
 };
-pub use solid::{SolidOptions, relief_solid};
+pub use solid::{ReliefSolid, SolidOptions, relief_solid};
 
 use crate::GeometryError;
 

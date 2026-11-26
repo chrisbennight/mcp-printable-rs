@@ -1,8 +1,12 @@
 //! Whether a relief solid can be printed, and released from a mould.
 //!
-//! The solid is checked by the crate's mesh analysis: closed, manifold,
-//! consistently oriented and free of self-intersections, with positive
-//! volume. The relief map is checked against the printer: its height range
+//! A relief solid is closed, manifold, consistently oriented and free of
+//! self-intersections by construction (see [`relief_solid`]), so its
+//! soundness is certified without the mesh analysis's pairwise search, which
+//! cannot finish on the largest reliefs. What the construction relies on is
+//! checked directly: a strictly increasing grid of top samples, every top
+//! sample finite and above the flat bottom, and a positive volume. The relief
+//! map is checked against the printer: its height range
 //! against minimum and maximum relief heights, and its detail against the
 //! nozzle. Detail narrower than the nozzle is found by morphological
 //! opening and closing with a disc of the nozzle's diameter: a ridge or
@@ -10,15 +14,15 @@
 //! removes, and a groove or pit the disc cannot fit into loses the depth
 //! the closing fills. Losses smaller than one layer are not counted, since
 //! a layer is the finest height a printer forms. A mould is checked for
-//! undercuts along the direction it releases.
+//! draft and undercuts along the direction it releases, over the relief's
+//! top surface only: the outer walls and the bottom are not cast against.
+//!
+//! [`relief_solid`]: super::relief_solid
 
 use serde::Serialize;
 
-use super::{ReliefError, ReliefMap, positive};
-use crate::{
-    DraftOptions, DraftReport, TriangleMesh, ValidationOptions, ValidationReport, analyze_mesh,
-    limit,
-};
+use super::{ReliefError, ReliefMap, ReliefSolid, positive};
+use crate::{DraftOptions, DraftReport, TriangleMesh, draft, limit, normalized_direction};
 
 /// A disc this many samples across, or more, is refused: the check would
 /// cost more than the relief it measures. Resample the relief more coarsely.
@@ -30,7 +34,8 @@ pub struct Release {
     /// Direction the cast part, or the mould, moves away; +Z lifts a cast
     /// out of an upward-facing cavity.
     pub pull_direction: [f64; 3],
-    /// Faces leaning less than this, in degrees, are reported as shallow.
+    /// Faces leaning less than this, in degrees, are reported as shallow;
+    /// at least 0 and below 90.
     pub minimum_draft_degrees: f64,
 }
 
@@ -72,8 +77,9 @@ pub struct NarrowDetail {
 /// The printability of a relief solid.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReliefPrintability {
-    /// Closed, manifold, consistently oriented, free of self-intersections
-    /// and of positive volume, by the mesh analysis.
+    /// Closed, manifold, consistently oriented and free of
+    /// self-intersections by construction, with every top sample above the
+    /// bottom on a strictly increasing grid, and a positive volume.
     pub solid: bool,
     pub volume_mm3: Option<f64>,
     /// Height from the relief's lowest point to its highest.
@@ -86,20 +92,19 @@ pub struct ReliefPrintability {
     pub narrow_ridges: NarrowDetail,
     /// Grooves and pits narrower than the nozzle.
     pub narrow_grooves: NarrowDetail,
+    /// Draft of the relief's top surface along the release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReport>,
     /// Whether the solid is sound, its height within limits and, for a
     /// mould, free of undercuts. Narrow detail prints but loses fidelity,
     /// so it is reported without failing the check.
     pub passed: bool,
-    /// The full mesh analysis.
-    pub validation: ValidationReport,
 }
 
 /// Check a relief map and the solid made from it.
 pub fn check_relief(
     map: &ReliefMap,
-    solid: &TriangleMesh,
+    solid: &ReliefSolid,
     options: &PrintabilityOptions,
 ) -> Result<ReliefPrintability, ReliefError> {
     if !positive(options.nozzle_mm) || !positive(options.layer_mm) {
@@ -122,6 +127,19 @@ pub fn check_relief(
             "spacing_mm must be finite positive numbers".to_string(),
         ));
     }
+    let pull = options
+        .release
+        .map(|release| {
+            if !(0.0..90.0).contains(&release.minimum_draft_degrees) {
+                return Err(ReliefError::InvalidOptions(
+                    "minimum_draft_degrees must be at least 0 and below 90".to_string(),
+                ));
+            }
+            normalized_direction(release.pull_direction, "pull_direction")
+                .map_err(ReliefError::from)
+        })
+        .transpose()?;
+
     let heights = map.heights_mm.values();
     let low = heights.iter().copied().fold(f64::INFINITY, f64::min);
     let high = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -132,23 +150,23 @@ pub fn check_relief(
             .is_none_or(|maximum| relief_height_mm <= maximum);
     let [narrow_ridges, narrow_grooves] = narrow_detail(map, options)?;
 
-    let validation = analyze_mesh(
-        solid,
-        ValidationOptions {
-            draft: options.release.map(|release| DraftOptions {
+    let volume_mm3 = sound(solid)?.then(|| signed_volume(solid.mesh()));
+    let solid_ok = volume_mm3.is_some_and(|volume| volume > 0.0);
+    let draft = options.release.zip(pull).map(|(release, pull)| {
+        let top = TriangleMesh {
+            vertices: solid.top_vertices().to_vec(),
+            triangles: solid.top_triangles().to_vec(),
+        };
+        draft::analyze(
+            &top,
+            pull,
+            DraftOptions {
                 pull_direction: release.pull_direction,
                 minimum_draft_degrees: release.minimum_draft_degrees,
                 parting_offset_mm: None,
-            }),
-            ..ValidationOptions::default()
-        },
-    )?;
-    let volume_mm3 = validation
-        .solid_properties
-        .as_ref()
-        .map(|properties| properties.volume_mm3);
-    let solid_ok = validation.solid_geometry && volume_mm3.is_some_and(|volume| volume > 0.0);
-    let draft = validation.draft.clone();
+            },
+        )
+    });
     let undercut_free = draft.as_ref().is_none_or(|draft| draft.undercut.faces == 0);
     Ok(ReliefPrintability {
         solid: solid_ok,
@@ -161,8 +179,45 @@ pub fn check_relief(
         narrow_grooves,
         draft,
         passed: solid_ok && relief_height_within_limits && undercut_free,
-        validation,
     })
+}
+
+/// Whether the top samples lie on a strictly increasing grid, every one
+/// finite and above the bottom on Z = 0. With the construction's fixed
+/// connectivity, these make the solid closed and free of crossings.
+fn sound(solid: &ReliefSolid) -> Result<bool, ReliefError> {
+    let top = solid.top_vertices();
+    let first_row = &top[..solid.columns];
+    if !first_row.windows(2).all(|pair| pair[0][0] < pair[1][0]) {
+        return Ok(false);
+    }
+    let mut above = f64::INFINITY;
+    for samples in top.chunks_exact(solid.columns) {
+        limit::check()?;
+        let y = samples[0][1];
+        let on_grid = y < above
+            && samples.iter().zip(first_row).all(|(sample, column)| {
+                sample[0] == column[0] && sample[1] == y && sample[2].is_finite() && sample[2] > 0.0
+            });
+        if !on_grid {
+            return Ok(false);
+        }
+        above = y;
+    }
+    Ok(true)
+}
+
+/// The volume a closed, outward-facing mesh encloses.
+fn signed_volume(mesh: &TriangleMesh) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|triangle| {
+            let [a, b, c] = triangle.map(|index| mesh.vertices[index as usize]);
+            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0])
+        })
+        .sum::<f64>()
+        / 6.0
 }
 
 /// Ridges, then grooves, narrower than the nozzle.

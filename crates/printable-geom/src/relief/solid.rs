@@ -1,22 +1,55 @@
 //! A watertight solid from a relief map.
 //!
-//! The top surface is the height field itself, one vertex per sample and two
-//! triangles per cell, so it never overlaps itself. Vertical walls run down
+//! The top surface is the height field itself, one vertex per sample on a
+//! regular grid and two triangles per cell, so it never overlaps itself.
+//! A mirrored relief splits each cell along the other diagonal, so its top
+//! is an exact reflection of the unmirrored one. Vertical walls run down
 //! from every boundary vertex to the base plane Z = 0, and the bottom is a
 //! coarse grid of cells whose outer sides carry the boundary vertices. Every
 //! edge is therefore shared by exactly two triangles that traverse it in
 //! opposite directions, and with a positive base thickness every triangle
 //! has positive area: the result is a closed, consistently outward-facing
-//! manifold.
+//! manifold. The top lies at least `base_mm` above the bottom and the walls
+//! stand on the grid's outline, so no two faces cross: the solid is sound by
+//! construction, without a pairwise self-intersection search.
 
 use super::{ReliefError, ReliefMap, positive};
-use crate::TriangleMesh;
+use crate::{TriangleMesh, limit};
 
 /// Samples spanned by each bottom cell along each axis. Coarse cells keep
-/// the bottom to a small fraction of the top's triangles, and fine enough
-/// that no bottom triangle overlaps more than a few dozen others, which
-/// keeps the mesh analysis's self-intersection search within its budget.
+/// the bottom to a small fraction of the top's triangles.
 const BOTTOM_STRIDE: usize = 16;
+
+/// A closed relief solid made by [`relief_solid`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReliefSolid {
+    pub(super) mesh: TriangleMesh,
+    /// Samples along a row and down a column of the top surface, border
+    /// included. The top's vertices come first, row by row, and its
+    /// triangles come first, two per cell.
+    pub(super) columns: usize,
+    pub(super) rows: usize,
+}
+
+impl ReliefSolid {
+    pub fn mesh(&self) -> &TriangleMesh {
+        &self.mesh
+    }
+
+    pub fn into_mesh(self) -> TriangleMesh {
+        self.mesh
+    }
+
+    /// The vertices of the top surface, row by row from the largest Y.
+    pub(super) fn top_vertices(&self) -> &[[f64; 3]] {
+        &self.mesh.vertices[..self.columns * self.rows]
+    }
+
+    /// The triangles of the top surface.
+    pub(super) fn top_triangles(&self) -> &[[u32; 3]] {
+        &self.mesh.triangles[..2 * (self.columns - 1) * (self.rows - 1)]
+    }
+}
 
 /// How a relief map becomes a solid.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +94,7 @@ impl SolidOptions {
 /// Close a relief map into a solid in millimetres: the relief faces +Z, the
 /// base lies on Z = 0, and the image's top-left corner is at the largest Y
 /// and smallest X, so the relief reads as the image does from above.
-pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleMesh, ReliefError> {
+pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<ReliefSolid, ReliefError> {
     let invalid = |message: &str| Err(ReliefError::InvalidOptions(message.to_string()));
     if !positive(options.base_mm) {
         return invalid("base_mm must be a finite positive number");
@@ -104,6 +137,10 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
     // Rows run down the image, so Y falls with the row.
     let mut ys = axis(height, map.spacing_mm[1]);
     ys.reverse();
+    let increasing = |positions: &[f64]| positions.windows(2).all(|pair| pair[0] < pair[1]);
+    if !increasing(&xs) || !ys.windows(2).all(|pair| pair[0] > pair[1]) {
+        return invalid("spacing_mm is too small to separate samples beside the border");
+    }
     let pad = if options.border_mm > 0.0 { 2 } else { 0 };
     let (columns, rows) = (xs.len(), ys.len());
     let vertex_count = columns * rows
@@ -115,6 +152,7 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
 
     let mut top = vec![options.border_height_mm; columns * rows];
     for y in 0..height {
+        limit::check()?;
         for x in 0..width {
             let column = if options.mirror { width - 1 - x } else { x };
             top[(y + pad) * columns + column + pad] = grid.get(x, y) - lowest;
@@ -129,6 +167,7 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
 
     let mut vertices = Vec::with_capacity(vertex_count);
     for (row, &y) in ys.iter().enumerate() {
+        limit::check()?;
         for (column, &x) in xs.iter().enumerate() {
             vertices.push([x, y, options.base_mm + top[row * columns + column]]);
         }
@@ -137,6 +176,7 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
     let index = |row: usize, column: usize| (row * columns + column) as u32;
     let mut triangles = Vec::with_capacity(2 * (columns - 1) * (rows - 1) + 6 * (columns + rows));
     for row in 0..rows - 1 {
+        limit::check()?;
         for column in 0..columns - 1 {
             // Seen from above: lower-left, lower-right, upper-right,
             // upper-left. Row + 1 is lower, at smaller Y.
@@ -144,8 +184,13 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
             let lower_right = index(row + 1, column + 1);
             let upper_right = index(row, column + 1);
             let upper_left = index(row, column);
-            triangles.push([lower_left, lower_right, upper_right]);
-            triangles.push([lower_left, upper_right, upper_left]);
+            if options.mirror {
+                triangles.push([lower_left, lower_right, upper_left]);
+                triangles.push([lower_right, upper_right, upper_left]);
+            } else {
+                triangles.push([lower_left, lower_right, upper_right]);
+                triangles.push([lower_left, upper_right, upper_left]);
+            }
         }
     }
 
@@ -214,6 +259,7 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
     };
     let mut polygon = Vec::new();
     for b in 0..coarse_rows.len() - 1 {
+        limit::check()?;
         for a in 0..coarse_columns.len() - 1 {
             let (upper, lower) = (coarse_rows[b], coarse_rows[b + 1]);
             let (left, right) = (coarse_columns[a], coarse_columns[a + 1]);
@@ -268,8 +314,12 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<TriangleM
             }
         }
     }
-    Ok(TriangleMesh {
-        vertices,
-        triangles,
+    Ok(ReliefSolid {
+        mesh: TriangleMesh {
+            vertices,
+            triangles,
+        },
+        columns,
+        rows,
     })
 }

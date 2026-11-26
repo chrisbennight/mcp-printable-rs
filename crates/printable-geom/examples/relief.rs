@@ -22,11 +22,12 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::Read;
 use std::time::Instant;
 
 use printable_geom::relief::{
-    Analysis, CompressionOptions, Grid, IntegrationMethod, IntegrationOptions, PrintabilityOptions,
-    SolidOptions, check_relief, compress, integrate, relief_solid,
+    Analysis, CompressionOptions, DEFAULT_MAX_PIXELS, Grid, IntegrationMethod, IntegrationOptions,
+    PrintabilityOptions, ReliefMap, SolidOptions, check_relief, compress, integrate, relief_solid,
 };
 
 #[derive(Default)]
@@ -97,11 +98,32 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
     Ok(arguments)
 }
 
-fn read_f32(path: &str, count: usize) -> Result<Vec<f32>, Box<dyn Error>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() != 4 * count {
-        return Err(format!("{path} has {} bytes, expected {}", bytes.len(), 4 * count).into());
+/// The pixels in a `width` x `height` map, refused above `limit` before
+/// anything that size is allocated or read.
+fn pixels_within(width: usize, height: usize, limit: usize) -> Result<usize, Box<dyn Error>> {
+    match width.checked_mul(height) {
+        Some(pixels) if pixels <= limit => Ok(pixels),
+        _ => Err(format!("{width} x {height} pixels exceed the limit of {limit}").into()),
     }
+}
+
+/// A file's bytes, refused unless it holds exactly `expected` bytes.
+fn read_exactly(path: &str, expected: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let file = fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length != expected as u64 {
+        return Err(format!("{path} has {length} bytes, expected {expected}").into());
+    }
+    let mut bytes = Vec::with_capacity(expected);
+    file.take(expected as u64).read_to_end(&mut bytes)?;
+    if bytes.len() != expected {
+        return Err(format!("{path} changed while it was read").into());
+    }
+    Ok(bytes)
+}
+
+fn read_f32(path: &str, count: usize) -> Result<Vec<f32>, Box<dyn Error>> {
+    let bytes = read_exactly(path, 4 * count)?;
     Ok(bytes
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
@@ -118,7 +140,8 @@ fn write_f32(path: &str, values: impl Iterator<Item = f64>) -> Result<(), Box<dy
 
 /// A sphere of radius 0.35 one unit before the camera, against a wall 1.6
 /// units away, with exact normals and multiplicative depth noise.
-fn synthetic(size: usize) -> Result<Analysis, Box<dyn Error>> {
+fn synthetic(size: usize, limit: usize) -> Result<Analysis, Box<dyn Error>> {
+    pixels_within(size, size, limit)?;
     let focal = size as f64;
     let centre = (size - 1) as f64 / 2.0;
     let (radius, distance, wall) = (0.35, 1.0, 1.6);
@@ -160,11 +183,12 @@ fn synthetic(size: usize) -> Result<Analysis, Box<dyn Error>> {
 }
 
 fn load(arguments: &Arguments) -> Result<Analysis, Box<dyn Error>> {
+    let limit = arguments.max_pixels.unwrap_or(DEFAULT_MAX_PIXELS);
     if let Some(size) = arguments.synthetic {
-        return synthetic(size);
+        return synthetic(size, limit);
     }
     let (width, height) = arguments.size.ok_or("--size is required")?;
-    let pixels = width * height;
+    let pixels = pixels_within(width, height, limit)?;
     let depth_path = arguments.depth.as_deref().ok_or("--depth is required")?;
     let mut depth = read_f32(depth_path, pixels)?;
     if arguments.log_depth {
@@ -180,10 +204,7 @@ fn load(arguments: &Arguments) -> Result<Analysis, Box<dyn Error>> {
     };
     let mask = match &arguments.mask {
         Some(path) => {
-            let bytes = fs::read(path)?;
-            if bytes.len() != pixels {
-                return Err(format!("{path} has {} bytes, expected {pixels}", bytes.len()).into());
-            }
+            let bytes = read_exactly(path, pixels)?;
             Some(Grid::new(
                 width,
                 height,
@@ -273,14 +294,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     println!(
         "solid: {} vertices, {} triangles, {:.2} s",
-        solid.vertices.len(),
-        solid.triangles.len(),
+        solid.mesh().vertices.len(),
+        solid.mesh().triangles.len(),
         stage.elapsed().as_secs_f64()
     );
 
     if arguments.check {
         let stage = Instant::now();
-        let check = check_relief(&relief, &solid, &PrintabilityOptions::default())?;
+        // A mould prints the relief upside down, so its ridges are the
+        // relief's grooves.
+        let inverted;
+        let printed = if arguments.mould {
+            let high = relief
+                .heights_mm
+                .values()
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            inverted = ReliefMap {
+                heights_mm: Grid::new(
+                    relief.heights_mm.width(),
+                    relief.heights_mm.height(),
+                    relief
+                        .heights_mm
+                        .values()
+                        .iter()
+                        .map(|value| high - value)
+                        .collect(),
+                )?,
+                spacing_mm: relief.spacing_mm,
+            };
+            &inverted
+        } else {
+            &relief
+        };
+        let check = check_relief(printed, &solid, &PrintabilityOptions::default())?;
         println!(
             "check: solid {}, passed {}, relief {:.3} mm, volume {:?} mm3, narrow ridges {:?}, narrow grooves {:?}, {:.2} s",
             check.solid,
@@ -291,22 +339,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             check.narrow_grooves,
             stage.elapsed().as_secs_f64()
         );
-        let topology = &check.validation.topology;
-        println!(
-            "topology: watertight {}, manifold {}, consistently oriented {}, components {}, degenerate {}, self-intersections {:?}",
-            topology.watertight,
-            topology.manifold,
-            topology.consistently_oriented,
-            topology.connected_components,
-            topology.degenerate_triangles,
-            topology.self_intersections
-        );
-        for issue in &check.validation.issues {
-            println!("issue: {}: {}", issue.code, issue.message);
-        }
     }
 
     if let Some(path) = &arguments.stl {
+        let solid = solid.mesh();
         let triangles: Vec<stl_io::Triangle> = solid
             .triangles
             .iter()

@@ -69,7 +69,11 @@ impl<T> Grid<T> {
         &self.values[y * self.width + x]
     }
 
-    fn same_size<U>(&self, other: &Grid<U>, name: &'static str) -> Result<(), ReliefError> {
+    pub(super) fn same_size<U>(
+        &self,
+        other: &Grid<U>,
+        name: &'static str,
+    ) -> Result<(), ReliefError> {
         if self.width == other.width && self.height == other.height {
             Ok(())
         } else {
@@ -191,7 +195,7 @@ impl Analysis {
             &mask,
             Some(&self.depth.values),
             max_jump_slope / jump_focal,
-        );
+        )?;
         let regions = count_regions(width, &mask, &open);
         Ok(Prepared {
             width,
@@ -213,7 +217,7 @@ pub(super) fn open_edges(
     mask: &[bool],
     depth: Option<&[f32]>,
     max_log_step: f64,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, ReliefError> {
     let joined = |i: usize, j: usize| {
         mask[i]
             && mask[j]
@@ -223,6 +227,7 @@ pub(super) fn open_edges(
     };
     let mut open = vec![0u8; width * height];
     for y in 0..height {
+        crate::limit::check()?;
         for x in 0..width {
             let i = y * width + x;
             if x + 1 < width && joined(i, i + 1) {
@@ -233,7 +238,7 @@ pub(super) fn open_edges(
             }
         }
     }
-    open
+    Ok(open)
 }
 
 /// Connected groups of subject pixels joined by open edges.
@@ -262,8 +267,8 @@ pub struct HeightField {
     /// integration without a focal length. Pixels outside the subject hold
     /// zero.
     pub heights: Grid<f64>,
-    /// The subject's pixels.
-    pub mask: Grid<bool>,
+    /// The subject's pixels, fixed with the edges found from them.
+    pub(super) mask: Grid<bool>,
     pub report: IntegrationReport,
     /// [`RIGHT`] and [`DOWN`] bits for edges joining one surface, with no
     /// silhouette or depth jump between their pixels.
@@ -271,6 +276,11 @@ pub struct HeightField {
 }
 
 impl HeightField {
+    /// The subject's pixels.
+    pub fn mask(&self) -> &Grid<bool> {
+        &self.mask
+    }
+
     /// A height field from heights the caller already has, such as a
     /// designed relief, with every edge between two subject pixels joining
     /// one surface.
@@ -304,7 +314,7 @@ impl HeightField {
                 problem: "is not finite",
             });
         }
-        let open = open_edges(width, height, &mask.values, None, f64::INFINITY);
+        let open = open_edges(width, height, &mask.values, None, f64::INFINITY)?;
         let regions = count_regions(width, &mask.values, &open);
         let mut heights = heights;
         for (value, inside) in heights.values.iter_mut().zip(&mask.values) {

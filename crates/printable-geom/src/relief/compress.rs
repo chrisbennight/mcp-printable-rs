@@ -31,6 +31,10 @@ use super::{Grid, HeightField, ReliefError, positive};
 /// of the slopes that pull on it.
 const PIN: f32 = 1e6;
 
+/// The largest `detail_sigma_px`. The blur's cost grows with its width, and
+/// wider detail is shape rather than detail.
+pub const MAX_DETAIL_SIGMA_PX: f64 = 64.0;
+
 /// Parameters for [`compress`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompressionOptions {
@@ -49,8 +53,8 @@ pub struct CompressionOptions {
     /// Multiplier for detail finer than `detail_sigma_px`; 1 compresses
     /// detail as much as the shape it lies on.
     pub detail_gain: f64,
-    /// Gaussian scale in pixels separating base from detail; 0 compresses
-    /// each slope by its own magnitude.
+    /// Gaussian scale in pixels separating base from detail, at most
+    /// [`MAX_DETAIL_SIGMA_PX`]; 0 compresses each slope by its own magnitude.
     pub detail_sigma_px: f64,
     /// Keep the steps at depth jumps inside the subject instead of removing
     /// them. Silhouette steps are always removed.
@@ -96,6 +100,11 @@ impl CompressionOptions {
                 "compression, detail_gain and detail_sigma_px must be finite and not negative",
             );
         }
+        if self.detail_sigma_px > MAX_DETAIL_SIGMA_PX {
+            return Err(ReliefError::InvalidOptions(format!(
+                "detail_sigma_px must be at most {MAX_DETAIL_SIGMA_PX}"
+            )));
+        }
         if self.max_solver_iterations == 0 || !positive(self.solver_tolerance) {
             return invalid("the solver needs at least one iteration and a positive tolerance");
         }
@@ -134,10 +143,13 @@ pub fn compress(
     options: &CompressionOptions,
 ) -> Result<(ReliefMap, CompressionReport), ReliefError> {
     options.validate()?;
+    // The mask and its edges are fixed when the field is made; the heights
+    // may since have been replaced.
+    field.heights.same_size(field.mask(), "mask")?;
     let (width, height) = (field.width(), field.height());
     let pixels = width * height;
     let heights = field.heights.values();
-    let mask = field.mask.values();
+    let mask = field.mask().values();
     let valid = |i: usize, j: usize, bit: u8| {
         mask[i] && mask[j] && (options.keep_depth_steps || field.open[i] & bit != 0)
     };

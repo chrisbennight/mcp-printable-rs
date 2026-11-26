@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::limit::WorkLimit;
-use crate::{GeometryError, TriangleMesh, ValidationOptions, analyze_mesh};
+use crate::{GeometryError, ValidationOptions, analyze_mesh};
 
 /// A small deterministic generator for property tests.
 struct Random(u64);
@@ -137,8 +137,8 @@ fn distances(field: &HeightField, far: f64) -> Vec<f64> {
     field.heights.values().iter().map(|h| far - h).collect()
 }
 
-fn assert_sound_solid(mesh: &TriangleMesh) -> f64 {
-    let report = analyze_mesh(mesh, ValidationOptions::default()).unwrap();
+fn assert_sound_solid(solid: &ReliefSolid) -> f64 {
+    let report = analyze_mesh(solid.mesh(), ValidationOptions::default()).unwrap();
     assert!(report.topology.watertight, "{:?}", report.issues);
     assert!(report.topology.manifold && report.topology.consistently_oriented);
     assert_eq!(report.topology.connected_components, 1);
@@ -395,17 +395,53 @@ fn invalid_analyses_are_refused_with_typed_errors() {
 }
 
 #[test]
-fn integration_stops_at_the_work_limit() {
+fn integration_and_solids_stop_at_the_work_limit() {
     let scene = Scene::sphere(16, 0.3, 1.0, 1.4);
-    let options = IntegrationOptions {
-        method: IntegrationMethod::AnchoredNormals,
-        ..IntegrationOptions::default()
-    };
     let expired = WorkLimit::new(Duration::ZERO, || false);
-    let result = expired.apply(|| integrate(&scene.analysis(), &options));
+    let stopped = |result: Result<(), ReliefError>| {
+        matches!(
+            result,
+            Err(ReliefError::Geometry(GeometryError::TimeLimit { .. }))
+        )
+    };
+    for method in [
+        IntegrationMethod::DepthOnly,
+        IntegrationMethod::AnchoredNormals,
+    ] {
+        let options = IntegrationOptions {
+            method,
+            ..IntegrationOptions::default()
+        };
+        let result = expired.apply(|| integrate(&scene.analysis(), &options).map(drop));
+        assert!(stopped(result), "{method:?}");
+    }
+    let relief = map(4, 4, 1.0, |_, _| 0.0);
+    let result = expired.apply(|| relief_solid(&relief, &SolidOptions::default()).map(drop));
+    assert!(stopped(result));
+}
+
+#[test]
+fn compression_refuses_heights_resized_away_from_the_mask() {
+    let heights = Grid::new(3, 3, vec![0.0; 9]).unwrap();
+    let mut field = HeightField::from_heights(heights, None).unwrap();
+    field.heights = Grid::new(4, 3, vec![0.0; 12]).unwrap();
     assert!(matches!(
-        result,
-        Err(ReliefError::Geometry(GeometryError::TimeLimit { .. }))
+        compress(&field, &CompressionOptions::new(10.0, 1.0)),
+        Err(ReliefError::SizeMismatch { name: "mask", .. })
+    ));
+}
+
+#[test]
+fn detail_scale_is_capped() {
+    let heights = Grid::new(3, 3, (0..9).map(f64::from).collect()).unwrap();
+    let field = HeightField::from_heights(heights, None).unwrap();
+    let mut options = CompressionOptions::new(10.0, 1.0);
+    options.detail_sigma_px = MAX_DETAIL_SIGMA_PX;
+    assert!(compress(&field, &options).is_ok());
+    options.detail_sigma_px = MAX_DETAIL_SIGMA_PX + 1.0;
+    assert!(matches!(
+        compress(&field, &options),
+        Err(ReliefError::InvalidOptions(_))
     ));
 }
 
@@ -551,7 +587,8 @@ fn flat_and_ramped_reliefs_have_their_analytic_volumes() {
         let volume = assert_sound_solid(&mesh);
         assert!((volume - 5.0 * 2.5 * (2.0 + 1.5)).abs() < 1e-9, "{volume}");
         let highest = |at_left: bool| {
-            mesh.vertices
+            mesh.mesh()
+                .vertices
                 .iter()
                 .filter(|v| !at_left || v[0] == 0.0)
                 .map(|v| v[2])
@@ -578,7 +615,7 @@ fn flat_and_ramped_reliefs_have_their_analytic_volumes() {
     bordered.border_height_mm = 0.6;
     let mesh = relief_solid(&ramp, &bordered).unwrap();
     assert_sound_solid(&mesh);
-    let report = analyze_mesh(&mesh, ValidationOptions::default()).unwrap();
+    let report = analyze_mesh(mesh.mesh(), ValidationOptions::default()).unwrap();
     assert_eq!(report.bounds.dimensions_mm, [7.0, 4.5, 5.0]);
 }
 
@@ -615,8 +652,108 @@ fn every_random_relief_becomes_a_sound_solid() {
             invert: case % 4 < 2,
         };
         let mesh = relief_solid(&relief, &options).unwrap();
-        assert_sound_solid(&mesh);
+        let volume = assert_sound_solid(&mesh);
+        // The certification by construction agrees with the full analysis.
+        let check = check_relief(&relief, &mesh, &PrintabilityOptions::default()).unwrap();
+        assert!(check.solid, "case {case}");
+        let certified = check.volume_mm3.unwrap();
+        assert!(
+            (certified - volume).abs() <= 1e-9 * volume,
+            "{certified} {volume}"
+        );
     }
+}
+
+#[test]
+fn a_solid_off_its_construction_is_not_certified() {
+    let relief = map(6, 5, 0.5, |x, y| (x * y) as f64 * 0.1);
+    let solid = relief_solid(&relief, &SolidOptions::default()).unwrap();
+    let options = PrintabilityOptions::default();
+    assert!(check_relief(&relief, &solid, &options).unwrap().solid);
+    // A top sample on the bottom, one moved off the grid, and a grid
+    // reversed into an inside-out solid.
+    let mut touching = solid.clone();
+    touching.mesh.vertices[8][2] = 0.0;
+    let mut moved = solid.clone();
+    moved.mesh.vertices[8][0] += 0.1;
+    let mut reversed = solid.clone();
+    reversed
+        .mesh
+        .triangles
+        .iter_mut()
+        .for_each(|t| t.swap(1, 2));
+    for broken in [touching, moved, reversed] {
+        let check = check_relief(&relief, &broken, &options).unwrap();
+        assert!(!check.solid && !check.passed);
+    }
+}
+
+#[test]
+fn a_mirrored_relief_is_an_exact_reflection() {
+    let mut random = Random(0x0517);
+    let relief = ReliefMap {
+        heights_mm: Grid::new(7, 5, (0..35).map(|_| random.next() * 2.0).collect()).unwrap(),
+        spacing_mm: [0.5, 0.5],
+    };
+    for border_mm in [0.0, 1.0] {
+        let options = SolidOptions {
+            border_mm,
+            border_height_mm: 0.5,
+            ..SolidOptions::default()
+        };
+        let plain = relief_solid(&relief, &options).unwrap();
+        let mirrored = relief_solid(
+            &relief,
+            &SolidOptions {
+                mirror: true,
+                ..options
+            },
+        )
+        .unwrap();
+        let columns = plain.columns;
+        let reflect = |index: u32| {
+            let index = index as usize;
+            (index / columns * columns + columns - 1 - index % columns) as u32
+        };
+        let faces = |triangles: &mut dyn Iterator<Item = [u32; 3]>| {
+            let mut faces: Vec<[u32; 3]> = triangles
+                .map(|mut triangle| {
+                    triangle.sort_unstable();
+                    triangle
+                })
+                .collect();
+            faces.sort_unstable();
+            faces
+        };
+        let reflected = faces(&mut plain.top_triangles().iter().map(|t| t.map(reflect)));
+        assert_eq!(
+            reflected,
+            faces(&mut mirrored.top_triangles().iter().copied())
+        );
+        for (index, vertex) in plain.top_vertices().iter().enumerate() {
+            let image = mirrored.top_vertices()[reflect(index as u32) as usize];
+            assert_eq!(vertex[2], image[2]);
+        }
+        assert_sound_solid(&mirrored);
+    }
+}
+
+#[test]
+fn a_full_size_relief_is_certified_quickly() {
+    let size = 2048;
+    let relief = map(size, size, 0.5, |x, y| {
+        ((x as f64 * 0.01).sin() + (y as f64 * 0.013).cos()) * 2.0
+    });
+    let started = std::time::Instant::now();
+    let solid = relief_solid(&relief, &SolidOptions::default()).unwrap();
+    let check = check_relief(&relief, &solid, &PrintabilityOptions::default()).unwrap();
+    assert!(check.solid && check.passed);
+    assert!(check.volume_mm3.unwrap() > 0.0);
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -690,8 +827,22 @@ fn relief_height_limits_and_mould_release_are_checked() {
     assert!(check.passed);
     let draft = check.draft.unwrap();
     assert_eq!(draft.undercut.faces, 0);
-    // The mould's outer walls are parallel to the pull.
-    assert!(draft.shallow.faces > 0);
+    // Only the cavity's surface is cast against; the outer walls, parallel
+    // to the pull, and the bottom are not counted.
+    assert_eq!(draft.shallow.faces, 0);
+    let counted =
+        draft.base.faces + draft.released.faces + draft.shallow.faces + draft.undercut.faces;
+    assert_eq!(counted, 2 * 11 * 11);
+    // A sideways pull finds the cavity's far slopes undercut.
+    let sideways = PrintabilityOptions {
+        release: Some(Release {
+            pull_direction: [1.0, 0.0, 0.0],
+            minimum_draft_degrees: 1.0,
+        }),
+        ..PrintabilityOptions::default()
+    };
+    let check = check_relief(&relief, &mould, &sideways).unwrap();
+    assert!(check.draft.unwrap().undercut.faces > 0 && !check.passed);
 
     let too_tall = PrintabilityOptions {
         maximum_relief_mm: Some(0.5),
@@ -729,6 +880,12 @@ fn a_photograph_analysis_becomes_a_printable_relief() {
         let check = check_relief(&relief, &mesh, &PrintabilityOptions::default()).unwrap();
         assert!(check.passed, "{method:?}");
         assert!((check.relief_height_mm - 3.0).abs() < 1e-9);
-        assert!((check.validation.bounds.maximum_mm[2] - 5.0).abs() < 1e-9);
+        let top = mesh
+            .mesh()
+            .vertices
+            .iter()
+            .map(|v| v[2])
+            .fold(0.0, f64::max);
+        assert!((top - 5.0).abs() < 1e-9);
     }
 }
