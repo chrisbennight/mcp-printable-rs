@@ -120,12 +120,14 @@ class PublishedRegistryTests(unittest.TestCase):
         self.assertEqual(chosen("depth.shallow", None), ("da3-mono-large", "cpu", 1024))
         self.assertEqual(chosen("depth.deep", 24 * 1024), ("dp2-h", "cuda", 2048))
         self.assertEqual(chosen("depth.deep", 8 * 1024), ("dp2-h", "cuda", 1024))
-        self.assertEqual(chosen("depth.deep", 3 * 1024), ("dp2-l", "cuda", 1024))
+        self.assertEqual(chosen("depth.deep", 5 * 1024), ("dp2-l", "cuda", 1024))
+        self.assertEqual(chosen("depth.deep", 3 * 1024), ("dp2-h", "cpu", 1024))
         self.assertEqual(chosen("depth.deep", None), ("dp2-h", "cpu", 1024))
         self.assertEqual(chosen("mask", 24 * 1024), ("moge3-vitg", "cuda", 1024))
-        self.assertEqual(chosen("mask", 3 * 1024), ("moge3-vitl", "cuda", 1024))
+        self.assertEqual(chosen("mask", 4 * 1024), ("moge3-vitl", "cuda", 1024))
+        self.assertEqual(chosen("mask", 3 * 1024), ("moge2-vitl-normal", "cpu", 1024))
         self.assertEqual(chosen("mask", None), ("moge2-vitl-normal", "cpu", 1024))
-        self.assertEqual(chosen("focal", 3 * 1024), ("dp2-l", "cuda", 1024))
+        self.assertEqual(chosen("focal", 5 * 1024), ("dp2-l", "cuda", 1024))
         self.assertEqual(chosen("normals", 3 * 1024), ("marigold-v2", "cuda", 1024))
 
     def test_every_route_runs_without_a_gpu(self):
