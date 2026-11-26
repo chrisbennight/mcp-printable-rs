@@ -330,8 +330,8 @@ impl DepthRequest {
     }
 }
 
-// How deep the photographed subject is, which selects the depth route:
-// shallow subjects are processed at 1024 px, deep ones at up to 2048 px.
+// How deep the photographed subject is, which chooses the default depth
+// model and processing size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
@@ -339,9 +339,8 @@ pub enum Subject {
     Deep,
 }
 
-// `best` takes the highest-quality route within the budgets and adds
-// mirrored and rescaled consistency passes; `fast` takes the fastest route
-// and skips them.
+// `best` adds mirrored and rescaled passes of the depth model as consistency
+// checks; `fast` skips them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalysisQuality {
@@ -350,46 +349,114 @@ pub enum AnalysisQuality {
     Fast,
 }
 
-// How artwork is read: `physical` as the flat object it is, with MoGe depth,
-// or `sculpture` as a sculpted scene, with Depth Anything 3 depth.
+// Geometry models with a depth output, by their names in the worker's model
+// list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DepthModel {
+    Da3MonoLarge,
+    Dp2H,
+    Dp2L,
+    Moge3Vitg,
+    Moge3Vitl,
+    Moge2VitlNormal,
+}
+
+// Geometry models with a subject mask output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaskModel {
+    Moge3Vitg,
+    Moge3Vitl,
+    Moge2VitlNormal,
+}
+
+// Geometry models with a focal-length output; both share one estimator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum FocalModel {
+    Dp2H,
+    Dp2L,
+}
+
+// Geometry models that make a normal map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum NormalsModel {
+    MarigoldV2,
+}
+
+// Where the models run; `auto` is the GPU unless the worker is configured
+// for the CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum Interpretation {
-    Physical,
-    Sculpture,
+pub enum AnalysisDevice {
+    #[default]
+    Auto,
+    Cuda,
+    Cpu,
 }
 
 /// Known focal lengths a caller may give, in pixels of the photograph.
 pub const ANALYSIS_FOCAL_LENGTHS_PX: std::ops::RangeInclusive<f64> = 10.0..=100_000.0;
+/// Longest sides, in pixels, the depth model may process a photograph at.
+pub const ANALYSIS_SIDES: [u32; 2] = [1024, 2048];
 
+// Optional fields are advertised without `null`; omitting one takes the
+// default the worker fills in.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnalyzeRequest {
     /// Workspace JPEG, PNG or WebP photograph.
     pub image: String,
-    /// `shallow` (reliefs, coins, artwork; 1024 px) or `deep` (heads,
-    /// objects, scenes; up to 2048 px).
+    /// shallow (reliefs, coins, artwork) or deep (heads, objects).
     pub subject: Subject,
-    /// `best` (default) adds consistency passes; `fast` takes the fastest
-    /// routes, for previews.
+    /// Default: shallow da3-mono-large (3.8 deg, 15.3% relief error); deep
+    /// dp2-h (21.1 mm head error, ~10 GB at 2048 px) or dp2-l at 1024 px
+    /// (~3 GB). MoGe reads art as flat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quality: Option<AnalysisQuality>,
-    /// Shallow only: `sculpture` (default) or `physical`, which reads artwork
-    /// as flat.
+    #[schemars(with = "DepthModel")]
+    pub depth_model: Option<DepthModel>,
+    /// Depth model side; default 2048 for deep on a GPU, else 1024.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interpretation: Option<Interpretation>,
-    /// Add a Marigold V2 normal map; otherwise normals come from depth.
+    #[schemars(schema_with = "analysis_side_schema")]
+    pub side: Option<u32>,
+    /// Default moge3-vitl (2.5 GB); moge3-vitg ranks higher (6.7 GB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MaskModel")]
+    pub mask_model: Option<MaskModel>,
+    /// Default the Depth Pro 2 depth model, else dp2-l (8.3% error vs EXIF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "FocalModel")]
+    pub focal_model: Option<FocalModel>,
+    /// Add a predicted normal map.
     #[serde(default)]
     pub normals: bool,
-    /// Known focal length in photograph pixels, 10 to 100000; estimated when
-    /// omitted.
+    /// marigold-v2 (4.0 deg, best measured).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "NormalsModel")]
+    pub normals_model: Option<NormalsModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "AnalysisDevice")]
+    pub device: Option<AnalysisDevice>,
+    /// best (default) adds consistency passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "AnalysisQuality")]
+    pub quality: Option<AnalysisQuality>,
+    /// Known focal length in photograph px.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "f64")]
     pub focal_length_px: Option<f64>,
 }
 
+fn analysis_side_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"enum": ANALYSIS_SIDES})
+}
+
 impl AnalyzeRequest {
-    /// Checks that need no file access.
+    /// Checks that need no file access or knowledge of the worker.
     pub fn validate(&self) -> Result<(), ToolError> {
+        let refuse = |message: &str| Err(ToolError::Validation(message.into()));
         if !IMAGE_SUFFIXES
             .iter()
             .any(|suffix| self.image.ends_with(suffix))
@@ -399,20 +466,37 @@ impl AnalyzeRequest {
                 self.image
             )));
         }
-        if self.interpretation.is_some() && self.subject != Subject::Shallow {
-            return Err(ToolError::Validation(
-                "interpretation applies only to shallow subjects".into(),
-            ));
-        }
         if self
-            .focal_length_px
-            .is_some_and(|focal| !ANALYSIS_FOCAL_LENGTHS_PX.contains(&focal))
+            .side
+            .is_some_and(|side| !ANALYSIS_SIDES.contains(&side))
         {
-            return Err(ToolError::Validation(format!(
-                "focal_length_px must be between {} and {}",
-                ANALYSIS_FOCAL_LENGTHS_PX.start(),
-                ANALYSIS_FOCAL_LENGTHS_PX.end()
-            )));
+            return refuse("side must be 1024 or 2048");
+        }
+        if let Some(focal) = self.focal_length_px {
+            if !ANALYSIS_FOCAL_LENGTHS_PX.contains(&focal) {
+                return Err(ToolError::Validation(format!(
+                    "focal_length_px must be between {} and {}",
+                    ANALYSIS_FOCAL_LENGTHS_PX.start(),
+                    ANALYSIS_FOCAL_LENGTHS_PX.end()
+                )));
+            }
+            if self.focal_model.is_some() {
+                return refuse("give either focal_model or focal_length_px, not both");
+            }
+        }
+        if self.normals_model.is_some() && !self.normals {
+            return refuse("normals_model needs normals: true");
+        }
+        if self.device == Some(AnalysisDevice::Cpu)
+            && (matches!(
+                self.depth_model,
+                Some(DepthModel::Moge3Vitg | DepthModel::Moge3Vitl)
+            ) || matches!(
+                self.mask_model,
+                Some(MaskModel::Moge3Vitg | MaskModel::Moge3Vitl)
+            ))
+        {
+            return refuse("MoGe-3 needs an NVIDIA GPU; on the CPU use moge2-vitl-normal");
         }
         Ok(())
     }
@@ -727,10 +811,7 @@ impl ReconWorker {
                 || capabilities.object
                 || capabilities.trellis2
                 || capabilities.photo_jobs
-                || capabilities
-                    .geometry
-                    .as_ref()
-                    .is_some_and(GeometryReadiness::can_analyze))
+                || capabilities.geometry.is_some())
         {
             (
                 true,
@@ -2033,13 +2114,10 @@ impl ReconClient {
         self.ready.borrow().geometry.clone()
     }
 
-    /// Whether the worker last reported routes for photograph analysis.
+    /// Whether the worker last reported configured geometry models; a model
+    /// that is not yet prepared is prepared inside the analysis job.
     pub fn can_analyze(&self) -> bool {
-        self.ready
-            .borrow()
-            .geometry
-            .as_ref()
-            .is_some_and(GeometryReadiness::can_analyze)
+        self.ready.borrow().geometry.is_some()
     }
 
     pub fn can_manage_photo_jobs(&self) -> bool {

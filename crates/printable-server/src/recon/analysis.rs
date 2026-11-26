@@ -2,8 +2,8 @@
 //! length and confidence for a photograph, made by the geometry models.
 //!
 //! An analysis is keyed by the photograph's SHA-256, its settings with every
-//! default filled in, the worker's budgets, and the registry and analysis
-//! code. Its maps and manifest live under `.printable/photo-analysis/<key>/`,
+//! default filled in (models, processing size and device), and the model
+//! list and analysis code. Its maps and manifest live under `.printable/photo-analysis/<key>/`,
 //! which only the server writes. The manifest is written last and records
 //! each map's SHA-256, so a directory is a cache hit only when its manifest
 //! exists and every map still matches it. A hit runs no Python at all.
@@ -26,23 +26,79 @@ const MAP_FILES: [(&str, &str); 4] = [
 /// Largest map committed to the cache: a 2048-pixel 32-bit depth map or a
 /// 16-bit RGB normal map, with room for the container.
 const MAX_ANALYSIS_MAP_BYTES: u64 = 64 * 1024 * 1024;
-/// How long planning, which loads no model, may take.
-const PLANNING_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The settings with every default filled in, as the cache key and the
-/// analyzer read them.
-fn normalized(request: &AnalyzeRequest) -> Value {
-    let interpretation = match request.subject {
-        Subject::Shallow => Some(request.interpretation.unwrap_or(Interpretation::Sculpture)),
-        Subject::Deep => None,
+/// analyzer read them. Defaults follow the depth benchmark's
+/// recommendations for the subject and the device: a worker configured for
+/// the CPU, or a request for it, runs MoGe-2 for the mask, since MoGe-3
+/// needs a GPU, and processes deep subjects at 1024 px.
+fn normalized(request: &AnalyzeRequest, worker_device: &str) -> Result<Value, ToolError> {
+    let cpu = match request.device.unwrap_or_default() {
+        AnalysisDevice::Cpu => true,
+        AnalysisDevice::Cuda if worker_device == "cpu" => {
+            return Err(reconstruction_error(
+                "unavailable",
+                "this worker is configured not to use a GPU",
+            ));
+        }
+        AnalysisDevice::Cuda => false,
+        AnalysisDevice::Auto => worker_device == "cpu",
     };
-    json!({
+    let depth_model = request.depth_model.unwrap_or(match request.subject {
+        Subject::Shallow => DepthModel::Da3MonoLarge,
+        Subject::Deep => DepthModel::Dp2H,
+    });
+    let mask_model = request.mask_model.unwrap_or(if cpu {
+        MaskModel::Moge2VitlNormal
+    } else {
+        MaskModel::Moge3Vitl
+    });
+    if cpu
+        && (matches!(depth_model, DepthModel::Moge3Vitg | DepthModel::Moge3Vitl)
+            || matches!(mask_model, MaskModel::Moge3Vitg | MaskModel::Moge3Vitl))
+    {
+        return Err(ToolError::Validation(
+            "MoGe-3 needs an NVIDIA GPU; on the CPU use moge2-vitl-normal".into(),
+        ));
+    }
+    // Every Depth Pro 2 size shares one focal-length estimator, so a Depth
+    // Pro 2 depth model also gives the focal length from the same run.
+    let focal_model = match (request.focal_length_px, request.focal_model, depth_model) {
+        (Some(_), _, _) => None,
+        (None, Some(model), _) => Some(model),
+        (None, None, DepthModel::Dp2H) => Some(FocalModel::Dp2H),
+        (None, None, _) => Some(FocalModel::Dp2L),
+    };
+    let side = request.side.unwrap_or(match request.subject {
+        Subject::Deep if !cpu => 2048,
+        _ => 1024,
+    });
+    Ok(json!({
         "subject": request.subject,
         "quality": request.quality.unwrap_or_default(),
-        "interpretation": interpretation,
-        "normals": request.normals,
+        "depth_model": depth_model,
+        "mask_model": mask_model,
+        "focal_model": focal_model,
+        "normals_model": request
+            .normals
+            .then(|| request.normals_model.unwrap_or(NormalsModel::MarigoldV2)),
+        "side": side,
+        "device": if cpu { "cpu" } else { "cuda" },
         "focal_length_px": request.focal_length_px,
-    })
+    }))
+}
+
+/// Each distinct model the settings name, to prepare before the run.
+fn models_of(settings: &Value) -> Vec<String> {
+    let mut models: Vec<String> = Vec::new();
+    for key in ["depth_model", "mask_model", "focal_model", "normals_model"] {
+        if let Some(name) = settings[key].as_str()
+            && !models.iter().any(|model| model == name)
+        {
+            models.push(name.to_owned());
+        }
+    }
+    models
 }
 
 fn protocol(message: &str) -> ToolError {
@@ -146,18 +202,9 @@ fn check_precision(path: &Path, file: &str, description: &Value) -> Result<(), T
 }
 
 impl ReconWorker {
-    /// The GPU budget, absent when this worker may not use a GPU, and the
-    /// RAM budget the analysis plans with.
-    fn analysis_budgets(&self, config: &GeometryConfig) -> (Option<u64>, Option<u64>) {
-        (
-            (self.config.device != "cpu").then_some(config.gpu_budget_mib),
-            config.ram_budget_mib,
-        )
-    }
-
-    /// The cache key: SHA-256 over the photograph's digest, the settings,
-    /// the budgets that choose routes, and the digests of the registry and
-    /// the analysis code beside the analyzer.
+    /// The cache key: SHA-256 over the photograph's digest, the settings
+    /// with the chosen models, side and device, and the digests of the model
+    /// list and the analysis code beside the analyzer.
     fn analysis_key(
         &self,
         config: &GeometryConfig,
@@ -171,14 +218,11 @@ impl ReconWorker {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
             Err(error) => Err(ToolError::from(error)),
         };
-        let (gpu_budget_mib, ram_budget_mib) = self.analysis_budgets(config);
         let identity = json!({
             "format": CACHE_FORMAT,
             "image_sha256": image_sha256,
             "settings": settings,
-            "gpu_budget_mib": gpu_budget_mib,
-            "ram_budget_mib": ram_budget_mib,
-            "registry": code(&directory.join("models/geometry.json"))?,
+            "models": code(&directory.join("models/geometry.json"))?,
             "analyzer": code(&config.analyze_script)?,
             "photo_analysis": code(&directory.join("printable_recon/photo_analysis.py"))?,
             "geometry_models": code(&directory.join("printable_recon/geometry_models.py"))?,
@@ -247,18 +291,15 @@ impl ReconWorker {
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
         let image_sha256 = file_digest(snapshot.path())?;
-        let settings = normalized(&request);
+        let settings = normalized(&request, &self.config.device)?;
         let key = self.analysis_key(config, &image_sha256, &settings)?;
         if let Some(cached) = self.cached_analysis(&key)? {
             return Ok(cached);
         }
         self.ensure_queue_space()?;
-        let (gpu_budget_mib, ram_budget_mib) = self.analysis_budgets(config);
         let execution = json!({
             "cache_key": key,
             "settings": settings,
-            "gpu_budget_mib": gpu_budget_mib,
-            "ram_budget_mib": ram_budget_mib,
             "model_run_timeout_seconds": config.timeout.as_secs(),
             "preparation_timeout_seconds": config.preparation_timeout.as_secs(),
         });
@@ -270,7 +311,7 @@ impl ReconWorker {
         )
     }
 
-    /// Plan, prepare, run and publish one retained analysis.
+    /// Prepare, run and publish one retained analysis.
     pub(super) async fn analyze_controlled(
         &self,
         request: AnalyzeRequest,
@@ -283,37 +324,14 @@ impl ReconWorker {
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
         control.verify_input(snapshot.path())?;
         let image_sha256 = file_digest(snapshot.path())?;
-        let settings = normalized(&request);
+        let settings = normalized(&request, &self.config.device)?;
         let key = self.analysis_key(config, &image_sha256, &settings)?;
-        let (gpu_budget_mib, ram_budget_mib) = self.analysis_budgets(config);
-        let budgets = json!({
-            "settings": settings,
-            "gpu_budget_mib": gpu_budget_mib,
-            "ram_budget_mib": ram_budget_mib,
-        });
+        let models = models_of(&settings);
 
         control.enter(Phase::PreparingModels)?;
-        let staging = tempfile::Builder::new()
-            .prefix("printable-analysis-")
-            .tempdir()?;
-        let mut planning = self.python_command(&config.analyze_script);
-        planning.arg("--plan");
-        let plan = self
-            .run_command(
-                planning,
-                &budgets,
-                staging.path(),
-                PLANNING_TIMEOUT,
-                "photograph analysis planning",
-                Some(control),
-            )
-            .await?;
-        let entries: Vec<String> = serde_json::from_value(plan["entries"].clone())
-            .map_err(|_| protocol("the analysis plan names no models"))?;
-        let runs = plan["runs"].as_array().map_or(1, Vec::len).max(1);
         // Preparation uses no GPU, so it runs before the job takes its turn.
         let prepared = self
-            .prepare_geometry_controlled(&entries, Some(control))
+            .prepare_geometry_controlled(&models, Some(control))
             .await?;
         let _permit = self.job_permit(Some(control)).await?;
         // An identical job may have finished while this one waited.
@@ -321,13 +339,18 @@ impl ReconWorker {
             return Ok(cached);
         }
         control.enter(Phase::Generating)?;
+        let staging = tempfile::Builder::new()
+            .prefix("printable-analysis-")
+            .tempdir()?;
         let output = staging.path().join("maps");
         std::fs::create_dir(&output)?;
-        let mut job = budgets;
-        job["image"] = json!(snapshot.path());
-        job["threads"] = json!(self.config.cpu_threads);
-        job["prepared"] = prepared["entries"].clone();
-        job["output"] = json!(output);
+        let job = json!({
+            "settings": settings,
+            "image": snapshot.path(),
+            "threads": self.config.cpu_threads,
+            "prepared": prepared["models"],
+            "output": output,
+        });
         let answer = self
             .run_command(
                 self.python_command(&config.analyze_script),
@@ -335,7 +358,7 @@ impl ReconWorker {
                 staging.path(),
                 config
                     .timeout
-                    .saturating_mul(u32::try_from(runs).unwrap_or(u32::MAX)),
+                    .saturating_mul(u32::try_from(models.len()).unwrap_or(u32::MAX)),
                 "photograph analysis",
                 Some(control),
             )
@@ -393,21 +416,18 @@ impl ReconWorker {
 mod tests {
     use super::*;
 
-    /// A stand-in analyzer. It plans one model, and a run writes maps whose
-    /// stored formats follow the photograph's bytes. Every call is logged.
+    /// A stand-in analyzer. A run writes maps whose stored formats follow the
+    /// photograph's bytes. Every call is logged.
     const ANALYZER: &str = r#"
 import json, os, struct, sys, zlib
 from pathlib import Path
 here = Path(__file__).resolve().parent
 request = json.load(open(sys.argv[-1]))
 with open(here / 'calls.log', 'a') as log:
-    log.write(('plan' if sys.argv[1] == '--plan' else 'run') + '\n')
-plan = {'entries': ['small'], 'runs': [{'entry': 'small', 'roles': ['depth.shallow', 'mask', 'focal']}],
-        'depth_role': 'depth.shallow', 'routes': {}}
-if sys.argv[1] == '--plan':
-    print(json.dumps({'result': plan}))
-    sys.exit(0)
-assert request['prepared']['small']['snapshot']
+    log.write('run\n')
+settings = request['settings']
+for key in ('depth_model', 'mask_model', 'focal_model'):
+    assert request['prepared'][settings[key]]['snapshot']
 image = Path(request['image']).read_bytes()
 out = Path(request['output'])
 def png(bits, channels, path):
@@ -427,8 +447,8 @@ png(8 if image == b'eight bit' else 16, 1, out / 'mask.png')
 png(16, 1, out / 'confidence.png')
 described = lambda file, fmt, bits, channels: {'file': file, 'format': fmt, 'bit_depth': bits, 'channels': channels}
 print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': request['settings'],
-    'focal_length': {'source': 'estimated', 'model': 'small', 'px': 2.0, 'photograph_px': 4.0},
-    'depth': {'role': 'depth.shallow', 'model': 'small', 'kind': 'relative'},
+    'focal_length': {'source': 'estimated', 'model': settings['focal_model'], 'px': 2.0, 'photograph_px': 4.0},
+    'depth': {'model': settings['depth_model'], 'kind': 'relative'},
     'scores': {'mask_fraction': 1.0, 'mean_confidence': 1.0}, 'warnings': [],
     'artifacts': {'depth': described('depth.tiff', 'tiff', 32, 1), 'normals': described('normals.png', 'png', 16, 3),
                   'mask': described('mask.png', 'png', 16, 1), 'confidence': described('confidence.png', 'png', 16, 1)}}}}))
@@ -457,21 +477,24 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         AnalyzeRequest {
             image: image.into(),
             subject: Subject::Shallow,
-            quality: None,
-            interpretation: None,
+            depth_model: None,
+            side: None,
+            mask_model: None,
+            focal_model: None,
             normals: false,
+            normals_model: None,
+            device: None,
+            quality: None,
             focal_length_px: None,
         }
     }
 
-    /// How many times the analyzer ran a model and how many times it was
-    /// called at all.
-    fn calls(root: &Path) -> (usize, usize) {
-        let log = std::fs::read_to_string(root.join("runtime/calls.log")).unwrap_or_default();
-        (
-            log.lines().filter(|line| *line == "run").count(),
-            log.lines().count(),
-        )
+    /// How many times the analyzer ran.
+    fn calls(root: &Path) -> usize {
+        std::fs::read_to_string(root.join("runtime/calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
     }
 
     async fn finished(worker: &ReconWorker, accepted: &Value) -> Value {
@@ -511,8 +534,9 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         assert_eq!(done["cache_key"], key);
         assert_eq!(
             result["settings"],
-            json!({"subject": "shallow", "quality": "best", "interpretation": "sculpture",
-                "normals": false, "focal_length_px": null})
+            json!({"subject": "shallow", "quality": "best", "depth_model": "da3-mono-large",
+                "mask_model": "moge2-vitl-normal", "focal_model": "dp2-l", "normals_model": null,
+                "side": 1024, "device": "cpu", "focal_length_px": null})
         );
         for (name, file) in MAP_FILES {
             let path = format!("{CACHE_ROOT}/{key}/{file}");
@@ -522,7 +546,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
                 worker.artifact_digest(&path).unwrap().as_str()
             );
         }
-        assert_eq!(calls(root.path()), (1, 2));
+        assert_eq!(calls(root.path()), 1);
 
         // The same photograph and settings are served from the cache without
         // calling the analyzer or preparing a model.
@@ -534,49 +558,98 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         assert_eq!(cached["cache"]["hit"], true);
         assert_eq!(cached["cache"]["key"], key);
         assert_eq!(cached["artifacts"], result["artifacts"]);
-        assert_eq!(calls(root.path()), (1, 2));
+        assert_eq!(calls(root.path()), 1);
+    }
+
+    #[test]
+    fn defaults_follow_the_subject_and_the_device() {
+        let settings =
+            |request: &AnalyzeRequest, device: &str| normalized(request, device).unwrap();
+        let shallow = settings(&request("coin.jpg"), "auto");
+        assert_eq!(
+            shallow,
+            json!({"subject": "shallow", "quality": "best", "depth_model": "da3-mono-large",
+                "mask_model": "moge3-vitl", "focal_model": "dp2-l", "normals_model": null,
+                "side": 1024, "device": "cuda", "focal_length_px": null})
+        );
+        let mut deep = request("head.jpg");
+        deep.subject = Subject::Deep;
+        let on_gpu = settings(&deep, "cuda");
+        assert_eq!(
+            (
+                &on_gpu["depth_model"],
+                &on_gpu["focal_model"],
+                &on_gpu["side"]
+            ),
+            (&json!("dp2-h"), &json!("dp2-h"), &json!(2048))
+        );
+        assert_eq!(models_of(&on_gpu), ["dp2-h", "moge3-vitl"]);
+        let on_cpu = settings(&deep, "cpu");
+        assert_eq!(
+            (&on_cpu["mask_model"], &on_cpu["side"], &on_cpu["device"]),
+            (&json!("moge2-vitl-normal"), &json!(1024), &json!("cpu"))
+        );
+        let mut chosen = request("coin.jpg");
+        chosen.depth_model = Some(DepthModel::Moge3Vitl);
+        chosen.mask_model = Some(MaskModel::Moge3Vitg);
+        chosen.side = Some(2048);
+        chosen.normals = true;
+        chosen.focal_length_px = Some(900.0);
+        let explicit = settings(&chosen, "auto");
+        assert_eq!(explicit["focal_model"], Value::Null);
+        assert_eq!(explicit["normals_model"], "marigold-v2");
+        assert_eq!(
+            models_of(&explicit),
+            ["moge3-vitl", "moge3-vitg", "marigold-v2"]
+        );
+        // MoGe-3 does not run on the CPU, and a GPU request needs a GPU.
+        assert_eq!(normalized(&chosen, "cpu").unwrap_err().code(), "validation");
+        let mut gpu = request("coin.jpg");
+        gpu.device = Some(AnalysisDevice::Cuda);
+        assert_eq!(normalized(&gpu, "cpu").unwrap_err().code(), "unavailable");
     }
 
     #[tokio::test]
-    async fn the_key_covers_the_photograph_settings_budgets_and_registry() {
-        let (root, mut worker) = fixture();
-        let worker = Arc::get_mut(&mut worker).unwrap();
+    async fn the_key_covers_the_photograph_models_side_device_and_model_list() {
+        let (root, worker) = fixture();
         let config = worker.config.geometry.clone().unwrap();
-        let settings = normalized(&request("face.jpg"));
-        let key = |worker: &ReconWorker, config: &GeometryConfig, image: &str, settings: &Value| {
-            worker.analysis_key(config, image, settings).unwrap()
+        let key = |image: &str, request: &AnalyzeRequest| {
+            let settings = normalized(request, "auto").unwrap();
+            worker.analysis_key(&config, image, &settings).unwrap()
         };
-        let base = key(worker, &config, "a", &settings);
+        let base = key("a", &request("face.jpg"));
         assert_eq!(base.len(), 64);
-        assert_eq!(base, key(worker, &config, "a", &settings));
+        assert_eq!(base, key("a", &request("face.jpg")));
         // Omitted defaults and their explicit values are the same analysis.
         let mut explicit = request("face.jpg");
         explicit.quality = Some(AnalysisQuality::Best);
-        explicit.interpretation = Some(Interpretation::Sculpture);
-        assert_eq!(base, key(worker, &config, "a", &normalized(&explicit)));
-        assert_ne!(base, key(worker, &config, "b", &settings));
-        for change in [
-            json!({"quality": "fast"}),
-            json!({"interpretation": "physical"}),
-            json!({"normals": true}),
-            json!({"focal_length_px": 900.0}),
-        ] {
-            let mut other = settings.clone();
-            for (name, value) in change.as_object().unwrap() {
-                other[name] = value.clone();
+        explicit.depth_model = Some(DepthModel::Da3MonoLarge);
+        explicit.mask_model = Some(MaskModel::Moge3Vitl);
+        explicit.side = Some(1024);
+        explicit.device = Some(AnalysisDevice::Cuda);
+        assert_eq!(base, key("a", &explicit));
+        assert_ne!(base, key("b", &request("face.jpg")));
+        let changes: [fn(&mut AnalyzeRequest); 7] = [
+            |r| r.quality = Some(AnalysisQuality::Fast),
+            |r| r.depth_model = Some(DepthModel::Moge3Vitl),
+            |r| r.mask_model = Some(MaskModel::Moge3Vitg),
+            |r| r.side = Some(2048),
+            |r| r.device = Some(AnalysisDevice::Cpu),
+            |r| r.normals = true,
+            |r| r.focal_length_px = Some(900.0),
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let mut other = request("face.jpg");
+            if index == 4 {
+                other.mask_model = Some(MaskModel::Moge2VitlNormal);
             }
-            assert_ne!(base, key(worker, &config, "a", &other), "{change}");
+            change(&mut other);
+            assert_ne!(base, key("a", &other), "change {index}");
         }
-        let mut budget = config.clone();
-        budget.ram_budget_mib = Some(4096);
-        assert_ne!(base, key(worker, &budget, "a", &settings));
-        worker.config.device = "cuda".into();
-        assert_ne!(base, key(worker, &config, "a", &settings));
-        worker.config.device = "cpu".into();
-        let registry = root.path().join("runtime/models/geometry.json");
-        std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
-        std::fs::write(&registry, b"{}").unwrap();
-        assert_ne!(base, key(worker, &config, "a", &settings));
+        let list = root.path().join("runtime/models/geometry.json");
+        std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+        std::fs::write(&list, b"{}").unwrap();
+        assert_ne!(base, key("a", &request("face.jpg")));
     }
 
     #[tokio::test]
@@ -627,7 +700,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         let again = worker.submit_analysis(request("face.jpg")).unwrap();
         assert!(again["job_id"].is_string(), "{again}");
         assert_eq!(finished(&worker, &again).await["state"], "succeeded");
-        assert_eq!(calls(root.path()).0, 2);
+        assert_eq!(calls(root.path()), 2);
         assert_eq!(
             worker.submit_analysis(request("face.jpg")).unwrap()["cache"]["hit"],
             true
@@ -645,13 +718,22 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
                 .code(),
             "unavailable"
         );
-        let mut deep = request("face.jpg");
-        deep.subject = Subject::Deep;
-        deep.interpretation = Some(Interpretation::Physical);
-        assert_eq!(
-            worker.submit_analysis(deep).unwrap_err().code(),
-            "validation"
-        );
+        let mut both = request("face.jpg");
+        both.focal_model = Some(FocalModel::Dp2L);
+        both.focal_length_px = Some(900.0);
+        let mut normals = request("face.jpg");
+        normals.normals_model = Some(NormalsModel::MarigoldV2);
+        let mut side = request("face.jpg");
+        side.side = Some(1536);
+        let mut moge = request("face.jpg");
+        moge.device = Some(AnalysisDevice::Cpu);
+        moge.mask_model = Some(MaskModel::Moge3Vitl);
+        for invalid in [both, normals, side, moge] {
+            assert_eq!(
+                worker.submit_analysis(invalid).unwrap_err().code(),
+                "validation"
+            );
+        }
         let mut focal = request("face.jpg");
         focal.focal_length_px = Some(5.0);
         assert_eq!(

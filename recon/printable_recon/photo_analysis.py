@@ -27,11 +27,15 @@ import struct
 import numpy
 
 from .geometry_models import Geometry
-from .registry import Host, Registry
 
-SUBJECTS = {"shallow": "depth.shallow", "deep": "depth.deep"}
+SUBJECTS = ("shallow", "deep")
 QUALITIES = ("best", "fast")
-INTERPRETATIONS = ("physical", "sculpture")
+DEVICES = ("cuda", "cpu")
+SIDES = (1024, 2048)
+# Models other than the depth model run at this side unless they share its run.
+OTHER_SIDE = 1024
+# Each model setting and the output its model must have.
+MODEL_SETTINGS = {"depth_model": "depth", "mask_model": "mask", "focal_model": "focal", "normals_model": "normals"}
 FOCAL_LENGTH_PX = (10.0, 100000.0)
 # The consistency passes run the depth model again on the mirrored photograph
 # and on the photograph at this share of its processed size.
@@ -58,42 +62,57 @@ class MapFormatError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
+    """What to run, every model named: the server fills the recommended defaults."""
+
     subject: str
+    depth_model: str
+    mask_model: str
+    side: int
+    device: str
     quality: str = "best"
-    interpretation: str | None = None
-    normals: bool = False
+    focal_model: str | None = None
+    normals_model: str | None = None
     focal_length_px: float | None = None
 
     @classmethod
-    def parse(cls, value: object) -> Settings:
+    def parse(cls, value: object, models: dict) -> Settings:
+        """Settings from a request, checked against the model list `models`."""
         if not isinstance(value, dict):
             raise RequestError("settings must be an object")
-        unknown = set(value) - {"subject", "quality", "interpretation", "normals", "focal_length_px"}
-        if unknown:
-            raise RequestError(f"unknown settings: {', '.join(sorted(unknown))}")
-        subject, quality = value.get("subject"), value.get("quality", "best")
-        interpretation, normals = value.get("interpretation"), value.get("normals", False)
-        focal = value.get("focal_length_px")
-        if subject not in SUBJECTS:
+        expected = {"subject", "quality", "side", "device", "focal_length_px", *MODEL_SETTINGS}
+        if set(value) != expected:
+            raise RequestError(f"settings must name exactly: {', '.join(sorted(expected))}")
+        if value["subject"] not in SUBJECTS:
             raise RequestError("subject must be shallow or deep")
-        if quality not in QUALITIES:
+        if value["quality"] not in QUALITIES:
             raise RequestError("quality must be best or fast")
-        if interpretation is not None and interpretation not in INTERPRETATIONS:
-            raise RequestError("interpretation must be physical or sculpture")
-        if interpretation is not None and subject != "shallow":
-            raise RequestError("interpretation applies only to shallow subjects")
-        if not isinstance(normals, bool):
-            raise RequestError("normals must be true or false")
+        if value["device"] not in DEVICES:
+            raise RequestError("device must be cuda or cpu")
+        side = value["side"]
+        if isinstance(side, bool) or side not in SIDES:
+            raise RequestError("side must be 1024 or 2048")
+        for key, output in MODEL_SETTINGS.items():
+            name = value[key]
+            if name is None and key in ("depth_model", "mask_model"):
+                raise RequestError(f"{key} must name a model")
+            if name is not None and (name not in models or output not in models[name].outputs):
+                raise RequestError(f"{key} must name a model with a {output} output")
+        focal = value["focal_length_px"]
         if focal is not None:
             if isinstance(focal, bool) or not isinstance(focal, (int, float)) or not math.isfinite(focal) \
                     or not FOCAL_LENGTH_PX[0] <= focal <= FOCAL_LENGTH_PX[1]:
                 raise RequestError(f"focal_length_px must be between {FOCAL_LENGTH_PX[0]:g} and {FOCAL_LENGTH_PX[1]:g}")
             focal = float(focal)
-        return cls(subject, quality, interpretation, normals, focal)
+        if (focal is None) == (value["focal_model"] is None):
+            raise RequestError("give exactly one of focal_model and focal_length_px")
+        return cls(value["subject"], value["depth_model"], value["mask_model"], side, value["device"],
+                   value["quality"], value["focal_model"], value["normals_model"], focal)
 
     def as_dict(self) -> dict:
-        return {"subject": self.subject, "quality": self.quality, "interpretation": self.interpretation,
-                "normals": self.normals, "focal_length_px": self.focal_length_px}
+        return {"subject": self.subject, "quality": self.quality, "depth_model": self.depth_model,
+                "mask_model": self.mask_model, "focal_model": self.focal_model,
+                "normals_model": self.normals_model, "side": self.side, "device": self.device,
+                "focal_length_px": self.focal_length_px}
 
 
 @dataclass(frozen=True)
@@ -113,8 +132,6 @@ class Run:
 
 @dataclass(frozen=True)
 class Plan:
-    depth_role: str
-    routes: dict
     runs: tuple[Run, ...]
 
     def run_for(self, role: str) -> Run | None:
@@ -124,38 +141,27 @@ class Plan:
     def entries(self) -> list[str]:
         return list(dict.fromkeys(run.entry for run in self.runs))
 
-    def as_dict(self) -> dict:
-        return {"depth_role": self.depth_role, "routes": self.routes, "runs": [run.as_dict() for run in self.runs],
-                "entries": self.entries}
 
-
-def plan(settings: Settings, registry: Registry, host: Host) -> Plan:
+def plan(settings: Settings) -> Plan:
     """The models an analysis runs, each loaded once, depth first.
 
-    Physical interpretation takes depth from the mask role's model, which
-    reads flat artwork as flat. Best quality adds the mirrored and rescaled
-    passes of the depth model; fast quality takes each role's fastest route
-    that fits and skips them. Raises NoRoute when a needed role has no route.
+    The depth model runs at the requested side; another model runs at 1024 px
+    unless it is the depth model, which then serves both roles from one run.
+    Best quality adds the mirrored and rescaled passes of the depth model.
     """
-    depth_role = "mask" if settings.interpretation == "physical" else SUBJECTS[settings.subject]
-    roles = ["mask"] if depth_role == "mask" else [depth_role, "mask"]
-    if settings.focal_length_px is None:
-        roles.append("focal")
-    if settings.normals:
-        roles.append("normals")
-    fastest = settings.quality == "fast"
-    routes, grouped = {}, {}
-    for role in roles:
-        chosen = registry.select(role, host, fastest=fastest)
-        option = chosen.option
-        routes[role] = {"entry": option.entry, "device": option.device, "side": option.side,
-                        "fallback": chosen.fallback, "rejected": list(chosen.rejected)}
-        grouped.setdefault((option.entry, option.device, option.side), []).append(role)
+    wanted = {"depth": settings.depth_model, "mask": settings.mask_model,
+              "focal": settings.focal_model, "normals": settings.normals_model}
+    grouped = {}
+    for role, entry in wanted.items():
+        if entry is None:
+            continue
+        side = settings.side if entry == settings.depth_model else OTHER_SIDE
+        grouped.setdefault((entry, side), []).append(role)
     runs = []
-    for (entry, device, side), served in grouped.items():
-        passes = ("main", "flip", "rescale") if depth_role in served and not fastest else ("main",)
-        runs.append(Run(entry, device, side, tuple(served), passes))
-    return Plan(depth_role, routes, tuple(runs))
+    for (entry, side), served in grouped.items():
+        passes = ("main", "flip", "rescale") if "depth" in served and settings.quality == "best" else ("main",)
+        runs.append(Run(entry, settings.device, side, tuple(served), passes))
+    return Plan(tuple(runs))
 
 
 @dataclass
@@ -297,7 +303,7 @@ def combine(plan: Plan, settings: Settings, outcomes: dict, photograph_width: in
     other depth model against the chosen one, and predicted normals against
     normals derived from depth.
     """
-    depth_run = plan.run_for(plan.depth_role)
+    depth_run = plan.run_for("depth")
     depth_outcome = outcomes[depth_run]
     main = depth_outcome.geometry
     if main.depth is None:
@@ -382,9 +388,8 @@ def combine(plan: Plan, settings: Settings, outcomes: dict, photograph_width: in
         "width": width,
         "height": height,
         "settings": settings.as_dict(),
-        "routes": plan.routes,
         "runs": [run.as_dict() for run in plan.runs],
-        "depth": {"role": plan.depth_role, "model": depth_run.entry, "kind": depth_kind},
+        "depth": {"model": depth_run.entry, "kind": depth_kind},
         "focal_length": focal,
         "scores": scores,
         "artifacts": {

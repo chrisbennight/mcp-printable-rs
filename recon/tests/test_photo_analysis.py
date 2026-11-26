@@ -13,88 +13,82 @@ import numpy
 from PIL import Image
 
 import analyze_photo
-from printable_recon import photo_analysis
+from printable_recon import geometry_files, photo_analysis
 from printable_recon.geometry_models import Geometry
 from printable_recon.photo_analysis import MapFormatError, Outcome, RequestError, Settings
-from printable_recon.registry import Host, NoRoute, Registry
 
-MODELS = Path(__file__).resolve().parents[1] / "models"
-REGISTRY = Registry.read(MODELS / "geometry.json")
-LARGE_GPU = Host(24576)
-SMALL_GPU = Host(3072)
-NO_GPU = Host(None)
+MODELS = geometry_files.read(Path(__file__).resolve().parents[1] / "models" / "geometry.json")
+
+
+def settings(**changes):
+    """The recommended shallow-subject settings on a GPU, with `changes`."""
+    value = {"subject": "shallow", "quality": "best", "depth_model": "da3-mono-large", "mask_model": "moge3-vitl",
+             "focal_model": "dp2-l", "normals_model": None, "side": 1024, "device": "cuda",
+             "focal_length_px": None}
+    value.update(changes)
+    return value
 
 
 def roles(plan):
-    return {role: (route["entry"], route["device"], route["side"]) for role, route in plan.routes.items()}
+    return {role: (run.entry, run.side) for run in plan.runs for role in run.roles}
 
 
 class SettingsTests(unittest.TestCase):
-    def test_defaults_are_best_quality_without_normals(self):
-        settings = Settings.parse({"subject": "deep"})
-        self.assertEqual(settings.as_dict(), {"subject": "deep", "quality": "best", "interpretation": None,
-                                              "normals": False, "focal_length_px": None})
+    def test_settings_name_every_model_and_round_trip(self):
+        value = settings(subject="deep", depth_model="dp2-h", focal_model="dp2-h", side=2048)
+        self.assertEqual(Settings.parse(value, MODELS).as_dict(), value)
 
     def test_invalid_settings_are_refused(self):
-        for value, message in [({}, "subject"), ({"subject": "flat"}, "subject"),
-                               ({"subject": "deep", "quality": "slow"}, "quality"),
-                               ({"subject": "deep", "interpretation": "physical"}, "shallow subjects"),
-                               ({"subject": "shallow", "interpretation": "painting"}, "interpretation"),
-                               ({"subject": "shallow", "normals": 1}, "normals"),
-                               ({"subject": "shallow", "focal_length_px": 1}, "focal_length_px"),
-                               ({"subject": "shallow", "focal_length_px": True}, "focal_length_px"),
-                               ({"subject": "shallow", "seed": 1}, "unknown"), ([], "object")]:
-            with self.assertRaises(RequestError, msg=value) as raised:
-                Settings.parse(value)
+        for changes, message in [({"subject": "flat"}, "subject"), ({"quality": "slow"}, "quality"),
+                                 ({"device": "auto"}, "device"), ({"side": 1536}, "side"), ({"side": True}, "side"),
+                                 ({"depth_model": "marigold-v2"}, "depth output"),
+                                 ({"mask_model": "dp2-l"}, "mask output"),
+                                 ({"focal_model": "da3-mono-large"}, "focal output"),
+                                 ({"normals_model": "absent"}, "normals output"),
+                                 ({"mask_model": None}, "mask_model"),
+                                 ({"focal_model": None}, "exactly one"),
+                                 ({"focal_length_px": 900.0}, "exactly one"),
+                                 ({"focal_model": None, "focal_length_px": 1}, "focal_length_px"),
+                                 ({"focal_model": None, "focal_length_px": True}, "focal_length_px"),
+                                 ({"seed": 1}, "exactly")]:
+            with self.assertRaises(RequestError, msg=changes) as raised:
+                Settings.parse(settings(**changes), MODELS)
             self.assertIn(message, str(raised.exception))
+        with self.assertRaises(RequestError):
+            Settings.parse([], MODELS)
 
 
 class PlanTests(unittest.TestCase):
-    def test_a_shallow_subject_runs_each_model_once_with_consistency_passes_on_depth(self):
-        plan = photo_analysis.plan(Settings("shallow", normals=True), REGISTRY, LARGE_GPU)
-        self.assertEqual(plan.depth_role, "depth.shallow")
-        self.assertEqual(roles(plan), {"depth.shallow": ("da3-mono-large", "cuda", 1024),
-                                       "mask": ("moge3-vitg", "cuda", 1024), "focal": ("dp2-l", "cuda", 1024),
-                                       "normals": ("marigold-v2", "cuda", 1024)})
+    def plan(self, **changes):
+        return photo_analysis.plan(Settings.parse(settings(**changes), MODELS))
+
+    def test_each_model_runs_once_with_consistency_passes_on_depth(self):
+        plan = self.plan(normals_model="marigold-v2")
+        self.assertEqual(roles(plan), {"depth": ("da3-mono-large", 1024), "mask": ("moge3-vitl", 1024),
+                                       "focal": ("dp2-l", 1024), "normals": ("marigold-v2", 1024)})
         self.assertEqual(plan.runs[0].passes, ("main", "flip", "rescale"))
         self.assertTrue(all(run.passes == ("main",) for run in plan.runs[1:]))
-        self.assertEqual(plan.entries, ["da3-mono-large", "moge3-vitg", "dp2-l", "marigold-v2"])
+        self.assertEqual(plan.entries, ["da3-mono-large", "moge3-vitl", "dp2-l", "marigold-v2"])
+        self.assertEqual({run.device for run in plan.runs}, {"cuda"})
 
-    def test_a_deep_subject_runs_on_the_gpu_at_2048_px_and_shares_a_model_with_focal_when_it_can(self):
-        plan = photo_analysis.plan(Settings("deep"), REGISTRY, LARGE_GPU)
-        self.assertEqual(roles(plan)["depth.deep"], ("dp2-h", "cuda", 2048))
-        small = photo_analysis.plan(Settings("deep"), REGISTRY, SMALL_GPU)
-        self.assertEqual(roles(small)["depth.deep"], ("dp2-l", "cuda", 1024))
-        self.assertTrue(small.routes["depth.deep"]["fallback"])
-        depth_run = small.run_for("depth.deep")
-        self.assertEqual(depth_run.roles, ("depth.deep", "focal"))
-        self.assertEqual(len(small.runs), 2)
+    def test_only_the_depth_model_takes_the_requested_side_and_shared_models_run_once(self):
+        plan = self.plan(subject="deep", depth_model="dp2-h", focal_model="dp2-h", side=2048)
+        self.assertEqual(roles(plan), {"depth": ("dp2-h", 2048), "focal": ("dp2-h", 2048),
+                                       "mask": ("moge3-vitl", 1024)})
+        self.assertEqual(len(plan.runs), 2)
 
-    def test_physical_artwork_takes_depth_from_the_mask_model(self):
-        plan = photo_analysis.plan(Settings("shallow", interpretation="physical"), REGISTRY, LARGE_GPU)
-        self.assertEqual(plan.depth_role, "mask")
-        self.assertNotIn("depth.shallow", plan.routes)
+    def test_depth_can_come_from_the_mask_model(self):
+        plan = self.plan(depth_model="moge3-vitl")
+        self.assertEqual(plan.run_for("depth"), plan.run_for("mask"))
         self.assertEqual(plan.run_for("mask").passes, ("main", "flip", "rescale"))
 
-    def test_fast_quality_takes_the_fastest_fitting_routes_without_extra_passes(self):
-        plan = photo_analysis.plan(Settings("deep", quality="fast"), REGISTRY, LARGE_GPU)
-        self.assertEqual(roles(plan)["depth.deep"], ("dp2-h", "cuda", 1024))
-        self.assertEqual(roles(plan)["mask"], ("moge2-vitl-normal", "cuda", 1024))
-        self.assertTrue(all(run.passes == ("main",) for run in plan.runs))
-        self.assertIn("slower than the chosen option", plan.routes["depth.deep"]["rejected"][0])
+    def test_fast_quality_skips_the_extra_passes(self):
+        self.assertTrue(all(run.passes == ("main",) for run in self.plan(quality="fast").runs))
 
     def test_a_known_focal_length_skips_the_focal_model(self):
-        plan = photo_analysis.plan(Settings("shallow", focal_length_px=900.0), REGISTRY, LARGE_GPU)
-        self.assertNotIn("focal", plan.routes)
+        plan = self.plan(focal_model=None, focal_length_px=900.0)
+        self.assertIsNone(plan.run_for("focal"))
         self.assertNotIn("dp2-l", plan.entries)
-
-    def test_without_a_gpu_every_run_is_on_the_processor(self):
-        plan = photo_analysis.plan(Settings("deep", normals=True), REGISTRY, NO_GPU)
-        self.assertEqual({run.device for run in plan.runs}, {"cpu"})
-
-    def test_an_unavailable_role_is_refused(self):
-        with self.assertRaises(NoRoute):
-            photo_analysis.plan(Settings("deep"), REGISTRY, Host(None, 1024))
 
 
 class ArithmeticTests(unittest.TestCase):
@@ -143,21 +137,20 @@ class CombineTests(unittest.TestCase):
         self.subject = numpy.zeros((16, 24), bool)
         self.subject[4:12, 6:18] = True
 
-    def shallow(self, **settings):
-        settings = Settings("shallow", **settings)
-        plan = photo_analysis.plan(settings, REGISTRY, LARGE_GPU)
-        return settings, plan
+    def planned(self, **changes):
+        chosen = Settings.parse(settings(**changes), MODELS)
+        return chosen, photo_analysis.plan(chosen)
 
     def test_confidence_is_zero_outside_the_mask_and_falls_where_a_check_disagrees(self):
-        settings, plan = self.shallow()
+        chosen, plan = self.planned()
         flipped = self.depth.copy()
         flipped[6, 8] *= 2
-        outcomes = {plan.run_for("depth.shallow"): outcome(self.depth, passes={
+        outcomes = {plan.run_for("depth"): outcome(self.depth, passes={
                         "flip": (flipped, numpy.ones_like(self.subject)),
                         "rescale": (self.depth, numpy.ones_like(self.subject))}),
                     plan.run_for("mask"): outcome(self.depth / 2, "metric", valid=self.subject),
                     plan.run_for("focal"): outcome(self.depth, "metric", focal=600.0)}
-        analysis = photo_analysis.combine(plan, settings, outcomes, photograph_width=48)
+        analysis = photo_analysis.combine(plan, chosen, outcomes, photograph_width=48)
         self.assertEqual(float(analysis.confidence[~self.subject].max()), 0.0)
         self.assertEqual(float(analysis.confidence[6, 8]), 0.0)
         self.assertEqual(float(analysis.confidence[8, 12]), 1.0)
@@ -168,21 +161,21 @@ class CombineTests(unittest.TestCase):
                          ["flip_consistency", "rescale_consistency", "model_disagreement"])
         self.assertEqual(manifest["scores"]["rescale_consistency"]["agreement"], 1.0)
         self.assertLess(manifest["scores"]["flip_consistency"]["agreement"], 1.0)
-        self.assertEqual(manifest["scores"]["model_disagreement"]["models"], ["da3-mono-large", "moge3-vitg"])
-        self.assertEqual(manifest["depth"], {"role": "depth.shallow", "model": "da3-mono-large", "kind": "relative"})
+        self.assertEqual(manifest["scores"]["model_disagreement"]["models"], ["da3-mono-large", "moge3-vitl"])
+        self.assertEqual(manifest["depth"], {"model": "da3-mono-large", "kind": "relative"})
         self.assertNotIn("metric_estimate", manifest)
         self.assertEqual(manifest["artifacts"]["normals"]["source"], "depth")
 
     def test_metric_depth_carries_the_close_up_warning_and_a_given_focal_length(self):
-        settings = Settings("deep", quality="fast", focal_length_px=2000.0, normals=True)
-        plan = photo_analysis.plan(settings, REGISTRY, LARGE_GPU)
+        chosen, plan = self.planned(subject="deep", quality="fast", depth_model="dp2-h", focal_model=None,
+                                    focal_length_px=2000.0, normals_model="marigold-v2")
         towards = numpy.zeros((8, 12, 3), numpy.float32)
         towards[..., 2] = 1
         flat = numpy.full((16, 24), 2.0, numpy.float32)
-        outcomes = {plan.run_for("depth.deep"): outcome(flat, "metric"),
+        outcomes = {plan.run_for("depth"): outcome(flat, "metric"),
                     plan.run_for("mask"): outcome(flat, "metric", valid=self.subject),
                     plan.run_for("normals"): outcome(flat, normals=towards)}
-        analysis = photo_analysis.combine(plan, settings, outcomes, photograph_width=96)
+        analysis = photo_analysis.combine(plan, chosen, outcomes, photograph_width=96)
         manifest = analysis.manifest
         self.assertEqual(manifest["focal_length"], {"source": "given", "px": 500.0, "photograph_px": 2000.0})
         self.assertEqual(manifest["metric_estimate"]["median_distance_m"], 2.0)
@@ -193,9 +186,9 @@ class CombineTests(unittest.TestCase):
         self.assertEqual(analysis.normals.shape, (16, 24, 3))
 
     def test_without_a_check_the_confidence_is_the_mask_and_says_so(self):
-        settings = Settings("shallow", quality="fast", interpretation="physical", focal_length_px=900.0)
-        plan = photo_analysis.plan(settings, REGISTRY, LARGE_GPU)
-        analysis = photo_analysis.combine(plan, settings, {plan.run_for("mask"): outcome(
+        chosen, plan = self.planned(quality="fast", depth_model="moge3-vitl", focal_model=None,
+                                    focal_length_px=900.0)
+        analysis = photo_analysis.combine(plan, chosen, {plan.run_for("mask"): outcome(
             self.depth, "metric", valid=self.subject)}, photograph_width=24)
         numpy.testing.assert_array_equal(analysis.confidence, self.subject.astype(numpy.float32))
         self.assertIn("No consistency check ran", " ".join(analysis.manifest["warnings"]))
@@ -230,13 +223,14 @@ class StoredFormatTests(unittest.TestCase):
             self.assertIn("8-bit", str(raised.exception))
 
     def test_every_map_is_stored_at_16_bits_or_as_float_and_reads_back(self):
-        settings = Settings("shallow", quality="fast", interpretation="physical", focal_length_px=900.0)
-        plan = photo_analysis.plan(settings, REGISTRY, LARGE_GPU)
+        chosen = Settings.parse(settings(quality="fast", depth_model="moge3-vitl", focal_model=None,
+                                         focal_length_px=900.0), MODELS)
+        plan = photo_analysis.plan(chosen)
         depth = numpy.full((12, 20), 1.5, numpy.float32)
         depth[0, 0] = 1.25
         valid = numpy.zeros((12, 20), bool)
         valid[2:10, 3:17] = True
-        analysis = photo_analysis.combine(plan, settings, {plan.run_for("mask"): outcome(depth, "metric", valid)}, 20)
+        analysis = photo_analysis.combine(plan, chosen, {plan.run_for("mask"): outcome(depth, "metric", valid)}, 20)
         manifest = photo_analysis.write_all(analysis, self.directory)
         for name, description in manifest["artifacts"].items():
             stored = photo_analysis.stored_format(self.directory / description["file"])
@@ -267,20 +261,13 @@ class CommandTests(unittest.TestCase):
         path.write_text(json.dumps(fields))
         return str(path)
 
-    def test_a_plan_names_the_entries_to_prepare_without_loading_a_model(self):
-        status, printed = self.call(["--plan", self.request(settings={"subject": "deep", "normals": True},
-                                                            gpu_budget_mib=3072, ram_budget_mib=None)])
-        self.assertEqual(status, 0, printed)
-        self.assertEqual(printed["result"]["entries"], ["dp2-l", "moge3-vitl", "marigold-v2"])
-        self.assertEqual(printed["result"]["runs"][0]["passes"], ["main", "flip", "rescale"])
-
-    def test_invalid_requests_and_missing_routes_are_refused(self):
-        status, printed = self.call(["--plan", self.request(settings={"subject": "flat"})])
+    def test_invalid_requests_are_refused_before_any_model_loads(self):
+        status, printed = self.call([self.request(settings={"subject": "deep"})])
         self.assertEqual((status, printed["error"]["code"]), (2, "validation"))
-        status, printed = self.call(["--plan", self.request(settings={"subject": "deep"}, ram_budget_mib=600)])
-        self.assertEqual((status, printed["error"]["code"]), (2, "unavailable"))
-        status, printed = self.call([self.request(settings={"subject": "deep"}, gpu_budget_mib=3072,
-                                                  image="photo.jpg", output=str(self.directory), prepared={})])
+        status, printed = self.call([self.request(settings=settings(), image="photo.jpg",
+                                                  output=str(self.directory), prepared={})])
+        self.assertEqual((status, printed["error"]["code"]), (2, "validation"))
+        status, printed = self.call(["--plan", self.request(settings=settings())])
         self.assertEqual((status, printed["error"]["code"]), (2, "validation"))
 
 
@@ -310,8 +297,8 @@ class RunTests(unittest.TestCase):
             return run
 
         request = {"image": str(self.directory / "photo.jpg"), "output": str(self.directory / "out"),
-                   "settings": {"subject": "shallow"}, "gpu_budget_mib": None,
-                   "prepared": {name: {"snapshot": str(self.directory)} for name in REGISTRY.entries}}
+                   "settings": settings(device="cpu", mask_model="moge2-vitl-normal"),
+                   "prepared": {name: {"snapshot": str(self.directory)} for name in MODELS}}
         path = self.directory / "request.json"
         path.write_text(json.dumps(request))
         printed = io.StringIO()

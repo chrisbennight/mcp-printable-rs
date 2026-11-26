@@ -1,31 +1,30 @@
 """Analyse one photograph with the geometry models: depth, normals, subject mask,
 focal length and a confidence map with summary scores.
 
-Usage: analyze_photo.py --plan <request.json>
-       analyze_photo.py <request.json>
+Usage: analyze_photo.py <request.json>
        analyze_photo.py --version
 
---plan reads {"settings": {...}, "gpu_budget_mib": int | null,
-"ram_budget_mib": int | null} and reports the routes and model runs the
-analysis would use, and the registry entries to prepare. It loads no model.
+The request holds:
 
-A run reads the same fields plus:
-
+- "settings": "subject" (shallow or deep), "quality" (best adds mirrored and
+  rescaled consistency passes of the depth model; fast skips them),
+  "depth_model", "mask_model", "focal_model" and "normals_model" (names in
+  models/geometry.json; focal_model is null when "focal_length_px" gives a
+  known focal length in photograph pixels, normals_model null for normals
+  derived from depth), "side" (1024 or 2048, the depth model's processing
+  size) and "device" (cuda or cpu). Every key is required; the server fills
+  the recommended defaults;
 - "image": the photograph;
-- "prepared": the prepare_geometry.py answer's "entries" object, naming each
-  entry's verified snapshot and, for a converted entry, its converted model;
+- "prepared": the prepare_geometry.py answer's "models" object, naming each
+  model's verified snapshot and, for a converted model, its converted form;
 - "threads": CPU threads for numerical work;
 - "output": an existing, empty directory for the maps.
 
-Settings are "subject" (shallow or deep), "quality" (best or fast),
-"interpretation" (physical or sculpture, shallow subjects only), "normals"
-(true for a predicted normal map) and "focal_length_px" (a known focal length
-in pixels of the photograph).
-
 The models run one at a time in this process, each loaded once and released
-before the next, under one GPU budget for the whole process. The maps are
-written as printable_recon.photo_analysis describes and the manifest is
-printed: {"result": {"manifest": ...}} or {"error": {"code", "message"}}.
+before the next. The maps are written as printable_recon.photo_analysis
+describes and the manifest is printed: {"result": {"manifest": ...}} or
+{"error": {"code", "message"}}. The manifest reports peak GPU memory, so
+callers can see what a choice costs.
 """
 
 from contextlib import redirect_stdout
@@ -37,7 +36,7 @@ from pathlib import Path
 
 VERSION = "printable-photo-analysis 1"
 ROOT = Path(__file__).resolve().parent
-REGISTRY = ROOT / "models/geometry.json"
+MODELS = ROOT / "models/geometry.json"
 
 
 class Failure(Exception):
@@ -48,62 +47,43 @@ class Failure(Exception):
         self.code, self.message = code, message
 
 
-def _budget(request: dict, key: str):
-    value = request.get(key)
-    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-        raise ValueError(f"{key} must be a positive integer or null")
-    return value
-
-
 def main(argv: list[str]) -> int:
     if argv == ["--version"]:
         print(VERSION)
         return 0
     sys.path.insert(0, str(ROOT))
-    from printable_recon import photo_analysis
-    from printable_recon.registry import Host, NoRoute, Registry, RegistryError
+    from printable_recon import geometry_files, photo_analysis
 
-    planning = len(argv) == 2 and argv[0] == "--plan"
-    if not planning and len(argv) != 1:
-        return _fail("validation", "expected --plan <request> or <request>")
+    if len(argv) != 1:
+        return _fail("validation", "expected one request file")
     try:
-        request = json.loads(Path(argv[-1]).read_text(encoding="utf-8"))
+        models = geometry_files.read(MODELS)
+    except (OSError, ValueError):
+        return _fail("unavailable", "the geometry model list could not be read")
+    try:
+        request = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
         if not isinstance(request, dict):
             raise ValueError("the request must be an object")
-        settings = photo_analysis.Settings.parse(request.get("settings"))
-        host = Host(_budget(request, "gpu_budget_mib"), _budget(request, "ram_budget_mib"))
-    except (OSError, ValueError) as error:
-        return _fail("validation", f"the request is invalid: {error}")
-    try:
-        registry = Registry.read(REGISTRY)
-    except (OSError, ValueError, RegistryError):
-        return _fail("unavailable", "the geometry model registry could not be read")
-    try:
-        chosen = photo_analysis.plan(settings, registry, host)
-    except NoRoute as error:
-        return _fail("unavailable", str(error))
-    if planning:
-        print(json.dumps({"result": chosen.as_dict()}))
-        return 0
-    try:
+        settings = photo_analysis.Settings.parse(request.get("settings"), models)
+        chosen = photo_analysis.plan(settings)
         image_path = Path(request["image"])
         output = Path(request["output"])
         prepared = request["prepared"]
         threads = request.get("threads")
-        models = {}
+        snapshots = {}
         for entry in chosen.entries:
             files = prepared[entry]
-            models[entry] = Path(files.get("converted") or files["snapshot"])
+            snapshots[entry] = Path(files.get("converted") or files["snapshot"])
         if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or threads < 1):
             raise ValueError("threads must be a positive integer")
         if not output.is_dir() or any(output.iterdir()):
             raise ValueError("output must be an existing, empty directory")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         return _fail("validation", f"the request is invalid: {error}")
-    return _analyse(chosen, settings, host, image_path, models, threads, output)
+    return _analyse(chosen, settings, image_path, snapshots, threads, output)
 
 
-def _analyse(chosen, settings, host, image_path: Path, models: dict, threads, output: Path) -> int:
+def _analyse(chosen, settings, image_path: Path, snapshots: dict, threads, output: Path) -> int:
     import torch
     from PIL import Image
 
@@ -112,12 +92,9 @@ def _analyse(chosen, settings, host, image_path: Path, models: dict, threads, ou
 
     if threads is not None:
         torch.set_num_threads(threads)
-    uses_gpu = any(run.device == "cuda" for run in chosen.runs)
-    if uses_gpu:
-        if host.gpu_budget_mib is None or not torch.cuda.is_available():
-            return _fail("unavailable", "no CUDA GPU is available to this worker")
-        total = torch.cuda.get_device_properties(0).total_memory
-        torch.cuda.set_per_process_memory_fraction(min(1.0, host.gpu_budget_mib * 2**20 / total))
+    uses_gpu = settings.device == "cuda"
+    if uses_gpu and not torch.cuda.is_available():
+        return _fail("unavailable", "no CUDA GPU is available to this worker")
     try:
         photograph = _open(image_path)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
@@ -127,7 +104,7 @@ def _analyse(chosen, settings, host, image_path: Path, models: dict, threads, ou
     # Model code may print progress; only the final answer goes to stdout.
     try:
         with redirect_stdout(sys.stderr):
-            outcomes, timings = _run_models(chosen, host, photograph, models, uses_gpu)
+            outcomes, timings = _run_models(chosen, photograph, snapshots, uses_gpu)
     except Failure as failure:
         return _fail(failure.code, failure.message)
 
@@ -146,7 +123,7 @@ def _analyse(chosen, settings, host, image_path: Path, models: dict, threads, ou
     return 0
 
 
-def _run_models(chosen, host, photograph, models: dict, uses_gpu: bool):
+def _run_models(chosen, photograph, snapshots: dict, uses_gpu: bool):
     """Each run's outcome and timing; a failure is raised as Failure."""
     import numpy
     import torch
@@ -161,7 +138,7 @@ def _run_models(chosen, host, photograph, models: dict, uses_gpu: bool):
         try:
             rgb = scaled(photograph, run.side)
             height, width = rgb.shape[:2]
-            runner = geometry_models.load(run.entry, models[run.entry], torch.device(run.device))
+            runner = geometry_models.load(run.entry, snapshots[run.entry], torch.device(run.device))
             outcome = photo_analysis.Outcome(runner(rgb), width, height)
             if "flip" in run.passes:
                 mirrored = runner(numpy.ascontiguousarray(rgb[:, ::-1]))
@@ -177,7 +154,7 @@ def _run_models(chosen, host, photograph, models: dict, uses_gpu: bool):
             raise Failure("checkpoints", str(error)) from error
         except torch.cuda.OutOfMemoryError:
             raise Failure("resource_limit",
-                          f"{run.entry} needs more than the {host.gpu_budget_mib} MiB GPU budget at {run.side} px") from None
+                          f"the GPU ran out of memory running {run.entry} at {run.side} px") from None
         except MemoryError:
             raise Failure("resource_limit", "the worker ran out of memory") from None
         finally:

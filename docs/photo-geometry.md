@@ -21,8 +21,8 @@ guided by the recommendations below. A run that needs more GPU memory than is
 free fails with a `resource_limit` error, and each run reports its peak GPU
 memory, so the cost of a choice stays visible.
 
-These models are configured, prepared and reported by the worker. Tools that
-run them on your photographs are not yet available.
+The `photo` tool's [`analyze` action](#analyse-a-photograph) runs them on
+your photographs.
 
 ## Recommendations
 
@@ -105,6 +105,137 @@ worker reads this from the cache on each readiness check without loading any
 model. If the models are not configured or the check cannot run,
 `photo_geometry` reports `"available": false` and the worker's other
 photograph jobs are unaffected.
+
+## Analyse a photograph
+
+The `analyze` action prepares, in one request, what later photograph
+workflows need: depth for broad shape, normals for detail, a subject mask, a
+focal length, and a confidence map with summary scores. It is offered while
+the geometry models are configured; a model that is not yet prepared is
+downloaded inside the analysis job.
+
+```json
+{"action": "analyze", "params": {
+  "image": "photos/coin.jpg",
+  "subject": "shallow",
+  "normals": true
+}}
+```
+
+Every model parameter is optional and defaults to the
+[recommendations](#recommendations). Name a model to choose differently, for
+example `"depth_model": "dp2-l", "side": 1024` for a deep subject on a GPU
+with about 3 GB free.
+
+| Parameter | Values | Default |
+| --- | --- | --- |
+| `image` | workspace JPEG, PNG or WebP | required; transparency is flattened onto black |
+| `subject` | `shallow` (reliefs, coins, lettering, artwork) or `deep` (heads, figures, objects) | required |
+| `depth_model` | `da3-mono-large`, `dp2-h`, `dp2-l`, `moge3-vitg`, `moge3-vitl`, `moge2-vitl-normal` | `da3-mono-large` for shallow subjects, `dp2-h` for deep ones |
+| `side` | `1024` or `2048`: the longest side the depth model processes the photograph at | `2048` for deep subjects on a GPU, otherwise `1024` |
+| `mask_model` | `moge3-vitg`, `moge3-vitl`, `moge2-vitl-normal` | `moge3-vitl` on a GPU, `moge2-vitl-normal` on the CPU |
+| `focal_model` | `dp2-h` or `dp2-l` | the depth model when it is a Depth Pro 2 model, which then serves both from one run; otherwise `dp2-l` |
+| `normals` | `false` or `true` | `false`: normals are derived from depth |
+| `normals_model` | `marigold-v2`, with `normals: true` | `marigold-v2` |
+| `device` | `auto`, `cuda` or `cpu` | `auto`: `cuda` unless the worker is configured with `PRINTABLE_RECON_DEVICE=cpu` |
+| `quality` | `best` or `fast` | `best`; see below |
+| `focal_length_px` | 10 to 100000 | none: a known focal length in pixels of the photograph, used instead of `focal_model` |
+
+Only the depth model uses `side`. The other models process the photograph at
+1024 pixels, unless one is the same model as the depth model, which then runs
+once for both. MoGe-3 needs a GPU, so it is refused with `device: cpu`.
+
+Depth from a MoGe model reads painted artwork as the flat object it is;
+Depth Anything 3 invents sculpted depth for a painting, which suits reliefs
+made from artwork. Choosing `depth_model: moge3-vitl` with the default mask
+model runs one model for depth and mask.
+
+`best` runs the depth model twice more: on the photograph mirrored left to
+right and at three quarters of its size, and uses the results as consistency
+checks. `fast` skips those two passes, so its confidence map has fewer
+checks. Use it for previews.
+
+### Results and the cache
+
+The first request for a photograph and settings returns a `job_id`. Follow it
+with `status`, find it with `list` and stop it with `cancel`, as for object
+jobs. The job downloads any model files it needs, waits for the GPU, runs the
+models one at a time in one process, freeing each before loading the next,
+and publishes the result. The whole run must finish within
+`PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS` for each model it loads. A run that
+needs more GPU memory than is free fails with a `resource_limit` error; choose
+a smaller model or side, or `device: cpu`.
+
+The result is stored under `.printable/photo-analysis/<cache_key>/` in the
+workspace, which only the server writes. The key is the SHA-256 of the
+photograph's SHA-256, the settings with their defaults filled in (so it covers
+the chosen models, side and device), the model list and the analysis code. A
+later request with the same photograph and settings returns the stored result
+at once, without loading a model, and reports `"cache": {"hit": true}`. A
+stored map that no longer matches the SHA-256 in its manifest is not used; the
+analysis runs again.
+
+| File | Format | Contents |
+| --- | --- | --- |
+| `depth.tiff` | 32-bit floating-point greyscale TIFF | Distance along the optical axis, larger is farther: metres for a metric model, an unscaled value for a relative one. Pixels outside the mask hold the largest depth inside it |
+| `normals.png` | 16-bit RGB PNG | Unit normals, x right, y up, z towards the camera; each component `c` is stored as `(c + 1) / 2 * 65535` |
+| `mask.png` | 16-bit greyscale PNG | 65535 on the subject, 0 elsewhere |
+| `confidence.png` | 16-bit greyscale PNG | Confidence from 0 to 1, stored as `p / 65535` |
+| `manifest.json` | JSON | The description below, written last |
+
+Every map is 16-bit or floating point from the models to the files, and the
+worker refuses a map stored with fewer bits. The maps have the size the depth
+model processed the photograph at, reported as `width` and `height`.
+
+The result, which is also the manifest, reports:
+
+- `artifacts`: each map's file, format, bit depth, channels, conventions,
+  workspace artifact and SHA-256;
+- `settings`: the request with every default filled in;
+- `runs`: the model, device and processing size of each run, the roles it
+  served and whether it had the extra passes;
+- `timings` and, on a GPU, `gpu_peak_allocated_mib`: the cost of the choice;
+- `depth`: the model the depth came from and whether it is `metric` or
+  `relative`;
+- `focal_length`: `px` at the maps' size and `photograph_px` at the
+  photograph's, with `source` `given` or `estimated` and the model that
+  estimated it;
+- `scores` and `warnings`, described below;
+- `metric_estimate`, for metric depth only: the median distance of the
+  subject in metres, always with a warning. It is a learned estimate that is
+  often wrong by a large factor for close-ups; never use it as a physical size;
+- `image_sha256`, `cache` with its `key`, `directory` and `hit`, and the
+  `manifest` artifact.
+
+### Confidence and scores
+
+Each check compares two estimates pixel by pixel:
+
+- `flip_consistency`, best quality only: depth of the mirrored photograph,
+  mirrored back, against the depth;
+- `rescale_consistency`, best quality only: depth of the reduced photograph,
+  enlarged back, against the depth;
+- `model_disagreement`, when the mask model is not the depth model: the mask
+  model's depth against the chosen depth;
+- `normal_agreement`, with `normals: true`: Marigold V2 normals against normals
+  derived from depth.
+
+Depths are compared after the scale and shift that best align them, so a
+relative model is not penalised for its unknown scale. A relative depth is also
+aligned to the mask model's depth before normals are derived from it. Each
+depth score reports `median_relative_difference` and `agreement`, the share of
+subject pixels within 5%; the normal score reports `median_angle_degrees` and
+the share within 15 degrees. `mask_fraction` and `mean_confidence` summarise the
+mask and the map.
+
+Inside the mask, a pixel's confidence is the lowest of its checks: a depth
+check falls from 1 at no difference to 0 at a 10% difference, and the normal
+check from 1 at 0 degrees to 0 at 45 degrees. Outside the mask confidence is 0.
+When no check ran, the map is the mask alone and a warning says so.
+
+The checks measure whether the models agree with themselves and each other,
+not whether they are right. How well the scores separate good regions from
+bad ones on real photographs has not yet been measured.
 
 ## Licences of bundled code
 

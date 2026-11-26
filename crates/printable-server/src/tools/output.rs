@@ -143,9 +143,9 @@ fn photo_analysis() -> Value {
     object(
         json!({
             "width":{"type":"integer","minimum":1}, "height":{"type":"integer","minimum":1},
-            "settings":{"type":"object"}, "routes":{"type":"object"},
-            "depth":object(json!({"role":{"type":"string"},"model":{"type":"string"},
-                "kind":{"enum":["metric","relative"]}}), &["role","model","kind"]),
+            "settings":{"type":"object"}, "runs":{"type":"array"},
+            "depth":object(json!({"model":{"type":"string"},
+                "kind":{"enum":["metric","relative"]}}), &["model","kind"]),
             "focal_length":object(json!({"source":{"enum":["given","estimated"]},
                 "px":{"type":"number","exclusiveMinimum":0},"photograph_px":{"type":"number","exclusiveMinimum":0},
                 "model":{"type":"string"}}), &["source","px"]),

@@ -468,7 +468,7 @@ pub struct Availability {
     pub depth: bool,
     /// The photograph worker can serve at least one object generator.
     pub object: bool,
-    /// The photograph worker reports routes for photograph analysis.
+    /// The photograph worker reports configured geometry models.
     pub analyze: bool,
     /// Retained photograph jobs exist independently of current model mounts.
     pub photo_jobs: bool,
@@ -991,15 +991,21 @@ mod tests {
         let call = resolve(
             PHOTO,
             json!({"action": "analyze", "params": {"image": "coin.jpg", "subject": "shallow",
-                "quality": "fast", "interpretation": "physical", "normals": true, "focal_length_px": 1200.0}}),
+                "quality": "fast", "depth_model": "moge3-vitl", "mask_model": "moge3-vitg",
+                "side": 2048, "device": "cuda", "normals": true, "normals_model": "marigold-v2",
+                "focal_length_px": 1200.0}}),
         )
         .unwrap();
         assert_eq!(call.name, "printable_photo_analyze");
-        assert_eq!(call.arguments["interpretation"], "physical");
+        assert_eq!(call.arguments["depth_model"], "moge3-vitl");
+        assert_eq!(call.arguments["side"], 2048);
         for params in [
             json!({"image": "coin.jpg"}),
             json!({"image": "coin.jpg", "subject": "flat"}),
             json!({"image": "coin.jpg", "subject": "deep", "quality": "slow"}),
+            json!({"image": "coin.jpg", "subject": "deep", "depth_model": "marigold-v2"}),
+            json!({"image": "coin.jpg", "subject": "deep", "mask_model": "dp2-l"}),
+            json!({"image": "coin.jpg", "subject": "deep", "interpretation": "physical"}),
             json!({"image": "coin.jpg", "subject": "deep", "depth_path": "depth.png"}),
         ] {
             assert!(
