@@ -141,7 +141,9 @@ metric model misjudged the distance of close-up subjects by several times.
 ## Cost
 
 Median per image, excluding model loading and one warm-up image; peak GPU
-memory is allocator memory. Storage reads were zero because model files were
+memory is allocator memory. The 2048 px columns are the median and peak over
+the three timing photographs; peaks over every 2048 px input, including the
+scenes, are in the route summary below and in the JSON. Storage reads were zero because model files were
 already in the page cache; a cold Marigold V2 read is about 13 GB per map, as
 [the depth guide](../docs/photo-depth.md) states.
 
@@ -157,8 +159,9 @@ already in the page cache; a cold Marigold V2 read is about 13 GB per map, as
 | Marigold V2 (depth and normals) | 6.2 s, 2.0 GB | 12.4 s, 2.5 GB | 1024 px; one of three 2048 px photographs ran out | 303 s, 4.0 GB | 935 s, 5.8 GB |
 
 CPU memory is peak resident memory. MoGe-3 depends on Triton and does not
-load without an NVIDIA GPU. Marigold V2 on the CPU exceeds 15 minutes per map
-at 2048 pixels.
+load without an NVIDIA GPU. Marigold V2's depth-and-normals pass, timed as one
+call, exceeds 15 minutes per map on the CPU at 2048 pixels; the two outputs
+were not timed separately.
 
 ## Chosen routes
 
