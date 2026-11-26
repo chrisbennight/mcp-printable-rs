@@ -3,3 +3,5 @@ PyYAML==6.0.3
 # Parse pinned Orca C++ definitions when regenerating slicer metadata.
 tree-sitter==0.26.1
 tree-sitter-cpp==0.23.4
+# Depth benchmark scoring (scripts/depth_benchmark); same version as the photograph worker.
+numpy==2.4.6
