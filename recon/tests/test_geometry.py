@@ -34,6 +34,12 @@ class ConventionTests(unittest.TestCase):
         self.assertEqual(geometry_models.resized(numpy.ones((4, 6), numpy.float32), 8, 12).shape, (8, 12))
         self.assertEqual(geometry_models.resized(numpy.ones((4, 6, 3), numpy.float32), 8, 12).shape, (8, 12, 3))
 
+    def test_moge3_is_refused_on_the_processor(self):
+        import torch
+
+        with self.assertRaisesRegex(geometry_models.ModelLoadError, "only on a CUDA GPU"):
+            geometry_models.load("moge3-vitl", Path("/nonexistent"), torch.device("cpu"))
+
     def test_unknown_entries_are_refused(self):
         with self.assertRaises(geometry_models.ModelLoadError):
             geometry_models.load("albedo-net", Path("/nonexistent"), None)
@@ -97,7 +103,7 @@ class RequestTests(unittest.TestCase):
 
     def test_invalid_requests_are_refused_before_loading_a_model(self):
         cases = [({"device": "mps"}, "device must be"), ({"side": 512}, "side one of"),
-                 ({"threads": 0}, "threads")]
+                 ({"threads": 0}, "threads"), ({"outputs": None}, "outputs must be an object")]
         for overrides, message in cases:
             with mock.patch.object(geometry_models, "load") as load:
                 status, printed = self.run_request(**overrides)
