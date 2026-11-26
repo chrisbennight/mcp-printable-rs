@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 import torch
 
+import checkpoints
 import common
 
 
@@ -16,7 +17,7 @@ def moge(version: int, repo: str, device):
         from moge.model.v3 import MoGeModel
     else:
         from moge.model.v2 import MoGeModel
-    model = MoGeModel.from_pretrained(repo).to(device).eval()
+    model = MoGeModel.from_pretrained(checkpoints.hugging_face_file(repo, "model.pt")).to(device).eval()
 
     @torch.inference_mode()
     def run(rgb):
@@ -32,14 +33,15 @@ def moge(version: int, repo: str, device):
             n = out["normal"].float().cpu().numpy()
             normals = np.stack([n[..., 0], -n[..., 1], -n[..., 2]], -1)  # OpenCV frame to x right, y up, z towards camera
         focal = float(out["intrinsics"][0, 0].item()) * w
-        return depth, "metric", normals, focal, {"masked_fraction": round(float(1 - mask.mean()), 4)}
+        return depth, "metric", normals, focal, {"mask": mask, "masked_fraction": round(float(1 - mask.mean()), 4)}
 
     return run
 
 
-def depth_pro_2(preset: str, device):
+def depth_pro_2(preset: str, checkpoint: str, device):
     from depth_pro_2 import create_model_and_transforms
 
+    checkpoints.depth_pro_2(checkpoint, "depthpro2-fov-ew55zg4kq7.pt")
     model, transform = create_model_and_transforms(preset, device=device)
 
     @torch.inference_mode()
@@ -48,7 +50,7 @@ def depth_pro_2(preset: str, device):
         depth = out["depth"].float().cpu().numpy()
         finite = np.isfinite(depth)
         depth = np.where(finite, depth, np.nanmax(np.where(finite, depth, np.nan)))
-        return depth, "metric", None, float(out["focallength_px"].item()), {}
+        return depth, "metric", None, float(out["focallength_px"].item()), {"mask": finite}
 
     return run
 
@@ -59,10 +61,10 @@ MODELS = {
     "moge2-vitl-normal": lambda d: moge(2, "Ruicheng/moge-2-vitl-normal", d),
     "moge2-vitb-normal": lambda d: moge(2, "Ruicheng/moge-2-vitb-normal", d),
     "moge2-vits-normal": lambda d: moge(2, "Ruicheng/moge-2-vits-normal", d),
-    "dp2-h": lambda d: depth_pro_2("depthpro2-h", d),
-    "dp2-l": lambda d: depth_pro_2("depthpro2-l", d),
-    "dp2-b": lambda d: depth_pro_2("depthpro2-b", d),
-    "dp2-s": lambda d: depth_pro_2("depthpro2-s", d),
+    "dp2-h": lambda d: depth_pro_2("depthpro2-h", "depthpro2-h-eivtm5w7m5.pt", d),
+    "dp2-l": lambda d: depth_pro_2("depthpro2-l", "depthpro2-l-tegstu7fim.pt", d),
+    "dp2-b": lambda d: depth_pro_2("depthpro2-b", "depthpro2-b-xb7m9egktw.pt", d),
+    "dp2-s": lambda d: depth_pro_2("depthpro2-s", "depthpro2-s-bgcc6f8bg3.pt", d),
 }
 
 
@@ -77,7 +79,7 @@ def main():
     try:
         run = MODELS[args.model](device)
     except Exception as error:  # a model that cannot load on this tier is a recorded result
-        common.log_failure(args.tier, args.model, "load", error)
+        common.log_failure(args.tier, args.model, "load", error, args.timing)
         return
     selection = [s for s in args.images.split(",") if s] or None
     common.run_images(args.tier, args.model, run, device, selection, args.timing)

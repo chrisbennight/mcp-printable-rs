@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 import torch
 
+import checkpoints
 import common
 
 MODELS = {
@@ -33,9 +34,9 @@ def main():
     try:
         from depth_anything_3.api import DepthAnything3
 
-        model = DepthAnything3.from_pretrained(repo).to(device).eval()
+        model = DepthAnything3.from_pretrained(str(checkpoints.hugging_face(repo))).to(device).eval()
     except Exception as error:  # a model that cannot load on this tier is a recorded result
-        common.log_failure(args.tier, args.model, "load", error)
+        common.log_failure(args.tier, args.model, "load", error, args.timing)
         return
     side = TIMING_SIDE if args.timing else PROCESS_SIDE
 

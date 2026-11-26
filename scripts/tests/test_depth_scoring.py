@@ -137,6 +137,19 @@ class ReliefTest(unittest.TestCase):
         result = scoring.relief_error(flat, self.truth, self.region, scoring.RELATIVE)
         self.assertGreater(result["rmse_pct"], 10.0)
 
+    def test_inverted_relief_scores_no_better_than_a_flat_one(self):
+        inverted = 2 * self.truth.mean() - self.truth
+        flat = np.full_like(self.truth, self.truth.mean())
+        inverted_error = scoring.relief_error(inverted, self.truth, self.region, scoring.RELATIVE)
+        flat_error = scoring.relief_error(flat, self.truth, self.region, scoring.RELATIVE)
+        self.assertGreater(inverted_error["rmse_pct"], 10.0)
+        self.assertAlmostEqual(inverted_error["rmse"], flat_error["rmse"], places=9)
+
+    def test_inverted_log_depth_is_not_rewarded(self):
+        aligned, params = scoring.align(-np.log(self.truth), self.truth, self.region, scoring.LOG_RELATIVE)
+        self.assertEqual(params["scale"], 0.0)
+        self.assertGreater(scoring.depth_errors(aligned, self.truth, self.region)["absrel"], 0.0)
+
     def test_plane_residual_removes_a_plane(self):
         h, w = 20, 30
         v, u = np.mgrid[0:h, 0:w]

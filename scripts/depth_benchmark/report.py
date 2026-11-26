@@ -1,8 +1,8 @@
 """Score every run and write the evidence: tables, metrics JSON and comparison sheets.
 
 Usage: python report.py [--out DIR]
-Reads work/gt/<scene>/{passes.exr,camera.json}, work/inputs/*.png and
-results/<tier>/<model>/*.npz; writes <out>/report.md, <out>/metrics.json and
+Reads work/gt/<scene>/{passes.exr,camera.json}, work/inputs/*.png,
+results/<tier>/<model>/*.npz and each results directory's logs; writes <out>/report.md, <out>/metrics.json and
 <out>/sheets/*.jpg (default out: results/).
 """
 
@@ -18,13 +18,19 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy import ndimage
 
+import checkpoints
 import common
 import scoring
 
 CPU_LIMIT_SECONDS = 15 * 60
-FUSIONS = [("dp2-h", "moge3-vitg"), ("moge3-vitg", "moge3-vitg"), ("da3-nested-giant", "moge3-vitg"),
-           ("marigold-v2", "marigold-v2"), ("moge3-vitl", "marigold-v2")]
+# (depth model, normal model): every depth model with metric or log-relative output, paired with the
+# strongest normal models (Marigold V2 and both MoGe-3 sizes).
+FUSIONS = [(d, n) for d in ("marigold-v2", "moge3-vitg", "moge3-vitl", "moge2-vitl-normal", "dp2-h", "dp2-l",
+                            "da3-nested-giant")
+           for n in ("marigold-v2", "moge3-vitg", "moge3-vitl")]
 FUSION_SIGMAS = [4.0, 16.0, 64.0, 256.0]  # 256 means normals only, levelled by the mean depth
+# Fusion uses no ground truth: each model's own depth units and this model's focal-length estimate.
+FUSION_FOCAL_MODEL = "dp2-l"
 
 
 def region(scene: str, world: np.ndarray, valid: np.ndarray) -> np.ndarray | None:
@@ -134,9 +140,18 @@ def models(tier: str) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir()) if root.exists() else []
 
 
-def runs(name: str) -> list[dict]:
-    f = common.RESULTS / name
+def runs(directory: str, name: str) -> list[dict]:
+    f = common.RESULTS / directory / name
     return [json.loads(line) for line in f.read_text().splitlines()] if f.exists() else []
+
+
+def model_units(pred: dict) -> np.ndarray | None:
+    """A prediction as positive depth in the model's own units, or None when it has no fixed zero."""
+    if pred["kind"] == scoring.METRIC:
+        return pred["depth"].astype(np.float64)
+    if pred["kind"] == scoring.LOG_RELATIVE:
+        return np.exp(pred["depth"].astype(np.float64))
+    return None
 
 
 # ---------------------------------------------------------------------- scoring
@@ -175,17 +190,25 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
     if reg is None:
         return rows
     smooth = scoring.smooth_mask(truth["depth"], truth["valid"]) & reg
+    focal_run = load_run(tier, FUSION_FOCAL_MODEL, f"gt-{scene}")
+    focal = None if focal_run is None else focal_run.get("focal_px")
+    if not focal:
+        return rows
     for depth_model, normal_model in FUSIONS:
         d, n = load_run(tier, depth_model, f"gt-{scene}"), load_run(tier, normal_model, f"gt-{scene}")
         if d is None or n is None or "normals" not in n:
             continue
-        base, _ = scoring.align(d["depth"], truth["depth"], truth["valid"], d["kind"])
+        base = model_units(d)
+        if base is None:
+            continue
         candidates = [("depth only", None, base)]
-        candidates += [("fused", s, fuse(base, n["normals"], truth["focal"], s)) for s in FUSION_SIGMAS]
+        candidates += [("fused", s, fuse(base, n["normals"], focal, s)) for s in FUSION_SIGMAS]
         for label, sigma, z in candidates:
+            # Scored like a relief the user scales: one scale and offset, then compared with the truth.
             relief = scoring.relief_error(z, truth["depth"], reg, scoring.RELATIVE)
-            angle = scoring.normal_errors(scoring.normals_from_depth(z, truth["focal"]), truth["normals"], smooth)
-            rows.append({"tier": tier, "scene": scene, "depth": depth_model,
+            shaped, _ = scoring.align(z, truth["depth"], truth["valid"], scoring.RELATIVE)
+            angle = scoring.normal_errors(scoring.normals_from_depth(shaped, truth["focal"]), truth["normals"], smooth)
+            rows.append({"tier": tier, "scene": scene, "depth": depth_model, "focal_from": FUSION_FOCAL_MODEL,
                          "normals": normal_model if label == "fused" else "none", "sigma": sigma,
                          "relief_rmse_mm": relief["rmse"] * 1000, "normal_deg": angle["median_deg"]})
     return rows
@@ -225,33 +248,58 @@ def exif_focal(name: str, w: int, h: int) -> float | None:
 
 
 # ------------------------------------------------------------------------- costs
-def cost_table() -> list[dict]:
-    rows = []
-    groups = defaultdict(list)
-    for r in runs("runs.jsonl"):
-        groups[(r["tier"], r["model"])].append(r)
-    timing = defaultdict(list)
-    for r in runs("timing2048.jsonl"):
-        timing[(r["tier"], r["model"])].append(r)
-    failures = defaultdict(list)
-    for r in runs("failures.jsonl"):
-        failures[(r["tier"], r["model"])].append(r)
-    for key in sorted(set(groups) | set(timing) | set(failures)):
-        tier, model = key
-        g, t, fails = groups.get(key, []), timing.get(key, []), failures.get(key, [])
-        row = {"tier": tier, "model": model, "images": len(g), "failures": len(fails)}
+def _by_model(rows: list[dict]) -> dict[str, list[dict]]:
+    out = defaultdict(list)
+    for r in rows:
+        out[r["model"]].append(r)
+    return out
+
+
+def _expected(directory: str) -> dict[str, set[str]]:
+    """The images each model's latest run was asked for."""
+    return {r["model"]: set(r["images"]) for r in runs(directory, "expected.jsonl")}
+
+
+def _costs(directory: str, suffix: str) -> dict[str, dict]:
+    done = _by_model(runs(directory, "runs.jsonl"))
+    fails = _by_model(runs(directory, "failures.jsonl"))
+    expected = _expected(directory)
+    out = {}
+    for model in sorted(set(done) | set(fails) | set(expected)):
+        g, f = done.get(model, []), fails.get(model, [])
+        completed = {x["image"] for x in g}
+        complete = model in expected and bool(expected[model]) and completed >= expected[model] and not f
+        row = {f"images{suffix}": len(completed), f"expected{suffix}": len(expected.get(model, ())),
+               f"failures{suffix}": len(f), f"complete{suffix}": complete}
         if g:
             secs = [x["seconds"] for x in g]
-            row.update({"median_s": float(np.median(secs)), "max_s": float(max(secs)),
-                        "gpu_peak_gb": max(x["gpu_peak_gb"] for x in g), "rss_peak_gb": max(x["rss_peak_gb"] for x in g),
-                        "read_gb_max": max(x["read_gb"] for x in g),
-                        "within_15_min": all(s <= CPU_LIMIT_SECONDS for s in secs)})
-        if t:
-            row.update({"median_s_2048": float(np.median([x["seconds"] for x in t])),
-                        "gpu_peak_gb_2048": max(x["gpu_peak_gb"] for x in t)})
-        if fails:
-            row["failure"] = f'{fails[0]["error"]}: {fails[0]["message"][:120]}'
-        rows.append(row)
+            row.update({f"median_s{suffix}": float(np.median(secs)), f"max_s{suffix}": float(max(secs)),
+                        f"gpu_peak_gb{suffix}": max(x["gpu_peak_gb"] for x in g),
+                        f"rss_peak_gb{suffix}": max(x["rss_peak_gb"] for x in g),
+                        f"read_gb_max{suffix}": max(x["read_gb"] for x in g)})
+        if f:
+            row[f"failure{suffix}"] = f'{f[0]["image"]}: {f[0]["error"]}: {f[0]["message"][:120]}'
+        out[model] = row
+    return out
+
+
+def cost_table() -> list[dict]:
+    """Per tier and model: cost at the shared size and at 2048 pixels.
+
+    A run counts as within 15 minutes per map only when every expected image
+    completed without failure and each took at most 15 minutes.
+    """
+    rows = []
+    for tier in common.TIERS:
+        quality = _costs(tier, "")
+        timing = _costs(common.log_set(tier, True), "_2048")
+        for model in sorted(set(quality) | set(timing)):
+            row = {"tier": tier, "model": model, **quality.get(model, {}), **timing.get(model, {})}
+            within = bool(row.get("complete")) and row["max_s"] <= CPU_LIMIT_SECONDS
+            if "expected_2048" in row:  # a 2048-pixel run that stopped early or failed does not pass
+                within = within and bool(row["complete_2048"]) and row["max_s_2048"] <= CPU_LIMIT_SECONDS
+            row["within_15_min"] = within
+            rows.append(row)
     return rows
 
 
@@ -396,28 +444,31 @@ def main():
     sheets.mkdir(parents=True, exist_ok=True)
     scenes = sorted(p.name for p in common.GT.iterdir() if (p / "passes.exr").exists())
     tiers = [t for t in common.TIERS if models(t)]
+    sheet_tier = "gpu" if "gpu" in tiers else (tiers[0] if tiers else None)
     scene_rows, fusion_rows, photo_rows = [], [], []
     for scene in scenes:
         truth = load_truth(scene)
         for tier in tiers:
             scene_rows += score_scene(scene, truth, tier)
             fusion_rows += score_fusion(scene, truth, tier)
-        if "gpu" in tiers:
-            image_sheet("gpu", f"gt-{scene}", truth).save(sheets / f"gt-{scene}.jpg", quality=88)
+        if sheet_tier:
+            image_sheet(sheet_tier, f"gt-{scene}", truth).save(sheets / f"gt-{scene}.jpg", quality=88)
     for tier in tiers:
         photo_rows += score_photos(tier)
     photos = [f.stem for f in common.inputs() if not f.stem.startswith("gt-")]
-    if "gpu" in tiers:
-        for image in photos:
-            image_sheet("gpu", image, None).save(sheets / f"{image}.jpg", quality=88)
-        for i in range(0, len(photos), 5):
-            overview("gpu", photos[i:i + 5]).save(sheets / f"overview-{i // 5 + 1}.jpg", quality=88)
-        overview("gpu", [f"gt-{s}" for s in scenes]).save(sheets / "overview-scenes.jpg", quality=88)
+    if sheet_tier:
+        shown = [p for p in photos if any(load_run(sheet_tier, m, p) for m in models(sheet_tier))]
+        for image in shown:
+            image_sheet(sheet_tier, image, None).save(sheets / f"{image}.jpg", quality=88)
+        for i in range(0, len(shown), 5):
+            overview(sheet_tier, shown[i:i + 5]).save(sheets / f"overview-{i // 5 + 1}.jpg", quality=88)
+        overview(sheet_tier, [f"gt-{s}" for s in scenes]).save(sheets / "overview-scenes.jpg", quality=88)
     costs = cost_table()
     summaries = {t: summary(scene_rows, t) for t in tiers}
     (args.out / "metrics.json").write_text(json.dumps(
         {"scenes": scenes, "tiers": tiers, "summary": summaries, "scene_rows": scene_rows,
-         "fusion_rows": fusion_rows, "photo_rows": photo_rows, "costs": costs}, indent=1))
+         "fusion_rows": fusion_rows, "photo_rows": photo_rows, "costs": costs,
+         "checkpoints": checkpoints.digests()}, indent=1))
 
     md = ["# Depth benchmark results", "",
           f"Scenes: {', '.join(scenes)}. Means over scenes with 95 % bootstrap intervals in brackets.", ""]
@@ -427,17 +478,23 @@ def main():
             ("Normals from depth, deg", "depth_normal_deg"), ("Model normals, deg", "normal_deg"),
             ("Relief error %", "relief_pct"), ("Edge F1", "edge_f1"), ("Focal error %", "focal_abs_pct"),
             ("Scenes", "scenes")]), ""]
-    md += ["## Cost", "", "Times exclude model loading and one warm-up image.", "", table(costs, [
-        ("Tier", "tier"), ("Model", "model"), ("Images", "images"), ("Median s", "median_s"), ("Max s", "max_s"),
-        ("GPU GB", "gpu_peak_gb"), ("RAM GB", "rss_peak_gb"), ("Read GB", "read_gb_max"),
-        ("Within 15 min", "within_15_min"), ("Median s, 2048 px", "median_s_2048"),
-        ("GPU GB, 2048 px", "gpu_peak_gb_2048"), ("Failures", "failures"), ("First failure", "failure")]), ""]
+    md += ["## Cost", "", "Times exclude model loading and one warm-up image. Within 15 min requires every "
+           "expected image to complete.", "", table(costs, [
+               ("Tier", "tier"), ("Model", "model"), ("Images", "images"), ("Expected", "expected"),
+               ("Median s", "median_s"), ("Max s", "max_s"), ("GPU GB", "gpu_peak_gb"), ("RAM GB", "rss_peak_gb"),
+               ("Read GB", "read_gb_max"), ("Within 15 min", "within_15_min"),
+               ("Images, 2048 px", "images_2048"), ("Expected, 2048 px", "expected_2048"),
+               ("Median s, 2048 px", "median_s_2048"), ("GPU GB, 2048 px", "gpu_peak_gb_2048"),
+               ("RAM GB, 2048 px", "rss_peak_gb_2048"), ("Read GB, 2048 px", "read_gb_max_2048"),
+               ("Failures", "failures"), ("First failure", "failure"),
+               ("Failures, 2048 px", "failures_2048"), ("First failure, 2048 px", "failure_2048")]), ""]
     md += ["## Per scene", "", table(scene_rows, [
         ("Tier", "tier"), ("Scene", "scene"), ("Model", "model"), ("Depth error", "absrel"),
         ("Normals from depth", "depth_normal_deg"), ("Model normals", "normal_deg"),
         ("Relief RMSE mm", "relief_rmse_mm"), ("Relief mm", "relief_mm"), ("Edge F1", "edge_f1"),
         ("Scale error %", "scale_error_pct"), ("Focal error %", "focal_error_pct")]), ""]
-    md += ["## Depth and normal fusion", "", "Sigma is the blur, in pixels, separating broad shape from detail; "
+    md += ["## Depth and normal fusion", "", "Each depth model's own units and the focal length estimated by "
+           f"{FUSION_FOCAL_MODEL}; sigma is the blur, in pixels, separating broad shape from detail; "
            "256 means normals only.", "", table(fusion_rows, [
                ("Tier", "tier"), ("Scene", "scene"), ("Depth", "depth"), ("Normals", "normals"),
                ("Sigma", "sigma"), ("Relief RMSE mm", "relief_rmse_mm"), ("Normal error deg", "normal_deg")]), ""]

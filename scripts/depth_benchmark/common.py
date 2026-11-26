@@ -5,8 +5,12 @@ Every runner writes results/<tier>/<model>/<image>.npz with:
   kind     "metric", "relative" or "logrel" (see scoring.KINDS)
   normals  float32 (H, W, 3), optional; camera frame x right, y up, z towards camera
   focal_px float, optional; focal length estimated by the model, in input pixels
-and appends one line per image to results/runs.jsonl with time, peak GPU
-memory, peak resident memory and bytes read from storage.
+  mask     bool (H, W), optional; pixels the model reports as valid
+and appends one line per image to results/<tier>/runs.jsonl with time, peak
+GPU memory, peak resident memory and bytes read from storage. Runs at 2048
+pixels log to results/timing-<tier>/. Each run also records the images it was
+asked for (expected.jsonl) and any failure (failures.jsonl), so a run that
+stopped early is visible. A tier's directory holds only that tier's latest run.
 
 Tiers:
   gpu     the GPU with no memory limit
@@ -149,14 +153,19 @@ class Measure:
         self.read_bytes = _read_bytes() - self.read0
 
 
-def _log(name: str, line: dict) -> None:
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    with open(RESULTS / name, "a") as f:
+def log_set(tier: str, timing: bool) -> str:
+    """The results directory of one tier's quality runs or timing runs."""
+    return f"timing-{tier}" if timing else tier
+
+
+def _log(directory: str, name: str, line: dict) -> None:
+    (RESULTS / directory).mkdir(parents=True, exist_ok=True)
+    with open(RESULTS / directory / name, "a") as f:
         f.write(json.dumps(line) + "\n")
     print(json.dumps(line), flush=True)
 
 
-def save(tier, model, image, depth, kind, m: Measure, normals=None, focal_px=None, extra=None) -> None:
+def save(tier, model, image, depth, kind, m: Measure, normals=None, focal_px=None, mask=None, extra=None) -> None:
     out = RESULTS / tier / model
     out.mkdir(parents=True, exist_ok=True)
     data = {"depth": np.asarray(depth, np.float32), "kind": kind}
@@ -166,8 +175,10 @@ def save(tier, model, image, depth, kind, m: Measure, normals=None, focal_px=Non
         data["normals"] = n
     if focal_px is not None:
         data["focal_px"] = float(focal_px)
+    if mask is not None:
+        data["mask"] = np.asarray(mask, bool)
     np.savez_compressed(out / f"{image}.npz", **data)
-    _log("runs.jsonl", {
+    _log(tier, "runs.jsonl", {
         "tier": tier, "model": model, "image": image, "side": int(max(np.shape(depth))),
         "seconds": round(m.seconds, 3), "gpu_peak_gb": round(m.gpu_peak / 2**30, 3),
         "rss_peak_gb": round(m.rss_peak / 2**30, 3), "read_gb": round(m.read_bytes / 2**30, 3),
@@ -176,27 +187,28 @@ def save(tier, model, image, depth, kind, m: Measure, normals=None, focal_px=Non
 
 
 def log_timing(tier, model, image, side, m: Measure) -> None:
-    _log("timing2048.jsonl", {
+    _log(log_set(tier, True), "runs.jsonl", {
         "tier": tier, "model": model, "image": image, "side": side, "seconds": round(m.seconds, 3),
         "gpu_peak_gb": round(m.gpu_peak / 2**30, 3), "rss_peak_gb": round(m.rss_peak / 2**30, 3),
         "read_gb": round(m.read_bytes / 2**30, 3),
     })
 
 
-def log_failure(tier, model, image, error: BaseException) -> None:
-    _log("failures.jsonl", {"tier": tier, "model": model, "image": image,
+def log_failure(tier, model, image, error: BaseException, timing: bool = False) -> None:
+    _log(log_set(tier, timing), "failures.jsonl", {"tier": tier, "model": model, "image": image,
                             "error": type(error).__name__, "message": str(error)[:300]})
 
 
 def run_images(tier: str, model: str, run, device, selection=None, timing=False) -> None:
     """Run a model over the inputs with one unrecorded warm-up, recording each result or failure."""
     files = inputs(selection, timing)
+    _log(log_set(tier, timing), "expected.jsonl", {"tier": tier, "model": model, "images": [f.stem for f in files]})
     if not files:
         return
     try:
         run(load_rgb(files[0]))
     except Exception as error:  # recorded so the tier table shows why a model does not run
-        log_failure(tier, model, "warm-up", error)
+        log_failure(tier, model, "warm-up", error, timing)
         return
     for f in files:
         rgb = load_rgb(f)
@@ -204,14 +216,18 @@ def run_images(tier: str, model: str, run, device, selection=None, timing=False)
             with Measure(device) as m:
                 result = run(rgb)
         except Exception as error:  # an out-of-memory or unsupported-device error is a result here
-            log_failure(tier, model, f.stem, error)
+            log_failure(tier, model, f.stem, error, timing)
             continue
         if timing:
             log_timing(tier, model, f.stem, int(max(rgb.shape[:2])), m)
             continue
         depth, kind, normals, focal, extra = result
+        extra = dict(extra)
+        mask = extra.pop("mask", None)
         h, w = rgb.shape[:2]
         depth = resize_to(depth, h, w)
         if normals is not None:
             normals = resize_to(normals, h, w)
-        save(tier, model, f.stem, depth, kind, m, normals, focal, extra)
+        if mask is not None:
+            mask = resize_to(np.asarray(mask, np.float32), h, w) > 0.5
+        save(tier, model, f.stem, depth, kind, m, normals, focal, mask, extra)

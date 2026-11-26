@@ -23,18 +23,24 @@ def reset():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
+    # Render on an NVIDIA GPU when one is visible, otherwise on the CPU; the passes are identical.
     prefs = bpy.context.preferences.addons["cycles"].preferences
+    gpu = None
     for kind in ("OPTIX", "CUDA"):
         try:
             prefs.compute_device_type = kind
             prefs.get_devices()
-            if any(d.type == kind for d in prefs.devices):
-                break
         except TypeError:
             continue
+        if any(d.type == kind for d in prefs.devices):
+            gpu = kind
+            break
+    if gpu is None:
+        prefs.compute_device_type = "NONE"
     for d in prefs.devices:
-        d.use = d.type != "CPU"
-    scene.cycles.device = "GPU"
+        d.use = gpu is not None and d.type == gpu
+    scene.cycles.device = "GPU" if gpu else "CPU"
+    print("device", gpu or "CPU", flush=True)
     scene.cycles.samples = 256
     scene.cycles.use_denoising = True
     scene.render.resolution_x, scene.render.resolution_y = W, H

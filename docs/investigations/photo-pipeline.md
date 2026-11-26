@@ -16,9 +16,10 @@ client agent.
 
 The proposals below aim to:
 
-1. Add fast metric depth, a valid-pixel mask and a reliable focal length
-   estimate alongside Marigold V2's high-detail normals, as chosen by the
-   [evaluation](#evaluation-results).
+1. Replace Marigold V2 as the depth source with fast depth, normals, a
+   valid-pixel mask and a reliable focal length estimate, as chosen by the
+   [depth benchmark](../../evidence/depth-benchmark.md); keep Marigold V2's
+   high-detail normals as an option.
 2. Give every photograph route the same preparation (subject mask, depth,
    normals, focal length) and the same finishing (exact solid rebuild and print
    checks) that busts already have.
@@ -153,10 +154,12 @@ should be expected to need a solid rebuild.
 ### Improve existing capability
 
 1. **Geometry backends.** Measured results are in
-   [Evaluation results](#evaluation-results). Keep Marigold V2 for the finest
-   surface normals; add MoGe-3 for fast depth, normals and a valid-pixel mask;
-   add the Depth Pro 2 field-of-view estimator for focal length. Keep the
-   relative map for compatibility.
+   [Evaluation results](#evaluation-results) and the
+   [depth benchmark](../../evidence/depth-benchmark.md). Use MoGe-3 (ViT-g on
+   the GPU, ViT-L within 3 GB) for depth, normals and a valid-pixel mask, and
+   Depth Pro 2 L depth on CPU-only hosts; add the Depth Pro 2 field-of-view
+   estimator for focal length. Keep Marigold V2 as an option for the finest
+   normal maps. Keep the relative map for compatibility.
 2. **Depth and normal fusion.** Produce one height field that takes large-scale
    shape from depth and fine detail from integrated model normals, without
    integrating across depth jumps. For shallow reliefs such as coins, let the
@@ -378,10 +381,14 @@ For deep subjects with occlusions, depth alone gives the best height.
 The larger [depth benchmark](../../evidence/depth-benchmark.md) (nine scenes,
 three execution tiers) replaces this section's model choices; its routes are:
 
-- Marigold V2 for normals and, fused with those normals, for depth: the best
-  surface quality measured, at 2.0 GB of GPU memory or about 6.5 minutes per
-  image on CPU.
-- MoGe-3 ViT-L for the subject mask on the GPU, MoGe-2 ViT-L on CPU.
+- MoGe-3 ViT-g depth fused with its own normals on the GPU (about 6.7 GB);
+  MoGe-3 ViT-L, the same way, within 3 GB; Depth Pro 2 L depth on CPU-only
+  hosts, under a minute per map at 2048 pixels. Marigold V2's own depth fused
+  with its normals scored worse once fusion stopped using ground truth.
+- Marigold V2 normals as an option for normal maps and normals-only reliefs:
+  still the most accurate normals measured.
+- The same MoGe model for the subject mask, MoGe-2 ViT-L on CPU (provisional
+  until masks are scored).
 - The Depth Pro 2 field-of-view estimator for focal length, including for
   `photo.object`.
 - Build reliefs by fusing depth (broad shape) with integrated normals (detail),

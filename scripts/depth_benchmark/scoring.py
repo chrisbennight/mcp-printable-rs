@@ -70,13 +70,25 @@ def align(pred: np.ndarray, truth: np.ndarray, mask: np.ndarray, kind: str) -> t
     if kind == METRIC:
         scale = float(np.median(g / np.maximum(p, 1e-12)))
         return (pred * scale).astype(np.float64), {"scale": scale}
-    design = np.stack([p, np.ones_like(p)], axis=1)
     if kind == RELATIVE:
-        (scale, offset), *_ = np.linalg.lstsq(design, g, rcond=None)
+        scale, offset = _nonnegative_fit(p, g)
         aligned = np.maximum(pred * scale + offset, 1e-9)
-        return aligned.astype(np.float64), {"scale": float(scale), "offset": float(offset)}
-    (scale, offset), *_ = np.linalg.lstsq(design, np.log(g), rcond=None)
-    return np.exp(pred * scale + offset).astype(np.float64), {"scale": float(scale), "offset": float(offset)}
+        return aligned.astype(np.float64), {"scale": scale, "offset": offset}
+    scale, offset = _nonnegative_fit(p, np.log(g))
+    return np.exp(pred * scale + offset).astype(np.float64), {"scale": scale, "offset": offset}
+
+
+def _nonnegative_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Least-squares y ~ scale * x + offset with scale >= 0.
+
+    A negative scale would swap near and far, letting an inverted prediction
+    fit perfectly; constrained, such a prediction fits as a flat one.
+    """
+    design = np.stack([x, np.ones_like(x)], axis=1)
+    (scale, offset), *_ = np.linalg.lstsq(design, y, rcond=None)
+    if scale < 0:
+        return 0.0, float(np.mean(y))
+    return float(scale), float(offset)
 
 
 def shape_kind(kind: str) -> str:
