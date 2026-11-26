@@ -1,7 +1,10 @@
 """Prepare pinned model data in persistent storage, without loading its code.
 
-Downloads are resumable. Only a complete, hash-verified snapshot is published;
-the cross-process lock also covers the final readiness check and publication.
+Files come from a Hub repository at a pinned commit, or from a fixed HTTPS URL
+for weights a publisher hosts outside the Hub; either way the SHA-256 digest
+and size are pinned. Downloads are resumable. Only a complete, hash-verified
+snapshot is published; the cross-process lock also covers the final readiness
+check and publication.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -17,7 +21,13 @@ import re
 import tempfile
 import time
 from typing import Callable, Iterator
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
+
+
+# A URL download in progress, beside the file it will become.
+PARTIAL_SUFFIX = ".partial"
 
 
 class PreparationError(Exception):
@@ -36,30 +46,77 @@ def _relative(value: str) -> str:
     return value
 
 
+def _https_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("a model URL must be a string")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.strip("/")
+    ):
+        raise ValueError("a model URL must be an HTTPS file URL without credentials or a query")
+    return value
+
+
 @dataclass(frozen=True)
 class ModelFile:
-    repo: str
-    revision: str
+    """One pinned file: from Hub `repo` at `revision`, or from `url` when `repo` is None."""
+
+    repo: str | None
+    revision: str | None
     directory: str
     filename: str
     sha256: str
     bytes: int
+    url: str | None = None
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repo):
-            raise ValueError("model repository must have an owner and name")
-        if not re.fullmatch(r"[0-9a-f]{40}", self.revision):
-            raise ValueError("model revision must be a full commit identifier")
+        if self.url is None:
+            if not isinstance(self.repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repo):
+                raise ValueError("model repository must have an owner and name")
+            if not isinstance(self.revision, str) or not re.fullmatch(r"[0-9a-f]{40}", self.revision):
+                raise ValueError("model revision must be a full commit identifier")
+        else:
+            if self.repo is not None or self.revision is not None:
+                raise ValueError("a model file comes from a Hub repository or a URL, not both")
+            _https_url(self.url)
         if not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
             raise ValueError("model files need a SHA-256 digest")
         if isinstance(self.bytes, bool) or not isinstance(self.bytes, int) or self.bytes < 1:
             raise ValueError("model file size must be a positive integer")
         _relative(self.directory)
         _relative(self.filename)
+        if any(part.endswith(PARTIAL_SUFFIX) for part in self.relative_path.split("/")):
+            raise ValueError("model file paths must not end in .partial, which names downloads in progress")
 
     @property
     def relative_path(self) -> str:
         return f"{self.directory}/{self.filename}"
+
+    @classmethod
+    def from_document(cls, entry: dict) -> ModelFile:
+        """A file from its manifest entry, where URL files omit the Hub fields."""
+        if not isinstance(entry, dict):
+            raise ValueError("a model file entry must be an object")
+        return cls(**{"repo": None, "revision": None, **entry})
+
+    @property
+    def source(self) -> tuple[str, ...]:
+        """What one snapshot directory may be filled from."""
+        return ("url",) if self.url is not None else (self.repo, self.revision)
+
+    def document(self) -> dict:
+        """The file's manifest entry; Hub files keep their original fields so identifiers are stable."""
+        entry = asdict(self)
+        for key in ("repo", "revision", "url"):
+            if entry[key] is None:
+                del entry[key]
+        return entry
 
 
 @dataclass(frozen=True)
@@ -72,14 +129,13 @@ class Manifest:
         paths = [item.relative_path for item in self.files]
         if len(paths) != len(set(paths)):
             raise ValueError("model files must have distinct destinations")
-        directories: dict[str, tuple[str, str]] = {}
+        directories: dict[str, tuple[str, ...]] = {}
         for item in self.files:
-            identity = (item.repo, item.revision)
-            if directories.setdefault(item.directory, identity) != identity:
+            if directories.setdefault(item.directory, item.source) != item.source:
                 raise ValueError("each model directory must have one repository and revision")
 
     def document(self) -> dict:
-        return {"format": "printable-models 1", "files": [asdict(item) for item in self.files]}
+        return {"format": "printable-models 1", "files": [item.document() for item in self.files]}
 
     @property
     def identifier(self) -> str:
@@ -91,7 +147,7 @@ class Manifest:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or data.get("format") != "printable-models 1":
             raise ValueError("unsupported model manifest format")
-        return cls(tuple(ModelFile(**item) for item in data["files"]))
+        return cls(tuple(ModelFile.from_document(item) for item in data["files"]))
 
 
 def _inside(root: Path, relative: str) -> Path:
@@ -147,7 +203,69 @@ def _locked(root: Path) -> Iterator[None]:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+URL_TIMEOUT_SECONDS = 60
+_CHUNK_BYTES = 1 << 20
+
+
+class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another HTTPS URL, so a pinned HTTPS file is never fetched in plain text."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise PreparationError("a model download redirected away from HTTPS; the download was refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsRedirects)
+
+
+def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.open) -> Path:
+    """Fetch a pinned-URL file, resuming a partial download when the server allows ranges.
+
+    The partial file is renamed into place only once it has the pinned size;
+    a response that ends early keeps it for the next attempt to resume.
+    """
+    target = _inside(directory, item.filename)
+    partial = _inside(directory, item.filename + PARTIAL_SUFFIX)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    offset = partial.stat().st_size if partial.is_file() else 0
+    # A partial longer than pinned, or one sharing its data with another file, starts again.
+    if offset > item.bytes or (partial.is_file() and partial.stat().st_nlink > 1):
+        partial.unlink()
+        offset = 0
+    if offset < item.bytes:
+        request = urllib.request.Request(item.url, headers={"Range": f"bytes={offset}-"} if offset else {})
+        try:
+            with opener(request, timeout=URL_TIMEOUT_SECONDS) as response:
+                if offset and getattr(response, "status", 200) != 206:
+                    offset = 0  # the server ignored the range; start again
+                flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_APPEND if offset else os.O_TRUNC)
+                with os.fdopen(os.open(partial, flags, 0o644), "ab") as sink:
+                    written = offset
+                    while chunk := response.read(_CHUNK_BYTES):
+                        written += len(chunk)
+                        if written > item.bytes:
+                            raise PreparationError(f"model download for {item.relative_path} is larger than pinned")
+                        sink.write(chunk)
+        except urllib.error.HTTPError as error:
+            if error.code == 416:
+                partial.unlink(missing_ok=True)  # the server refused the range; the next attempt starts again
+            raise PreparationError(
+                f"model download failed for {item.relative_path} (HTTP {error.code}); check network access"
+            ) from None
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError):
+            raise PreparationError(
+                f"model download failed for {item.relative_path}; check network access and retry"
+            ) from None
+    if partial.stat().st_size != item.bytes:
+        raise PreparationError(f"model download for {item.relative_path} ended early; retrying resumes it")
+    os.replace(partial, target)
+    return target
+
+
 def _download(item: ModelFile, directory: Path, hub_endpoint: str) -> Path:
+    if item.url is not None:
+        return _download_url(item, directory)
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
     import httpx
