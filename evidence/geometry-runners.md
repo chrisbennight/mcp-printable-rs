@@ -24,13 +24,9 @@ relative difference in focal length. "Normals" is the largest median angle.
 
 The runners reproduce the benchmark's outputs.
 
-The CUDA runs were held to each model's peak allocated memory from the
-benchmark. The photographs that did not run stopped with an out-of-memory
-error, because the limit also counts memory the allocator keeps in reserve.
-One uncapped run of Depth Anything 3 reached 3,294 MiB reserved against
-2,221 MiB allocated, about 35 % more. The registry's GPU figures are therefore
-the benchmark peak plus 35 %. That margin was measured for Depth Anything 3
-only; the other models were not measured again.
+The CUDA runs in this table were held to each model's benchmark peak as a hard
+limit, and the photographs that did not run stopped with an out-of-memory error
+under that limit. The runner no longer applies a limit.
 
 Not run through the worker on a GPU: MoGe-3 ViT-g and ViT-L, MoGe-2 on CUDA,
 Marigold V2 normals, and Depth Pro 2 H+ at 2048 px.

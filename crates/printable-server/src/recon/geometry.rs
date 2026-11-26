@@ -1,9 +1,9 @@
-//! Photograph geometry models: route selection, preparation and single runs.
+//! Photograph geometry models: preparation, readiness and single runs.
 //!
-//! The model registry in the worker image lists, for every analysis role, the
-//! options best first. The worker's GPU and RAM budgets decide which option
-//! each role takes; the Python scripts apply that policy, and this module
-//! supplies the budgets and reports the answer.
+//! The model list in the worker image names each model's pinned files. The
+//! caller chooses which model, device and processing size to run; this module
+//! prepares the files, reports each model's preparation state and runs one
+//! model on one photograph.
 
 use std::collections::BTreeMap;
 
@@ -14,15 +14,11 @@ use super::*;
 pub struct GeometryConfig {
     pub script: PathBuf,
     pub prepare_script: PathBuf,
-    /// Runs a whole photograph analysis; beside it are the registry and the
-    /// analysis code the cache key covers.
+    /// Runs a whole photograph analysis; beside it are the model list and
+    /// the analysis code the cache key covers.
     pub analyze_script: PathBuf,
     /// Persistent storage for downloaded and converted model files.
     pub cache: PathBuf,
-    /// GPU memory one model run may allocate; enforced inside the process.
-    pub gpu_budget_mib: u64,
-    /// Host memory a route may need, or `None` for no limit.
-    pub ram_budget_mib: Option<u64>,
     pub timeout: Duration,
     pub preparation_timeout: Duration,
 }
@@ -34,12 +30,16 @@ impl GeometryConfig {
         else {
             return Ok(None);
         };
-        let parse = |name: &str, value: String, bounds: std::ops::RangeInclusive<u64>| {
+        let seconds = |name: &str, default: u64, bounds: std::ops::RangeInclusive<u64>| {
+            let Some(value) = get(name) else {
+                return Ok(Duration::from_secs(default));
+            };
             value
                 .trim()
                 .parse::<u64>()
                 .ok()
                 .filter(|value| bounds.contains(value))
+                .map(Duration::from_secs)
                 .ok_or_else(|| {
                     format!(
                         "{name} must be between {} and {}",
@@ -48,20 +48,6 @@ impl GeometryConfig {
                     )
                 })
         };
-        let number =
-            |name: &str, default: u64, bounds: std::ops::RangeInclusive<u64>| match get(name) {
-                Some(value) => parse(name, value, bounds),
-                None => Ok(default),
-            };
-        let ram_budget_mib =
-            match get("PRINTABLE_RECON_RAM_BUDGET_MIB").filter(|value| !value.trim().is_empty()) {
-                Some(value) => Some(parse(
-                    "PRINTABLE_RECON_RAM_BUDGET_MIB",
-                    value,
-                    512..=1048576,
-                )?),
-                None => None,
-            };
         Ok(Some(Self {
             script: get("PRINTABLE_RECON_GEOMETRY_SCRIPT")
                 .unwrap_or_else(|| "/opt/printable/recon/estimate_geometry.py".into())
@@ -73,87 +59,31 @@ impl GeometryConfig {
                 .unwrap_or_else(|| "/opt/printable/recon/analyze_photo.py".into())
                 .into(),
             cache: cache.into(),
-            gpu_budget_mib: number("PRINTABLE_RECON_GPU_BUDGET_MIB", 8192, 256..=262144)?,
-            ram_budget_mib,
-            timeout: Duration::from_secs(number(
-                "PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS",
-                900,
-                1..=86400,
-            )?),
-            preparation_timeout: Duration::from_secs(number(
+            timeout: seconds("PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS", 900, 1..=86400)?,
+            preparation_timeout: seconds(
                 "PRINTABLE_RECON_GEOMETRY_PREPARATION_TIMEOUT_SECONDS",
                 86400,
                 1..=172800,
-            )?),
+            )?,
         }))
     }
 }
 
-/// The model one analysis role would run on this worker.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct SelectedRoute {
-    /// Registry entry name.
-    pub entry: String,
-    pub device: String,
-    /// Longest side, in pixels, the photograph is processed at.
-    pub side: u32,
-    /// A better option did not fit this worker's budgets.
-    pub fallback: bool,
-    /// Why each better option was passed over.
-    #[serde(default)]
-    pub rejected: Vec<String>,
-}
-
-/// A role's route, or why no option fits.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum RoleRoute {
-    Selected(SelectedRoute),
-    Unavailable { error: String },
-}
-
-/// What the geometry models would run and how far each entry is prepared.
+/// How far each geometry model is prepared, by model name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeometryReadiness {
-    pub roles: BTreeMap<String, RoleRoute>,
-    pub preparation: BTreeMap<String, PreparationStatus>,
+    pub models: BTreeMap<String, PreparationStatus>,
 }
 
 impl GeometryReadiness {
-    /// Whether a photograph analysis can run: a subject mask route and at
-    /// least one depth route. A request whose other roles have no route is
-    /// refused when it is planned.
-    pub fn can_analyze(&self) -> bool {
-        let selected = |role: &str| matches!(self.roles.get(role), Some(RoleRoute::Selected(_)));
-        selected("mask") && (selected("depth.shallow") || selected("depth.deep"))
-    }
-
-    /// A short per-role summary for the status tool.
+    /// Each model's preparation state, for the status tool.
     pub fn report(&self) -> Value {
-        let roles: serde_json::Map<String, Value> = self
-            .roles
+        let models: serde_json::Map<String, Value> = self
+            .models
             .iter()
-            .map(|(role, route)| {
-                let value = match route {
-                    RoleRoute::Selected(route) => {
-                        let mut value = json!({
-                            "model": route.entry,
-                            "device": route.device,
-                            "side_px": route.side,
-                            "fallback": route.fallback,
-                            "preparation": self.preparation.get(&route.entry).map(|status| status.state),
-                        });
-                        if route.fallback {
-                            value["fallback_reasons"] = json!(route.rejected);
-                        }
-                        value
-                    }
-                    RoleRoute::Unavailable { error } => json!({"unavailable": error}),
-                };
-                (role.clone(), value)
-            })
+            .map(|(name, status)| (name.clone(), json!(status.state)))
             .collect();
-        json!({"available": true, "roles": roles})
+        json!({"available": true, "models": models})
     }
 }
 
@@ -169,12 +99,13 @@ pub struct GeometryOutputs {
     pub normals: Option<PathBuf>,
 }
 
-/// One registry entry run on one photograph.
+/// One geometry model run on one photograph.
 #[derive(Debug, Clone, Serialize)]
 pub struct GeometryRun {
     pub image: PathBuf,
+    /// The model's name in the worker's model list.
     pub entry: String,
-    /// The prepared snapshot, or for a converted entry its converted model.
+    /// The prepared snapshot, or for a converted model its converted form.
     pub snapshot: PathBuf,
     pub device: String,
     pub side: u32,
@@ -182,8 +113,8 @@ pub struct GeometryRun {
 }
 
 impl ReconWorker {
-    /// The route for every role and each entry's preparation state, or why
-    /// they could not be read. Nothing is downloaded.
+    /// Each model's preparation state, or why it could not be read. Nothing
+    /// is downloaded and no model is loaded.
     pub(super) async fn geometry_readiness(&self) -> Option<Result<GeometryReadiness, ToolError>> {
         let config = self.config.geometry.as_ref()?;
         Some(self.read_geometry_readiness(config).await)
@@ -193,68 +124,34 @@ impl ReconWorker {
         &self,
         config: &GeometryConfig,
     ) -> Result<GeometryReadiness, ToolError> {
-        let staging = tempfile::Builder::new()
-            .prefix("printable-geometry-")
-            .tempdir()?;
-        let request = json!({
-            "gpu_budget_mib": (self.config.device != "cpu").then_some(config.gpu_budget_mib),
-            "ram_budget_mib": config.ram_budget_mib,
-        });
-        let mut select = self.python_command(&config.prepare_script);
-        select.arg("--select");
         let mut status = self.python_command(&config.prepare_script);
         status.arg("--status").arg(&config.cache);
-        let (selected, status) = tokio::join!(
-            self.run_command(
-                select,
-                &request,
-                staging.path(),
-                MODEL_CHECK_TIMEOUT,
-                "geometry model selection",
-                None,
-            ),
-            tokio::time::timeout(MODEL_CHECK_TIMEOUT, status.output())
-        );
-        #[derive(Deserialize)]
-        struct Selected {
-            roles: BTreeMap<String, RoleRoute>,
-        }
-        #[derive(Deserialize)]
-        struct Status {
-            entries: BTreeMap<String, PreparationStatus>,
-        }
-        let roles = serde_json::from_value::<Selected>(selected?)
-            .map_err(|_| {
-                reconstruction_error("protocol", "the geometry model selection was malformed")
-            })?
-            .roles;
-        let output = status.map_err(|_| {
-            reconstruction_error(
-                "timeout",
-                "the geometry model preparation check did not finish",
-            )
-        })??;
-        let preparation = serde_json::from_slice::<Status>(&output.stdout)
+        let output = tokio::time::timeout(MODEL_CHECK_TIMEOUT, status.output())
+            .await
             .map_err(|_| {
                 reconstruction_error(
-                    "protocol",
-                    "the geometry model preparation check returned no answer",
+                    "timeout",
+                    "the geometry model preparation check did not finish",
                 )
-            })?
-            .entries;
-        Ok(GeometryReadiness { roles, preparation })
+            })??;
+        serde_json::from_slice(&output.stdout).map_err(|_| {
+            reconstruction_error(
+                "protocol",
+                "the geometry model preparation check returned no answer",
+            )
+        })
     }
 
-    /// Download, verify and convert the named registry entries, returning
-    /// each entry's snapshot and, where it has one, its converted model.
+    /// Download, verify and convert the named models, returning each
+    /// model's snapshot and, where it has one, its converted form.
     /// Preparation uses no GPU, so it runs outside the photograph job lane.
-    pub async fn prepare_geometry(&self, entries: &[String]) -> Result<Value, ToolError> {
-        self.prepare_geometry_controlled(entries, None).await
+    pub async fn prepare_geometry(&self, models: &[String]) -> Result<Value, ToolError> {
+        self.prepare_geometry_controlled(models, None).await
     }
 
     pub(super) async fn prepare_geometry_controlled(
         &self,
-        entries: &[String],
+        models: &[String],
         control: Option<&JobControl>,
     ) -> Result<Value, ToolError> {
         let config = self.geometry_config()?;
@@ -266,7 +163,7 @@ impl ReconWorker {
         allow_downloads(&mut command);
         self.run_command(
             command,
-            &json!({"cache": config.cache, "entries": entries}),
+            &json!({"cache": config.cache, "models": models}),
             staging.path(),
             config.preparation_timeout,
             "geometry model preparation",
@@ -276,7 +173,7 @@ impl ReconWorker {
     }
 
     /// Run one prepared geometry model on one photograph, in the photograph
-    /// job lane, with this worker's GPU budget and CPU thread count.
+    /// job lane, with this worker's CPU thread count.
     pub async fn estimate_geometry(&self, run: GeometryRun) -> Result<Value, ToolError> {
         let config = self.geometry_config()?;
         if run.device == "cuda" && self.config.device == "cpu" {
@@ -286,7 +183,6 @@ impl ReconWorker {
             ));
         }
         let mut job = serde_json::to_value(&run)?;
-        job["gpu_budget_mib"] = json!((run.device == "cuda").then_some(config.gpu_budget_mib));
         job["threads"] = json!(self.config.cpu_threads);
         let _permit = self.permit()?;
         let staging = tempfile::Builder::new()
@@ -319,27 +215,17 @@ pub(super) mod tests {
     const PREPARE: &str = r#"
 import json, os, sys
 if sys.argv[1] == '--status':
+    assert os.environ['HF_HUB_OFFLINE'] == '1'
     prepared = os.path.isdir(os.path.join(sys.argv[2], 'snapshots'))
     state = {'state': 'prepared', 'last_verified_unix_ms': 5} if prepared else {'state': 'not_prepared', 'last_verified_unix_ms': None}
-    print(json.dumps({'entries': {'small': state}}))
+    print(json.dumps({'models': {'small': state}}))
     sys.exit(0)
 request = json.load(open(sys.argv[2]))
-assert 'HF_TOKEN' not in os.environ or sys.argv[1] == 'prepare'
-if sys.argv[1] == '--select':
-    assert os.environ['HF_HUB_OFFLINE'] == '1'
-    if request['gpu_budget_mib'] is None:
-        roles = {'depth.deep': {'entry': 'small', 'device': 'cpu', 'side': 1024, 'fallback': True,
-            'rejected': ['large on cuda at 2048 px: no GPU is available to this worker']},
-            'normals': {'error': 'no normals model fits this worker'}}
-    else:
-        roles = {'depth.deep': {'entry': 'small', 'device': 'cuda', 'side': 1024, 'fallback': False, 'rejected': []}}
-    print(json.dumps({'result': {'roles': roles, 'budget': request}}))
-    sys.exit(0)
 assert sys.argv[1] == 'prepare'
 assert os.environ['HF_HUB_OFFLINE'] == '0'
 assert os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN'] == '1'
 os.makedirs(os.path.join(request['cache'], 'snapshots'), exist_ok=True)
-print(json.dumps({'result': {'entries': {name: {'snapshot': os.path.join(request['cache'], 'snapshots', name)} for name in request['entries']}}}))
+print(json.dumps({'result': {'models': {name: {'snapshot': os.path.join(request['cache'], 'snapshots', name)} for name in request['models']}}}))
 "#;
 
     const ESTIMATE: &str = r#"
@@ -347,12 +233,13 @@ import json, os, sys
 request = json.load(open(sys.argv[1]))
 assert os.environ['HF_HUB_OFFLINE'] == '1'
 assert os.environ['OMP_NUM_THREADS'] == str(request['threads'])
+assert 'gpu_budget_mib' not in request
 if 'oom' in request['image']:
-    print(json.dumps({'error': {'code': 'resource_limit', 'message': 'needs more than the budget'}}))
+    print(json.dumps({'error': {'code': 'resource_limit', 'message': 'the GPU ran out of memory'}}))
     sys.exit(2)
 open(request['outputs']['depth'], 'wb').write(b'depth')
 print(json.dumps({'result': {'entry': request['entry'], 'device': request['device'],
-    'gpu_budget_mib': request['gpu_budget_mib'], 'threads': request['threads'], 'outputs': ['depth']}}))
+    'threads': request['threads'], 'outputs': ['depth']}}))
 "#;
 
     pub(in crate::recon) fn configured(root: &Path, worker: &mut ReconWorker) {
@@ -365,8 +252,6 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
             prepare_script: prepare,
             analyze_script: root.join("runtime/analyze_photo.py"),
             cache: root.join("geometry"),
-            gpu_budget_mib: 3072,
-            ram_budget_mib: None,
             timeout: Duration::from_secs(60),
             preparation_timeout: Duration::from_secs(60),
         });
@@ -374,15 +259,14 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
     }
 
     #[test]
-    fn configuration_is_optional_and_bounds_budgets() {
+    fn configuration_is_optional_and_bounds_timeouts() {
         assert!(GeometryConfig::configure(&|_| None).unwrap().is_none());
         let get = |name: &str| match name {
             "PRINTABLE_RECON_GEOMETRY_CACHE" => Some("/models/geometry".into()),
             _ => None,
         };
         let config = GeometryConfig::configure(&get).unwrap().unwrap();
-        assert_eq!(config.gpu_budget_mib, 8192);
-        assert_eq!(config.ram_budget_mib, None);
+        assert_eq!(config.cache, PathBuf::from("/models/geometry"));
         assert_eq!(config.timeout, Duration::from_secs(900));
         assert_eq!(config.preparation_timeout, Duration::from_secs(86400));
         let with = |key: &'static str, value: &'static str| {
@@ -394,24 +278,27 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
                 }
             })
         };
-        for value in ["0", "255", "262145", "-1", "no"] {
-            assert!(with("PRINTABLE_RECON_GPU_BUDGET_MIB", value).is_err());
+        for value in ["0", "86401", "soon"] {
+            assert!(with("PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS", value).is_err());
         }
-        for value in ["511", "1048577", "lots"] {
-            assert!(with("PRINTABLE_RECON_RAM_BUDGET_MIB", value).is_err());
-        }
-        assert_eq!(
-            with("PRINTABLE_RECON_RAM_BUDGET_MIB", "8192")
-                .unwrap()
-                .unwrap()
-                .ram_budget_mib,
-            Some(8192)
+        assert!(
+            with(
+                "PRINTABLE_RECON_GEOMETRY_PREPARATION_TIMEOUT_SECONDS",
+                "172801"
+            )
+            .is_err()
         );
-        assert!(with("PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS", "0").is_err());
+        assert_eq!(
+            with("PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS", "60")
+                .unwrap()
+                .unwrap()
+                .timeout,
+            Duration::from_secs(60)
+        );
     }
 
     #[tokio::test]
-    async fn readiness_reports_routes_and_preparation_without_downloading() {
+    async fn readiness_reports_each_models_preparation_without_downloading() {
         let (root, mut worker) = super::super::tests::worker(Duration::from_secs(60));
         let (_, answer) = worker.readiness().await;
         assert_eq!(answer["capabilities"]["geometry"], Value::Null);
@@ -420,45 +307,13 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         assert!(ready);
         let geometry: GeometryReadiness =
             serde_json::from_value(answer["capabilities"]["geometry"].clone()).unwrap();
-        // The worker's device is cpu, so no GPU budget is offered.
         assert_eq!(
-            geometry.roles["depth.deep"],
-            RoleRoute::Selected(SelectedRoute {
-                entry: "small".into(),
-                device: "cpu".into(),
-                side: 1024,
-                fallback: true,
-                rejected: vec![
-                    "large on cuda at 2048 px: no GPU is available to this worker".into()
-                ],
-            })
-        );
-        assert_eq!(
-            geometry.roles["normals"],
-            RoleRoute::Unavailable {
-                error: "no normals model fits this worker".into()
-            }
-        );
-        assert_eq!(
-            geometry.preparation["small"].state,
+            geometry.models["small"].state,
             PreparationState::NotPrepared
         );
-        let report = geometry.report();
-        assert_eq!(report["roles"]["depth.deep"]["preparation"], "not_prepared");
         assert_eq!(
-            report["roles"]["depth.deep"]["fallback_reasons"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(report["roles"]["normals"]["unavailable"].is_string());
-
-        worker.config.device = "cuda".into();
-        let (_, answer) = worker.readiness().await;
-        assert_eq!(
-            answer["capabilities"]["geometry"]["roles"]["depth.deep"]["device"],
-            "cuda"
+            geometry.report(),
+            json!({"available": true, "models": {"small": "not_prepared"}})
         );
         // A geometry check that cannot run withholds geometry alone.
         worker.config.geometry.as_mut().unwrap().prepare_script = root.path().join("absent.py");
@@ -485,20 +340,17 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         let prepared = worker.prepare_geometry(&["small".into()]).await.unwrap();
         drop(permit);
         assert!(
-            prepared["entries"]["small"]["snapshot"]
+            prepared["models"]["small"]["snapshot"]
                 .as_str()
                 .unwrap()
                 .ends_with("snapshots/small")
         );
         let geometry = worker.geometry_readiness().await.unwrap().unwrap();
-        assert_eq!(
-            geometry.preparation["small"].state,
-            PreparationState::Prepared
-        );
+        assert_eq!(geometry.models["small"].state, PreparationState::Prepared);
     }
 
     #[tokio::test]
-    async fn a_run_gets_the_budget_and_threads_and_takes_its_turn() {
+    async fn a_run_gets_the_threads_and_takes_its_turn() {
         let (root, mut worker) = super::super::tests::worker(Duration::from_secs(60));
         configured(root.path(), &mut worker);
         let output = root.path().join("depth.npy");
@@ -525,7 +377,6 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
             .estimate_geometry(run("photo.png", "cpu"))
             .await
             .unwrap();
-        assert_eq!(result["gpu_budget_mib"], Value::Null);
         assert_eq!(result["threads"], 3);
         assert!(output.is_file());
         worker.config.device = "cuda".into();
@@ -533,7 +384,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
             .estimate_geometry(run("photo.png", "cuda"))
             .await
             .unwrap();
-        assert_eq!(result["gpu_budget_mib"], 3072);
+        assert_eq!(result["device"], "cuda");
         let error = worker
             .estimate_geometry(run("oom.png", "cuda"))
             .await

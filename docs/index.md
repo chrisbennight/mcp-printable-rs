@@ -27,7 +27,7 @@ own Linux NVIDIA host; your client provides the assistant and conversation.
 | MakerWorld, Printables, Thingiverse | Find other people's designs and retain their files, source, and license | [Enable sites](model-library.md); authentication and download access differ by site |
 | Bambuddy | Send printer-ready packages, review materials/hardware, stage/start jobs, and read status or camera frames | [Configure the printer integration](printer-integration.md); a printer is unnecessary for modeling or slicing |
 | Marigold V2 | Estimate relative photo depth and normals for relief work | [Optional photograph worker and model files](photo-depth.md) |
-| Photograph geometry models | Prepare depth, subject mask, focal length and normal models chosen to fit the worker's GPU and memory | [Optional photograph worker cache](photo-geometry.md); the chosen models appear in status |
+| Photograph geometry models | Prepare depth, subject mask, focal length and normal models, with benchmark-based recommendations for choosing among them | [Optional photograph worker cache](photo-geometry.md); each model's preparation state appears in status |
 | Pixal3D or TRELLIS.2 | Generate an object's shape from an image | [Optional object generator](photo-object.md); available models appear in status |
 | FLAME and reconstruction models | Create parametric heads and prepare busts, optionally from photographs | [Separately obtained models](flame-models.md); reconstruction also needs the photograph worker |
 | Client-run skills | Guide FDM preparation, image-to-mold work, and printer-camera assessment | Load through `skill`; the client runs the instructions and supplies any required vision or scheduling |
