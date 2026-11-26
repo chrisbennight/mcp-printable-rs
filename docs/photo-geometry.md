@@ -23,7 +23,7 @@ a persistent directory writable by uid 10001. The settings are listed in
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `PRINTABLE_RECON_GEOMETRY_CACHE` | unset (disabled) | Where downloaded and converted model files are kept |
-| `PRINTABLE_RECON_GPU_BUDGET_MIB` | 3072 | GPU memory one model run may allocate, 256 to 262144 MiB |
+| `PRINTABLE_RECON_GPU_BUDGET_MIB` | 8192 | GPU memory one model run may allocate, 256 to 262144 MiB |
 | `PRINTABLE_RECON_RAM_BUDGET_MIB` | unset (no limit) | Host memory a route may need, 512 to 1048576 MiB |
 | `PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS` | 900 | Deadline for one model run |
 | `PRINTABLE_RECON_GEOMETRY_PREPARATION_TIMEOUT_SECONDS` | 86400 | Deadline for downloading and converting models |
@@ -41,15 +41,18 @@ for it on a benchmark set.
 
 The worker takes the first option that fits:
 
-- A GPU option fits when the worker may use the GPU and the option's measured
-  GPU peak is within `PRINTABLE_RECON_GPU_BUDGET_MIB`.
+- A GPU option fits when the worker may use the GPU and the option's GPU
+  memory limit is within `PRINTABLE_RECON_GPU_BUDGET_MIB`. Each limit is the
+  benchmark's peak allocated memory plus 35 % for memory the allocator keeps
+  in reserve.
 - Any option fits only when its measured host memory peak is within
   `PRINTABLE_RECON_RAM_BUDGET_MIB`, if that is set.
 
 An option after the first is a fallback, and the worker records why each
-better option was passed over. With the default 3072 MiB budget, for example,
-`depth.deep` falls back from Depth Pro 2 H+ to Depth Pro 2 L because H+ needed
-more GPU memory than that in the measurements. When no option fits, the role
+better option was passed over. With the default 8192 MiB budget, for example,
+`depth.deep` runs Depth Pro 2 H+ at 1024 px rather than 2048 px, and `mask`
+runs MoGe-3 ViT-L rather than ViT-g. With 3072 MiB, only Marigold V2 normals
+stay on the GPU and the other roles run on the processor. When no option fits, the role
 is unavailable and the reason for each option is reported.
 
 The GPU budget is a hard limit on the PyTorch memory allocator in each model
