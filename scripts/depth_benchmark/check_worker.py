@@ -12,10 +12,12 @@ worker would start it. For every input the outputs are compared with the
 benchmark's maps for the same model: median relative depth difference
 (after a scale fit for relative depth), valid-pixel agreement, focal length
 difference and median normal angle. The default is every route option in
-models/geometry.json at 1024 px.
+models/geometry.json. CHECK_GPU_BUDGET_MIB, when set, replaces each CUDA
+route's budget, so its true peak reserved memory can be measured.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -88,7 +90,7 @@ def main(argv):
         for option in options:
             option["side"] = int(option["side"])
     else:
-        options = [o for route in registry["routes"].values() for o in route if o["side"] == 1024]
+        options = [o for route in registry["routes"].values() for o in route]
     seen, report = set(), []
     for option in options:
         key = (option["entry"], option["device"], option["side"])
@@ -98,6 +100,8 @@ def main(argv):
         budget = next((o.get("gpu_peak_mib") for route in registry["routes"].values() for o in route
                        if (o["entry"], o["device"], o["side"]) == key), None)
         tier = "cpu" if option["device"] == "cpu" else ("budget" if budget and budget <= 3072 else "gpu")
+        if option["device"] == "cuda" and os.environ.get("CHECK_GPU_BUDGET_MIB"):
+            budget = int(os.environ["CHECK_GPU_BUDGET_MIB"])
         for image in sorted(inputs.glob("*.png")):
             with tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
