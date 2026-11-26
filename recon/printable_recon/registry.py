@@ -49,7 +49,7 @@ class Option:
     side: int
     seconds: float
     gpu_peak_mib: int | None
-    ram_peak_mib: int | None
+    ram_peak_mib: int
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class Registry:
 
 
 def _unfit(option: Option, host: Host) -> str | None:
-    if host.ram_budget_mib is not None and option.ram_peak_mib is not None and option.ram_peak_mib > host.ram_budget_mib:
+    if host.ram_budget_mib is not None and option.ram_peak_mib > host.ram_budget_mib:
         return f"needs {option.ram_peak_mib} MiB of memory, the budget is {host.ram_budget_mib} MiB"
     if option.device == "cpu":
         return None
@@ -176,6 +176,6 @@ def _option(role: str, value: object, entries: dict[str, Entry]) -> Option:
         raise RegistryError(f"an option for {role} needs its measured seconds")
     if (device == "cuda") != (gpu is not None) or (gpu is not None and not _positive(gpu, int)):
         raise RegistryError(f"GPU options for {role} need their measured GPU peak, and CPU options must not have one")
-    if ram is not None and not _positive(ram, int):
-        raise RegistryError(f"an option for {role} has an invalid RAM peak")
+    if not _positive(ram, int):
+        raise RegistryError(f"an option for {role} needs its measured RAM peak")
     return Option(entry.name, device, side, float(seconds), gpu, ram)

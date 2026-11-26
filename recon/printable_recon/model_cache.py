@@ -25,6 +25,10 @@ import urllib.request
 from urllib.parse import urlsplit
 
 
+# A URL download in progress, beside the file it will become.
+PARTIAL_SUFFIX = ".partial"
+
+
 class PreparationError(Exception):
     """A model cannot be prepared or its files fail integrity validation."""
 
@@ -86,6 +90,8 @@ class ModelFile:
             raise ValueError("model file size must be a positive integer")
         _relative(self.directory)
         _relative(self.filename)
+        if self.filename.endswith(PARTIAL_SUFFIX):
+            raise ValueError("model file names must not end in .partial, which names downloads in progress")
 
     @property
     def relative_path(self) -> str:
@@ -200,33 +206,55 @@ URL_TIMEOUT_SECONDS = 60
 _CHUNK_BYTES = 1 << 20
 
 
-def _download_url(item: ModelFile, directory: Path, opener: Callable = urllib.request.urlopen) -> Path:
-    """Fetch a pinned-URL file, resuming a partial download when the server allows ranges."""
+class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another HTTPS URL, so a pinned HTTPS file is never fetched in plain text."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise PreparationError("a model download redirected away from HTTPS; the download was refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsRedirects)
+
+
+def _download_url(item: ModelFile, directory: Path, opener: Callable = _OPENER.open) -> Path:
+    """Fetch a pinned-URL file, resuming a partial download when the server allows ranges.
+
+    The partial file is renamed into place only once it has the pinned size;
+    a response that ends early keeps it for the next attempt to resume.
+    """
     target = _inside(directory, item.filename)
+    partial = _inside(directory, item.filename + PARTIAL_SUFFIX)
     target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_name(target.name + ".partial")
     offset = partial.stat().st_size if partial.is_file() else 0
     if offset > item.bytes:
         partial.unlink()
         offset = 0
-    request = urllib.request.Request(item.url, headers={"Range": f"bytes={offset}-"} if offset else {})
-    try:
-        with opener(request, timeout=URL_TIMEOUT_SECONDS) as response:
-            if offset and getattr(response, "status", 200) != 206:
-                offset = 0  # the server ignored the range; start again
-            with partial.open("ab" if offset else "wb") as sink:
-                while chunk := response.read(_CHUNK_BYTES):
-                    if sink.tell() + len(chunk) > item.bytes:
-                        raise PreparationError(f"model download for {item.relative_path} is larger than pinned")
-                    sink.write(chunk)
-    except urllib.error.HTTPError as error:
-        raise PreparationError(
-            f"model download failed for {item.relative_path} (HTTP {error.code}); check network access"
-        ) from None
-    except (urllib.error.URLError, TimeoutError, ConnectionError):
-        raise PreparationError(
-            f"model download failed for {item.relative_path}; check network access and retry"
-        ) from None
+    if offset < item.bytes:
+        request = urllib.request.Request(item.url, headers={"Range": f"bytes={offset}-"} if offset else {})
+        try:
+            with opener(request, timeout=URL_TIMEOUT_SECONDS) as response:
+                if offset and getattr(response, "status", 200) != 206:
+                    offset = 0  # the server ignored the range; start again
+                flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_APPEND if offset else os.O_TRUNC)
+                with os.fdopen(os.open(partial, flags, 0o644), "ab") as sink:
+                    written = offset
+                    while chunk := response.read(_CHUNK_BYTES):
+                        written += len(chunk)
+                        if written > item.bytes:
+                            raise PreparationError(f"model download for {item.relative_path} is larger than pinned")
+                        sink.write(chunk)
+        except urllib.error.HTTPError as error:
+            raise PreparationError(
+                f"model download failed for {item.relative_path} (HTTP {error.code}); check network access"
+            ) from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            raise PreparationError(
+                f"model download failed for {item.relative_path}; check network access and retry"
+            ) from None
+    if partial.stat().st_size != item.bytes:
+        raise PreparationError(f"model download for {item.relative_path} ended early; retrying resumes it")
     os.replace(partial, target)
     return target
 

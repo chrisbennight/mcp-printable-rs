@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 
 from printable_recon import model_cache
 from printable_recon.model_cache import Manifest, ModelFile, PreparationError
@@ -93,6 +94,7 @@ class ValidationTests(unittest.TestCase):
     def test_measurements_must_be_positive(self):
         self.assert_invalid(lambda d: d["routes"]["mask"][0].update(seconds=0), "measured seconds")
         self.assert_invalid(lambda d: d["routes"]["mask"][0].update(gpu_peak_mib=True), "GPU options")
+        self.assert_invalid(lambda d: d["routes"]["mask"][1].pop("ram_peak_mib"), "measured RAM peak")
 
     def test_files_must_be_pinned(self):
         self.assert_invalid(lambda d: d["entries"]["large"]["files"][0].update(revision="main"), "full commit")
@@ -155,6 +157,8 @@ class UrlFileTests(unittest.TestCase):
                 ModelFile(None, None, "weights", "model.pt", "a" * 64, 1, url=url)
         with self.assertRaisesRegex(ValueError, "not both"):
             ModelFile("example/model", "a" * 40, "weights", "model.pt", "a" * 64, 1, url=self.item.url)
+        with self.assertRaisesRegex(ValueError, "must not end in .partial"):
+            ModelFile("example/model", "a" * 40, "weights", "model.pt.partial", "a" * 64, 1)
 
     def test_hub_manifest_identifiers_are_unchanged(self):
         published = Manifest.read(MODELS / "trellis2.json")
@@ -200,6 +204,40 @@ class UrlFileTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PreparationError, "HTTP 404"):
             model_cache._download_url(self.item, self.directory, failing)
+
+    def test_a_short_response_keeps_its_bytes_for_the_next_attempt(self):
+        class Response(io.BytesIO):
+            status = 200
+
+        with self.assertRaisesRegex(PreparationError, "ended early"):
+            model_cache._download_url(self.item, self.directory, lambda r, timeout: Response(self.content[:7]))
+        self.assertEqual((self.directory / "model.pt.partial").read_bytes(), self.content[:7])
+        self.assertFalse((self.directory / "model.pt").exists())
+
+    def test_a_complete_partial_file_is_finished_without_a_request(self):
+        (self.directory / "model.pt.partial").write_bytes(self.content)
+
+        def unused(request, timeout):
+            raise AssertionError("no request is needed")
+
+        path = model_cache._download_url(self.item, self.directory, unused)
+        self.assertEqual(path.read_bytes(), self.content)
+
+    def test_a_symbolic_link_in_place_of_the_partial_file_is_refused(self):
+        elsewhere = self.directory / "verified.pt"
+        elsewhere.write_bytes(b"keep")
+        (self.directory / "model.pt.partial").symlink_to(elsewhere)
+        with self.assertRaisesRegex(PreparationError, "symbolic links"):
+            model_cache._download_url(self.item, self.directory, lambda r, timeout: io.BytesIO(self.content))
+        self.assertEqual(elsewhere.read_bytes(), b"keep")
+
+    def test_redirects_away_from_https_are_refused(self):
+        handler = model_cache._HttpsRedirects()
+        request = urllib.request.Request(self.item.url)
+        with self.assertRaisesRegex(PreparationError, "away from HTTPS"):
+            handler.redirect_request(request, None, 302, "Found", {}, "http://models.example.test/model.pt")
+        followed = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.test/model.pt")
+        self.assertEqual(followed.full_url, "https://cdn.example.test/model.pt")
 
     def test_prepare_verifies_url_files_like_hub_files(self):
         root = self.directory / "cache"

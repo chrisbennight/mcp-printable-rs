@@ -1,6 +1,6 @@
 {
   "format": "printable-geometry 1",
-  "measured": "evidence/depth-benchmark.md: median seconds per image and peak allocated memory over every input, one model at a time, on an RTX 4090 and a 32-thread CPU",
+  "measured": "evidence/depth-benchmark.md: median seconds per image and peak allocated memory over every input, one model at a time, on an RTX 4090 and a 32-thread CPU, with and without a 3 GiB GPU cap; the GPU figure is the larger peak, except that Depth Pro 2 L allocates 3,120 MiB uncapped but stays within the 3,072 MiB cap, so it needs that cap",
   "entries": {
     "da3-mono-large": {
       "model": "Depth Anything 3 mono large",
@@ -296,7 +296,7 @@
         "device": "cuda",
         "side": 1024,
         "seconds": 0.21,
-        "gpu_peak_mib": 2482,
+        "gpu_peak_mib": 3072,
         "ram_peak_mib": 2272
       },
       {
@@ -346,7 +346,7 @@
         "device": "cuda",
         "side": 1024,
         "seconds": 0.21,
-        "gpu_peak_mib": 2482,
+        "gpu_peak_mib": 3072,
         "ram_peak_mib": 2272
       },
       {
