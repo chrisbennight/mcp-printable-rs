@@ -190,11 +190,27 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
     if reg is None:
         return rows
     smooth = scoring.smooth_mask(truth["depth"], truth["valid"]) & reg
+
+    def score(z, depth_model, normals, sigma):
+        # Scored like a relief the user scales: one scale and offset, then compared with the truth.
+        relief = scoring.relief_error(z, truth["depth"], reg, scoring.RELATIVE)
+        shaped, _ = scoring.align(z, truth["depth"], truth["valid"], scoring.RELATIVE)
+        angle = scoring.normal_errors(scoring.normals_from_depth(shaped, truth["focal"]), truth["normals"], smooth)
+        rows.append({"tier": tier, "scene": scene, "depth": depth_model, "focal_from": FUSION_FOCAL_MODEL,
+                     "normals": normals, "sigma": sigma,
+                     "relief_rmse_mm": relief["rmse"] * 1000, "normal_deg": angle["median_deg"]})
+
+    # Every model's depth alone, scored the same way, so fusion is compared with the best plain depth.
+    # Relative depth is already affine in depth, so the scale and offset fit applies to it directly.
+    for model in models(tier):
+        d = load_run(tier, model, f"gt-{scene}")
+        if d is not None:
+            base = model_units(d)
+            score(d["depth"].astype(np.float64) if base is None else base, model, "none", None)
     focal_run = load_run(tier, FUSION_FOCAL_MODEL, f"gt-{scene}")
     focal = None if focal_run is None else focal_run.get("focal_px")
     if not focal:
         return rows
-    baselines = set()  # each depth model's depth-only row is scored once per scene
     for depth_model, normal_model in FUSIONS:
         d, n = load_run(tier, depth_model, f"gt-{scene}"), load_run(tier, normal_model, f"gt-{scene}")
         if d is None or n is None or "normals" not in n:
@@ -202,17 +218,8 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
         base = model_units(d)
         if base is None:
             continue
-        candidates = [] if depth_model in baselines else [("depth only", None, base)]
-        baselines.add(depth_model)
-        candidates += [("fused", s, fuse(base, n["normals"], focal, s)) for s in FUSION_SIGMAS]
-        for label, sigma, z in candidates:
-            # Scored like a relief the user scales: one scale and offset, then compared with the truth.
-            relief = scoring.relief_error(z, truth["depth"], reg, scoring.RELATIVE)
-            shaped, _ = scoring.align(z, truth["depth"], truth["valid"], scoring.RELATIVE)
-            angle = scoring.normal_errors(scoring.normals_from_depth(shaped, truth["focal"]), truth["normals"], smooth)
-            rows.append({"tier": tier, "scene": scene, "depth": depth_model, "focal_from": FUSION_FOCAL_MODEL,
-                         "normals": normal_model if label == "fused" else "none", "sigma": sigma,
-                         "relief_rmse_mm": relief["rmse"] * 1000, "normal_deg": angle["median_deg"]})
+        for sigma in FUSION_SIGMAS:
+            score(fuse(base, n["normals"], focal, sigma), depth_model, normal_model, sigma)
     return rows
 
 

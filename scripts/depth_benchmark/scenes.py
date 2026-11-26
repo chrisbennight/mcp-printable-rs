@@ -10,13 +10,16 @@ Normal passes, so no Blender-specific depth convention is relied on.
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
 import bpy
 from mathutils import Euler, Vector
 
-W, H = 1024, 768
+# Render width from BENCH_SIDE (default 1024), at a 4:3 aspect ratio.
+W = int(os.environ.get("BENCH_SIDE", "1024"))
+H = W * 3 // 4
 
 
 def reset():

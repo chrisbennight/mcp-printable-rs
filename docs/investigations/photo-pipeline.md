@@ -155,10 +155,12 @@ should be expected to need a solid rebuild.
 
 1. **Geometry backends.** Measured results are in
    [Evaluation results](#evaluation-results) and the
-   [depth benchmark](../../evidence/depth-benchmark.md). Use MoGe-3 (ViT-g on
-   the GPU, ViT-L within 3 GB) for depth, normals and a valid-pixel mask, and
-   Depth Pro 2 L depth on CPU-only hosts; add the Depth Pro 2 field-of-view
-   estimator for focal length. Keep Marigold V2 as an option for the finest
+   [depth benchmark](../../evidence/depth-benchmark.md). Choose by subject:
+   Depth Anything 3 mono large depth for shallow subjects (reliefs, coins,
+   artwork) on every host; MoGe-3 (ViT-g on the GPU, ViT-L within 3 GB) or
+   Depth Pro 2 L on CPU-only hosts for deep subjects; MoGe-3 for the
+   valid-pixel mask; the Depth Pro 2 field-of-view estimator for focal length.
+   Process at 1024 pixels: 2048 pixels gave no measured gain. Keep Marigold V2 as an option for the finest
    normal maps. Keep the relative map for compatibility.
 2. **Depth and normal fusion.** Produce one height field that takes large-scale
    shape from depth and fine detail from integrated model normals, without
@@ -381,12 +383,16 @@ For deep subjects with occlusions, depth alone gives the best height.
 The larger [depth benchmark](../../evidence/depth-benchmark.md) (nine scenes,
 three execution tiers) replaces this section's model choices; its routes are:
 
-- MoGe-3 ViT-g depth fused with its own normals on the GPU (about 6.7 GB);
-  MoGe-3 ViT-L, the same way, within 3 GB; Depth Pro 2 L depth on CPU-only
-  hosts, under a minute per map at 2048 pixels. Marigold V2's own depth fused
-  with its normals scored worse once fusion stopped using ground truth.
-- Marigold V2 normals as an option for normal maps and reliefs built mostly from normals:
-  still the most accurate normals measured.
+- Shallow subjects: Depth Anything 3 mono large depth, the best surface
+  direction measured, on GPU, within 3 GB or on CPU (about 13 seconds).
+- Deep subjects: MoGe-3 ViT-g depth fused with its own normals on the GPU
+  (about 6.7 GB); MoGe-3 ViT-L, the same way, within 3 GB; Depth Pro 2 L depth
+  on CPU-only hosts. Marigold V2's own depth fused with its normals scored
+  worse once fusion stopped using ground truth.
+- Process at 1024 pixels; 2048 pixels gave no measured quality gain and made
+  Marigold V2's normals worse.
+- Marigold V2 normals as an option for normal-map output: still the most
+  accurate normal maps measured.
 - The same MoGe model for the subject mask, MoGe-2 ViT-L on CPU (provisional
   until masks are scored).
 - The Depth Pro 2 field-of-view estimator for focal length, including for

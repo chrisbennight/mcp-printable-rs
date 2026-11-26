@@ -18,7 +18,8 @@ MODELS = {
     "da3-base": ("depth-anything/DA3-BASE", "relative", True),
     "da3-small": ("depth-anything/DA3-SMALL", "relative", True),
 }
-PROCESS_SIDE = 1008  # the default is 504; use a size close to the other models' inputs
+# The default is 504; process near the input size, as a multiple of the 14-pixel patch.
+PROCESS_SIDE = 1008 if common.input_side() <= 1024 else 14 * (common.input_side() // 14)
 TIMING_SIDE = 2044
 
 

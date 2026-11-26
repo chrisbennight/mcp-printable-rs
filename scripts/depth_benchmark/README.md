@@ -31,6 +31,7 @@ time, for example `run.sh ~/depth-benchmark report`.
 | `BENCH_GPU_BUDGET_GB` | GPU memory limit for the `budget` tier (default 3) |
 | `BENCH_CPU_THREADS` | CPU threads for the `cpu` tier (default: all) |
 | `BENCH_GPU_LOCK` | Optional file held with `flock` while the GPU is in use, for shared hosts |
+| `BENCH_SIDE` | Scene render size and input size in pixels (default 1024); use a separate data directory for each size |
 
 The `cpu` tier runs with no GPU visible. Every model scores the same three
 scenes there; faster models also run two photographs. Each model has a time

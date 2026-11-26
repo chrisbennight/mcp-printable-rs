@@ -17,8 +17,9 @@
 #   BENCH_GPU_BUDGET_GB GPU memory limit for the budget tier (default 3)
 #   BENCH_CPU_THREADS   CPU threads for the cpu tier (default all)
 #   BENCH_GPU_LOCK      optional file to hold with flock while the GPU is in use
+#   BENCH_SIDE          input and scene size in pixels (default 1024); use a separate data directory per size
 set -eu
-[ $# -ge 1 ] || { sed -n '2,19p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,20p' "$0"; exit 2; }
 data=$(cd "$1" 2>/dev/null && pwd || { mkdir -p "$1" && cd "$1" && pwd; })
 shift
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then has_gpu=1; else has_gpu=0; fi
@@ -47,6 +48,7 @@ container() {
     -e HOME=/tmp -e HF_HOME=/cache -e TORCH_HOME=/cache/torch -e TRITON_CACHE_DIR=/tmp/triton \
     -e MPLCONFIGDIR=/tmp/matplotlib -e PYTHONUNBUFFERED=1 \
     -e BENCH_GPU_BUDGET_GB="${BENCH_GPU_BUDGET_GB:-3}" -e BENCH_CPU_THREADS="${BENCH_CPU_THREADS:-0}" \
+    -e BENCH_SIDE="${BENCH_SIDE:-1024}" \
     -v "$data/images:/bench/images:ro" -v "$data/work:/bench/work" -v "$data/results:/bench/results" \
     -v "$cache:/cache" ${BENCH_MARIGOLD_DIR:+-v "$BENCH_MARIGOLD_DIR:/models/marigold-v2:ro"} \
     "$image" /bench/scripts/stage.sh "$@"

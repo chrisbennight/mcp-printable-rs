@@ -74,10 +74,11 @@ brackets.
 
 | Tier | Depth | Normals | Surface error, deg | Height error, mm |
 | --- | --- | --- | --- | --- |
+| gpu | Depth Anything 3 mono large | none (depth only) | **3.8** (2.6-5.6) | 8.1 (0.4-23.1) |
 | gpu | MoGe-3 ViT-g | none (depth only) | 6.1 (3.9-8.7) | 5.5 (0.4-15.2) |
 | gpu | MoGe-3 ViT-g | MoGe-3 ViT-g, sigma 4 | 5.7 (3.3-8.6) | 5.9 (0.4-16.4) |
 | gpu | MoGe-3 ViT-g | Marigold V2, sigma 4 | 5.7 (3.3-8.5) | 5.9 (0.4-16.4) |
-| gpu | Depth Anything 3 nested giant | Marigold V2, normals dominate | **4.4** (1.9-7.6) | 10.5 (0.5-29.6) |
+| gpu | Depth Anything 3 nested giant | Marigold V2, normals dominate | 4.4 (1.9-7.6) | 10.5 (0.5-29.6) |
 | gpu | Depth Pro 2 H+ | Marigold V2, normals dominate | 5.1 (2.1-9.5) | 7.3 (0.5-20.7) |
 | gpu | Depth Anything 3 nested giant | MoGe-3 ViT-g, sigma 16 | 5.1 (2.7-8.5) | 9.0 (0.4-25.9) |
 | gpu | Marigold V2 | none (depth only) | 8.6 (5.0-13.2) | 9.0 (0.7-25.4) |
@@ -85,6 +86,7 @@ brackets.
 | budget | MoGe-3 ViT-L | MoGe-3 ViT-L, sigma 4 | 7.6 (4.2-11.6) | 7.2 (0.4-20.4) |
 | budget | Depth Pro 2 L | none (depth only) | 8.6 (5.3-12.2) | 5.9 (0.4-16.5) |
 | budget | Depth Pro 2 L | Marigold V2, sigma 4 | 7.8 (4.3-11.8) | 6.6 (0.4-18.6) |
+| cpu | Depth Anything 3 mono large | none (depth only) | 5.1 (2.7-9.1) | 18.2 (0.4-53.2) |
 | cpu | Depth Pro 2 L | none (depth only) | 6.6 (3.9-10.6) | 13.1 (0.4-37.6) |
 | cpu | Depth Pro 2 L | Marigold V2, sigma 4 | 6.3 (3.8-10.1) | 14.8 (0.4-42.6) |
 | cpu | Marigold V2 | Marigold V2, sigma 4 | 9.2 (4.2-14.9) | 18.2 (0.6-52.8) |
@@ -94,9 +96,36 @@ other. Marigold V2's depth carries no fixed scale or exponent, so in its own
 units its normals and depth disagree in magnitude; without ground truth to
 reconcile them, its own fusion is the weakest of the leading pairs. With
 MoGe-3 ViT-g depth at sigma 4 the choice of normal model makes no measurable
-difference. Letting Marigold V2 normals dominate gives the best surface
-direction but worse height. Height intervals are wide because the head scene's errors, in
-millimetres, dominate them; no pair separates on height.
+difference. Depth Anything 3 mono large gives the best surface direction from
+its depth alone, better than any fusion, but worse height on the deep head
+scene; on the six shallow scenes its relief error (15.3 %, 10.6-19.8) ties the
+leaders (MoGe-3 ViT-g 16.3 %, Depth Pro 2 L 15.8 %). Height intervals are wide
+because the head scene's errors, in millimetres, dominate them; no pair
+separates on height.
+
+## Input size: 1024 or 2048 pixels
+
+The nine scenes were rendered again at 2048 x 1536 and every model ran on the
+GPU at 2048 pixels (Depth Anything 3 processing at 2044). Paired by scene,
+2048 pixels gave no measured quality gain for shallow subjects and made some
+models worse:
+
+- Marigold V2's normals: 4.0 to 7.6 degrees (change +3.6, interval +2.4 to
+  +4.8); its relief error rose from 16.0 % to 21.8 %.
+- MoGe-3 and MoGe-2: unchanged within a quarter of a degree, as they resize
+  their input internally; MoGe-3 ViT-g fused at sigma 4 scored 5.8 degrees and
+  5.6 mm.
+- Depth Anything 3 and Depth Pro 2: relief error on the shallow scenes
+  unchanged; surface direction from depth worse (Depth Anything 3 mono large
+  3.8 to 4.9 degrees), partly because finer pixels make differentiated depth
+  noisier.
+- Deep subjects: on the head scene only, Depth Pro 2 H+ height error fell from
+  34.5 to 21.1 mm and Depth Anything 3 mono large from 53 to 44 mm; over all
+  seven relief scenes the change includes zero (Depth Pro 2 H+ -1.9 mm,
+  -5.8 to +0.1).
+
+Depth and normals are therefore computed at 1024 pixels on the longest side;
+larger photographs are reduced first and the result scaled to the output.
 
 ## Focal length
 
@@ -130,24 +159,29 @@ at 2048 pixels.
 
 ## Chosen routes
 
-| Role | Default (GPU) | Within 3 GB of GPU memory | CPU only |
-| --- | --- | --- | --- |
-| Depth and normals | MoGe-3 ViT-g, fused with its own normals at sigma 4 | MoGe-3 ViT-L, fused with its own normals at sigma 4 | Depth Pro 2 L depth |
-| Subject mask | MoGe-3 ViT-g | MoGe-3 ViT-L | MoGe-2 ViT-L normal |
-| Focal length | Depth Pro 2 field-of-view estimator | the same | the same |
-| Detail normals (optional) | Marigold V2 | Marigold V2 | none |
+Routes depend on the subject: shallow subjects (reliefs, coins, lettering,
+artwork) need surface direction; deep subjects (objects, figures) need overall
+height.
 
-The default runs one depth model in under a second plus Depth Pro 2 for
-focal length: about 6.7 GB of GPU memory at the peak, one model at a time.
-The 3 GB route gives up about 2 degrees of surface direction for that
-memory. It fits 3 GB at 1024 pixels; at 2048 pixels the full Depth Pro 2 L
-model ran out of memory under the cap, so that route must estimate focal
-length on a reduced copy of the image (field of view does not depend on
-resolution). The benchmark has not measured that reduced-copy estimate. The CPU route takes under a minute per map at 2048 pixels. Marigold
-V2's own normals remain the most accurate measured (4.0 degrees) and are kept
-for normal-map output and reliefs built mostly from normals, where they gave
-the best surface direction measured (4.4 degrees with Depth Anything 3 nested
-giant depth); it is not needed for depth.
+| Role | GPU | Within 3 GB of GPU memory | CPU only |
+| --- | --- | --- | --- |
+| Shallow subjects | Depth Anything 3 mono large depth | the same | the same (13 s per map) |
+| Deep subjects | MoGe-3 ViT-g, fused with its own normals at sigma 4 | MoGe-3 ViT-L, fused with its own normals at sigma 4 | Depth Pro 2 L depth |
+| Subject mask | MoGe-3 ViT-g | MoGe-3 ViT-L | MoGe-2 ViT-L normal |
+| Focal length | Depth Pro 2 field-of-view estimator | the same, on a reduced copy above 1024 pixels | the same |
+| Normal-map output (optional) | Marigold V2 | Marigold V2 | none |
+
+All routes process at 1024 pixels. Models run one at a time; the GPU route
+peaks at about 6.7 GB (MoGe-3 ViT-g) and takes under a second per model,
+plus loading. The 3 GB route gives up about 2 degrees of surface direction on
+deep subjects; at 1024 pixels every model in it fits the cap. The full Depth
+Pro 2 L model ran out of memory under the cap at 2048 pixels, so focal length
+there must come from a reduced copy (field of view does not depend on
+resolution); that reduced-copy estimate has not been measured. The CPU routes
+take under 20 seconds of inference per map, plus about 7 seconds for the
+mask. Marigold V2's own normals remain the most accurate normal maps measured
+(4.0 degrees at 1024 pixels) and are kept for normal-map output; it is not
+needed for depth.
 
 The subject-mask choice is provisional: masks are saved with each prediction
 but not yet scored, and will be measured when `photo.analyze` is built.
@@ -158,6 +192,8 @@ but not yet scored, and will be measured when `photo.analyze` is built.
   overlap for most close pairs, and height error does not separate the leading
   combinations.
 - The CPU tier scores three scenes per model.
+- The 2048-pixel comparison covers the GPU tier only; its scenes are separate
+  renders of the same geometry.
 - The engraved coin (1 mm engraving) was poorly recovered by every model.
 - Photographs were judged visually except for focal length.
 - One run per image; DSINE was not measured because its weights are published
