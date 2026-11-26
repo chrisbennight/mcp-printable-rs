@@ -386,7 +386,7 @@ three execution tiers) replaces this section's model choices; its routes are:
 - Shallow subjects: Depth Anything 3 mono large depth, the best surface
   direction measured, on GPU, within 3 GB or on CPU (about 13 seconds).
 - Deep subjects (provisional, one scene): Depth Pro 2 H+ depth at 2048 pixels
-  on the GPU (about 8.6 GB), Depth Pro 2 L at 1024 pixels within 3 GB, Depth
+  on the GPU (peak 10.1 GB), Depth Pro 2 L at 1024 pixels within 3 GB, Depth
   Pro 2 H+ at 1024 pixels on CPU-only hosts. Fusing normals made deep height
   worse.
 - Shallow subjects at 1024 pixels: 2048 pixels gave no measured gain there and
