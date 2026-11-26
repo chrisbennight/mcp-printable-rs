@@ -122,6 +122,93 @@ fn photo_job() -> Value {
     job
 }
 
+/// A photograph analysis, returned from the cache or as a job's result.
+fn photo_analysis() -> Value {
+    let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
+    let map = object(
+        json!({
+            "file":{"type":"string"}, "format":{"enum":["png","tiff"]},
+            "bit_depth":{"enum":[16, 32]}, "channels":{"type":"integer","minimum":1},
+            "artifact":artifact(), "sha256":digest
+        }),
+        &[
+            "file",
+            "format",
+            "bit_depth",
+            "channels",
+            "artifact",
+            "sha256",
+        ],
+    );
+    object(
+        json!({
+            "width":{"type":"integer","minimum":1}, "height":{"type":"integer","minimum":1},
+            "settings":{"type":"object"}, "routes":{"type":"object"},
+            "depth":object(json!({"role":{"type":"string"},"model":{"type":"string"},
+                "kind":{"enum":["metric","relative"]}}), &["role","model","kind"]),
+            "focal_length":object(json!({"source":{"enum":["given","estimated"]},
+                "px":{"type":"number","exclusiveMinimum":0},"photograph_px":{"type":"number","exclusiveMinimum":0},
+                "model":{"type":"string"}}), &["source","px"]),
+            "scores":{"type":"object"},
+            "metric_estimate":{"type":"object"},
+            "warnings":{"type":"array","items":{"type":"string"}},
+            "artifacts":object(json!({"depth":map,"normals":map,"mask":map,"confidence":map}),
+                &["depth","normals","mask","confidence"]),
+            "image_sha256":digest,
+            "cache":object(json!({"key":digest,"directory":{"type":"string"},"hit":{"type":"boolean"}}),
+                &["key","directory","hit"]),
+            "manifest":artifact()
+        }),
+        &[
+            "width",
+            "height",
+            "settings",
+            "depth",
+            "focal_length",
+            "scores",
+            "warnings",
+            "artifacts",
+            "image_sha256",
+            "cache",
+            "manifest",
+        ],
+    )
+}
+
+fn analysis_job() -> Value {
+    object(
+        json!({
+            "job_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},
+            "state":{"enum":["queued","running","succeeded","failed","cancelled","interrupted","outcome_unknown"]},
+            "phase":{"enum":["queued","preparing_models","waiting_for_gpu","generating","publishing","finished"]},
+            "action":{"const":"analyze"}, "image":{"type":"string"},
+            "subject":{"enum":["shallow","deep"]},
+            "cache_key":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "created_unix_ms":{"type":"integer","minimum":0}, "updated_unix_ms":{"type":"integer","minimum":0},
+            "cancellation_requested":{"type":"boolean"}, "cancellable":{"type":"boolean"},
+            "result":{"anyOf":[photo_analysis(),{"type":"null"}]},
+            "failure":{"anyOf":[object(json!({"code":{"type":"string"},"message":{"type":"string"}}), &["code","message"]),{"type":"null"}]},
+            "request":{"type":"object"}, "execution":{"type":"object"},
+            "image_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+        }),
+        &[
+            "job_id",
+            "state",
+            "phase",
+            "action",
+            "image",
+            "subject",
+            "cache_key",
+            "created_unix_ms",
+            "updated_unix_ms",
+            "cancellation_requested",
+            "cancellable",
+            "result",
+            "failure",
+        ],
+    )
+}
+
 fn publication_errors() -> Value {
     json!({"type":"array","items":object(json!({"artifact":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}), &["artifact","code","message"])})
 }
@@ -1040,8 +1127,10 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 &["artifact", "triangles", "generated_triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
             ),
             photo_job(),
+            analysis_job(),
+            photo_analysis(),
             object(json!({
-                "jobs":{"type":"array","items":photo_job()},
+                "jobs":{"type":"array","items":{"anyOf":[photo_job(),analysis_job()]}},
                 "requested_limit":{"type":"integer","minimum":1},
                 "returned":{"type":"integer","minimum":0},
                 "next_offset":{"type":["integer","null"],"minimum":0}

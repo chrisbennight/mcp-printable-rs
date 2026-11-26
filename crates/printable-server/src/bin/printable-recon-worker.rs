@@ -11,8 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    DepthRequest, GeometryConfig, ObjectModel, ObjectRequest, PhotoJobListRequest, PhotoJobRequest,
-    ReconConfig, ReconRequest, ReconWorker, TrellisConfig, worker_message,
+    AnalyzeRequest, DepthRequest, GeometryConfig, ObjectModel, ObjectRequest, PhotoJobListRequest,
+    PhotoJobRequest, ReconConfig, ReconRequest, ReconWorker, TrellisConfig, worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -136,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/reconstruct", post(reconstruct))
         .route("/depth", post(depth))
         .route("/object", post(object))
+        .route("/photo/analyze", post(photo_analyze))
         .route("/photo/jobs/status", post(photo_job_status))
         .route("/photo/jobs/list", post(photo_job_list))
         .route("/photo/jobs/cancel", post(photo_job_cancel))
@@ -208,6 +209,13 @@ fn photo_answer(
             Json(json!({"code": error.code(), "message": worker_message(&error)})),
         ),
     }
+}
+
+async fn photo_analyze(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(request): Json<AnalyzeRequest>,
+) -> (StatusCode, Json<Value>) {
+    photo_answer(worker.submit_analysis(request))
 }
 
 async fn photo_job_status(

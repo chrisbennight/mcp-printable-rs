@@ -14,6 +14,9 @@ use super::*;
 pub struct GeometryConfig {
     pub script: PathBuf,
     pub prepare_script: PathBuf,
+    /// Runs a whole photograph analysis; beside it are the registry and the
+    /// analysis code the cache key covers.
+    pub analyze_script: PathBuf,
     /// Persistent storage for downloaded and converted model files.
     pub cache: PathBuf,
     /// GPU memory one model run may allocate; enforced inside the process.
@@ -66,6 +69,9 @@ impl GeometryConfig {
             prepare_script: get("PRINTABLE_RECON_GEOMETRY_PREPARE_SCRIPT")
                 .unwrap_or_else(|| "/opt/printable/recon/prepare_geometry.py".into())
                 .into(),
+            analyze_script: get("PRINTABLE_RECON_GEOMETRY_ANALYZE_SCRIPT")
+                .unwrap_or_else(|| "/opt/printable/recon/analyze_photo.py".into())
+                .into(),
             cache: cache.into(),
             gpu_budget_mib: number("PRINTABLE_RECON_GPU_BUDGET_MIB", 3072, 256..=262144)?,
             ram_budget_mib,
@@ -114,6 +120,14 @@ pub struct GeometryReadiness {
 }
 
 impl GeometryReadiness {
+    /// Whether a photograph analysis can run: a subject mask route and at
+    /// least one depth route. A request whose other roles have no route is
+    /// refused when it is planned.
+    pub fn can_analyze(&self) -> bool {
+        let selected = |role: &str| matches!(self.roles.get(role), Some(RoleRoute::Selected(_)));
+        selected("mask") && (selected("depth.shallow") || selected("depth.deep"))
+    }
+
     /// A short per-role summary for the status tool.
     pub fn report(&self) -> Value {
         let roles: serde_json::Map<String, Value> = self
@@ -235,6 +249,14 @@ impl ReconWorker {
     /// each entry's snapshot and, where it has one, its converted model.
     /// Preparation uses no GPU, so it runs outside the photograph job lane.
     pub async fn prepare_geometry(&self, entries: &[String]) -> Result<Value, ToolError> {
+        self.prepare_geometry_controlled(entries, None).await
+    }
+
+    pub(super) async fn prepare_geometry_controlled(
+        &self,
+        entries: &[String],
+        control: Option<&JobControl>,
+    ) -> Result<Value, ToolError> {
         let config = self.geometry_config()?;
         let staging = tempfile::Builder::new()
             .prefix("printable-geometry-prepare-")
@@ -248,7 +270,7 @@ impl ReconWorker {
             staging.path(),
             config.preparation_timeout,
             "geometry model preparation",
-            None,
+            control,
         )
         .await
     }
@@ -280,7 +302,7 @@ impl ReconWorker {
         .await
     }
 
-    fn geometry_config(&self) -> Result<&GeometryConfig, ToolError> {
+    pub(super) fn geometry_config(&self) -> Result<&GeometryConfig, ToolError> {
         self.config.geometry.as_ref().ok_or_else(|| {
             reconstruction_error(
                 "unavailable",
@@ -291,7 +313,7 @@ impl ReconWorker {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     const PREPARE: &str = r#"
@@ -333,7 +355,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
     'gpu_budget_mib': request['gpu_budget_mib'], 'threads': request['threads'], 'outputs': ['depth']}}))
 "#;
 
-    fn configured(root: &Path, worker: &mut ReconWorker) {
+    pub(in crate::recon) fn configured(root: &Path, worker: &mut ReconWorker) {
         let prepare = root.join("runtime/prepare_geometry.py");
         let estimate = root.join("runtime/estimate_geometry.py");
         std::fs::write(&prepare, PREPARE).unwrap();
@@ -341,6 +363,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         worker.config.geometry = Some(GeometryConfig {
             script: estimate,
             prepare_script: prepare,
+            analyze_script: root.join("runtime/analyze_photo.py"),
             cache: root.join("geometry"),
             gpu_budget_mib: 3072,
             ram_budget_mib: None,

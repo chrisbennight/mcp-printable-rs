@@ -149,6 +149,7 @@ workflow!(HeadRequest {
 workflow!(PhotoRequest {
     Depth(crate::recon::DepthRequest) => "printable_photo_depth",
     Object(crate::recon::ObjectRequest) => "printable_photo_object",
+    Analyze(crate::recon::AnalyzeRequest) => "printable_photo_analyze",
     Status(crate::recon::PhotoJobRequest) => "printable_photo_job_status",
     List(crate::recon::PhotoJobListRequest) => "printable_photo_job_list",
     Cancel(crate::recon::PhotoJobRequest) => "printable_photo_job_cancel",
@@ -166,18 +167,15 @@ fn head_schema() -> Arc<JsonObject> {
     )
 }
 
-/// The `photo` input schema with depth and retained-job actions.
-fn photo_depth_schema() -> Arc<JsonObject> {
-    without_actions(&workflow_schema_of::<PhotoRequest>(), &["object"])
-}
-
-/// The `photo` input schema with object generation and retained-job actions.
-fn photo_object_schema() -> Arc<JsonObject> {
-    without_actions(&workflow_schema_of::<PhotoRequest>(), &["depth"])
-}
-
-fn photo_jobs_schema() -> Arc<JsonObject> {
-    without_actions(&workflow_schema_of::<PhotoRequest>(), &["depth", "object"])
+/// The `photo` input schema with the retained-job actions and only the
+/// generation actions the worker can serve.
+fn photo_schema<const DEPTH: bool, const OBJECT: bool, const ANALYZE: bool>() -> Arc<JsonObject> {
+    let removed: Vec<&str> = [("depth", DEPTH), ("object", OBJECT), ("analyze", ANALYZE)]
+        .into_iter()
+        .filter(|(_, served)| !served)
+        .map(|(action, _)| action)
+        .collect();
+    without_actions(&workflow_schema_of::<PhotoRequest>(), &removed)
 }
 
 /// A workflow input schema without the `removed` actions.
@@ -470,6 +468,8 @@ pub struct Availability {
     pub depth: bool,
     /// The photograph worker can serve at least one object generator.
     pub object: bool,
+    /// The photograph worker reports routes for photograph analysis.
+    pub analyze: bool,
     /// Retained photograph jobs exist independently of current model mounts.
     pub photo_jobs: bool,
     /// At least one public model site is enabled.
@@ -487,14 +487,20 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
         .filter(move |tool| {
-            tool.name != PHOTO || available.depth || available.object || available.photo_jobs
+            tool.name != PHOTO
+                || available.depth
+                || available.object
+                || available.analyze
+                || available.photo_jobs
         })
         .filter(move |tool| tool.name != LIBRARY || available.library)
         .map(move |tool| match tool.name {
             HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
-            PHOTO if !available.object && !available.depth => &PHOTO_JOBS,
-            PHOTO if !available.object => &PHOTO_DEPTH,
-            PHOTO if !available.depth => &PHOTO_OBJECT,
+            PHOTO => {
+                &PHOTO_VARIANTS[usize::from(available.depth)
+                    | usize::from(available.object) << 1
+                    | usize::from(available.analyze) << 2]
+            }
             _ => tool,
         })
 }
@@ -507,40 +513,130 @@ macro_rules! photo_prefix {
 }
 macro_rules! photo_depth_text {
     () => {
-        "depth writes a 16-bit relative depth PNG, and optionally a normal map, for reliefs and molds; calibrate heights before building geometry, as the image-to-mold skill describes."
+        "depth writes a 16-bit relative depth PNG and optional normal map for reliefs; calibrate heights as the image-to-mold skill describes."
     };
 }
 macro_rules! photo_object_text {
     () => {
-        "object generates one object's shape with Pixal3D or TRELLIS.2 as an STL in millimetres, Z up; hidden sides are invented, so validate and repair it before slicing. A background or TRELLIS.2 request returns a job_id: poll it with status, find jobs with list and stop one with cancel."
+        "object generates an STL in millimetres, Z up, with Pixal3D or TRELLIS.2; hidden sides are invented, so validate it before slicing."
     };
 }
 
-static PHOTO_DEPTH: ToolDef = ToolDef {
-    name: PHOTO,
-    description: concat!(
-        photo_prefix!(),
-        " ",
-        photo_depth_text!(),
-        " status, list and cancel inspect and stop retained jobs."
-    ),
-    schema: photo_depth_schema,
-    annotations: write_annotations,
-};
+macro_rules! photo_analyze_text {
+    () => {
+        "analyze caches float depth, normals, a subject mask, focal length and confidence for reuse; a repeat returns the cache at once."
+    };
+}
+macro_rules! photo_jobs_text {
+    () => {
+        "Background requests return a job_id: follow it with status, find jobs with list, stop one with cancel."
+    };
+}
 
-static PHOTO_OBJECT: ToolDef = ToolDef {
-    name: PHOTO,
-    description: concat!(photo_prefix!(), " ", photo_object_text!()),
-    schema: photo_object_schema,
-    annotations: write_annotations,
-};
-
-static PHOTO_JOBS: ToolDef = ToolDef {
-    name: PHOTO,
-    description: "Inspect retained photograph jobs with status and list, or request cancellation with cancel. Interrupted jobs are never replayed; inspect the output path before submitting again.",
-    schema: photo_jobs_schema,
-    annotations: write_annotations,
-};
+/// The `photo` tool for each combination of served generation actions,
+/// indexed by depth, object and analyze as bits 0, 1 and 2.
+static PHOTO_VARIANTS: [ToolDef; 8] = [
+    ToolDef {
+        name: PHOTO,
+        description: "Inspect retained photograph jobs with status and list, or request cancellation with cancel. Interrupted jobs are never replayed; inspect the output path before submitting again.",
+        schema: photo_schema::<false, false, false>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_depth_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<true, false, false>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_object_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<false, true, false>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_depth_text!(),
+            " ",
+            photo_object_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<true, true, false>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_analyze_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<false, false, true>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_depth_text!(),
+            " ",
+            photo_analyze_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<true, false, true>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_object_text!(),
+            " ",
+            photo_analyze_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<false, true, true>,
+        annotations: write_annotations,
+    },
+    ToolDef {
+        name: PHOTO,
+        description: concat!(
+            photo_prefix!(),
+            " ",
+            photo_depth_text!(),
+            " ",
+            photo_object_text!(),
+            " ",
+            photo_analyze_text!(),
+            " ",
+            photo_jobs_text!()
+        ),
+        schema: photo_schema::<true, true, true>,
+        annotations: write_annotations,
+    },
+];
 
 // The parts of the `head` description.
 macro_rules! head_text {
@@ -707,7 +803,11 @@ pub const TOOLS: &[ToolDef] = &[
             " ",
             photo_depth_text!(),
             " ",
-            photo_object_text!()
+            photo_object_text!(),
+            " ",
+            photo_analyze_text!(),
+            " ",
+            photo_jobs_text!()
         ),
         schema: workflow_schema_of::<PhotoRequest>,
         annotations: write_annotations,
@@ -836,6 +936,7 @@ mod tests {
                 reconstruct: false,
                 depth,
                 object: false,
+                analyze: false,
                 photo_jobs: false,
                 library: false,
             })
@@ -861,22 +962,54 @@ mod tests {
 
     #[test]
     fn photo_offers_only_the_actions_its_models_serve() {
-        let photo = |depth, object| {
+        let photo = |depth, object, analyze| {
             advertised(Availability {
                 depth,
                 object,
+                analyze,
                 ..Availability::default()
             })
             .find(|tool| tool.name == PHOTO)
         };
-        assert!(photo(false, false).is_none());
-        for (depth, object) in [(true, false), (false, true), (true, true)] {
-            let tool = photo(depth, object).unwrap();
+        assert!(photo(false, false, false).is_none());
+        for mask in 1..8u8 {
+            let (depth, object, analyze) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0);
+            let tool = photo(depth, object, analyze).unwrap();
             let schema = serde_json::to_string(&*(tool.schema)()).unwrap();
             assert_eq!(schema.contains("depth_path"), depth);
             assert_eq!(schema.contains("mesh_path"), object);
+            assert_eq!(schema.contains("focal_length_px"), analyze);
             assert_eq!(tool.description.contains("depth writes"), depth);
             assert_eq!(tool.description.contains("object generates"), object);
+            assert_eq!(tool.description.contains("analyze caches"), analyze);
+            assert!(tool.description.contains("status"));
+        }
+    }
+
+    #[test]
+    fn photo_analyze_resolves_to_the_analysis_operation() {
+        let call = resolve(
+            PHOTO,
+            json!({"action": "analyze", "params": {"image": "coin.jpg", "subject": "shallow",
+                "quality": "fast", "interpretation": "physical", "normals": true, "focal_length_px": 1200.0}}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_analyze");
+        assert_eq!(call.arguments["interpretation"], "physical");
+        for params in [
+            json!({"image": "coin.jpg"}),
+            json!({"image": "coin.jpg", "subject": "flat"}),
+            json!({"image": "coin.jpg", "subject": "deep", "quality": "slow"}),
+            json!({"image": "coin.jpg", "subject": "deep", "depth_path": "depth.png"}),
+        ] {
+            assert!(
+                resolve(
+                    PHOTO,
+                    json!({"action": "analyze", "params": params.clone()})
+                )
+                .is_err(),
+                "{params}"
+            );
         }
     }
 
@@ -952,6 +1085,7 @@ mod tests {
                 reconstruct,
                 depth: false,
                 object: false,
+                analyze: false,
                 photo_jobs: false,
                 library: false,
             })

@@ -20,6 +20,7 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 use crate::error::ToolError;
 
+mod analysis;
 mod geometry;
 mod photo_jobs;
 mod trellis;
@@ -325,6 +326,94 @@ impl DepthRequest {
                 "max_side must be between {} and {}",
                 DEPTH_MAX_SIDES.start(),
                 DEPTH_MAX_SIDES.end()
+            )));
+        }
+        Ok(())
+    }
+}
+
+// How deep the photographed subject is, which selects the depth route:
+// shallow subjects are processed at 1024 px, deep ones at up to 2048 px.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Subject {
+    Shallow,
+    Deep,
+}
+
+// `best` takes the highest-quality route within the budgets and adds
+// mirrored and rescaled consistency passes; `fast` takes the fastest route
+// and skips them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisQuality {
+    #[default]
+    Best,
+    Fast,
+}
+
+// How artwork is read: `physical` as the flat object it is, with MoGe depth,
+// or `sculpture` as a sculpted scene, with Depth Anything 3 depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Interpretation {
+    Physical,
+    Sculpture,
+}
+
+/// Known focal lengths a caller may give, in pixels of the photograph.
+pub const ANALYSIS_FOCAL_LENGTHS_PX: std::ops::RangeInclusive<f64> = 10.0..=100_000.0;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalyzeRequest {
+    /// Workspace JPEG, PNG or WebP photograph.
+    pub image: String,
+    /// `shallow` (reliefs, coins, artwork; 1024 px) or `deep` (heads,
+    /// objects, scenes; up to 2048 px).
+    pub subject: Subject,
+    /// `best` (default) adds consistency passes; `fast` takes the fastest
+    /// routes, for previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<AnalysisQuality>,
+    /// Shallow only: `sculpture` (default) or `physical`, which reads artwork
+    /// as flat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpretation: Option<Interpretation>,
+    /// Add a Marigold V2 normal map; otherwise normals come from depth.
+    #[serde(default)]
+    pub normals: bool,
+    /// Known focal length in photograph pixels, 10 to 100000; estimated when
+    /// omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focal_length_px: Option<f64>,
+}
+
+impl AnalyzeRequest {
+    /// Checks that need no file access.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        if !IMAGE_SUFFIXES
+            .iter()
+            .any(|suffix| self.image.ends_with(suffix))
+        {
+            return Err(ToolError::Validation(format!(
+                "{} is not a .jpg, .jpeg, .png or .webp photograph",
+                self.image
+            )));
+        }
+        if self.interpretation.is_some() && self.subject != Subject::Shallow {
+            return Err(ToolError::Validation(
+                "interpretation applies only to shallow subjects".into(),
+            ));
+        }
+        if self
+            .focal_length_px
+            .is_some_and(|focal| !ANALYSIS_FOCAL_LENGTHS_PX.contains(&focal))
+        {
+            return Err(ToolError::Validation(format!(
+                "focal_length_px must be between {} and {}",
+                ANALYSIS_FOCAL_LENGTHS_PX.start(),
+                ANALYSIS_FOCAL_LENGTHS_PX.end()
             )));
         }
         Ok(())
@@ -639,7 +728,11 @@ impl ReconWorker {
                 || capabilities.depth
                 || capabilities.object
                 || capabilities.trellis2
-                || capabilities.photo_jobs)
+                || capabilities.photo_jobs
+                || capabilities
+                    .geometry
+                    .as_ref()
+                    .is_some_and(GeometryReadiness::can_analyze))
         {
             (
                 true,
@@ -1942,6 +2035,15 @@ impl ReconClient {
         self.ready.borrow().geometry.clone()
     }
 
+    /// Whether the worker last reported routes for photograph analysis.
+    pub fn can_analyze(&self) -> bool {
+        self.ready
+            .borrow()
+            .geometry
+            .as_ref()
+            .is_some_and(GeometryReadiness::can_analyze)
+    }
+
     pub fn can_manage_photo_jobs(&self) -> bool {
         self.ready.borrow().photo_jobs
     }
@@ -2039,6 +2141,16 @@ impl ReconClient {
             "object",
             request,
             "list photograph jobs and inspect mesh_path before retrying, because the request may have been retained or the mesh written",
+        )
+        .await
+    }
+
+    pub async fn analyze(&self, request: &AnalyzeRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.post(
+            "photo/analyze",
+            request,
+            "list photograph jobs before retrying, because the request may have been retained",
         )
         .await
     }

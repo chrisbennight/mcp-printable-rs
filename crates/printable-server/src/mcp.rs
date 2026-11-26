@@ -212,6 +212,11 @@ impl PrintableServer {
                 .recon
                 .as_ref()
                 .is_some_and(|recon| recon.can_generate_objects()),
+            analyze: self
+                .settings
+                .recon
+                .as_ref()
+                .is_some_and(|recon| recon.can_analyze()),
             photo_jobs: self
                 .settings
                 .recon
@@ -907,6 +912,7 @@ mod tests {
             reconstruct: true,
             depth: true,
             object: true,
+            analyze: true,
             photo_jobs: true,
             library: true,
         };
@@ -1017,7 +1023,7 @@ mod tests {
         ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
-        ("photo", 4_900, 0),
+        ("photo", 6_100, 0),
         ("library", 3_000, 0),
         ("artifact", 6_400, 0),
     ];
@@ -1025,7 +1031,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 197_000;
+    const CATALOG_BUDGET: usize = 198_500;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {
@@ -1034,6 +1040,7 @@ mod tests {
             reconstruct: true,
             depth: true,
             object: true,
+            analyze: true,
             photo_jobs: true,
             library: true,
         };
