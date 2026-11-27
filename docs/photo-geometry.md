@@ -76,7 +76,10 @@ Set `PRINTABLE_RECON_GEOMETRY_CACHE` in the photograph worker's environment to
 a persistent directory writable by uid 10001. The photograph overlay,
 [`compose.photo.yaml`](../compose.photo.yaml), already sets it to
 `/models/geometry` on the disk-backed `geometry-models` volume, so analysis is
-enabled there and downloads each model the first time it is used. The settings are listed in
+enabled there and downloads each model the first time it is used (about
+7.2 GiB for the default shallow-subject GPU route). To keep models prepared
+elsewhere, set `PRINTABLE_RECON_GEOMETRY_CACHE` in the environment Compose
+reads and mount that directory into the worker. The settings are listed in
 [`.env.example`](../.env.example):
 
 | Setting | Default | Meaning |

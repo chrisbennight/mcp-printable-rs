@@ -30,7 +30,7 @@ services:
       PRINTABLE_RECON_TRELLIS_SCRATCH: /scratch/trellis2
       # Photograph analysis (photo.analyze and photo.relief from a photograph)
       # downloads its pinned models here on first use.
-      PRINTABLE_RECON_GEOMETRY_CACHE: /models/geometry
+      PRINTABLE_RECON_GEOMETRY_CACHE: ${PRINTABLE_RECON_GEOMETRY_CACHE:-/models/geometry}
       # Kernels compiled at run time are loaded from here; /tmp does not allow
       # executable files.
       TRITON_CACHE_DIR: /cache/compile/triton
