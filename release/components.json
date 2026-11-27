@@ -235,6 +235,86 @@
       "notice_locations": [
         "/usr/share/doc/printable/LICENSE-Fira-OFL.txt"
       ]
+    },
+    {
+      "name": "MoGe",
+      "version": "74fbce054ebe",
+      "roles": [
+        "recon"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/microsoft/MoGe",
+      "source_commit": "74fbce054ebed49800de42d0ad0e83495065719a",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/geometry/MoGe-MIT.txt"
+      ]
+    },
+    {
+      "name": "utils3d-moge",
+      "version": "62f09d585094",
+      "roles": [
+        "recon"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/EasternJournalist/utils3d-moge",
+      "source_commit": "62f09d58509485564e24d5d9f6aac9ee9ebc0c37",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/geometry/utils3d-moge-MIT.txt"
+      ]
+    },
+    {
+      "name": "FlexGEMM for MoGe-3",
+      "version": "b2fadb29d418",
+      "roles": [
+        "recon"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/JeffreyXiang/FlexGEMM",
+      "source_commit": "b2fadb29d41846c7981ade6801ffc689fae119cf",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/geometry/FlexGEMM-MoGe-MIT.txt"
+      ]
+    },
+    {
+      "name": "Depth Pro 2",
+      "version": "aa389cbb0b74",
+      "roles": [
+        "recon"
+      ],
+      "license": "LicenseRef-Apple-Sample-Code",
+      "source_url": "https://github.com/apple-aiml-research/ml-depth-pro-2",
+      "source_commit": "aa389cbb0b74341664ed663a0966c859905cd6c0",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/geometry/DepthPro2-code.txt"
+      ]
+    },
+    {
+      "name": "Depth Anything 3",
+      "version": "3d835ec1a580",
+      "roles": [
+        "recon"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/ByteDance-Seed/Depth-Anything-3",
+      "source_commit": "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4",
+      "recipe_paths": [
+        "Dockerfile"
+      ],
+      "notice_locations": [
+        "/usr/share/doc/printable/geometry/DepthAnything3-Apache-2.0.txt"
+      ]
     }
   ]
 }
