@@ -2426,6 +2426,9 @@ async fn dispatch_value(
         }
         "printable_photo_depth" => photo::depth(Arc::clone(workspace), settings, de(args)?).await,
         "printable_photo_object" => photo::object(Arc::clone(workspace), settings, de(args)?).await,
+        "printable_photo_analyze" => {
+            photo::analyze(Arc::clone(workspace), settings, de(args)?).await
+        }
         "printable_photo_job_status" => photo::job_status(settings, de(args)?).await,
         "printable_photo_job_list" => photo::job_list(settings, de(args)?).await,
         "printable_photo_job_cancel" => photo::job_cancel(settings, de(args)?).await,
@@ -6263,6 +6266,10 @@ async fn status(
             "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_generate_objects()),
             "models": settings.recon.as_ref().map(|recon| recon.object_models()).unwrap_or_default(),
             "trellis2_preparation": settings.recon.as_ref().and_then(|recon| recon.trellis_preparation()),
+        },
+        "analyze": {
+            "configured": settings.recon.is_some(),
+            "ready": settings.recon.as_ref().is_some_and(|recon| recon.can_analyze()),
         },
         "photo_geometry": settings
             .recon

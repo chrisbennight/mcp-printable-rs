@@ -1,4 +1,5 @@
-//! Retained object jobs, independent of rendering and the live Blender scene.
+//! Retained object and analysis jobs, independent of rendering and the live
+//! Blender scene.
 
 use super::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -64,6 +65,62 @@ pub(super) enum Phase {
     Finished,
 }
 
+/// What a retained job does. Records from before analysis jobs hold an
+/// object request alone; the two requests never parse as each other, since
+/// each refuses the other's required fields.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub(super) enum JobInput {
+    Object(ObjectRequest),
+    Analysis(AnalyzeRequest),
+}
+
+impl JobInput {
+    fn validate(&self) -> Result<(), ToolError> {
+        match self {
+            Self::Object(request) => request.validate(),
+            Self::Analysis(request) => request.validate(),
+        }
+    }
+
+    fn image(&self) -> &str {
+        match self {
+            Self::Object(request) => &request.image,
+            Self::Analysis(request) => &request.image,
+        }
+    }
+
+    fn with_image(&self, image: String) -> Self {
+        match self {
+            Self::Object(request) => Self::Object(ObjectRequest {
+                image,
+                ..request.clone()
+            }),
+            Self::Analysis(request) => Self::Analysis(AnalyzeRequest {
+                image,
+                ..request.clone()
+            }),
+        }
+    }
+
+    /// Whether an error while publishing leaves the caller's destination in
+    /// an unknown state. An analysis publishes into its own cache directory
+    /// and writes its manifest last, so an unfinished one is simply absent.
+    fn publication_can_be_partial(&self) -> bool {
+        matches!(self, Self::Object(_))
+    }
+
+    /// What to inspect after an interruption.
+    fn advice(&self) -> &'static str {
+        match self {
+            Self::Object(_) => "inspect mesh_path before submitting again",
+            Self::Analysis(_) => {
+                "submit the analysis again; a completed analysis is returned from its cache"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Record {
     format_version: u8,
@@ -72,7 +129,7 @@ struct Record {
     phase: Phase,
     created_unix_ms: u64,
     updated_unix_ms: u64,
-    request: ObjectRequest,
+    request: JobInput,
     image_sha256: String,
     execution: Value,
     cancellation_requested: bool,
@@ -82,14 +139,30 @@ struct Record {
 
 impl Record {
     fn response(&self, detail: bool) -> Value {
-        let mut value = json!({
-            "job_id":self.job_id, "state":self.state, "phase":self.phase,
-            "model":self.request.model, "mesh_path":self.request.mesh_path,
-            "created_unix_ms":self.created_unix_ms, "updated_unix_ms":self.updated_unix_ms,
-            "cancellation_requested":self.cancellation_requested,
-            "cancellable": !self.state.terminal() && self.phase != Phase::Publishing,
-            "result":self.result, "failure":self.failure,
-        });
+        let mut value = match &self.request {
+            JobInput::Object(request) => {
+                json!({"job_id":self.job_id, "state":self.state, "phase":self.phase,
+                    "model":request.model, "mesh_path":request.mesh_path})
+            }
+            JobInput::Analysis(request) => {
+                json!({"job_id":self.job_id, "state":self.state, "phase":self.phase,
+                    "action":"analyze", "image":request.image, "subject":request.subject,
+                    "cache_key":self.execution["cache_key"]})
+            }
+        };
+        for (key, field) in [
+            ("created_unix_ms", json!(self.created_unix_ms)),
+            ("updated_unix_ms", json!(self.updated_unix_ms)),
+            ("cancellation_requested", json!(self.cancellation_requested)),
+            (
+                "cancellable",
+                json!(!self.state.terminal() && self.phase != Phase::Publishing),
+            ),
+            ("result", json!(self.result)),
+            ("failure", json!(self.failure)),
+        ] {
+            value[key] = field;
+        }
         if detail {
             value["request"] = json!(self.request);
             value["image_sha256"] = json!(self.image_sha256);
@@ -209,14 +282,17 @@ impl PhotoJobs {
             }
             record.request.validate()?;
             if !record.state.terminal() {
-                record.state = if record.phase == Phase::Publishing {
+                record.state = if record.phase == Phase::Publishing
+                    && record.request.publication_can_be_partial()
+                {
                     JobState::OutcomeUnknown
                 } else {
                     JobState::Interrupted
                 };
-                record.failure = Some(
-                    json!({"code":"interrupted", "message":"the worker restarted; this job was not replayed; inspect mesh_path before submitting again"}),
-                );
+                record.failure = Some(json!({"code":"interrupted", "message":format!(
+                    "the worker restarted; this job was not replayed; {}",
+                    record.request.advice()
+                )}));
                 record.updated_unix_ms = now();
                 self.persist(&record)?;
             }
@@ -297,6 +373,7 @@ impl PhotoJobs {
             }
             Err(error) => {
                 record.state = if record.phase == Phase::Publishing
+                    && record.request.publication_can_be_partial()
                     && matches!(
                         &error,
                         ToolError::Io(_)
@@ -316,9 +393,10 @@ impl PhotoJobs {
         store.active.remove(id);
         if let Err(error) = self.persist(&record) {
             record.state = JobState::OutcomeUnknown;
-            record.failure = Some(
-                json!({"code":"persistence","message":"the final job record could not be saved; inspect mesh_path before submitting again"}),
-            );
+            record.failure = Some(json!({"code":"persistence","message":format!(
+                "the final job record could not be saved; {}",
+                record.request.advice()
+            )}));
             store.records.insert(id.to_owned(), record);
             return Err(error);
         }
@@ -399,26 +477,11 @@ impl ReconWorker {
                 "TRELLIS.2 needs CUDA and configured persistent model and scratch storage",
             ));
         }
-        self.photo_jobs.initialize()?;
-        if self.photo_jobs.lock()?.active.len() >= self.config.photo_queue_depth {
-            return Err(reconstruction_error(
-                "busy",
-                "the photograph job queue is full",
-            ));
-        }
+        self.ensure_queue_space()?;
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
         let image_sha256 = file_digest(snapshot.path())?;
-        let id = crate::upload::random_hex_id()?;
-        let suffix = Path::new(&request.image)
-            .extension()
-            .and_then(|value| value.to_str())
-            .expect("validated photograph extension");
-        let input = format!("{ROOT}/{id}/input.{suffix}");
-        let mut execution = request.clone();
-        execution.image = input.clone();
-        let cancel = CancellationToken::new();
         let settings = match self
             .config
             .trellis
@@ -430,6 +493,42 @@ impl ReconWorker {
             }
             None => json!({"generation_timeout_seconds":self.config.object_timeout.as_secs()}),
         };
+        self.admit(
+            JobInput::Object(request),
+            snapshot.path(),
+            image_sha256,
+            settings,
+        )
+    }
+
+    /// Refuse a submission while the job queue is full.
+    pub(super) fn ensure_queue_space(&self) -> Result<(), ToolError> {
+        self.photo_jobs.initialize()?;
+        if self.photo_jobs.lock()?.active.len() >= self.config.photo_queue_depth {
+            return Err(reconstruction_error(
+                "busy",
+                "the photograph job queue is full",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retain the photograph and request durably, then start the job.
+    pub(super) fn admit(
+        self: &Arc<Self>,
+        request: JobInput,
+        snapshot: &Path,
+        image_sha256: String,
+        settings: Value,
+    ) -> Result<Value, ToolError> {
+        let id = crate::upload::random_hex_id()?;
+        let suffix = Path::new(request.image())
+            .extension()
+            .and_then(|value| value.to_str())
+            .expect("validated photograph extension");
+        let input = format!("{ROOT}/{id}/input.{suffix}");
+        let execution = request.with_image(input.clone());
+        let cancel = CancellationToken::new();
         let record = Record {
             format_version: 1,
             job_id: id.clone(),
@@ -457,7 +556,7 @@ impl ReconWorker {
             let admission = (|| -> Result<(), ToolError> {
                 self.workspace.commit_reserved_generated_artifact_bounded(
                     &input,
-                    snapshot.path(),
+                    snapshot,
                     false,
                     MAX_IMAGE_BYTES,
                 )?;
@@ -518,9 +617,14 @@ impl ReconWorker {
         };
         // The immutable input and request are durable before work is enqueued.
         tokio::spawn(async move {
-            let outcome = worker
-                .generate_object_controlled(execution, Some(&control))
-                .await;
+            let outcome = match execution {
+                JobInput::Object(request) => {
+                    worker
+                        .generate_object_controlled(request, Some(&control))
+                        .await
+                }
+                JobInput::Analysis(request) => worker.analyze_controlled(request, &control).await,
+            };
             if let Err(error) = worker.photo_jobs.finish(&control.id, outcome) {
                 tracing::error!(job_id=%control.id, code=error.code(), "photograph job completion could not be persisted");
             }
@@ -831,7 +935,7 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
                 phase,
                 created_unix_ms: now(),
                 updated_unix_ms: now(),
-                request: request.clone(),
+                request: JobInput::Object(request.clone()),
                 image_sha256: "0".repeat(64),
                 execution: json!({}),
                 cancellation_requested: false,

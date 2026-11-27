@@ -15,6 +15,13 @@ The same worker can also prepare a separate set of
 [photograph geometry models](photo-geometry.md), with measured
 recommendations for choosing among them.
 
+The `depth` action keeps the request and result described here. For float
+depth, a subject mask, a focal length and a confidence map that later relief,
+lithophane and object work can share, use the `analyze` action described in
+[Analyse a photograph](photo-geometry.md#analyse-a-photograph). It caches its
+result, so a repeated request with the same photograph and settings returns at
+once without running a model.
+
 ## What it writes
 
 A request names a workspace photograph and the PNG files to write:

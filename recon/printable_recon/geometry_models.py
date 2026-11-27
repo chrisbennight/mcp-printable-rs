@@ -59,18 +59,20 @@ class Geometry:
 Runner = Callable[[numpy.ndarray], Geometry]
 
 
-def load(entry: str, snapshot: Path, device) -> Runner:
+def load(entry: str, snapshot: Path, device, focal_fraction: float | None = None) -> Runner:
     """The runner for a model in models/geometry.json, with its weights read from `snapshot`.
 
     For marigold-v2, `snapshot` is the directory convert_marigold.py wrote
-    from the downloaded files.
+    from the downloaded files. `focal_fraction`, a known focal length divided
+    by the photograph's width, makes Depth Pro 2 use it for metric depth
+    instead of its own estimate.
     """
     if entry == "marigold-v2":
         return _marigold(snapshot, device)
     if entry == "da3-mono-large":
         return _depth_anything_3(snapshot / "da3-mono-large", device)
     if entry in DEPTH_PRO_2_PRESETS:
-        return _depth_pro_2(entry, snapshot / "depthpro2", device)
+        return _depth_pro_2(entry, snapshot / "depthpro2", device, focal_fraction)
     if entry in MOGE_VERSIONS:
         return _moge(MOGE_VERSIONS[entry], snapshot / entry / "model.pt", device)
     raise ModelLoadError(f"no runner for model {entry!r}")
@@ -149,7 +151,7 @@ def _depth_anything_3(directory: Path, device) -> Runner:
     return run
 
 
-def _depth_pro_2(entry: str, directory: Path, device) -> Runner:
+def _depth_pro_2(entry: str, directory: Path, device, focal_fraction: float | None = None) -> Runner:
     import torch
 
     _vendor("depth-pro-2")
@@ -167,7 +169,8 @@ def _depth_pro_2(entry: str, directory: Path, device) -> Runner:
 
     @torch.inference_mode()
     def run(rgb: numpy.ndarray) -> Geometry:
-        out = model.infer(transform(rgb), f_px=None)
+        known = None if focal_fraction is None else focal_fraction * rgb.shape[1]
+        out = model.infer(transform(rgb), f_px=known)
         depth, valid = filled(out["depth"].float().cpu().numpy(), numpy.ones(rgb.shape[:2], dtype=bool))
         return Geometry(depth=depth, depth_kind="metric", valid=valid, focal_px=float(out["focallength_px"].item()))
 

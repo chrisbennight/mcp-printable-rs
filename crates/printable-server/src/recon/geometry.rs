@@ -14,6 +14,9 @@ use super::*;
 pub struct GeometryConfig {
     pub script: PathBuf,
     pub prepare_script: PathBuf,
+    /// Runs a whole photograph analysis; beside it are the model list and
+    /// the analysis code the cache key covers.
+    pub analyze_script: PathBuf,
     /// Persistent storage for downloaded and converted model files.
     pub cache: PathBuf,
     pub timeout: Duration,
@@ -27,6 +30,11 @@ impl GeometryConfig {
         else {
             return Ok(None);
         };
+        // Preparation runs in a scratch working directory, so a relative cache
+        // would resolve differently there than for readiness.
+        if !Path::new(&cache).is_absolute() {
+            return Err("PRINTABLE_RECON_GEOMETRY_CACHE must be an absolute path".to_string());
+        }
         let seconds = |name: &str, default: u64, bounds: std::ops::RangeInclusive<u64>| {
             let Some(value) = get(name) else {
                 return Ok(Duration::from_secs(default));
@@ -51,6 +59,9 @@ impl GeometryConfig {
                 .into(),
             prepare_script: get("PRINTABLE_RECON_GEOMETRY_PREPARE_SCRIPT")
                 .unwrap_or_else(|| "/opt/printable/recon/prepare_geometry.py".into())
+                .into(),
+            analyze_script: get("PRINTABLE_RECON_GEOMETRY_ANALYZE_SCRIPT")
+                .unwrap_or_else(|| "/opt/printable/recon/analyze_photo.py".into())
                 .into(),
             cache: cache.into(),
             timeout: seconds("PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS", 900, 1..=86400)?,
@@ -140,6 +151,14 @@ impl ReconWorker {
     /// model's snapshot and, where it has one, its converted form.
     /// Preparation uses no GPU, so it runs outside the photograph job lane.
     pub async fn prepare_geometry(&self, models: &[String]) -> Result<Value, ToolError> {
+        self.prepare_geometry_controlled(models, None).await
+    }
+
+    pub(super) async fn prepare_geometry_controlled(
+        &self,
+        models: &[String],
+        control: Option<&JobControl>,
+    ) -> Result<Value, ToolError> {
         let config = self.geometry_config()?;
         let staging = tempfile::Builder::new()
             .prefix("printable-geometry-prepare-")
@@ -153,7 +172,7 @@ impl ReconWorker {
             staging.path(),
             config.preparation_timeout,
             "geometry model preparation",
-            None,
+            control,
         )
         .await
     }
@@ -184,7 +203,7 @@ impl ReconWorker {
         .await
     }
 
-    fn geometry_config(&self) -> Result<&GeometryConfig, ToolError> {
+    pub(super) fn geometry_config(&self) -> Result<&GeometryConfig, ToolError> {
         self.config.geometry.as_ref().ok_or_else(|| {
             reconstruction_error(
                 "unavailable",
@@ -195,7 +214,7 @@ impl ReconWorker {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     const PREPARE: &str = r#"
@@ -228,7 +247,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
     'threads': request['threads'], 'outputs': ['depth']}}))
 "#;
 
-    fn configured(root: &Path, worker: &mut ReconWorker) {
+    pub(in crate::recon) fn configured(root: &Path, worker: &mut ReconWorker) {
         let prepare = root.join("runtime/prepare_geometry.py");
         let estimate = root.join("runtime/estimate_geometry.py");
         std::fs::write(&prepare, PREPARE).unwrap();
@@ -236,6 +255,7 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         worker.config.geometry = Some(GeometryConfig {
             script: estimate,
             prepare_script: prepare,
+            analyze_script: root.join("runtime/analyze_photo.py"),
             cache: root.join("geometry"),
             timeout: Duration::from_secs(60),
             preparation_timeout: Duration::from_secs(60),
@@ -254,6 +274,10 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         assert_eq!(config.cache, PathBuf::from("/models/geometry"));
         assert_eq!(config.timeout, Duration::from_secs(900));
         assert_eq!(config.preparation_timeout, Duration::from_secs(86400));
+        let relative = |name: &str| {
+            (name == "PRINTABLE_RECON_GEOMETRY_CACHE").then(|| "models/geometry".to_string())
+        };
+        assert!(GeometryConfig::configure(&relative).is_err());
         let with = |key: &'static str, value: &'static str| {
             GeometryConfig::configure(&move |name| {
                 if name == key {

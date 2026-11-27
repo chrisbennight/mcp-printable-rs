@@ -45,6 +45,22 @@ pub(super) async fn object(
     client.generate_object(&request).await
 }
 
+/// Return the cached analysis of a workspace photograph, or start a retained
+/// job that makes it with the photograph geometry models.
+pub(super) async fn analyze(
+    workspace: Arc<Workspace>,
+    settings: &Settings,
+    request: crate::recon::AnalyzeRequest,
+) -> Result<Value, ToolError> {
+    request.validate()?;
+    let client = settings
+        .recon
+        .as_ref()
+        .ok_or_else(|| ToolError::Validation("the photograph worker is not configured".into()))?;
+    workspace.stat_artifact(&request.image)?;
+    client.analyze(&request).await
+}
+
 pub(super) async fn job_status(
     settings: &Settings,
     request: crate::recon::PhotoJobRequest,

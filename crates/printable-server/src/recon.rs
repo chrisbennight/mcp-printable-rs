@@ -20,6 +20,7 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 use crate::error::ToolError;
 
+mod analysis;
 mod geometry;
 mod photo_jobs;
 mod trellis;
@@ -324,6 +325,178 @@ impl DepthRequest {
                 DEPTH_MAX_SIDES.start(),
                 DEPTH_MAX_SIDES.end()
             )));
+        }
+        Ok(())
+    }
+}
+
+// How deep the photographed subject is, which chooses the default depth
+// model and processing size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Subject {
+    Shallow,
+    Deep,
+}
+
+// `best` adds mirrored and rescaled passes of the depth model as consistency
+// checks; `fast` skips them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisQuality {
+    #[default]
+    Best,
+    Fast,
+}
+
+// Geometry models with a depth output, by their names in the worker's model
+// list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DepthModel {
+    Da3MonoLarge,
+    Dp2H,
+    Dp2L,
+    Moge3Vitg,
+    Moge3Vitl,
+    Moge2VitlNormal,
+}
+
+// Geometry models with a subject mask output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaskModel {
+    Moge3Vitg,
+    Moge3Vitl,
+    Moge2VitlNormal,
+}
+
+// Geometry models with a focal-length output; both share one estimator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum FocalModel {
+    Dp2H,
+    Dp2L,
+}
+
+// Geometry models that make a normal map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum NormalsModel {
+    MarigoldV2,
+}
+
+// Where the models run; `auto` is the GPU unless the worker is configured
+// for the CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisDevice {
+    #[default]
+    Auto,
+    Cuda,
+    Cpu,
+}
+
+/// Known focal lengths a caller may give, in pixels of the photograph.
+pub const ANALYSIS_FOCAL_LENGTHS_PX: std::ops::RangeInclusive<f64> = 10.0..=100_000.0;
+/// Longest sides, in pixels, the depth model may process a photograph at.
+pub const ANALYSIS_SIDES: [u32; 2] = [1024, 2048];
+
+// Optional fields are advertised without `null`; omitting one takes the
+// default the worker fills in.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalyzeRequest {
+    /// Workspace JPEG, PNG or WebP photograph.
+    pub image: String,
+    /// shallow (reliefs, coins, artwork) or deep (heads, objects).
+    pub subject: Subject,
+    /// Default: shallow da3-mono-large (3.8 deg, 15.3% relief error); deep
+    /// dp2-h (21.1 mm head error, ~10 GB at 2048 px) or dp2-l at 1024 px
+    /// (~3 GB). MoGe reads art as flat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "DepthModel")]
+    pub depth_model: Option<DepthModel>,
+    /// Depth model side; default 2048 for deep on a GPU, else 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "analysis_side_schema")]
+    pub side: Option<u32>,
+    /// Default moge3-vitg (best, 6.7 GB); moge3-vitl uses 2.5 GB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MaskModel")]
+    pub mask_model: Option<MaskModel>,
+    /// Default the Depth Pro 2 depth model, else dp2-l (8.3% error vs EXIF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "FocalModel")]
+    pub focal_model: Option<FocalModel>,
+    /// Add a predicted normal map.
+    #[serde(default)]
+    pub normals: bool,
+    /// marigold-v2 (4.0 deg, best measured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "NormalsModel")]
+    pub normals_model: Option<NormalsModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "AnalysisDevice")]
+    pub device: Option<AnalysisDevice>,
+    /// best (default) adds consistency passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "AnalysisQuality")]
+    pub quality: Option<AnalysisQuality>,
+    /// Known focal length in photograph px.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "f64")]
+    pub focal_length_px: Option<f64>,
+}
+
+fn analysis_side_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"enum": ANALYSIS_SIDES})
+}
+
+impl AnalyzeRequest {
+    /// Checks that need no file access or knowledge of the worker.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        let refuse = |message: &str| Err(ToolError::Validation(message.into()));
+        if !IMAGE_SUFFIXES
+            .iter()
+            .any(|suffix| self.image.ends_with(suffix))
+        {
+            return Err(ToolError::Validation(format!(
+                "{} is not a .jpg, .jpeg, .png or .webp photograph",
+                self.image
+            )));
+        }
+        if self
+            .side
+            .is_some_and(|side| !ANALYSIS_SIDES.contains(&side))
+        {
+            return refuse("side must be 1024 or 2048");
+        }
+        if let Some(focal) = self.focal_length_px {
+            if !ANALYSIS_FOCAL_LENGTHS_PX.contains(&focal) {
+                return Err(ToolError::Validation(format!(
+                    "focal_length_px must be between {} and {}",
+                    ANALYSIS_FOCAL_LENGTHS_PX.start(),
+                    ANALYSIS_FOCAL_LENGTHS_PX.end()
+                )));
+            }
+            if self.focal_model.is_some() {
+                return refuse("give either focal_model or focal_length_px, not both");
+            }
+        }
+        if self.normals_model.is_some() && !self.normals {
+            return refuse("normals_model needs normals: true");
+        }
+        if self.device == Some(AnalysisDevice::Cpu)
+            && (matches!(
+                self.depth_model,
+                Some(DepthModel::Moge3Vitg | DepthModel::Moge3Vitl)
+            ) || matches!(
+                self.mask_model,
+                Some(MaskModel::Moge3Vitg | MaskModel::Moge3Vitl)
+            ))
+        {
+            return refuse("MoGe-3 needs an NVIDIA GPU; on the CPU use moge2-vitl-normal");
         }
         Ok(())
     }
@@ -637,7 +810,8 @@ impl ReconWorker {
                 || capabilities.depth
                 || capabilities.object
                 || capabilities.trellis2
-                || capabilities.photo_jobs)
+                || capabilities.photo_jobs
+                || capabilities.geometry.is_some())
         {
             (
                 true,
@@ -1940,6 +2114,12 @@ impl ReconClient {
         self.ready.borrow().geometry.clone()
     }
 
+    /// Whether the worker last reported configured geometry models; a model
+    /// that is not yet prepared is prepared inside the analysis job.
+    pub fn can_analyze(&self) -> bool {
+        self.ready.borrow().geometry.is_some()
+    }
+
     pub fn can_manage_photo_jobs(&self) -> bool {
         self.ready.borrow().photo_jobs
     }
@@ -2037,6 +2217,16 @@ impl ReconClient {
             "object",
             request,
             "list photograph jobs and inspect mesh_path before retrying, because the request may have been retained or the mesh written",
+        )
+        .await
+    }
+
+    pub async fn analyze(&self, request: &AnalyzeRequest) -> Result<Value, ToolError> {
+        request.validate()?;
+        self.post(
+            "photo/analyze",
+            request,
+            "list photograph jobs before retrying, because the request may have been retained",
         )
         .await
     }

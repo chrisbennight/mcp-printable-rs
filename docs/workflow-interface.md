@@ -76,7 +76,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `collection` | `create`, `get`, `list`, `update`, `add_projects`, `remove_projects`, `delete` (group projects into [collections](project-collections.md), like folders; a project is in at most one) |
 | `catalog` | `search`, `card`, `status` (read-only search of the user's own [project library](project-library.md); designs on model sites are found with `library`) |
 | `head` | `models`, `create`, `update`, `export`, `prepare_print`, plus `reconstruct` and `photo_to_bust` when the reconstruction worker is ready; advertised only when FLAME models are mounted |
-| `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), and retained object-job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, or retained job history; offers the available generation actions and job management |
+| `photo` | `depth` (relative depth and surface normals from a photograph), `object` (an object's shape from a photograph, as an STL), `analyze` (cached depth, normals, subject mask, focal length and confidence for one photograph), and retained job `status`, `list` and `cancel`; advertised when the photograph worker reports a usable [depth model](photo-depth.md), an available [object generator](photo-object.md), including TRELLIS.2 configured for first-use downloads, configured [geometry models](photo-geometry.md#analyse-a-photograph), or retained job history; offers the available generation actions and job management |
 | `library` | `search`, `get`, `download` (find designs on public model sites and save their files into a project), `sign_in` (finish a MakerWorld sign-in with a code from the user); advertised only when [model sites](model-library.md) are enabled |
 | `printer` | `list`, `status`, `refresh_status`, `materials`, `history`, `snapshot` |
 | `print` | `import`, `review`, `stage`, `list`, `history`, `status`, `start`, `update`, `control`, `cancel`, `pause`, `resume`, `stop`, `clear_plate` |
@@ -124,7 +124,7 @@ a separate presentation ceiling. The native query behavior is verified against
 and [material-usage reads](https://github.com/maziggy/bambuddy/blob/v0.2.4.9/backend/app/api/routes/inventory.py).
 
 The `job` tool manages render execution; the `photo` tool manages its own retained
-object-generation jobs. The `upload` tool manages staged file transfer. Each
+object-generation and analysis jobs. The `upload` tool manages staged file transfer. Each
 identifier belongs to the tool that created it. Mixed-action
 tools with any mutating action use conservative mutating annotations for the
 whole tool; selecting a read action does not create a separate MCP

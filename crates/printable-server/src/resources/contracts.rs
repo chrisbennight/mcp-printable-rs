@@ -178,6 +178,7 @@ mod tests {
                 reconstruct: false,
                 depth: false,
                 object: false,
+                analyze: false,
                 photo_jobs: false,
                 library: false,
             },
@@ -186,6 +187,7 @@ mod tests {
                 reconstruct: true,
                 depth: true,
                 object: true,
+                analyze: true,
                 photo_jobs: true,
                 library: true,
             },
@@ -326,6 +328,7 @@ mod tests {
                         reconstruct: true,
                         depth: true,
                         object: true,
+                        analyze: true,
                         photo_jobs: true,
                         library: true,
                     }
