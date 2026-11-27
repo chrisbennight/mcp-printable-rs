@@ -169,22 +169,9 @@ impl ReconWorker {
         });
         let started = std::time::Instant::now();
         let mut preparation = self.python_command(&config.script);
-        preparation
-            .arg("prepare")
-            .env("HF_HUB_OFFLINE", "0")
-            .env("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1");
+        preparation.arg("prepare");
+        allow_downloads(&mut preparation);
         staging.retain_for_command(preparation.as_std_mut())?;
-        for name in [
-            "HF_ENDPOINT",
-            "HF_TOKEN",
-            "HF_HUB_DISABLE_XET",
-            "HF_HUB_DOWNLOAD_TIMEOUT",
-            "HF_HUB_ETAG_TIMEOUT",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                preparation.env(name, value);
-            }
-        }
         if let Some(control) = control {
             control.enter(Phase::PreparingModels)?;
         }

@@ -11,8 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    DepthRequest, ObjectModel, ObjectRequest, PhotoJobListRequest, PhotoJobRequest, ReconConfig,
-    ReconRequest, ReconWorker, TrellisConfig, worker_message,
+    DepthRequest, GeometryConfig, ObjectModel, ObjectRequest, PhotoJobListRequest, PhotoJobRequest,
+    ReconConfig, ReconRequest, ReconWorker, TrellisConfig, worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -108,6 +108,14 @@ async fn main() -> anyhow::Result<()> {
             object_timeout: Duration::from_secs(object_timeout),
             trellis: TrellisConfig::configure(&|name| std::env::var(name).ok())
                 .map_err(anyhow::Error::msg)?,
+            geometry: GeometryConfig::configure(&|name| std::env::var(name).ok())
+                .map_err(anyhow::Error::msg)?,
+            cpu_threads: std::env::var("PRINTABLE_RECON_CPU_THREADS")
+                .unwrap_or_else(|_| "4".into())
+                .parse::<u16>()
+                .ok()
+                .filter(|threads| (1..=256).contains(threads))
+                .context("PRINTABLE_RECON_CPU_THREADS must be between 1 and 256")?,
             photo_queue_depth: std::env::var("PRINTABLE_RECON_PHOTO_QUEUE_DEPTH")
                 .unwrap_or_else(|_| "8".into())
                 .parse::<usize>()
