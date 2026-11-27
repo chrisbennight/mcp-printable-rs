@@ -431,16 +431,19 @@ therefore rebuilds it before writing it, with the same preparation as the
 
 - Openings are closed, inconsistent facing is fixed, every closed piece is
   turned to face outwards, and the surface is rebuilt as one exact solid with
-  facets 0.4% of the longest side of the piece enclosing the most volume, the
-  part that is kept, at least 0.1 mm; after rescaling to `size_mm` that is
-  about 0.4% of `size_mm`. `solid_rebuild.edge_length_mm` gives the facet size
-  on the written mesh. With `target_triangles`, the facet length is chosen instead to give
-  about that many triangles over the area of the piece enclosing the most
-  volume, which is the part kept, at least
-  0.1 mm. Finer detail is smoothed away.
+  facets 0.4% of the longest side of the subject's surface, at least 0.1 mm;
+  after rescaling to `size_mm` that is about 0.4% of `size_mm`. The subject
+  is the surface, triangles joined through shared vertices, with the most
+  area. `solid_rebuild.edge_length_mm` gives the facet size on the written
+  mesh. With `target_triangles`, the facet length is chosen instead to give
+  about that many triangles over the subject's area, at least 0.1 mm. Finer
+  detail is smoothed away; thin parts such as spokes and stems narrower than
+  about two facets can break off and are then removed with the other pieces.
 - Only the largest part is kept, since a photograph shows one subject and
-  separate pieces are generator debris; `solid_rebuild.smaller_parts` counts
-  those removed. The result is then scaled again so that its longest side is
+  separate pieces are generator debris. Surfaces lying wholly apart from the
+  subject are dropped before the rebuild, counted in
+  `solid_rebuild.dropped_before_rebuild`, and the parts the rebuild leaves
+  beside the largest are counted in `solid_rebuild.smaller_parts`. The result is then scaled again so that its longest side is
   `size_mm`, centred on the origin and standing on Z = 0, since the generator
   sized the surface with the removed pieces included. `solid_rebuild.size_mm`
   gives the final size.

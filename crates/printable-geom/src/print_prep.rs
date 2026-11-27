@@ -176,6 +176,10 @@ pub struct PrintPrepReport {
     /// With only the largest part kept, the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smaller_parts: Option<Parts>,
+    /// With only the largest part kept, separate source surfaces dropped
+    /// before the rebuild because they lie wholly apart from the largest.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_before_rebuild: usize,
     /// Separate parts lying wholly within the slice the plinth's flat base
     /// cuts off, which are removed with it.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -224,14 +228,24 @@ pub fn prepare_print(
     if triangles.is_empty() {
         return Err(GeometryError::EmptyMesh);
     }
-    let pieces = pieces(&triangles);
+    let source_pieces = pieces(&triangles);
     let (open_edges, _) = edge_counts(&triangles);
     let source = SourceSummary {
         triangles: triangles.len(),
-        shells: pieces.count,
+        shells: source_pieces.count,
         open_edges,
         volume_mm3: (open_edges == 0).then(|| signed_volume(&vertices, &triangles)),
     };
+    drop(source_pieces);
+    // Keeping only the largest part, surfaces that cannot touch it are
+    // dropped before the rebuild, which would otherwise spend its memory
+    // meshing them only for them to be removed.
+    let dropped_before_rebuild = if request.parts == KeptParts::Largest {
+        drop_distant_surfaces(&vertices, &mut triangles)
+    } else {
+        0
+    };
+    let pieces = pieces(&triangles);
     let flipped_triangles = orient(&mut triangles, &pieces);
     let (openings_closed, openings_left) = close_openings(&mut vertices, &mut triangles);
     drop(pieces);
@@ -430,6 +444,7 @@ pub fn prepare_print(
         floating_parts,
         would_remove,
         smaller_parts,
+        dropped_before_rebuild,
         removed_by_base_cut,
         plinth,
         hollow,
@@ -693,29 +708,94 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
     inward.iter().filter(|inward| **inward).count()
 }
 
-/// The area and longest side of the piece enclosing the most volume.
-fn largest_piece(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) {
-    let pieces = pieces(triangles);
-    let mut volume = vec![0.0; pieces.count];
-    let mut area = vec![0.0; pieces.count];
-    for (face, triangle) in triangles.iter().enumerate() {
-        let piece = pieces.of_triangle[face] as usize;
-        let one = std::slice::from_ref(triangle);
-        volume[piece] += signed_volume(vertices, one);
-        area[piece] += surface_area(vertices, one);
+/// Each surface of a mesh, a set of triangles joined through shared
+/// vertices whatever their edges, with its area and bounds. Generated
+/// surfaces often have edges used by more than two triangles, which split
+/// them into many small pieces, but they still share vertices.
+struct Surfaces {
+    of_triangle: Vec<u32>,
+    area: Vec<f64>,
+    bounds: Vec<([f64; 3], [f64; 3])>,
+}
+
+fn surfaces(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> Surfaces {
+    let mut parent: Vec<usize> = (0..vertices.len()).collect();
+    for [a, b, c] in triangles {
+        for (p, q) in [(*a, *b), (*b, *c)] {
+            let (p, q) = (root(&mut parent, p as usize), root(&mut parent, q as usize));
+            parent[p] = q;
+        }
     }
-    let Some(largest) =
-        (0..pieces.count).max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
-    else {
+    let mut numbers: HashMap<usize, u32> = HashMap::new();
+    let of_triangle: Vec<u32> = triangles
+        .iter()
+        .map(|triangle| {
+            let next = numbers.len() as u32;
+            *numbers
+                .entry(root(&mut parent, triangle[0] as usize))
+                .or_insert(next)
+        })
+        .collect();
+    let count = numbers.len();
+    let mut area = vec![0.0; count];
+    let mut bounds = vec![([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]); count];
+    for (triangle, &surface) in triangles.iter().zip(&of_triangle) {
+        let surface = surface as usize;
+        area[surface] += surface_area(vertices, std::slice::from_ref(triangle));
+        let (low, high) = &mut bounds[surface];
+        for &index in triangle {
+            for (axis, value) in vertices[index as usize].into_iter().enumerate() {
+                low[axis] = low[axis].min(value);
+                high[axis] = high[axis].max(value);
+            }
+        }
+    }
+    Surfaces {
+        of_triangle,
+        area,
+        bounds,
+    }
+}
+
+impl Surfaces {
+    /// The surface with the most area: for a generated object, its subject.
+    fn largest(&self) -> Option<usize> {
+        (0..self.area.len()).max_by(|a, b| self.area[*a].total_cmp(&self.area[*b]))
+    }
+}
+
+/// The area and longest side of the surface with the most area.
+fn largest_piece(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) {
+    let surfaces = surfaces(vertices, triangles);
+    let Some(largest) = surfaces.largest() else {
         return (0.0, 0.0);
     };
-    let corners: Vec<[f64; 3]> = triangles
+    let (low, high) = surfaces.bounds[largest];
+    let extent = (0..3)
+        .map(|axis| high[axis] - low[axis])
+        .fold(0.0, f64::max);
+    (surfaces.area[largest], extent)
+}
+
+/// Remove the triangles of surfaces whose bounds do not meet those of the
+/// surface with the most area, which cannot join it. Returns how many
+/// surfaces were removed.
+fn drop_distant_surfaces(vertices: &[[f64; 3]], triangles: &mut Vec<[u32; 3]>) -> usize {
+    let surfaces = surfaces(vertices, triangles);
+    let Some(largest) = surfaces.largest() else {
+        return 0;
+    };
+    let (low, high) = surfaces.bounds[largest];
+    let meets: Vec<bool> = surfaces
+        .bounds
         .iter()
-        .enumerate()
-        .filter(|(face, _)| pieces.of_triangle[*face] as usize == largest)
-        .flat_map(|(_, triangle)| triangle.map(|index| vertices[index as usize]))
+        .map(|(other_low, other_high)| {
+            (0..3).all(|axis| other_low[axis] <= high[axis] && low[axis] <= other_high[axis])
+        })
         .collect();
-    (area[largest], print_check::extent(&corners))
+    let mut kept = surfaces.of_triangle.iter();
+    triangles.retain(|_| meets[*kept.next().expect("one surface per triangle") as usize]);
+    meets.iter().filter(|meets| !**meets).count()
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -879,8 +959,8 @@ mod tests {
         let mut largest = request(0.5);
         largest.parts = KeptParts::Largest;
         let (prepared, report) = prepare(mesh, &largest).unwrap();
-        let smaller = report.smaller_parts.unwrap();
-        assert_eq!((smaller.count, smaller.removed), (2, true));
+        // Both lie apart from the subject and go before the rebuild.
+        assert_eq!(report.dropped_before_rebuild, 2, "{report:?}");
         assert_eq!(report.shells, 1);
         assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
         let low = prepared
@@ -1017,15 +1097,15 @@ mod tests {
 
     #[test]
     fn a_triangle_target_counts_only_the_largest_part_when_only_it_is_kept() {
-        // The second block has as much surface as the first; only the
-        // first, which encloses more, is kept.
+        // A second block beside the first has half its surface; only the
+        // first, the surface with the most area, counts and is kept.
         let mut target = request(1.0);
         target.edge_length_mm = None;
         target.target_triangles = Some(50_000);
         target.parts = KeptParts::Largest;
         let mesh = joined(&[
             cuboid([0.0; 3], [40.0; 3]),
-            cuboid([60.0, 0.0, 0.0], [80.0, 80.0, 0.5]),
+            cuboid([60.0, 0.0, 0.0], [28.3; 3]),
         ]);
         let (_, report) = prepare(mesh, &target).unwrap();
         assert_eq!(report.shells, 1);
@@ -1243,6 +1323,120 @@ mod tests {
         ]);
         assert_eq!(parts_below(&solid, 1.0), 1);
         assert_eq!(parts_below(&solid, 0.25), 0);
+    }
+
+    /// A cube `size` across from `low` whose faces are each a grid of
+    /// `cells` by `cells` squares, facing outwards.
+    fn gridded_cube(low: [f64; 3], size: f64, cells: usize) -> Soup {
+        let mut vertices: Vec<[f64; 3]> = Vec::new();
+        let mut index: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut triangles = Vec::new();
+        let mut at = |grid: [usize; 3]| -> u32 {
+            let key = grid.map(|value| value as i64);
+            *index.entry(key).or_insert_with(|| {
+                vertices.push(std::array::from_fn(|axis| {
+                    low[axis] + size * grid[axis] as f64 / cells as f64
+                }));
+                (vertices.len() - 1) as u32
+            })
+        };
+        for axis in 0..3 {
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            for side in [0, cells] {
+                for i in 0..cells {
+                    for j in 0..cells {
+                        let corner = |di: usize, dj: usize| {
+                            let mut grid = [0; 3];
+                            grid[axis] = side;
+                            grid[u] = i + di;
+                            grid[v] = j + dj;
+                            grid
+                        };
+                        let [a, b, c, d] =
+                            [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)].map(&mut at);
+                        // u, v, axis is right-handed, so a, b, c faces +axis.
+                        if side == cells {
+                            triangles.push([a, b, c]);
+                            triangles.push([a, c, d]);
+                        } else {
+                            triangles.push([a, c, b]);
+                            triangles.push([a, d, c]);
+                        }
+                    }
+                }
+            }
+        }
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn openings_that_cannot_be_closed_leave_no_column_reaching_the_edge() {
+        // Two cubes without bottoms whose rims meet at one corner: neither
+        // rim is a simple loop, so both openings stay open. A ray up from
+        // below either cube crosses its top alone; counted on that ray only,
+        // the space under the cube would be solid down to the edge of the
+        // sampled box, and the extracted surface would be open there.
+        let (first, first_triangles) = cuboid([0.0; 3], [10.0; 3]);
+        let (second, second_triangles) = cuboid([10.0, 10.0, 0.0], [10.0; 3]);
+        let bottomless = |triangles: Vec<[u32; 3]>| -> Vec<[u32; 3]> {
+            triangles
+                .into_iter()
+                .filter(|triangle| *triangle != [0, 2, 1] && *triangle != [1, 2, 3])
+                .collect()
+        };
+        let mut vertices = first;
+        let mut triangles = bottomless(first_triangles);
+        let offset = vertices.len() as u32;
+        vertices.extend(second);
+        // The second cube's corner 0 is the first one's corner 3.
+        triangles.extend(
+            bottomless(second_triangles)
+                .iter()
+                .map(|triangle| triangle.map(|index| if index == 0 { 3 } else { index + offset })),
+        );
+        let (prepared, report) = prepare((vertices, triangles), &request(0.5)).unwrap();
+        assert!(report.openings_left >= 2, "{report:?}");
+        // Both cubes are solid, their open bottoms filled within a grid step.
+        assert!((report.volume_mm3 - 2000.0).abs() < 100.0, "{report:?}");
+        assert!(report.size_mm[2] < 11.0, "{report:?}");
+        let analysed = crate::analyze_mesh(&prepared, crate::ValidationOptions::default()).unwrap();
+        assert!(analysed.solid_geometry, "{:?}", analysed.issues);
+    }
+
+    #[test]
+    fn a_surface_split_by_crowded_edges_is_sized_as_one() {
+        // Every triangle of a gridded 40 mm cube written twice: each edge is
+        // used by four triangles, so the pieces joined through edges two
+        // triangles use are single triangles 4 mm across. The surface still
+        // shares its vertices, and the default facet size follows its 40 mm.
+        let (vertices, triangles) = gridded_cube([0.0; 3], 40.0, 10);
+        let doubled: Vec<[u32; 3]> = triangles
+            .iter()
+            .flat_map(|triangle| [*triangle, *triangle])
+            .collect();
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare((vertices, doubled), &largest).unwrap();
+        assert!((report.edge_length_mm - 0.16).abs() < 1e-9, "{report:?}");
+        assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
+    }
+
+    #[test]
+    fn surfaces_apart_from_the_largest_are_dropped_before_the_rebuild() {
+        let mesh = joined(&[
+            cuboid([0.0; 3], [20.0; 3]),
+            cuboid([50.0, 0.0, 0.0], [2.0; 3]),
+            cuboid([5.0, 5.0, 5.0], [2.0; 3]),
+        ]);
+        let mut largest = request(0.5);
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        // The distant cube goes before the rebuild; the one inside the block
+        // joins it.
+        assert_eq!(report.dropped_before_rebuild, 1, "{report:?}");
+        assert!(report.smaller_parts.is_none(), "{report:?}");
+        assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
     }
 
     #[test]

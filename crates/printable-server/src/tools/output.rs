@@ -858,6 +858,7 @@ fn mesh_preparation() -> Value {
             "triangles": count, "shells": count,
             "volume_mm3": {"type": "number"}, "size_mm": size,
             "floating_parts": parts.clone(), "would_remove": parts.clone(), "smaller_parts": parts,
+            "dropped_before_rebuild": count,
             "removed_by_base_cut": count,
             "plinth": {"type": "object"}, "hollow": {"type": "object"},
             "overhang": {"type": "object"}, "thin": {"type": "object"}

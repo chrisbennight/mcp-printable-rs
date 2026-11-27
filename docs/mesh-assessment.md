@@ -68,7 +68,11 @@ The source is read in millimetres with Z up. The preparation:
    described that way, such as an inward box sharing the top face of an
    outward one to make an open cup, stays a cavity. The rebuild then counts
    everything inside any closed surface as solid, whichever way it faces, so
-   no body is lost to its facing. A closed inward-facing piece on its own,
+   no body is lost to its facing. A point is inside when most of six rays
+   from it, both ways along each axis, cross the surface: a generated
+   surface's openings mislead the odd ray, but not most of them, so an
+   opening neither leaves a column of material reaching out from it nor a
+   tunnel through the solid. A closed inward-facing piece on its own,
    meant as a cavity, is filled; `cavities_filled` counts those. Set `keep_cavities` to trust the
    mesh's facing instead: each piece keeps its facing, inward-facing pieces
    stay cavities, counted in `cavities`, and a piece facing inwards that lies

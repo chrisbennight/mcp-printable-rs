@@ -152,8 +152,23 @@ struct Field {
     band: f64,
     floor: f64,
     columns: Columns,
+    /// The surface's vertices with their coordinates turned cyclically, so
+    /// that x and then y take the place of z, and the triangles bucketed in
+    /// those views, for rays along x and y.
+    sides: [(Vec<Vector>, Columns); 2],
     voxels: Voxels,
     rule: InsideRule,
+}
+
+/// A point's coordinates turned cyclically `turns` times, so that x
+/// (one turn) or y (two turns) takes the place of z. A cyclic turn keeps
+/// the handedness of every orientation test.
+fn turned(point: Point, turns: usize) -> Point {
+    match turns {
+        1 => [point[1], point[2], point[0]],
+        2 => [point[2], point[0], point[1]],
+        _ => point,
+    }
 }
 
 impl Field {
@@ -184,6 +199,23 @@ impl Field {
         }
         let columns = Columns::new(vertices, triangles, low, high, cell, u32::MAX as usize)
             .ok_or_else(|| GeometryError::Kernel("remeshing input is too large".into()))?;
+        let side = |turns: usize| -> Result<(Vec<Vector>, Columns), GeometryError> {
+            let view: Vec<Vector> = vertices
+                .iter()
+                .map(|vertex| Vector::from_array(turned(vertex.to_array(), turns)))
+                .collect();
+            let columns = Columns::new(
+                &view,
+                triangles,
+                turned(low, turns),
+                turned(high, turns),
+                cell,
+                u32::MAX as usize,
+            )
+            .ok_or_else(|| GeometryError::Kernel("remeshing input is too large".into()))?;
+            Ok((view, columns))
+        };
+        let sides = [side(1)?, side(2)?];
         let voxels = Voxels::new(vertices, triangles, low, high, band)?;
         Ok(Self {
             surface,
@@ -192,6 +224,7 @@ impl Field {
             band,
             floor: cell * FLOOR_FRACTION,
             columns,
+            sides,
             voxels,
             rule: InsideRule::Positive,
         })
@@ -259,22 +292,45 @@ impl Field {
         None
     }
 
-    /// Outward-facing minus inward-facing crossings of the ray from `point`
-    /// along +z.
     /// Whether `point` is inside the solid by the field's rule.
+    ///
+    /// The winding count is taken along six rays from the point, both ways
+    /// along each axis, and the point is inside when most of them say so.
+    /// For a closed surface every ray gives the same count. Where an opening
+    /// is left, as in a generated surface, a ray through it miscounts; one
+    /// ray alone would then leave a column of material reaching out from the
+    /// opening, or a tunnel through the solid. A point outside the surface's
+    /// bounds always has at least four rays crossing nothing, so the edge of
+    /// the sampled box is always outside.
     fn inside(&self, point: Point) -> bool {
-        let winding = self.winding(point);
-        match self.rule {
+        let inside = |winding: i32| match self.rule {
             InsideRule::Positive => winding > 0,
             InsideRule::NonZero => winding != 0,
+        };
+        let (up, down) = self.windings(&self.columns, self.surface.vertices(), point);
+        let mut votes = usize::from(inside(up)) + usize::from(inside(down));
+        for (turns, (view, columns)) in self.sides.iter().enumerate() {
+            let (forward, back) = self.windings(columns, view, turned(point, turns + 1));
+            votes += usize::from(inside(forward)) + usize::from(inside(back));
         }
+        votes >= 4
     }
 
+    /// Outward-facing minus inward-facing crossings of the ray from `point`
+    /// along +z.
+    #[cfg(test)]
     fn winding(&self, point: Point) -> i32 {
-        let mut winding = 0;
-        for &triangle in self.columns.candidates(point) {
+        self.windings(&self.columns, self.surface.vertices(), point)
+            .0
+    }
+
+    /// The winding counts along the rays from `point` along +z and -z, with
+    /// the surface's vertices `vertices` bucketed in `columns`.
+    fn windings(&self, columns: &Columns, vertices: &[Vector], point: Point) -> (i32, i32) {
+        let (mut winding, mut below) = (0, 0);
+        for &triangle in columns.candidates(point) {
             let [a, b, c] = self.surface.indices()[triangle as usize]
-                .map(|index| self.surface.vertices()[index as usize].to_array());
+                .map(|index| vertices[index as usize].to_array());
             let facing = orient2(a, b, c);
             if facing == 0.0 {
                 continue;
@@ -284,12 +340,18 @@ impl Field {
             if !covers(a, b, point) || !covers(b, c, point) || !covers(c, a, point) {
                 continue;
             }
-            // Positive when `point` lies below the plane of the reordered corners.
-            if orient3d(coord3(a), coord3(b), coord3(c), coord3(point)) > 0.0 {
+            // Positive when `point` lies below the plane of the reordered
+            // corners; a face below the point crosses the downward ray, and
+            // counts with the opposite sign, since it faces the other way
+            // when the point is inside.
+            let height = orient3d(coord3(a), coord3(b), coord3(c), coord3(point));
+            if height > 0.0 {
                 winding += if facing > 0.0 { 1 } else { -1 };
+            } else if height < 0.0 {
+                below += if facing > 0.0 { -1 } else { 1 };
             }
         }
-        winding
+        (winding, below)
     }
 }
 
