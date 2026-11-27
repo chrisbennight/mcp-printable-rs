@@ -117,7 +117,7 @@ def main(argv: list[str]) -> int:
 def _write_float(values, path: Path) -> None:
     from PIL import Image
 
-    Image.fromarray(values).save(path, format="TIFF")
+    Image.fromarray(values).save(path, format="TIFF", compression="tiff_adobe_deflate")
 
 
 def _fail(code: str, message: str) -> int:

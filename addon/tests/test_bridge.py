@@ -3890,6 +3890,11 @@ class HandlerValidationTests(unittest.TestCase):
         photo = geometry_camera(bounds, 4, 2, "perspective", 8.0)
         self.assertEqual(photo["focal_px"], 8.0)
         self.assertAlmostEqual((photo["origin_z"] - 5.0) * 4 / 8.0, 40.0)
+        # Another mesh seen from the first's viewpoint gets the same rays.
+        again = geometry_camera((0.0, 1.0, 0.0, 1.0, 0.5), 4, 2, "perspective", lens["focal_px"],
+                                (10.0, 10.0, lens["origin_z"]))
+        self.assertEqual(again["ray"](1, 2), lens["ray"](1, 2))
+        self.assertEqual(again["origin_z"], lens["origin_z"])
         with self.assertRaisesRegex(HandlerError, "projection"):
             geometry_camera(bounds, 4, 2, "fisheye")
 
@@ -3910,7 +3915,10 @@ class HandlerValidationTests(unittest.TestCase):
                                     ({"width": 0}, "width"), ({"height": 5000}, "height"),
                                     ({"projection": "fisheye"}, "projection"), ({"lens": 1}, "unknown"),
                                     ({"focal_px": 500.0}, "perspective"),
-                                    ({"projection": "perspective", "focal_px": -1}, "focal_px")]:
+                                    ({"projection": "perspective", "focal_px": -1}, "focal_px"),
+                                    ({"projection": "perspective", "position": [0, 0, 1]}, "focal_px"),
+                                    ({"projection": "perspective", "focal_px": 9.0, "position": [0, 1]},
+                                     "three finite")]:
                 with self.subTest(change=change), self.assertRaisesRegex(Exception, message):
                     handlers._job_render_geometry({**valid, **change})
             watchdog.arm.assert_not_called()

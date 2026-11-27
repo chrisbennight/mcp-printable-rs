@@ -105,27 +105,65 @@ def _check_pixels(name: str, width: int, height: int) -> None:
         raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
 
 
-def _check_archive(name: str, path: Path) -> None:
-    """Refuse a NumPy archive whose arrays would decode to more than MAX_PIXELS pixels of three channels,
-    from the array headers alone."""
+# The members of each NumPy archive compare reads, with their data type and
+# dimensions: "image" is a height x width map, "normals" adds three channels,
+# "scalar" has none.
+RENDERED_VIEW = {"depth": ("<f4", "image"), "normals": ("<f4", "normals"), "mask": ("|b1", "image"),
+                 "focal_px": ("<f8", "scalar")}
+BENCHMARK_TRUTH = {"depth": ("<f8", "image"), "normals": ("<f4", "normals"), "valid": ("|b1", "image"),
+                   "focal": ("<f8", "scalar"), "region": ("|b1", "image")}
+# Bytes allowed beyond an array's own data: its header.
+ARCHIVE_HEADER_BYTES = 4096
+
+
+def _check_archive(name: str, path: Path, layouts: tuple[dict, ...]) -> dict:
+    """The layout a NumPy archive follows, checked from its member headers before any array is loaded.
+
+    The archive must hold exactly one layout's members, each with its data
+    type and dimensions, one image size of at most MAX_PIXELS pixels, and no
+    member whose stored data is larger than its header declares.
+    """
     try:
         with zipfile.ZipFile(path) as archive:
+            members = {}
             for info in archive.infolist():
+                if not info.filename.endswith(".npy"):
+                    raise CompareError(f"{name} holds an unexpected member, {info.filename}")
                 with archive.open(info) as member:
                     version = numpy.lib.format.read_magic(member)
                     read = (numpy.lib.format.read_array_header_1_0 if version == (1, 0)
                             else numpy.lib.format.read_array_header_2_0)
-                    shape, _, _ = read(member)
-                    if int(numpy.prod(shape, dtype=numpy.int64)) > 3 * MAX_PIXELS:
-                        raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
-    except (zipfile.BadZipFile, ValueError) as error:
+                    shape, fortran, dtype = read(member)
+                if dtype.hasobject or fortran:
+                    raise CompareError(f"{name} holds an unexpected array, {info.filename}")
+                members[info.filename[:-4]] = (dtype.str, shape, info.file_size)
+    except (zipfile.BadZipFile, ValueError, OSError) as error:
         if isinstance(error, CompareError):
             raise
         raise CompareError(f"{name} is not a readable NumPy archive: {error}") from None
+    layout = next((layout for layout in layouts if set(layout) == set(members)), None)
+    if layout is None:
+        raise CompareError(f"{name} does not hold the expected arrays")
+    sizes = set()
+    for key, (dtype, kind) in layout.items():
+        found, shape, stored = members[key]
+        expected = {"image": 2, "normals": 3, "scalar": 0}[kind]
+        if found != dtype or len(shape) != expected or (kind == "normals" and shape[2] != 3):
+            raise CompareError(f"{name}: {key} is not a {dtype} array of the expected shape")
+        if kind != "scalar":
+            sizes.add(tuple(shape[:2]))
+        elements = int(numpy.prod(shape, dtype=numpy.int64))
+        if kind != "scalar" and shape[0] * shape[1] > MAX_PIXELS:
+            raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
+        if stored > elements * numpy.dtype(dtype).itemsize + ARCHIVE_HEADER_BYTES:
+            raise CompareError(f"{name}: {key} holds more data than its header declares")
+    if len(sizes) != 1:
+        raise CompareError(f"{name}: its maps differ in size")
+    return layout
 
 
 def _load_rendered(name: str, path: Path) -> Input:
-    _check_archive(name, path)
+    _check_archive(name, path, (RENDERED_VIEW,))
     with numpy.load(path, allow_pickle=False) as data:
         depth = numpy.asarray(data["depth"], numpy.float64) / 1000.0
         normals = numpy.asarray(data["normals"], numpy.float64)
@@ -298,8 +336,9 @@ def compare_outputs(items: list[Input]) -> tuple[list[dict], list[numpy.ndarray]
         valid = reference.valid & item.valid
         if valid.sum() < 2:
             raise CompareError(f"{item.name} and {reference.name} share no valid pixels")
-        aligned, fit = scoring.align(item.depth, reference.depth, valid, scoring.RELATIVE)
-        difference = numpy.where(valid, aligned - reference.depth, 0.0)
+        scale, offset = _scale_and_offset(item.depth[valid], reference.depth[valid])
+        fit = {"scale": scale, "offset": offset}
+        difference = numpy.where(valid, item.depth * scale + offset - reference.depth, 0.0)
         span = float(numpy.percentile(reference.depth[valid], 99) - numpy.percentile(reference.depth[valid], 1))
         results.append({
             "input": item.name, "reference": reference.name, "alignment": fit,
@@ -310,6 +349,19 @@ def compare_outputs(items: list[Input]) -> tuple[list[dict], list[numpy.ndarray]
         })
         differences.append(difference)
     return results, differences, {"width": width, "height": height}
+
+
+def _scale_and_offset(x: numpy.ndarray, y: numpy.ndarray) -> tuple[float, float]:
+    """Least-squares y ~ scale * x + offset, with no floor on the values, so signed maps align exactly.
+
+    The scale may not be negative, as in the benchmark's alignment: an
+    inverted input fits as a flat one and its difference stays visible.
+    """
+    design = numpy.stack([x, numpy.ones_like(x)], axis=1)
+    (scale, offset), *_ = numpy.linalg.lstsq(design, y, rcond=None)
+    if scale < 0:
+        return 0.0, float(numpy.mean(y))
+    return float(scale), float(offset)
 
 
 def _correlation(a: numpy.ndarray, b: numpy.ndarray) -> float | None:
@@ -356,7 +408,11 @@ def compare_photo(items: list[Input], analysis: dict, luminance: numpy.ndarray) 
         inside = scoring.erode(mask & item.valid, 2)
         if inside.sum() < 4:
             raise CompareError(f"{item.name} and the analysis's subject mask have too little overlap to compare")
-        normals, scale = fitted_normals(item.depth, target, inside)
+        if item.source == "mesh":
+            # A rendered mesh has its own exact normals in the photograph's camera frame.
+            normals, scale = item.normals, None
+        else:
+            normals, scale = fitted_normals(item.depth, target, inside)
         angles = scoring.angle_deg(normals, target)
         selected = angles[inside]
         shading_region = inside & scoring.erode(shape, 2)
@@ -385,14 +441,21 @@ def compare_synthetic(items: list[Input], truth: dict) -> list[dict]:
     for item in items:
         item = resized(item, height, width)
         if item.depth is None:
-            smooth = scoring.smooth_mask(truth["depth"], truth["valid"])
+            smooth = scoring.smooth_mask(truth["depth"], truth["valid"]) & item.valid
+            if not smooth.any():
+                raise CompareError(f"{item.name} has no values where the scene is visible")
             row = {"normal_deg": scoring.normal_errors(item.normals, truth["normals"], smooth)["median_deg"]}
         else:
+            # Only pixels where the prediction has a value are scored.
+            valid = truth["valid"] & item.valid
+            if valid.sum() < 2:
+                raise CompareError(f"{item.name} has no values where the scene is visible")
+            region = truth["region"] & item.valid if truth["region"] is not None else None
             # The benchmark stores every prediction in 32-bit floating point.
             pred = {"depth": item.depth.astype(numpy.float32), "kind": item.kind}
             if item.normals is not None:
                 pred["normals"] = item.normals.astype(numpy.float32)
-            row = scoring.scene_scores(pred, truth)
+            row = scoring.scene_scores(pred, {**truth, "valid": valid, "region": region})
         for key, value in row.items():
             if isinstance(value, float) and not numpy.isfinite(value):
                 raise CompareError(f"{item.name} gave a non-finite {key}; check the map's values")
@@ -408,10 +471,8 @@ def load_truth(path: Path) -> dict:
     benchmark's, or a mesh rendered by the render worker, depth in
     millimetres, whose relief region is every pixel the mesh covers.
     """
-    _check_archive("the scene", path)
-    with numpy.load(path, allow_pickle=False) as data:
-        benchmark = "valid" in data.files
-    if benchmark:
+    layout = _check_archive("the scene", path, (BENCHMARK_TRUTH, RENDERED_VIEW))
+    if layout is BENCHMARK_TRUTH:
         try:
             return scoring.load_truth(path)
         except (KeyError, ValueError) as error:

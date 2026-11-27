@@ -136,6 +136,7 @@ def geometry_camera(
     height: int,
     projection: str,
     focal_px: float | None = None,
+    position: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """The view of a comparison render from the model's (min x, max x, min y,
     max y, max z) bounds: the frame covers the bounds' footprint, widened to
@@ -144,7 +145,9 @@ def geometry_camera(
     A perspective view uses ``focal_px`` when given, a photograph's focal
     length, and then stands where the footprint's top just fills the frame, as
     the photographed subject fills the photograph; otherwise it uses the 50 mm
-    lens with a margin.
+    lens with a margin. ``position``, the (x, y, z) of an earlier
+    perspective view with its ``focal_px``, reuses that camera exactly, so two
+    meshes can be seen from one viewpoint.
 
     Orthographic rays start above the model on a grid of pixel centres;
     perspective rays leave one point. ``ray(row, column)`` gives a pixel's
@@ -172,6 +175,8 @@ def geometry_camera(
     if focal_px is None:
         focal_px = width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
     origin_z = top + margin * frame_width * focal_px / width
+    if position is not None:
+        centre_x, centre_y, origin_z = position
 
     def ray(row: int, column: int) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         u = (column + 0.5 - width / 2.0) / focal_px
@@ -2029,7 +2034,7 @@ class BlenderHandlers:
         leaves its camera as the scene camera, so a later product render with
         a preserved camera photographs the same view.
         """
-        _only_keys(params, {"path", "width", "height", "projection", "focal_px", "timeout_seconds"})
+        _only_keys(params, {"path", "width", "height", "projection", "focal_px", "position", "timeout_seconds"})
         if self._config.role != "render_worker" or not self._bpy.app.background:
             raise HandlerError("geometry rendering requires the background render worker")
         # A NumPy archive is a zip file; the workspace accepts it as one.
@@ -2044,6 +2049,11 @@ class BlenderHandlers:
             if projection != "perspective":
                 raise HandlerError("focal_px is only valid for a perspective view")
             focal_px = _positive_float(params, "focal_px", 1.0)
+        position = None
+        if "position" in params:
+            if focal_px is None:
+                raise HandlerError("position needs the perspective view's focal_px")
+            position = _finite_vector(params, "position")
         timeout_seconds = _positive_float(
             params, "timeout_seconds", DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS
         )
@@ -2081,7 +2091,7 @@ class BlenderHandlers:
                 min(v.y for v in vertices), max(v.y for v in vertices),
                 max(v.z for v in vertices),
             )
-            camera = geometry_camera(bounds, width, height, projection, focal_px)
+            camera = geometry_camera(bounds, width, height, projection, focal_px, position)
             tree = BVHTree.FromPolygons(vertices, triangles, all_triangles=True)
             depth = numpy.zeros((height, width), numpy.float32)
             normals = numpy.zeros((height, width, 3), numpy.float32)
@@ -2129,6 +2139,7 @@ class BlenderHandlers:
                 "height": height,
                 "projection": projection,
                 "focal_px": camera["focal_px"],
+                "position": [*camera["centre"], camera["origin_z"]],
                 "pixel_size": camera["pixel_size"],
                 "covered_pixels": int(mask.sum()),
                 "triangles": len(triangles),

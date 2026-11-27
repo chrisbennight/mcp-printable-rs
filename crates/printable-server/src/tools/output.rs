@@ -175,10 +175,30 @@ fn photo_analysis() -> Value {
     )
 }
 
-/// A relief built from an analysis, or the analysis job it waits for.
 /// A `photo compare` report: each input's measures, separately, with the
 /// analysis's own confidence scores in photo mode.
 fn photo_comparison() -> Value {
+    let [photo, outputs, synthetic] = comparison_rows();
+    object(
+        json!({
+            "mode":{"enum":["outputs","photo","synthetic"]},
+            "kind":{"enum":["relative","metric","logrel"]},
+            "inputs":{"type":"array","items":{"type":"string"},"maxItems":6},
+            "results":{"type":"array","maxItems":6,"items":{"anyOf":[photo, outputs, synthetic]}},
+            "analysis":object(json!({"cache_key":{"type":"string"},"scores":{"type":"object"},
+                "warnings":{"type":"array"}}), &["cache_key","scores","warnings"]),
+            "renders":{"type":"object"},
+            "artifacts":object(json!({"report":artifact(),"sheet":artifact(),
+                "differences":{"type":"array","items":artifact()},"scene_photograph":artifact()}),
+                &["report","sheet"])
+        }),
+        &["mode", "kind", "inputs", "results", "artifacts"],
+    )
+}
+
+/// One result row of a `photo compare` report, for each mode: photo,
+/// outputs and synthetic.
+pub(crate) fn comparison_rows() -> [Value; 3] {
     let number = json!({"type":["number","null"]});
     let outline = object(
         json!({"mean_px":number,"p95_px":number,"percent_of_diagonal":number}),
@@ -189,7 +209,7 @@ fn photo_comparison() -> Value {
             "input":{"type":"string"}, "source":{"type":"string"}, "crop":{"type":"object"},
             "silhouette_iou":number, "outline_distance":outline,
             "normal_angle":object(json!({"median_deg":{"type":"number"},"within_15_deg":{"type":"number"},
-                "height_scale":{"type":"number","minimum":0}}), &["median_deg","within_15_deg","height_scale"]),
+                "height_scale":{"type":["number","null"],"minimum":0}}), &["median_deg","within_15_deg","height_scale"]),
             "shading":object(json!({"correlation":number,"analysis_correlation":number}),
                 &["correlation","analysis_correlation"])
         }),
@@ -215,23 +235,10 @@ fn photo_comparison() -> Value {
             "relief_pct":number}),
         &["input", "source"],
     );
-    object(
-        json!({
-            "mode":{"enum":["outputs","photo","synthetic"]},
-            "kind":{"enum":["relative","metric","logrel"]},
-            "inputs":{"type":"array","items":{"type":"string"},"maxItems":6},
-            "results":{"type":"array","maxItems":6,"items":{"anyOf":[photo, outputs, synthetic]}},
-            "analysis":object(json!({"cache_key":{"type":"string"},"scores":{"type":"object"},
-                "warnings":{"type":"array"}}), &["cache_key","scores","warnings"]),
-            "renders":{"type":"object"},
-            "artifacts":object(json!({"report":artifact(),"sheet":artifact(),
-                "differences":{"type":"array","items":artifact()},"scene_photograph":artifact()}),
-                &["report","sheet"])
-        }),
-        &["mode", "kind", "inputs", "results", "artifacts"],
-    )
+    [photo, outputs, synthetic]
 }
 
+/// A relief built from an analysis, or the analysis job it waits for.
 fn photo_relief() -> [Value; 2] {
     let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
     let size =

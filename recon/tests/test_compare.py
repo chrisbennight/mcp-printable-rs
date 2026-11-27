@@ -55,18 +55,20 @@ class SyntheticTests(unittest.TestCase):
         # A benchmark-style relief plaque: a tilted plane with a raised bump,
         # seen by a pinhole camera.
         v, u = numpy.mgrid[0:H, 0:W].astype(numpy.float64)
-        truth_depth = 0.5 + 0.0005 * v - 0.01 * dome()
+        # The render worker stores depth in millimetres and both maps in 32-bit floating point.
+        stored = ((0.5 + 0.0005 * v - 0.01 * dome()) * 1000.0).astype(numpy.float32)
+        normals = scoring.normals_from_depth(stored.astype(numpy.float64), 140.0).astype(numpy.float32)
+        truth_depth = stored.astype(numpy.float64) / 1000.0
         focal = 140.0
-        truth = {"depth": truth_depth, "normals": scoring.normals_from_depth(truth_depth, focal),
+        truth = {"depth": truth_depth, "normals": normals.astype(numpy.float64),
                  "valid": numpy.ones((H, W), bool), "focal": focal}
         truth["region"] = truth["valid"]
         rng = numpy.random.default_rng(0)
         agent = (3.0 * truth_depth + 1.0 + rng.normal(0, 0.0005, (H, W))).astype(numpy.float32)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            # The render worker stores depth in millimetres.
-            numpy.savez(directory / "truth.npz", depth=truth["depth"] * 1000.0, normals=truth["normals"],
-                        mask=truth["valid"], focal_px=focal)
+            numpy.savez(directory / "truth.npz", depth=stored, normals=normals, mask=truth["valid"],
+                        focal_px=numpy.float64(focal))
             Image.fromarray(agent).save(directory / "agent.tiff", format="TIFF")
             answer = run({"mode": "synthetic", "truth": str(directory / "truth.npz"),
                           "inputs": [{"name": "maps/agent.tiff", "file": str(directory / "agent.tiff")}]},
@@ -98,6 +100,40 @@ class SyntheticTests(unittest.TestCase):
         result = answer["result"]["results"][0]
         for key, value in expected.items():
             self.assertEqual(result[key], value, key)
+
+    def test_a_mesh_seen_through_the_scenes_camera_scores_as_identical(self):
+        # The render worker gives a candidate mesh the scene's camera, so the
+        # same mesh renders to the same archive and has no error.
+        v, u = numpy.mgrid[0:H, 0:W].astype(numpy.float64)
+        stored = ((0.5 + 0.0005 * v - 0.01 * dome()) * 1000.0).astype(numpy.float32)
+        normals = scoring.normals_from_depth(stored.astype(numpy.float64), 140.0).astype(numpy.float32)
+        with tempfile.TemporaryDirectory() as temporary:
+            view = Path(temporary) / "view.zip"
+            with view.open("wb") as stream:
+                numpy.savez(stream, depth=stored, normals=normals, mask=numpy.ones((H, W), bool),
+                            focal_px=numpy.float64(140.0))
+            truth = comparison.load_truth(view)
+            mesh = comparison.load("same.stl", view, "relative")
+        result = comparison.compare_synthetic([mesh], truth)[0]
+        self.assertLess(result["absrel"], 1e-6)
+        self.assertLess(result["depth_normal_deg"], 0.01)
+        self.assertLess(result["normal_deg"], 0.01)
+        self.assertAlmostEqual(result["scale_error_pct"], 0.0, places=4)
+
+    def test_pixels_without_a_value_are_not_scored(self):
+        depth = 0.5 - 0.01 * dome()
+        truth = {"depth": depth, "normals": scoring.normals_from_depth(depth, 140.0),
+                 "valid": numpy.ones((H, W), bool), "focal": 140.0, "region": None}
+        partial = depth.copy()
+        partial[:, :20] = numpy.nan
+        valid = numpy.isfinite(partial)
+        item = comparison.Input("d.tiff", "depth map", numpy.where(valid, partial, 0.0), None, valid, "relative")
+        result = comparison.compare_synthetic([item], truth)[0]
+        self.assertLess(result["absrel"], 1e-6)
+        empty = comparison.Input("d.tiff", "depth map", numpy.zeros((H, W)), None, numpy.zeros((H, W), bool),
+                                 "relative")
+        with self.assertRaisesRegex(comparison.CompareError, "no values"):
+            comparison.compare_synthetic([empty], truth)
 
     def test_a_normal_map_is_scored_by_normal_angle(self):
         truth_depth = 0.5 - 0.01 * dome()
@@ -149,7 +185,9 @@ class PhotoTests(unittest.TestCase):
     def test_a_mesh_silhouette_is_its_coverage(self):
         # A flat mesh seen straight on has no raised area, but covers the disk.
         disk = dome() > 0
-        flat = comparison.Input("disk.stl", "mesh", numpy.full((H, W), 0.1), None, disk, "metric")
+        up = numpy.zeros((H, W, 3))
+        up[..., 2] = 1.0
+        flat = comparison.Input("disk.stl", "mesh", numpy.full((H, W), 0.1), up, disk, "metric")
         numpy.testing.assert_array_equal(comparison.silhouette(flat), disk)
         normals = height_normals(dome(), 40.0)
         light = numpy.clip(0.1 + 0.8 * (normals * numpy.array([-0.3, 0.4, 0.87])).sum(-1), 0, 1)
@@ -157,6 +195,17 @@ class PhotoTests(unittest.TestCase):
         self.assertEqual(result["silhouette_iou"], 1.0)
         self.assertEqual(result["outline_distance"]["mean_px"], 0.0)
         self.assertEqual(result["shading"]["correlation"], 0.0)
+
+    def test_a_mesh_is_measured_by_its_rendered_normals(self):
+        disk = dome() > 0
+        normals = height_normals(dome(), 40.0)
+        light = numpy.clip(0.1 + 0.8 * (normals * numpy.array([-0.3, 0.4, 0.87])).sum(-1), 0, 1)
+        # A flat depth with the dome's exact normals: slopes would find nothing.
+        mesh = comparison.Input("dome.stl", "mesh", numpy.full((H, W), 0.1), normals, disk, "metric")
+        result = comparison.compare_photo([mesh], {"mask": disk, "normals": normals}, light)[0][0]
+        self.assertLess(result["normal_angle"]["median_deg"], 0.01)
+        self.assertIsNone(result["normal_angle"]["height_scale"])
+        self.assertGreater(result["shading"]["correlation"], 0.99)
 
     def test_a_photograph_without_shading_is_an_error(self):
         disk = dome() > 0
@@ -191,6 +240,20 @@ class OutputsTests(unittest.TestCase):
             self.assertEqual(difference.dtype, numpy.float32)
             self.assertEqual(difference.shape, (H, W))
 
+    def test_identical_signed_maps_have_no_difference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            signed = (dome() - 0.7).astype(numpy.float32)
+            for name in ("a.tiff", "b.tiff"):
+                Image.fromarray(signed).save(directory / name, format="TIFF")
+            answer = run({"mode": "outputs", "inputs": [
+                {"name": name, "file": str(directory / name)} for name in ("a.tiff", "b.tiff")]}, directory)
+            result = answer["result"]["results"][0]
+            self.assertLess(result["whole"]["rmse"], 1e-6)
+            self.assertAlmostEqual(result["alignment"]["scale"], 1.0, places=5)
+            difference = numpy.asarray(Image.open(directory / "out/diff-1.tiff"))
+            self.assertLess(numpy.abs(difference).max(), 1e-6)
+
     def test_inputs_of_other_proportions_or_without_heights_are_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -219,9 +282,9 @@ class LoadingTests(unittest.TestCase):
                 comparison.load("h.png", directory / "h.png", "metric")
             loaded = comparison.load("h.png", directory / "h.png", "relative")
             self.assertEqual((loaded.source, loaded.depth.min(), loaded.depth.max()), ("heightmap", 0.0, 1.0))
-            depth = numpy.where(dome() > 0, 2.0, 3.0)
-            numpy.savez(directory / "mesh.npz", depth=depth, normals=numpy.zeros((H, W, 3)), mask=dome() > 0,
-                        focal_px=0.0)
+            depth = numpy.where(dome() > 0, 2.0, 3.0).astype(numpy.float32)
+            numpy.savez(directory / "mesh.npz", depth=depth, normals=numpy.zeros((H, W, 3), numpy.float32),
+                        mask=dome() > 0, focal_px=numpy.float64(0.0))
             mesh = comparison.load("part.stl", directory / "mesh.npz", "relative")
             self.assertEqual((mesh.source, mesh.kind, float(mesh.depth.max())), ("mesh", "metric", 0.002))
             with mock.patch.object(comparison, "MAX_PIXELS", 100):
@@ -229,6 +292,15 @@ class LoadingTests(unittest.TestCase):
                     comparison.load("h.png", directory / "h.png", "relative")
                 with self.assertRaisesRegex(comparison.CompareError, "more than 100 pixels"):
                     comparison.load("part.stl", directory / "mesh.npz", "relative")
+            for change, message in [({"depth": numpy.zeros((H, W))}, "f4"),
+                                    ({"extra": numpy.zeros(3)}, "expected arrays"),
+                                    ({"normals": numpy.zeros((H, W), numpy.float32)}, "shape"),
+                                    ({"mask": numpy.zeros((H, 10), bool)}, "differ")]:
+                arrays = {"depth": numpy.zeros((H, W), numpy.float32), "normals": numpy.zeros((H, W, 3), numpy.float32),
+                          "mask": numpy.ones((H, W), bool), "focal_px": numpy.float64(0.0), **change}
+                numpy.savez(directory / "odd.npz", **arrays)
+                with self.subTest(change=sorted(change)), self.assertRaisesRegex(comparison.CompareError, message):
+                    comparison.load("part.stl", directory / "odd.npz", "relative")
             (directory / "text.png").write_text("not an image")
             with self.assertRaisesRegex(comparison.CompareError, "not a PNG"):
                 comparison.load("text.png", directory / "text.png", "relative")

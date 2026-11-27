@@ -142,6 +142,12 @@ impl CompareRequest {
             {
                 refuse("a benchmark truth has its own photograph; give the inputs to score")
             }
+            CompareMode::Synthetic
+                if self.scene.as_deref().is_some_and(is_truth)
+                    && self.inputs.iter().any(|input| is_mesh(input)) =>
+            {
+                refuse("a benchmark truth has no camera to render a mesh with; give maps")
+            }
             _ => Ok(()),
         }
     }
@@ -407,6 +413,10 @@ mod tests {
                 "inputs to score",
             ),
             (
+                json!({"mode": "synthetic", "scene": "truth.zip", "inputs": ["m.stl"], "path": "r.json"}),
+                "give maps",
+            ),
+            (
                 json!({"mode": "synthetic", "scene": "s.stl", "image": "p.jpg", "path": "r.json"}),
                 "photo mode",
             ),
@@ -462,7 +472,15 @@ if request['mode'] == 'outputs':
 results = []
 for item in request['inputs']:
     assert Path(item['file']).is_absolute() and item['file'] != item['name'], item
-    results.append({'input': item['name'], 'source': Path(item['file']).read_text(), 'absrel': 0.5})
+    assert Path(item['file']).read_text() == item['name']
+if request['mode'] == 'outputs':
+    first = request['inputs'][0]['name']
+    for item in request['inputs'][1:]:
+        stats = {'pixels': 4, 'rmse': 0.25, 'rmse_percent_of_range': 5.0}
+        results.append({'input': item['name'], 'reference': first, 'alignment': {'scale': 1.0, 'offset': 0.0},
+                        'correlation': 0.9, 'whole': stats, 'regions': {'centre': stats}})
+else:
+    results = [{'input': item['name'], 'source': 'heightmap', 'absrel': 0.5} for item in request['inputs']]
 if request['mode'] == 'photo':
     assert Path(request['photograph']).read_bytes() == b'image bytes'
     assert sorted(request['analysis']) == ['depth', 'mask', 'normals']
@@ -517,7 +535,12 @@ print(json.dumps({'result': {'results': results, 'files': files}}))
         let schema = Value::Object(crate::tools::output::schema("photo").as_ref().clone());
         let validator = jsonschema::validator_for(&schema).unwrap();
         assert!(validator.is_valid(&report), "{report}");
-        assert_eq!(report["results"][1]["source"], "b.tiff");
+        // Each row is an outputs-mode row, not merely some row the report allows.
+        let [_, outputs, _] = crate::tools::output::comparison_rows();
+        let rows = jsonschema::validator_for(&outputs).unwrap();
+        assert_eq!(report["results"].as_array().unwrap().len(), 1, "{report}");
+        assert!(rows.is_valid(&report["results"][0]), "{report}");
+        assert_eq!(report["results"][0]["reference"], "a.png");
         assert_eq!(
             report["artifacts"]["differences"][0]["path"],
             "cmp/r.diff-1.tiff"

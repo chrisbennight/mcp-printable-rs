@@ -808,8 +808,8 @@ impl JobRegistry {
 
     /// Render a workspace mesh's exact depth, normals and coverage seen from
     /// above, for a comparison, on the isolated render worker. The view goes
-    /// to `{work}.zip`, through `view`: a projection and, for a perspective,
-    /// an optional focal length in pixels. With `photograph`, a perspective view is also
+    /// to `{work}.zip`, through `view`: the projection and, for a
+    /// perspective, an optional focal length in pixels and camera position. With `photograph`, a perspective view is also
     /// rendered as a picture through the same camera at `{work}.png`. The
     /// caller removes both files. The render waits for no queue: when a
     /// render job is queued or running, it is refused as busy so it never
@@ -819,7 +819,7 @@ impl JobRegistry {
         model: &str,
         work: &str,
         size: (u32, u32),
-        view: (&'static str, Option<f64>),
+        view: Value,
         photograph: bool,
     ) -> Result<Value, ToolError> {
         let registry = self.clone();
@@ -840,7 +840,7 @@ impl JobRegistry {
         model: &str,
         work: &str,
         (width, height): (u32, u32),
-        (projection, focal_px): (&'static str, Option<f64>),
+        view: Value,
         photograph: bool,
     ) -> Result<Value, ToolError> {
         if !self.project_pictures_available() {
@@ -929,10 +929,14 @@ impl JobRegistry {
                     budget,
                 )
                 .await?;
-            let mut view = json!({"path": view_path, "width": width, "height": height,
-                "projection": projection, "timeout_seconds": budget.as_secs()});
-            if let Some(focal_px) = focal_px {
-                view["focal_px"] = json!(focal_px);
+            let mut view = view;
+            for (key, value) in [
+                ("path", json!(view_path)),
+                ("width", json!(width)),
+                ("height", json!(height)),
+                ("timeout_seconds", json!(budget.as_secs())),
+            ] {
+                view[key] = value;
             }
             let mut rendered = transaction
                 .send_value_with_work_budget("job_render_geometry", params(view)?, budget)

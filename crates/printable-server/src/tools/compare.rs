@@ -102,10 +102,11 @@ pub(super) async fn compare(
         .await?
     };
 
+    // The scene goes first, so the inputs can be seen through its camera.
     let meshes: Vec<&String> = request
-        .inputs
+        .scene
         .iter()
-        .chain(&request.scene)
+        .chain(&request.inputs)
         .filter(|path| is_mesh(path))
         .collect();
     let work = format!("{WORK_ROOT}/{}", crate::upload::random_hex_id()?);
@@ -113,6 +114,7 @@ pub(super) async fn compare(
     let outcome = async {
         let mut renders = serde_json::Map::new();
         let mut views = std::collections::HashMap::new();
+        let mut scene_camera: Option<Value> = None;
         for (index, mesh) in meshes.iter().enumerate() {
             let registry = job_registry(jobs)?;
             let prefix = format!("{work}/{index}");
@@ -122,16 +124,25 @@ pub(super) async fn compare(
             if photograph {
                 staged.push(format!("{prefix}.png"));
             }
-            // A synthetic scene and a mesh seen through the photograph's
-            // camera are perspective views; other meshes are seen from above.
-            let view = match (scene, focal_px) {
-                (true, _) => ("perspective", None),
-                (false, Some(focal)) => ("perspective", Some(focal)),
-                (false, None) => ("orthographic", None),
+            // A synthetic scene is a perspective view, and a mesh scored
+            // against it is seen through exactly its camera; a mesh in photo
+            // mode is seen through the photograph's focal length; other
+            // meshes are seen from above.
+            let view = match (scene, &scene_camera, focal_px) {
+                (true, _, _) => json!({"projection": "perspective"}),
+                (false, Some(camera), _) => camera.clone(),
+                (false, None, Some(focal)) => {
+                    json!({"projection": "perspective", "focal_px": focal})
+                }
+                (false, None, None) => json!({"projection": "orthographic"}),
             };
             let rendered = registry
                 .render_geometry(mesh, &prefix, size, view, photograph)
                 .await?;
+            if scene {
+                scene_camera = Some(json!({"projection": "perspective",
+                    "focal_px": rendered["focal_px"], "position": rendered["position"]}));
+            }
             renders.insert((*mesh).clone(), rendered);
             views.insert((*mesh).clone(), format!("{prefix}.zip"));
         }
@@ -163,7 +174,9 @@ pub(super) async fn compare(
                 Value::Object(renders.clone())
             },
         };
-        let mut report = client.compare(&job).await?;
+        // The scene's photograph is published before the report, so a
+        // failure leaves no report behind.
+        let mut photograph = None;
         if let (Some(path), Some(scene)) = (&companions.scene_photograph, &request.scene) {
             let rendered = &renders[scene.as_str()]["photograph"];
             let source = format!("{}.png", views[scene.as_str()].trim_end_matches(".zip"));
@@ -175,7 +188,10 @@ pub(super) async fn compare(
                 u64::from(size.1),
             )
             .await?;
-            let artifact = workspace.write_generated_bytes(path, &bytes, request.overwrite)?;
+            photograph = Some(workspace.write_generated_bytes(path, &bytes, request.overwrite)?);
+        }
+        let mut report = client.compare(&job).await?;
+        if let Some(artifact) = photograph {
             report["artifacts"]["scene_photograph"] = json!(artifact);
         }
         Ok::<_, ToolError>(report)

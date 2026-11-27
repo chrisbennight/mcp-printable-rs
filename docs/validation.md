@@ -61,13 +61,14 @@ worker's CPU with the depth benchmark's own scoring code, so the action is
 offered with `photo.analyze`. A comparison takes its turn with the worker's
 other photograph jobs: while one is running, it is refused as busy. Maps and
 rendered views larger than 40 million pixels are refused before they are
-decoded.
+decoded, and a NumPy archive must hold exactly the arrays, data types and
+sizes compare expects.
 
 ### outputs
 
-Every input is aligned to the first with the least-squares scale and offset
-the benchmark uses for relative depth; a negative scale is not allowed, so an
-inverted input aligns as a flat one. Each later input then reports:
+Every input is aligned to the first with a least-squares scale and offset,
+with no floor on the values, so signed maps align exactly; a negative scale
+is not allowed, so an inverted input aligns as a flat one. Each later input then reports:
 
 - `correlation` of its values with the first's, before alignment; a negative
   value means one is inverted;
@@ -102,10 +103,12 @@ footprint. Each input reports:
   averaged both ways, its 95th percentile, and the mean as a percentage of
   the image diagonal;
 - `normal_angle`: median angle and the share within 15 degrees between the
-  input's surface normals and the analysis normals inside the mask. A relief
-  compresses depth, so the input's heights are first scaled by the one
-  non-negative factor, `height_scale`, that best matches the analysis
-  slopes. An inverted relief fits with a scale of 0 and scores as flat;
+  input's surface normals and the analysis normals inside the mask. A mesh
+  uses its exact rendered normals, and `height_scale` is null. A map's
+  normals come from its slopes: a relief compresses depth, so its heights
+  are first scaled by the one non-negative factor, `height_scale`, that best
+  matches the analysis slopes. An inverted relief fits with a scale of 0 and
+  scores as flat;
 - `shading`: the correlation of the photograph's brightness with the best
   single directional light on the input's normals, and the same for the
   analysis normals, `analysis_correlation`, as a reference for what this
@@ -127,19 +130,23 @@ each other. Low agreement means the reference itself is uncertain there.
 `work/gt/<scene>/truth.zip` the benchmark report writes beside each scene,
 or a mesh. With the benchmark's truth, each input is scored against that
 scene's own camera, depth, normals and relief region, and the numbers are
-the benchmark report's for the same prediction. Give the inputs: run the
-route on the scene's `rgb.png`, at the benchmark's input size.
+the benchmark report's for the same prediction. Give maps as the inputs:
+run the route on the scene's `rgb.png`, at the benchmark's input size. A
+benchmark truth has no camera to render a mesh with.
 
 A mesh `scene` is in millimetres, Z up. The render worker renders it straight
 down through a 50 mm lens on a 36 mm sensor at 1024 x 768, the benchmark's
 frame, standing far enough back that its footprint fits with a 10 % margin.
+A mesh given as an input is rendered through exactly that camera, so the
+same mesh scores as identical.
 
 With no `inputs`, the request writes the scene's photograph,
-`NAME.scene.png`, rendered in Cycles through the same camera, and a sheet of
-the exact depth and normals. Run any route on that photograph, then repeat
+`NAME.scene.png`, rendered in Cycles through the same camera, then a sheet of
+the exact depth and normals and the report. Run any route on that photograph, then repeat
 the request with the route's map, or several, as `inputs`.
 
-Each input is resampled to the scene's size and scored with the benchmark's
+Each input is resampled to the scene's size and scored, over the pixels
+where it has a value, with the benchmark's
 scene scores (`scoring.scene_scores` in
 [scoring.py](../scripts/depth_benchmark/scoring.py)): `absrel` depth error,
 `edge_f1`, `depth_normal_deg` (normals derived from the depth),
