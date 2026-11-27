@@ -117,12 +117,12 @@ is the default flat plate, 100 mm wide.
 | `analyze` shallow, GPU, cold | 24.1 s | 15.4 s | 6,794 / 8,351 MiB | 10.2 GiB | 7.2 GiB |
 | `analyze` deep, GPU, warm | 22.1 s | 15.8 s: Depth Pro 2 H+ at 2048 px 2.7 s, MoGe-3 ViT-g 11.9 s | 8,287 / 10,823 MiB | 10.5 GiB | 1.9 GiB |
 | `analyze` deep, GPU, cold | 24.1 s | 16.3 s | 8,803 / 11,623 MiB | 10.6 GiB | 8.0 GiB |
-| `relief` from the cached GPU analysis | 0.30 s (7.4 s for the marble bust) | | none | 81 MiB (server) | none |
+| `relief` from the cached GPU analysis | 0.30 s (7.4 s for the marble bust) | | none | 81 MiB (server) | not measured |
 | `analyze` shallow, CPU, cold | 48.1 s | 43.2 s: Depth Anything 3 24.2 s, MoGe-2 ViT-L normal 10.9 s, Depth Pro 2 L 7.7 s | none | 3.4 GiB | 3.8 GiB |
 | `analyze` shallow, CPU, second photograph | 54.1 s | 48.5 s | none | 2.9 GiB | 2.6 GiB |
 | `analyze` deep, CPU, cold | 54.1 s | 48.7 s: Depth Pro 2 H+ at 1024 px 37.5 s, MoGe-2 ViT-L normal 10.9 s | none | 4.8 GiB | 4.6 GiB |
-| `relief` from the cached CPU analysis | 0.29 s | | none | | none |
-| `lithophane`, CPU only | 0.21 s | | none | 81 MiB (server) | none |
+| `relief` from the cached CPU analysis | 0.29 s | | none | not measured | not measured |
+| `lithophane`, CPU only | 0.21 s | | none | 81 MiB (server) | not measured |
 
 The whole-GPU figure is the sampled peak less the 416 MiB in use before the
 run. Disk reads were counted for the photograph worker container only, so the
@@ -191,7 +191,7 @@ bootstrap intervals from the benchmark's `bootstrap_mean`.
   route's depth-derived normals, as #339 found.
 - **Relief height**: 15.3 % (10.7-19.8) against 16.9 % (11.9-20.9). The
   intervals overlap, so this measurement does not show the default route to
-  be better on relief height, only no worse.
+  be better or worse on relief height; the difference is not established either way.
 - **The written relief scores worse than its analysis.** The heightmap of the
   relief STL compresses slopes on purpose. With the default compression its
   surface error rose to 5.0° on the shallow scenes (9.8° over all nine, where
