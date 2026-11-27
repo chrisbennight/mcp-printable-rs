@@ -84,6 +84,12 @@ class BundledSkillScopeTests(unittest.TestCase):
         self.assertEqual(scope["images"], "true")
         self.assertEqual(scope["publish"], "true")
 
+    def test_benchmark_scoring_edits_select_its_tests_images_and_publication(self):
+        scope = self.scope_for_changed_input("scripts/depth_benchmark/scoring.py")
+        self.assertEqual(scope["tooling"], "true")
+        self.assertEqual(scope["images"], "true")
+        self.assertEqual(scope["publish"], "true")
+
     def test_image_set_definition_edits_select_images_and_publication(self):
         scope = self.scope_for_changed_input("docker-bake.hcl")
         self.assertEqual(scope["images"], "true")

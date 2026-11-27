@@ -51,8 +51,9 @@ else
       Dockerfile|docker-bake.hcl|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
         images=true ;;
       compose.yaml|compose.photo.yaml) images=true ;;
-      # The photograph worker image installs the depth benchmark's scores.
-      scripts/depth_benchmark/scoring.py) images=true ;;
+      # The photograph worker image installs the depth benchmark's scores,
+      # which the benchmark tests cover.
+      scripts/depth_benchmark/scoring.py) images=true; tooling=true ;;
       acceptance/products/*) rust=true; images=true ;;
     esac
     case "$path" in
@@ -76,7 +77,7 @@ else
     case "$path" in
       crates/printable-scad/fuzz/*|addon/tests/*|crates/*/tests/*|crates/*/benches/*|crates/*/examples/*) ;;
       scripts/release_security.py) ;;
-      Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|skills/*|addon/*|Dockerfile|docker-bake.hcl|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless|scripts/release_*.py|scripts/publish_images.py|.github/actions/*|.github/workflows/ci.yml) publish=true ;;
+      Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/config|.cargo/config.toml|crates/*/Cargo.toml|crates/*/build.rs|crates/*/src/*|crates/*/assets/*|crates/*/resources/*|skills/*|addon/*|Dockerfile|docker-bake.hcl|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|release/*|scripts/run-headless-blender|scripts/openscad-headless|scripts/orca-headless|scripts/release_*.py|scripts/publish_images.py|.github/actions/*|.github/workflows/ci.yml|scripts/depth_benchmark/scoring.py) publish=true ;;
     esac
     if [[ ! -e "$path" ]]; then docs=true; fi
   done <"$changed_files"
