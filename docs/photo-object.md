@@ -239,7 +239,9 @@ It never downloads Python code at run time.
 standard installation. Set `PRINTABLE_RECON_IMAGE` to the matching immutable
 reconstruction image from the same release record as the other services, then
 use `docker compose -f compose.yaml -f compose.photo.yaml up -d`. The overlay
-provides disk-backed named volumes, download egress, 8 CPUs and a 24 GiB memory
+provides disk-backed named volumes (including the photograph analysis model
+cache, which enables `photo.analyze` and `photo.relief`), download egress,
+8 CPUs and a 24 GiB memory
 limit with no additional swap; set `PRINTABLE_RECON_MEMORY` (for example `32g`)
 to change it. The default GPU photograph analysis was measured at about
 10.5 GiB of memory, so the limit leaves room for one analysis or generation at a

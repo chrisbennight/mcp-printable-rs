@@ -20,6 +20,7 @@ services:
       - trellis-models:/models/trellis2
       - trellis-scratch:/scratch/trellis2
       - compile-cache:/cache/compile
+      - geometry-models:/models/geometry
     networks: [control, model-downloads]
     environment:
       PRINTABLE_WORKSPACE_ROOT: /workspace
@@ -27,6 +28,9 @@ services:
       PRINTABLE_RECON_PHOTO_QUEUE_DEPTH: ${PRINTABLE_RECON_PHOTO_QUEUE_DEPTH:-8}
       PRINTABLE_RECON_TRELLIS_CACHE: /models/trellis2
       PRINTABLE_RECON_TRELLIS_SCRATCH: /scratch/trellis2
+      # Photograph analysis (photo.analyze and photo.relief from a photograph)
+      # downloads its pinned models here on first use.
+      PRINTABLE_RECON_GEOMETRY_CACHE: /models/geometry
       # Kernels compiled at run time are loaded from here; /tmp does not allow
       # executable files.
       TRITON_CACHE_DIR: /cache/compile/triton
@@ -63,3 +67,4 @@ volumes:
   trellis-models: {}
   trellis-scratch: {}
   compile-cache: {}
+  geometry-models: {}
