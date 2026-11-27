@@ -5428,6 +5428,7 @@ fn worker_error_code(code: &str) -> &'static str {
         "relief_empty_mask" => "relief_empty_mask",
         "relief_missing_input" => "relief_missing_input",
         "relief_invalid_map" => "relief_invalid_map",
+        "relief_not_printable" => "relief_not_printable",
         _ => "geometry",
     }
 }
@@ -6853,6 +6854,7 @@ mod visual_contract_tests {
             "relief_empty_mask",
             "relief_missing_input",
             "relief_invalid_map",
+            "relief_not_printable",
         ] {
             assert_eq!(worker_error_code(code), code);
         }
