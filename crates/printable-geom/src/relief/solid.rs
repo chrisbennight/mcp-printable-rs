@@ -66,6 +66,9 @@ pub struct SolidOptions {
     /// Turn the relief upside down into a cavity, deepest where the relief
     /// is highest, with the cavity's floor `base_mm` above Z = 0.
     pub invert: bool,
+    /// Give the bottom a vertex under every top vertex instead of coarse
+    /// cells, so that bending the solid moves both faces alike.
+    pub fine_bottom: bool,
 }
 
 impl Default for SolidOptions {
@@ -76,6 +79,7 @@ impl Default for SolidOptions {
             border_height_mm: 0.0,
             mirror: false,
             invert: false,
+            fine_bottom: false,
         }
     }
 }
@@ -143,10 +147,14 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<ReliefSol
         return invalid("spacing_mm is too small to separate samples beside the border");
     }
     let pad = if options.border_mm > 0.0 { 2 } else { 0 };
+    let stride = if options.fine_bottom {
+        1
+    } else {
+        BOTTOM_STRIDE
+    };
     let (columns, rows) = (xs.len(), ys.len());
-    let vertex_count = columns * rows
-        + 2 * (columns + rows)
-        + 2 * (columns / BOTTOM_STRIDE + 2) * (rows / BOTTOM_STRIDE + 2);
+    let vertex_count =
+        columns * rows + 2 * (columns + rows) + 2 * (columns / stride + 2) * (rows / stride + 2);
     if u32::try_from(vertex_count).is_err() {
         return Err(crate::GeometryError::TooManyVertices.into());
     }
@@ -231,13 +239,13 @@ pub fn relief_solid(map: &ReliefMap, options: &SolidOptions) -> Result<ReliefSol
         triangles.push([bottom_here, top_next, top_here]);
     }
 
-    // The bottom: a coarse grid of cells, each spanning up to BOTTOM_STRIDE
+    // The bottom: a coarse grid of cells, each spanning up to `stride`
     // samples. Interior cells are two triangles. A cell on the boundary
     // carries every boundary vertex along its outer sides and is a fan
     // around its own centre, which lies strictly inside it, so no triangle
     // is degenerate and none reaches beyond its cell.
     let coarse = |count: usize| {
-        let mut positions: Vec<usize> = (0..count).step_by(BOTTOM_STRIDE).collect();
+        let mut positions: Vec<usize> = (0..count).step_by(stride).collect();
         if positions.last() != Some(&(count - 1)) {
             positions.push(count - 1);
         }

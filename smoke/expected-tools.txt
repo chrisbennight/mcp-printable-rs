@@ -18,6 +18,7 @@ job
 project
 collection
 catalog
+photo
 artifact
 printer
 print

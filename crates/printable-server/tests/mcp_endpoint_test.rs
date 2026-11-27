@@ -853,6 +853,7 @@ async fn mcp_handshake_lists_tools_calls_status_and_resources() {
             "project",
             "collection",
             "catalog",
+            "photo",
             "artifact",
             "printer",
             "print",
@@ -2438,12 +2439,17 @@ async fn a_photograph_worker_without_a_head_model_announces_depth_changes() {
         stream.next().await["params"]["notifications"],
         json!({"toolsListChanged": true})
     );
-    let photo_listed = |tools: &Value| {
+    // The photo tool is always listed for lithophanes; depth needs the
+    // worker.
+    let depth_offered = |tools: &Value| {
         tools["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|tool| tool["name"] == "photo")
+            .find(|tool| tool["name"] == "photo")
+            .unwrap()["inputSchema"]
+            .to_string()
+            .contains("depth_path")
     };
     let list = |id| {
         let http = http.clone();
@@ -2460,14 +2466,14 @@ async fn a_photograph_worker_without_a_head_model_announces_depth_changes() {
             .await
         }
     };
-    assert!(!photo_listed(&list(3).await));
+    assert!(!depth_offered(&list(3).await));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(recon.refresh().await.depth);
     assert_eq!(
         stream.next().await["method"],
         "notifications/tools/list_changed"
     );
-    assert!(photo_listed(&list(4).await));
+    assert!(depth_offered(&list(4).await));
     drop(stream);
     server.shutdown().await;
     worker.abort();

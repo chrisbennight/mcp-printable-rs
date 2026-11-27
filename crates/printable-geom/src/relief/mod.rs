@@ -15,6 +15,9 @@
 //! 4. [`check_relief`] checks the solid and its relief against what a
 //!    printer can reproduce.
 //!
+//! [`lithophane`] makes backlit plates from an image's brightness with the
+//! same solid and checks.
+//!
 //! Every stage bounds its memory by the input's pixel count and its work by
 //! iteration limits, and stops at the geometry work limit applied to its
 //! thread. The module performs no I/O.
@@ -22,6 +25,7 @@
 mod compress;
 mod heightfield;
 mod integrate;
+pub mod lithophane;
 mod poisson;
 mod printability;
 mod solid;

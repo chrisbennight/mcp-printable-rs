@@ -227,7 +227,8 @@ impl PrintableServer {
     }
 
     /// The photograph worker's readiness changes the catalog: it gates the
-    /// `photo` tool, and `reconstruct` when a FLAME 2020 model is mounted.
+    /// `photo` tool's worker actions, and `reconstruct` when a FLAME 2020
+    /// model is mounted.
     fn tool_list_can_change(&self) -> bool {
         self.settings.recon.is_some()
     }
@@ -239,15 +240,20 @@ impl PrintableServer {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        if !tools::workflows::advertised(self.availability()).any(|tool| tool.name == params.name) {
+        let Some(advertised) =
+            tools::workflows::advertised(self.availability()).find(|tool| tool.name == params.name)
+        else {
             return Err(McpError::method_not_found::<
                 rmcp::model::CallToolRequestMethod,
             >());
-        }
+        };
         let args = params
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Map::new()));
+        if let Err(error) = tools::workflows::refuse_unoffered(advertised, &args) {
+            return Ok(error_result(&params.name, &error));
+        }
 
         let ingest_requested = params.name == "artifact"
             && args.get("action").and_then(Value::as_str) == Some("ingest");
@@ -1023,7 +1029,7 @@ mod tests {
         ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
-        ("photo", 8_366, 0),
+        ("photo", 10_042, 0),
         ("library", 3_000, 0),
         ("artifact", 6_400, 0),
     ];
@@ -1031,7 +1037,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 203_331;
+    const CATALOG_BUDGET: usize = 205_012;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {

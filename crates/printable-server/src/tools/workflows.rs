@@ -151,6 +151,7 @@ workflow!(PhotoRequest {
     Object(crate::recon::ObjectRequest) => "printable_photo_object",
     Analyze(crate::recon::AnalyzeRequest) => "printable_photo_analyze",
     Relief(relief::ReliefRequest) => "printable_photo_relief",
+    Lithophane(lithophane::LithophaneRequest) => "printable_photo_lithophane",
     Status(crate::recon::PhotoJobRequest) => "printable_photo_job_status",
     List(crate::recon::PhotoJobListRequest) => "printable_photo_job_list",
     Cancel(crate::recon::PhotoJobRequest) => "printable_photo_job_cancel",
@@ -183,6 +184,17 @@ fn photo_schema<const DEPTH: bool, const OBJECT: bool, const ANALYZE: bool>() ->
     .map(|(action, _)| action)
     .collect();
     without_actions(&workflow_schema_of::<PhotoRequest>(), &removed)
+}
+
+/// The `photo` input schema with only `lithophane`, which needs no
+/// photograph worker.
+fn photo_lithophane_schema() -> Arc<JsonObject> {
+    without_actions(
+        &workflow_schema_of::<PhotoRequest>(),
+        &[
+            "depth", "object", "analyze", "relief", "status", "list", "cancel",
+        ],
+    )
 }
 
 /// A workflow input schema without the `removed` actions.
@@ -448,6 +460,50 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
     }
 }
 
+/// The actions a workflow input schema offers.
+fn schema_actions(schema: &JsonObject) -> Vec<String> {
+    ["oneOf", "anyOf"]
+        .iter()
+        .filter_map(|key| schema.get(*key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|variant| {
+            let action = &variant["properties"]["action"];
+            action["const"].as_str().or_else(|| {
+                action["enum"]
+                    .as_array()
+                    .filter(|names| names.len() == 1)
+                    .and_then(|names| names[0].as_str())
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Refuse an action that the tool has but `advertised`, the form of it
+/// this server currently offers, leaves out, with the error an unknown
+/// action gets.
+pub fn refuse_unoffered(advertised: &ToolDef, arguments: &Value) -> Result<(), ToolError> {
+    let (Some(action), Some(full)) = (arguments["action"].as_str(), lookup(advertised.name)) else {
+        return Ok(());
+    };
+    if std::ptr::eq(advertised, full) {
+        return Ok(());
+    }
+    let offered = schema_actions(&(advertised.schema)());
+    if offered.iter().any(|name| name == action)
+        || !schema_actions(&(full.schema)())
+            .iter()
+            .any(|name| name == action)
+    {
+        return Ok(());
+    }
+    let expected: Vec<String> = offered.iter().map(|name| format!("`{name}`")).collect();
+    Err(ToolError::Validation(format!(
+        "unknown variant `{action}`, expected one of {}",
+        expected.join(", ")
+    )))
+}
+
 pub fn lookup(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|tool| tool.name == name)
 }
@@ -455,8 +511,9 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 /// The workflow tool that exists only while FLAME head models are mounted.
 pub const HEAD: &str = "head";
 
-/// The workflow tool that exists only while the photograph worker can
-/// estimate depth, generate objects or inspect retained photograph jobs.
+/// The workflow tool for photograph geometry. Its `lithophane` action is
+/// always offered; the others only while the photograph worker can serve
+/// them.
 pub const PHOTO: &str = "photo";
 
 /// The workflow tool that exists only while public model sites are enabled.
@@ -486,24 +543,25 @@ pub struct Availability {
 
 /// Tools this server advertises and accepts. `head` is included only when a
 /// FLAME model is mounted, and offers `reconstruct` only when that can be
-/// served, `photo` when generation or retained jobs can be served,
-/// offering only the actions that can be served, and `library` only when a
-/// model site is enabled, so clients never see a capability that cannot be
+/// served; `photo` offers `lithophane` and only the photograph worker's
+/// actions that can be served; and `library` is included only when a model
+/// site is enabled, so clients never see a capability that cannot be
 /// served.
 pub fn advertised(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
     TOOLS
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
-        .filter(move |tool| {
-            tool.name != PHOTO
-                || available.depth
-                || available.object
-                || available.analyze
-                || available.photo_jobs
-        })
         .filter(move |tool| tool.name != LIBRARY || available.library)
         .map(move |tool| match tool.name {
             HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
+            PHOTO
+                if !(available.depth
+                    || available.object
+                    || available.analyze
+                    || available.photo_jobs) =>
+            {
+                &PHOTO_LITHOPHANE_ONLY
+            }
             PHOTO => {
                 &PHOTO_VARIANTS[usize::from(available.depth)
                     | usize::from(available.object) << 1
@@ -516,37 +574,48 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
 // The parts of the `photo` description, as macros so `concat!` can join them.
 macro_rules! photo_prefix {
     () => {
-        "Estimate geometry from a workspace photograph on the photograph worker's GPU."
+        "Geometry from workspace images. lithophane makes a backlit lithophane, or an attenuation test strip, as an STL, preview and report on the CPU."
     };
 }
 macro_rules! photo_depth_text {
     () => {
-        "depth writes a 16-bit relative depth PNG and optional normal map; calibrate heights as the image-to-mold skill describes."
+        "depth writes a 16-bit relative depth PNG and optional normals; calibrate heights per the image-to-mold skill."
     };
 }
 macro_rules! photo_object_text {
     () => {
-        "object generates an STL in millimetres, Z up, with Pixal3D or TRELLIS.2; hidden sides are invented, so validate before slicing."
+        "object generates a millimetre STL, Z up, with Pixal3D or TRELLIS.2; hidden sides are invented, so validate it."
     };
 }
 
 macro_rules! photo_analyze_text {
     () => {
-        "analyze caches float depth, normals, subject mask, focal length and confidence; a repeat returns the cache. relief builds a checked relief STL, heightmap and report."
+        "analyze caches depth, normals, subject mask, focal length and confidence; relief builds a checked relief STL, heightmap and report from it."
     };
 }
 macro_rules! photo_jobs_text {
     () => {
-        "Background jobs return a job_id: follow it with status, find jobs with list, stop one with cancel."
+        "Photograph worker jobs return a job_id: follow with status, find with list, stop with cancel."
     };
 }
+
+/// The `photo` tool without the photograph worker.
+static PHOTO_LITHOPHANE_ONLY: ToolDef = ToolDef {
+    name: PHOTO,
+    description: photo_prefix!(),
+    schema: photo_lithophane_schema,
+    annotations: write_annotations,
+};
 
 /// The `photo` tool for each combination of served generation actions,
 /// indexed by depth, object and analyze as bits 0, 1 and 2.
 static PHOTO_VARIANTS: [ToolDef; 8] = [
     ToolDef {
         name: PHOTO,
-        description: "Inspect retained photograph jobs with status and list, or request cancellation with cancel. Interrupted jobs are never replayed; inspect the output path before submitting again.",
+        description: concat!(
+            photo_prefix!(),
+            " Inspect retained photograph jobs with status and list, or request cancellation with cancel. Interrupted jobs are never replayed; inspect the output path before submitting again."
+        ),
         schema: photo_schema::<false, false, false>,
         annotations: write_annotations,
     },
@@ -937,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn head_and_photo_are_advertised_only_when_they_can_be_served() {
+    fn head_is_advertised_only_when_it_can_be_served_and_photo_always() {
         let names = |head, depth| {
             advertised(Availability {
                 head,
@@ -953,11 +1022,11 @@ mod tests {
         };
         assert!(!names(false, false).contains(&HEAD));
         assert!(names(true, false).contains(&HEAD));
-        assert!(!names(true, false).contains(&PHOTO));
+        assert!(names(false, false).contains(&PHOTO));
         assert!(names(false, true).contains(&PHOTO));
         assert!(!names(true, true).contains(&LIBRARY));
         assert_eq!(names(true, true).len(), TOOLS.len() - 1);
-        assert_eq!(names(false, false).len(), TOOLS.len() - 3);
+        assert_eq!(names(false, false).len(), TOOLS.len() - 2);
         let library = advertised(Availability {
             library: true,
             ..Availability::default()
@@ -965,7 +1034,7 @@ mod tests {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
         assert!(library.contains(&LIBRARY));
-        assert_eq!(library.len(), TOOLS.len() - 2);
+        assert_eq!(library.len(), TOOLS.len() - 1);
     }
 
     #[test]
@@ -979,7 +1048,21 @@ mod tests {
             })
             .find(|tool| tool.name == PHOTO)
         };
-        assert!(photo(false, false, false).is_none());
+        // Without the photograph worker, only lithophane is offered.
+        let alone = photo(false, false, false).unwrap();
+        let schema = serde_json::to_string(&*(alone.schema)()).unwrap();
+        assert!(schema.contains("max_thickness_mm"));
+        for absent in [
+            "depth_path",
+            "mesh_path",
+            "focal_length_px",
+            "relief_depth_mm",
+            "job_id",
+        ] {
+            assert!(!schema.contains(absent), "{absent}");
+        }
+        assert!(alone.description.contains("lithophane"));
+        assert!(!alone.description.contains("status"));
         for mask in 1..8u8 {
             let (depth, object, analyze) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0);
             let tool = photo(depth, object, analyze).unwrap();
@@ -993,6 +1076,36 @@ mod tests {
             assert_eq!(tool.description.contains("analyze caches"), analyze);
             assert_eq!(tool.description.contains("relief builds"), analyze);
             assert!(tool.description.contains("status"));
+            assert!(schema.contains("max_thickness_mm"));
+            assert!(tool.description.contains("lithophane makes"));
+        }
+    }
+
+    #[test]
+    fn photo_lithophane_resolves_without_the_photograph_worker() {
+        let call = resolve(
+            PHOTO,
+            json!({"action": "lithophane", "params": {"image": "cat.png", "path": "cat.stl",
+                "width_mm": 100, "shape": "curved", "arc_degrees": 90, "filament": "natural_pla",
+                "crop_px": [0, 0, 64, 64], "contrast": 1.2}}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_lithophane");
+        assert_eq!(call.arguments["shape"], "curved");
+        assert_eq!(call.arguments["crop_px"], json!([0, 0, 64, 64]));
+        for params in [
+            json!({"image": "cat.png", "path": "cat.stl", "width_mm": 100, "colour": "red"}),
+            json!({"image": "cat.png", "path": "cat.stl", "shape": "round"}),
+            json!({"image": "cat.png", "path": "cat.stl", "filament": "glass"}),
+        ] {
+            assert!(
+                resolve(
+                    PHOTO,
+                    json!({"action": "lithophane", "params": params.clone()})
+                )
+                .is_err(),
+                "{params}"
+            );
         }
     }
 
@@ -1040,6 +1153,7 @@ mod tests {
         let schema = serde_json::to_string(&*(tool.schema)()).unwrap();
         assert!(!schema.contains("depth_path"));
         assert!(!schema.contains("mesh_path"));
+        assert!(schema.contains("max_thickness_mm"));
         for (action, operation, params) in [
             (
                 "status",

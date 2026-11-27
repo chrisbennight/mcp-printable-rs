@@ -283,9 +283,12 @@ mod tests {
                 .iter()
                 .any(|entry| entry["tool"] == "photo")
         };
-        assert!(!listed(none));
+        assert!(listed(none));
         assert!(listed(depth));
         assert!(listed(object));
+        assert!(read("printable://contracts/photo/lithophane", none).is_some());
+        assert!(read("printable://contracts/photo/status", none).is_none());
+        assert!(read("printable://contracts/photo/relief", none).is_none());
         assert!(read("printable://contracts/photo/depth", none).is_none());
         assert!(read("printable://contracts/photo/object", depth).is_none());
         assert!(read("printable://contracts/photo/depth", object).is_none());

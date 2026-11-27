@@ -7,10 +7,12 @@ image and your scale choices with the project so you can revise the result.
 | Goal | Route | Files and checks |
 | --- | --- | --- |
 | Raised artwork, a plaque, a mold master, or a casting cavity | [Image-to-mold skill](../image-to-mold.md); [`photo.relief`](../photo-geometry.md#build-a-relief) for photographs | Calibrated 16-bit height map, positive/negative geometry, optional tray, mesh checks and sections |
+| A backlit picture that shows the image when light shines through it | [`photo.lithophane`](../lithophanes.md), on the CPU without the photograph worker | Flat or curved STL, backlit preview, tone-mapping report and thickness checks |
 | An object, figure, or character from one image | [Pixal3D or TRELLIS.2](../photo-object.md) | Scaled STL, generation settings and input hash; repair and validate before slicing |
 | A recognizable head and printable bust from portraits | [FLAME reconstruction and print preparation](../flame-models.md#from-photographs-to-a-bust-in-one-step) | Fitted coefficients/detail maps, optional viewing texture, watertight bust STL and print-related reports |
 
-The [optional photograph worker](../index.md#engines-and-integrations) needs its
+Apart from lithophanes, these routes use the
+[optional photograph worker](../index.md#engines-and-integrations), which needs its
 model files and GPU setup. `status` and the available tool actions tell you
 which routes are ready. Model downloads and licenses are separate from the
 server's source license; follow each guide before obtaining or redistributing them.
@@ -79,6 +81,28 @@ Then [slice and inspect toolpaths](model-to-printer.md) to see whether the nozzl
 can reproduce the intended features. A height map cannot represent undercuts;
 geometry checks do not establish silicone compatibility, leak resistance, or
 successful release from a mold.
+
+## Image to a lithophane
+
+`photo.lithophane` turns any workspace image into a lithophane: a thin plate
+whose thickness varies so that the image appears when a light shines through
+it. It runs on the CPU and is offered even without the photograph worker.
+
+```json
+{"action":"lithophane","params":{
+  "image":"projects/gift/photos/family.jpg",
+  "path":"projects/gift/models/family.stl",
+  "width_mm":120,"shape":"curved","arc_degrees":120,"border_mm":3
+}}
+```
+
+The image's brightness is converted to linear light and mapped to thickness
+with the filament's light attenuation, so tones come through as they are in
+the image within the plate's contrast range. The result is an STL with its flat
+face towards the viewer and its relief towards the light, a preview of the
+backlit plate, and a report with the mapping and checks. The filament presets
+are starting values; print a `test_strip` to measure your filament and
+backlight. See [Lithophanes](../lithophanes.md) for every option.
 
 ## Image to an object
 

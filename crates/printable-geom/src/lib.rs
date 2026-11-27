@@ -45,7 +45,7 @@ pub use baked_texture::{TextureRegion, TextureReport, bake_texture_stl};
 pub use bust::{
     Body, BodyKind, BodyReport, BustReport, BustRequest, DetailPercentiles, Displacement,
     DisplacementReport, EyeAxis, EyeCarving, EyeReport, Hollow, HollowReport, MAX_RAISED_SHARE,
-    Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust,
+    Plinth, PlinthReport, Raised, RaisedMap, bust_stl, head_height_mm, prepare_bust, write_stl,
 };
 pub use compare::{
     Alignment, AlignmentReport, ComparisonOptions, ComparisonReport, DeviationDistribution,

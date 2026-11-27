@@ -39,7 +39,7 @@ pub(crate) const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// Largest displacement map committed to the workspace.
 const MAX_MAP_BYTES: u64 = 16 * 1024 * 1024;
-const IMAGE_SUFFIXES: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
+pub(crate) const IMAGE_SUFFIXES: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
 /// How long the worker waits for one job's model file check. The checks run
 /// together and finish well inside the server's readiness deadline, so one
 /// check that hangs reports only its own job missing.
