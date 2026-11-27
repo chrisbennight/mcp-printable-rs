@@ -241,35 +241,6 @@ pub fn prepare_print(
     } else {
         (inward, 0)
     };
-    // Sized after facing is settled, so the largest piece is the one that
-    // encloses the most volume, as the part finally kept is.
-    let edge = match (request.edge_length_mm, request.target_triangles) {
-        (Some(edge), _) => edge,
-        // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
-        (None, Some(target)) => {
-            (4.0 * if request.parts == KeptParts::Largest {
-                largest_piece(&vertices, &triangles).0
-            } else {
-                surface_area(&vertices, &triangles)
-            } / (3f64.sqrt() * target.max(1) as f64))
-                .sqrt()
-                .max(MIN_DEFAULT_EDGE_MM)
-        }
-        // Only the largest part is kept, so its size sets the default.
-        (None, None) => (DEFAULT_EDGE_SHARE
-            * if request.parts == KeptParts::Largest {
-                largest_piece(&vertices, &triangles).1
-            } else {
-                print_check::extent(&vertices)
-            })
-        .max(MIN_DEFAULT_EDGE_MM),
-    };
-    if !(edge.is_finite() && edge > 0.0) {
-        return Err(GeometryError::InvalidOptions(
-            "edge length must be a positive number of millimetres".into(),
-        ));
-    }
-
     // By default anything inside any closed surface is solid, whichever way
     // it faces, so a body whose facing was misjudged is never lost. Keeping
     // cavities trusts the mesh's facing.
@@ -278,6 +249,19 @@ pub fn prepare_print(
     } else {
         remesh::InsideRule::NonZero
     };
+    // Sized from the whole source, whichever parts are kept afterwards: no
+    // choice of part made before the rebuild is reliable.
+    let edge = fine_edge(
+        request,
+        surface_area(&vertices, &triangles),
+        print_check::extent(&vertices),
+    );
+    if !(edge.is_finite() && edge > 0.0) {
+        return Err(GeometryError::InvalidOptions(
+            "edge length must be a positive number of millimetres".into(),
+        ));
+    }
+
     let solid = remesh::remesh_union_with(vertices, triangles, edge, rule)?;
     let spacing = edge / remesh::EDGE_PER_SPACING;
     let mut parts = solids(&solid);
@@ -693,29 +677,16 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
     inward.iter().filter(|inward| **inward).count()
 }
 
-/// The area and longest side of the piece enclosing the most volume.
-fn largest_piece(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) {
-    let pieces = pieces(triangles);
-    let mut volume = vec![0.0; pieces.count];
-    let mut area = vec![0.0; pieces.count];
-    for (face, triangle) in triangles.iter().enumerate() {
-        let piece = pieces.of_triangle[face] as usize;
-        let one = std::slice::from_ref(triangle);
-        volume[piece] += signed_volume(vertices, one);
-        area[piece] += surface_area(vertices, one);
+/// The facet edge for a surface of this area and longest side.
+fn fine_edge(request: &PrintPrepOptions, area: f64, extent: f64) -> f64 {
+    match (request.edge_length_mm, request.target_triangles) {
+        (Some(edge), _) => edge,
+        // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
+        (None, Some(target)) => (4.0 * area / (3f64.sqrt() * target.max(1) as f64))
+            .sqrt()
+            .max(MIN_DEFAULT_EDGE_MM),
+        (None, None) => (DEFAULT_EDGE_SHARE * extent).max(MIN_DEFAULT_EDGE_MM),
     }
-    let Some(largest) =
-        (0..pieces.count).max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
-    else {
-        return (0.0, 0.0);
-    };
-    let corners: Vec<[f64; 3]> = triangles
-        .iter()
-        .enumerate()
-        .filter(|(face, _)| pieces.of_triangle[*face] as usize == largest)
-        .flat_map(|(_, triangle)| triangle.map(|index| vertices[index as usize]))
-        .collect();
-    (area[largest], print_check::extent(&corners))
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -1017,8 +988,8 @@ mod tests {
 
     #[test]
     fn a_triangle_target_counts_only_the_largest_part_when_only_it_is_kept() {
-        // The second block has as much surface as the first; only the
-        // first, which encloses more, is kept.
+        // The plate has more surface than the block, so it sets the facet
+        // size, but the block, which encloses more, is the part kept.
         let mut target = request(1.0);
         target.edge_length_mm = None;
         target.target_triangles = Some(50_000);
@@ -1078,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_facet_size_follows_the_kept_part_and_its_final_size() {
+    fn the_default_facet_size_follows_the_whole_source_and_the_final_size() {
         // Distant debris makes the source 200 mm long; the kept block is
         // 20 mm, rescaled to 40 mm.
         let mesh = joined(&[
@@ -1090,8 +1061,8 @@ mod tests {
         sized.parts = KeptParts::Largest;
         sized.longest_side_mm = Some(40.0);
         let (_, report) = prepare(mesh, &sized).unwrap();
-        // 0.4% of the block's 20 mm is 0.1 mm, doubled by the rescale.
-        assert!((report.edge_length_mm - 0.2).abs() < 1e-9, "{report:?}");
+        // 0.4% of the source's 200 mm is 0.8 mm, doubled by the rescale.
+        assert!((report.edge_length_mm - 1.6).abs() < 1e-9, "{report:?}");
         assert!((report.size_mm[0] - 40.0).abs() < 1e-6, "{report:?}");
     }
 
@@ -1243,6 +1214,162 @@ mod tests {
         ]);
         assert_eq!(parts_below(&solid, 1.0), 1);
         assert_eq!(parts_below(&solid, 0.25), 0);
+    }
+
+    /// A cube `size` across from `low` whose faces are each a grid of
+    /// `cells` by `cells` squares, facing outwards.
+    fn gridded_cube(low: [f64; 3], size: f64, cells: usize) -> Soup {
+        let mut vertices: Vec<[f64; 3]> = Vec::new();
+        let mut index: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut triangles = Vec::new();
+        let mut at = |grid: [usize; 3]| -> u32 {
+            let key = grid.map(|value| value as i64);
+            *index.entry(key).or_insert_with(|| {
+                vertices.push(std::array::from_fn(|axis| {
+                    low[axis] + size * grid[axis] as f64 / cells as f64
+                }));
+                (vertices.len() - 1) as u32
+            })
+        };
+        for axis in 0..3 {
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            for side in [0, cells] {
+                for i in 0..cells {
+                    for j in 0..cells {
+                        let corner = |di: usize, dj: usize| {
+                            let mut grid = [0; 3];
+                            grid[axis] = side;
+                            grid[u] = i + di;
+                            grid[v] = j + dj;
+                            grid
+                        };
+                        let [a, b, c, d] =
+                            [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)].map(&mut at);
+                        // u, v, axis is right-handed, so a, b, c faces +axis.
+                        if side == cells {
+                            triangles.push([a, b, c]);
+                            triangles.push([a, c, d]);
+                        } else {
+                            triangles.push([a, c, b]);
+                            triangles.push([a, d, c]);
+                        }
+                    }
+                }
+            }
+        }
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn openings_that_cannot_be_closed_leave_no_column_reaching_the_edge() {
+        // Two cubes without bottoms whose rims meet at one corner: neither
+        // rim is a simple loop, so both openings stay open. A ray up from
+        // below either cube crosses its top alone; counted on that ray only,
+        // the space under the cube would be solid down to the edge of the
+        // sampled box, and the extracted surface would be open there.
+        let (first, first_triangles) = cuboid([0.0; 3], [10.0; 3]);
+        let (second, second_triangles) = cuboid([10.0, 10.0, 0.0], [10.0; 3]);
+        let bottomless = |triangles: Vec<[u32; 3]>| -> Vec<[u32; 3]> {
+            triangles
+                .into_iter()
+                .filter(|triangle| *triangle != [0, 2, 1] && *triangle != [1, 2, 3])
+                .collect()
+        };
+        let mut vertices = first;
+        let mut triangles = bottomless(first_triangles);
+        let offset = vertices.len() as u32;
+        vertices.extend(second);
+        // The second cube's corner 0 is the first one's corner 3.
+        triangles.extend(
+            bottomless(second_triangles)
+                .iter()
+                .map(|triangle| triangle.map(|index| if index == 0 { 3 } else { index + offset })),
+        );
+        let (prepared, report) = prepare((vertices, triangles), &request(0.5)).unwrap();
+        assert!(report.openings_left >= 2, "{report:?}");
+        // Both cubes are solid, their open bottoms filled within a grid step.
+        assert!((report.volume_mm3 - 2000.0).abs() < 100.0, "{report:?}");
+        assert!(report.size_mm[2] < 11.0, "{report:?}");
+        let analysed = crate::analyze_mesh(&prepared, crate::ValidationOptions::default()).unwrap();
+        assert!(analysed.solid_geometry, "{:?}", analysed.issues);
+    }
+
+    #[test]
+    fn a_surface_split_by_crowded_edges_is_sized_as_one() {
+        // Every triangle of a gridded 40 mm cube written twice: each edge is
+        // used by four triangles, so the pieces joined through edges two
+        // triangles use are single triangles 4 mm across. The surface still
+        // shares its vertices, and the default facet size follows its 40 mm.
+        let (vertices, triangles) = gridded_cube([0.0; 3], 40.0, 10);
+        let doubled: Vec<[u32; 3]> = triangles
+            .iter()
+            .flat_map(|triangle| [*triangle, *triangle])
+            .collect();
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare((vertices, doubled), &largest).unwrap();
+        assert!((report.edge_length_mm - 0.16).abs() < 1e-9, "{report:?}");
+        assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
+    }
+
+    #[test]
+    fn a_long_diagonal_rod_does_not_displace_the_cube() {
+        // The rod's bounds are larger than the cube's, but it encloses far
+        // less.
+        let (cube, cube_triangles) = cuboid([0.0; 3], [40.0; 3]);
+        let rod: Vec<[f64; 3]> = cuboid([0.0; 3], [1.0; 3])
+            .0
+            .iter()
+            .map(|[x, y, z]| [60.0 + 80.0 * x + y, 80.0 * x + z, 80.0 * x])
+            .collect();
+        let mesh = joined(&[(cube, cube_triangles.clone()), (rod, cube_triangles)]);
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
+        assert!((report.size_mm[2] - 40.0).abs() < 0.5, "{report:?}");
+    }
+
+    #[test]
+    fn a_thin_plate_enclosing_more_is_the_part_kept() {
+        // A 5 mm cube and, beside it, a 1 mm plate enclosing far more,
+        // between grid samples of any coarse look. The plate is kept.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [5.0; 3]),
+            cuboid([10.0, 0.0, 1.0], [80.0, 90.0, 1.0]),
+        ]);
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 7_200.0).abs() < 400.0, "{report:?}");
+        assert!(
+            report.size_mm[0] > 79.0 && report.size_mm[1] > 89.0,
+            "{report:?}"
+        );
+        assert_eq!(report.smaller_parts.unwrap().count, 1, "{report:?}");
+    }
+
+    #[test]
+    fn a_slab_with_more_surface_does_not_displace_the_cube() {
+        // A disjoint slab has more surface than the cube beside it, but the
+        // cube encloses more, so it is the subject and is kept.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [40.0; 3]),
+            cuboid([60.0, 0.0, 0.0], [80.0, 80.0, 2.0]),
+        ]);
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
+        assert!((report.size_mm[2] - 40.0).abs() < 0.5, "{report:?}");
+        assert_eq!(report.smaller_parts.unwrap().count, 1, "{report:?}");
     }
 
     #[test]
