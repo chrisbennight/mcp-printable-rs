@@ -324,7 +324,8 @@ decides which pixels are the subject; the rest becomes the flat background.
 
 ### Relief results
 
-The result, which is also the saved report, holds:
+The result holds the following; the saved report holds the same except
+`artifacts`:
 
 - `settings`: every choice with the preset's values filled in;
 - `analysis`: the cache key, the photograph's SHA-256, the size of its maps,
