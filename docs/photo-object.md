@@ -432,7 +432,8 @@ therefore rebuilds it before writing it, with the same preparation as the
   turned to face outwards, and the surface is rebuilt as one exact solid with
   facets 0.4% of `size_mm` long (0.4 mm at the default 100 mm), at least
   0.1 mm. With `target_triangles`, the facet length is chosen instead to give
-  about that many triangles over the generated surface's area, at least
+  about that many triangles over the area of the piece enclosing the most
+  volume, which is the part kept, at least
   0.1 mm. Finer detail is smoothed away.
 - Only the largest part is kept, since a photograph shows one subject and
   separate pieces are generator debris; `preparation.smaller_parts` counts
