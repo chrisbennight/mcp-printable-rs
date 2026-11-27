@@ -59,7 +59,7 @@
  "criteria": {
   "time_under_15_minutes": "pass with the local override; slowest 54.1 s (CPU deep analysis)",
   "default_gpu_analysis_in_published_overlay": "miss: resource_limit from a 10 GiB cgroup out-of-memory kill, and from Triton loading a module from a /tmp tmpfs without exec",
-  "default_relief_route_vs_marigold_only": "pass on surface angle (intervals do not overlap); relief height not distinguishable (intervals overlap)",
+  "default_relief_route_vs_marigold_only": "analysis depth better on surface angle (intervals do not overlap); relief height not distinguishable (intervals overlap); written relief not compared like for like",
   "relief_hard_checks": "pass: 22 of 22 relief STLs had checks.passed true",
   "photo_object_strict_print_check": "miss: 0 of 20 object requests produced a result; every solid rebuild failed"
  },

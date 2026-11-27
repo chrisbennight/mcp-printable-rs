@@ -15,7 +15,7 @@ records and the scene scores are in
 | --- | --- |
 | Each action under 15 minutes on a 1024 px photograph, GPU and CPU routes | **Pass** once the worker can run the default analysis (slowest: 54 s on the CPU) |
 | The default GPU analysis runs in the installation the overlay describes | **Miss**: it fails in `compose.photo.yaml` as published, for two reasons below |
-| Default relief route against the Marigold-only route | **Pass** on surface angle, **not distinguishable** on relief height |
+| Default relief route against the Marigold-only route | **Analysis depth: better** on surface angle, **not distinguishable** on relief height. **Written relief: not compared like for like** (no Marigold relief was written); the default relief heightmap scores worse than Marigold depth on surface angle because the relief compresses slopes on purpose |
 | Every relief STL passes the hard checks | **Pass**: 22 of 22 |
 | `photo.object`: every result passes the strict print check, with separate shells reported | **Miss**: no object was delivered; the solid rebuild failed on all 20 requests, so no shells were reported |
 
@@ -87,7 +87,9 @@ How the resources were measured:
 
 - **Wall time**: from sending the request until the result, or for a job
   until `status` reported it finished, polled every 2 s; so a job's wall time
-  can be up to 2 s longer than its work. Results also report the job's own
+  can be up to 2 s longer than its work, plus admission and result
+  publication (the cold shallow GPU run spent 8.7 s outside the job's own
+  15.4 s; that time was not broken down). Results also report the job's own
   `seconds` and each model's time.
 - **GPU memory**: the worker's `gpu_peak_allocated_mib` (PyTorch's peak
   allocation) and, sampled every 0.5 s with `nvidia-smi`, the whole GPU's
@@ -123,7 +125,10 @@ is the default flat plate, 100 mm wide.
 | `lithophane`, CPU only | 0.21 s | | none | 81 MiB (server) | none |
 
 The whole-GPU figure is the sampled peak less the 416 MiB in use before the
-run. The relief has 767,250 triangles and the lithophane 769,778.
+run. Disk reads were counted for the photograph worker container only, so the
+relief and lithophane rows, which run in the server and its geometry worker,
+do not include the server's own reads of the cached maps or the image, and the
+CPU relief row has no server memory figure. The relief has 767,250 triangles and the lithophane 769,778.
 
 Every relief and lithophane passed its checks. The relief is built from the
 cached analysis, so a relief request for a photograph that has not been
@@ -229,9 +234,10 @@ transformer blocks from disk repeatedly by design.
   (`mesh_solid` in `crates/printable-geom/src/remesh.rs`) and the mesh it
   extracts is rejected by Manifold as not manifold. This happened on clean
   single-object photographs as well as on the expected-difficult ones.
-- `geometry_resource_limit`: the geometry worker exceeded its default 1 GiB
-  memory budget (`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`) on the three
-  thin-structure or cluttered photographs.
+- `geometry_resource_limit` on the three thin-structure or cluttered
+  photographs. This status covers the geometry worker exceeding its default
+  1 GiB memory budget (`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`) and other
+  unexpected worker exits, so the cause is not yet confirmed.
 - The error message suggests `scene` `prepare_print` on the kept surface.
   On the marble bust's kept Pixal3D surface it failed the same way, both at
   the default facet size and at `edge_length_mm` 1.0.
