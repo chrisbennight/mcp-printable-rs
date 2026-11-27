@@ -16,16 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libsm6 libxext6 libxxf86vm1 libxfixes3 libegl1 \
  && rm -rf /var/lib/apt/lists/*
 
-# Blender renders the scenes with exact depth and normals.
+# Blender renders the scenes with exact depth and normals. The archive is
+# checked against a digest recorded here, not against a checksum file from the
+# same server; change BLENDER_SHA256 whenever BLENDER_VERSION changes.
 ARG BLENDER_SERIES=5.3
 ARG BLENDER_VERSION=5.3.0
-RUN base=https://download.blender.org/release/Blender${BLENDER_SERIES} \
- && archive=blender-${BLENDER_VERSION}-linux-x64.tar.xz \
- && curl -fsSL -o /tmp/${archive} ${base}/${archive} \
- && curl -fsSL -o /tmp/blender.sha256 ${base}/blender-${BLENDER_VERSION}.sha256 \
- && (cd /tmp && grep " ${archive}\$" blender.sha256 | sha256sum -c -) \
+ARG BLENDER_SHA256=dacb8264197a3f7fda6001285a5a506fc97ee943881261c2c3bd63c882f22e05
+RUN archive=blender-${BLENDER_VERSION}-linux-x64.tar.xz \
+ && curl -fsSL -o /tmp/${archive} https://download.blender.org/release/Blender${BLENDER_SERIES}/${archive} \
+ && echo "${BLENDER_SHA256}  /tmp/${archive}" | sha256sum --check --strict \
  && mkdir -p /opt/blender && tar -xJf /tmp/${archive} -C /opt/blender --strip-components=1 \
- && rm /tmp/${archive} /tmp/blender.sha256
+ && rm /tmp/${archive}
 
 # Model code at the revisions the recorded evidence used.
 ARG MOGE_REVISION=74fbce054ebed49800de42d0ad0e83495065719a
