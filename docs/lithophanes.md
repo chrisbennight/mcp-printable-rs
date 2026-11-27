@@ -147,7 +147,8 @@ The checks are those of a [relief](photo-geometry.md#relief-results): the
 plate is closed, manifold and free of self-intersections by construction,
 and narrow ridges and grooves are reported without failing the check.
 `thickness_within_range` confirms every sample lies within the thickness
-range, and `passed` requires it as well as a sound solid. A curved plate is
+range, and `passed` requires it as well as a sound solid. A plate that fails
+is not written; the request returns `relief_not_printable`. A curved plate is
 checked flat and then bent: bending moves its vertices without changing how
 they join. A curve so tight that the flat face's coarse bottom cells would sag
 more than a quarter of the thinnest thickness towards the relief is refused,

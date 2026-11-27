@@ -299,6 +299,14 @@ impl ReliefRequest {
         if preset.shape == ReliefShape::Round && border_mm >= width_mm / 4.0 {
             return refuse("a coin's rim, border_mm, must be less than a quarter of its diameter");
         }
+        let nozzle_mm = within(
+            "nozzle_mm",
+            self.nozzle_mm.unwrap_or(DEFAULT_NOZZLE_MM),
+            &NOZZLE_MM,
+        )?;
+        if border_mm > 0.0 && border_mm < nozzle_mm {
+            return refuse("border_mm must be 0 or at least nozzle_mm, so the border prints");
+        }
         let advanced = &self.advanced;
         Ok(ReliefSettings {
             preset: self.preset,
@@ -325,11 +333,7 @@ impl ReliefRequest {
             )?,
             mirror: advanced.mirror.unwrap_or(preset.mirror),
             invert: advanced.invert.unwrap_or(preset.invert),
-            nozzle_mm: within(
-                "nozzle_mm",
-                self.nozzle_mm.unwrap_or(DEFAULT_NOZZLE_MM),
-                &NOZZLE_MM,
-            )?,
+            nozzle_mm,
             layer_mm: LAYER_MM,
         })
     }
@@ -676,6 +680,40 @@ fn crop<T: Copy>(values: &[T], width: usize, height: usize, side: usize) -> Vec<
         .collect()
 }
 
+/// Bilinearly resample `map` so no sample spacing is finer than
+/// `spacing_mm`, keeping its outer edges.
+fn coarsen(map: ReliefMap, spacing_mm: f64) -> Result<ReliefMap, WorkerError> {
+    let (width, height) = (map.heights_mm.width(), map.heights_mm.height());
+    let factor = spacing_mm / map.spacing_mm[0].min(map.spacing_mm[1]);
+    if factor <= 1.0 {
+        return Ok(map);
+    }
+    let resized = |count: usize| (((count - 1) as f64 / factor).floor() as usize).max(1) + 1;
+    let (new_width, new_height) = (resized(width), resized(height));
+    let step = |count: usize, new: usize| (count - 1) as f64 / (new - 1) as f64;
+    let (step_x, step_y) = (step(width, new_width), step(height, new_height));
+    let values = map.heights_mm.values();
+    let mut heights = Vec::with_capacity(new_width * new_height);
+    for row in 0..new_height {
+        let y = (row as f64 * step_y).min((height - 1) as f64);
+        let (y0, fy) = (y.floor() as usize, y.fract());
+        let y1 = (y0 + 1).min(height - 1);
+        for column in 0..new_width {
+            let x = (column as f64 * step_x).min((width - 1) as f64);
+            let (x0, fx) = (x.floor() as usize, x.fract());
+            let x1 = (x0 + 1).min(width - 1);
+            let at = |x: usize, y: usize| values[y * width + x];
+            let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+            let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+            heights.push(top * (1.0 - fy) + bottom * fy);
+        }
+    }
+    Ok(ReliefMap {
+        heights_mm: Grid::new(new_width, new_height, heights)?,
+        spacing_mm: [map.spacing_mm[0] * step_x, map.spacing_mm[1] * step_y],
+    })
+}
+
 /// Distance in pixels from the centre of a `side` x `side` grid.
 fn radius_at(index: usize, side: usize) -> f64 {
     let centre = (side - 1) as f64 / 2.0;
@@ -723,8 +761,6 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     // A round relief uses the image's central square, so the principal
     // point stays at the image centre.
     let round = settings.shape == ReliefShape::Round;
-    let mut face_px = f64::INFINITY;
-    let mut outline_px = f64::INFINITY;
     if round {
         let side = width.min(height);
         depth = crop(&depth, width, height, side);
@@ -732,8 +768,8 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
         confidence = confidence.map(|values| crop(&values, width, height, side));
         normals = normals.map(|values| crop(&values, width, height, side));
         (width, height) = (side, side);
-        outline_px = (side - 1) as f64 / 2.0;
-        face_px = outline_px - settings.border_mm * (side - 1) as f64 / settings.width_mm;
+        let outline_px = (side - 1) as f64 / 2.0;
+        let face_px = outline_px - settings.border_mm * (side - 1) as f64 / settings.width_mm;
         for (index, inside) in mask.iter_mut().enumerate() {
             *inside &= radius_at(index, side) <= face_px;
         }
@@ -758,7 +794,7 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
         },
     )?;
     drop(analysis);
-    let (mut map, compression) = compress(
+    let (map, compression) = compress(
         &field,
         &CompressionOptions {
             height_mm: settings.height_mm,
@@ -769,7 +805,13 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     )?;
     let integration = field.report.clone();
     drop(field);
+    // Samples finer than half the nozzle add triangles the printer cannot
+    // reproduce, so the map is resampled to that spacing.
+    let mut map = coarsen(map, settings.nozzle_mm / 2.0)?;
+    let (width, height) = (map.heights_mm.width(), map.heights_mm.height());
     if round {
+        let outline_px = (width - 1) as f64 / 2.0;
+        let face_px = outline_px - settings.border_mm * (width - 1) as f64 / settings.width_mm;
         // The rim stands level with the relief's top; outside the outline
         // the plate stays at the base.
         let heights: Vec<f64> = map
@@ -788,7 +830,10 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
                 }
             })
             .collect();
-        map.heights_mm = Grid::new(width, height, heights)?;
+        map = ReliefMap {
+            heights_mm: Grid::new(width, height, heights)?,
+            spacing_mm: map.spacing_mm,
+        };
     }
 
     // A border stands level with the relief's top: raised around a
@@ -837,6 +882,15 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
         },
     )?;
     drop(printed);
+    if !checks.passed {
+        return Err(WorkerError {
+            code: "relief_not_printable",
+            message: format!(
+                "the relief failed its printability check (solid: {}, relief height {:.3} mm, at least {:.3} mm needed); try a larger relief_depth_mm, less compression or another depth model",
+                checks.solid, checks.relief_height_mm, checks.minimum_relief_mm
+            ),
+        });
+    }
 
     write_heightmap(&map, settings.relief_depth_mm, &output.join(HEIGHTMAP_FILE))?;
     let mesh = solid.into_mesh();
@@ -864,7 +918,7 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             "bit_depth": 16,
             "full_scale_mm": settings.relief_depth_mm,
             "encoding": "height_mm = value / 65535 * full_scale_mm",
-            "describes": "the relief before any border, mirroring or inversion, top row at the image's top",
+            "describes": "the relief, including a coin's rim but no rectangular border, before mirroring or inversion, top row at the image's top",
         },
     }))
 }
@@ -1052,6 +1106,8 @@ mod tests {
         path.path = "relief/coin.obj".into();
         let mut photo = request(ReliefPreset::Plaque);
         photo.image = Some("photos/coin.gif".into());
+        let mut thin_border = request(ReliefPreset::Plaque);
+        thin_border.border_mm = Some(0.000001);
         for invalid in [
             both,
             neither,
@@ -1063,6 +1119,7 @@ mod tests {
             small,
             path,
             photo,
+            thin_border,
         ] {
             assert_eq!(
                 invalid.settings().unwrap_err().code(),
@@ -1085,6 +1142,23 @@ mod tests {
                 "relief/coin.report.json".to_owned()
             )
         );
+    }
+
+    #[test]
+    fn coarsening_stops_at_the_requested_spacing_and_keeps_the_edges() {
+        let fine = ReliefMap {
+            heights_mm: Grid::new(9, 5, (0..45).map(f64::from).collect()).unwrap(),
+            spacing_mm: [0.1, 0.1],
+        };
+        let coarse = coarsen(fine.clone(), 0.2).unwrap();
+        assert_eq!(
+            (coarse.heights_mm.width(), coarse.heights_mm.height()),
+            (5, 3)
+        );
+        assert_eq!(coarse.spacing_mm, [0.2, 0.2]);
+        let values = coarse.heights_mm.values();
+        assert_eq!((values[0], values[4], values[14]), (0.0, 8.0, 44.0));
+        assert_eq!(coarsen(fine.clone(), 0.05).unwrap(), fine);
     }
 
     #[test]

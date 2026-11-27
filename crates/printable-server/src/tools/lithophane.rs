@@ -597,6 +597,15 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
         thinnest >= settings.min_thickness_mm && thickest <= settings.max_thickness_mm;
     checks["thickness_within_range"] = json!(within_range);
     checks["passed"] = json!(checks["passed"] == true && within_range);
+    if checks["passed"] != true {
+        return Err(WorkerError {
+            code: "relief_not_printable",
+            message: format!(
+                "the lithophane failed its printability check (solid: {}, thickness within range: {within_range})",
+                checks["solid"]
+            ),
+        });
+    }
 
     let mut mesh = solid.into_mesh();
     let shape = match settings.shape {

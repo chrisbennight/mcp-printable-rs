@@ -128,7 +128,8 @@ downloaded inside the analysis job.
 Every model parameter is optional and defaults to the
 [recommendations](#recommendations). Name a model to choose differently, for
 example `"depth_model": "dp2-l", "side": 1024, "mask_model": "moge3-vitl"` for
-a deep subject on a GPU with about 3 GB free.
+a deep subject on a GPU with about 3.5 GB free (Depth Pro 2 L allocates
+about 3.1 GB when nothing limits it).
 
 | Parameter | Values | Default |
 | --- | --- | --- |
@@ -278,9 +279,9 @@ have changed is refused.
 | `height_mm` | 5 to 1000; not for a coin | the image's proportions |
 | `relief_depth_mm` | 0.2 to 50: lowest to highest point of the relief | the preset's |
 | `base_mm` | 0.4 to 50: the flat base under the relief | the preset's |
-| `border_mm` | 0 to 100: a flat border level with the relief's top, or a coin's rim | the preset's |
+| `border_mm` | 0, or `nozzle_mm` to 100: a flat border level with the relief's top, added outside `width_mm` and `height_mm`, or a coin's rim inside its diameter | the preset's |
 | `quality` | `best` or `fast`, passed to the analysis | `best` |
-| `nozzle_mm` | 0.1 to 2: the nozzle the narrow-detail check uses | 0.4 |
+| `nozzle_mm` | 0.1 to 2: the nozzle; samples are kept at least half its width apart, and the narrow-detail check uses it | 0.4 |
 | `advanced` | see below | none |
 
 The presets set these starting values. None has been measured on printed
@@ -335,11 +336,13 @@ The result, which is also the saved report, holds:
 - `artifacts`: the STL, the heightmap and the report.
 
 `checks.passed` is true when the solid is sound and the relief is at least
-one 0.2 mm layer high. Ridges and grooves narrower than the nozzle are
-reported in `narrow_ridges` and `narrow_grooves` without failing the check.
+one 0.2 mm layer high. A relief that fails is not written; the request
+returns `relief_not_printable`. Ridges and grooves narrower than the nozzle
+still print, with less detail, so they are reported in `narrow_ridges` and
+`narrow_grooves` without failing the check.
 
-The heightmap is a 16-bit greyscale PNG of the relief before any border,
-mirroring or inversion, with the image's top row at the top. A pixel value `p`
+The heightmap is a 16-bit greyscale PNG of the relief, including a coin's rim
+but not a rectangular border, before mirroring or inversion, with the image's top row at the top. A pixel value `p`
 is a height of `p / 65535 * full_scale_mm` above the relief's lowest point,
 where `full_scale_mm` is the relief depth, recorded in the report.
 
