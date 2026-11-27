@@ -9,8 +9,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 512
-    mem_limit: 10g
-    memswap_limit: 10g
+    mem_limit: ${PRINTABLE_RECON_MEMORY:-24g}
+    memswap_limit: ${PRINTABLE_RECON_MEMORY:-24g}
     cpus: 8
     restart: unless-stopped
     tmpfs:
@@ -19,6 +19,7 @@ services:
       - workspace:/workspace
       - trellis-models:/models/trellis2
       - trellis-scratch:/scratch/trellis2
+      - compile-cache:/cache/compile
     networks: [control, model-downloads]
     environment:
       PRINTABLE_WORKSPACE_ROOT: /workspace
@@ -26,6 +27,9 @@ services:
       PRINTABLE_RECON_PHOTO_QUEUE_DEPTH: ${PRINTABLE_RECON_PHOTO_QUEUE_DEPTH:-8}
       PRINTABLE_RECON_TRELLIS_CACHE: /models/trellis2
       PRINTABLE_RECON_TRELLIS_SCRATCH: /scratch/trellis2
+      # Kernels compiled at run time are loaded from here; /tmp does not allow
+      # executable files.
+      TRITON_CACHE_DIR: /cache/compile/triton
       PRINTABLE_RECON_TRELLIS_VRAM_MIB: ${PRINTABLE_RECON_TRELLIS_VRAM_MIB:-4096}
       PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS: ${PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS:-21600}
       PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS: ${PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS:-86400}
@@ -58,3 +62,4 @@ networks:
 volumes:
   trellis-models: {}
   trellis-scratch: {}
+  compile-cache: {}

@@ -344,7 +344,7 @@ COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/p
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
- && install -d -o 10001 -g 10001 -m 0700 /models/trellis2 /scratch/trellis2
+ && install -d -o 10001 -g 10001 -m 0700 /models/trellis2 /scratch/trellis2 /cache/compile
 # Declared here so the per-commit revision leaves earlier layers cacheable.
 ARG SOURCE_REVISION
 ARG SOURCE_REPOSITORY=https://github.com/chrisbennight/mcp-printable-rs

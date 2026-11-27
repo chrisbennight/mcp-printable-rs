@@ -1517,8 +1517,13 @@ impl ReconWorker {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        // The NVIDIA container runtime selects devices through these.
-        for name in ["CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"] {
+        // The NVIDIA container runtime selects devices through the first two;
+        // kernels compiled at run time must be cached where files may execute.
+        for name in [
+            "CUDA_VISIBLE_DEVICES",
+            "NVIDIA_VISIBLE_DEVICES",
+            "TRITON_CACHE_DIR",
+        ] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
