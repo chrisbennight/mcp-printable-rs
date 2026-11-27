@@ -16,20 +16,22 @@ out.stl`, where the request held the source path, `{"checks":
 {"overhang_degrees": 45, "min_feature_mm": 0.4}}`, an overhang angle of 45
 degrees and the subject name; and once more with `"edge_length_mm": 0.2`. This
 is the whole worker run behind `scene` `prepare_print`, including the
-validation of the written mesh. `/usr/bin/time -v` measured each run three
+validation of the written mesh, whose wall-thickness measurement against the
+0.4 mm minimum takes most of the time. `/usr/bin/time -v` measured each run three
 times; the table gives the median.
 
 | Edge | Address-space limit | Output triangles | Wall seconds | CPU seconds (user + system) | Peak resident memory |
 | --- | --- | --- | --- | --- | --- |
-| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 507,332 | 2.9 | 3.4 | 491 MiB |
-| 0.2 mm | none | 2,945,256 | 14.8 | 16.7 | 2,508 MiB |
+| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 507,332 | 7.2 | 7.9 | 554 MiB |
+| 0.2 mm | none | 2,945,256 | 45.6 | 48.1 | 2,691 MiB |
 | 0.2 mm | 1 GiB | none: the worker was stopped when it ran out of address space | | | |
 
 Both runs closed the five openings, turned the inward-facing surface to face
 outwards (`cavities_filled: 1`), merged the overlapping block into it and kept
 the floating cube, which the report lists as one floating part, since every
 part is kept by default. Each result was two shells, a valid solid with no
-self-intersections and no shells touching or crossing. The default edge fits within the geometry worker's
+self-intersections and no shells touching or crossing; its wall-thickness
+assessment failed, since the lumpy surface has walls thinner than 0.4 mm. The default edge fits within the geometry worker's
 default 1 GiB limit. Finer edges need more memory: raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. Measured values are in
 [print-prep-rebuild.json](print-prep-rebuild.json).

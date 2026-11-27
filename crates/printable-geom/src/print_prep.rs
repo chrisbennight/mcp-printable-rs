@@ -107,6 +107,10 @@ pub struct Finding {
     pub area_mm2: f64,
     /// The largest connected regions, largest first.
     pub regions: Vec<Region>,
+    /// Faces resting on the build plate were not measured, so a thin part
+    /// lying flat on the plate is not found.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub excludes_plate_faces: bool,
 }
 
 /// One connected region of a [`Finding`].
@@ -129,6 +133,7 @@ impl From<SurfaceFinding> for Finding {
                     centre_mm: region.centre_mm,
                 })
                 .collect(),
+            excludes_plate_faces: false,
         }
     }
 }
@@ -247,7 +252,15 @@ pub fn prepare_print(
         (inward, 0)
     };
 
-    let solid = remesh::remesh_union(vertices, triangles, edge)?;
+    // By default anything inside any closed surface is solid, whichever way
+    // it faces, so a body whose facing was misjudged is never lost. Keeping
+    // cavities trusts the mesh's facing.
+    let rule = if request.keep_cavities {
+        remesh::InsideRule::Positive
+    } else {
+        remesh::InsideRule::NonZero
+    };
+    let solid = remesh::remesh_union_with(vertices, triangles, edge, rule)?;
     let spacing = edge / remesh::EDGE_PER_SPACING;
     let mut parts = solids(&solid);
     parts.sort_by(|a, b| b.volume().total_cmp(&a.volume()));
@@ -356,7 +369,10 @@ pub fn prepare_print(
         print_check::overhang_above(&mesh, checks.overhang_degrees, &[], PLATE_TOLERANCE_MM).into()
     });
     let thin = match request.checks.and_then(|checks| checks.min_feature_mm) {
-        Some(min_mm) => Some(print_check::thin(&mesh, min_mm, raise, &[])?.into()),
+        Some(min_mm) => Some(Finding {
+            excludes_plate_faces: true,
+            ..print_check::thin(&mesh, min_mm, raise, &[])?.into()
+        }),
         None => None,
     };
     let report = PrintPrepReport {
@@ -606,7 +622,8 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
     volume.iter().filter(|volume| **volume < 0.0).count()
 }
 
-/// The area of the piece enclosing the most volume, either way round.
+/// The area of the piece with the largest bounding box, which does not
+/// depend on its facing or on whether it is closed.
 fn largest_piece_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
     let valid: Vec<[u32; 3]> = triangles
         .iter()
@@ -618,15 +635,25 @@ fn largest_piece_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
         .copied()
         .collect();
     let pieces = pieces(&valid);
-    let mut volume = vec![0.0; pieces.count];
+    let mut bounds = vec![([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]); pieces.count];
     let mut area = vec![0.0; pieces.count];
     for (face, triangle) in valid.iter().enumerate() {
         let piece = pieces.of_triangle[face] as usize;
-        volume[piece] += signed_volume(vertices, std::slice::from_ref(triangle));
         area[piece] += surface_area(vertices, std::slice::from_ref(triangle));
+        let (low, high) = &mut bounds[piece];
+        for &index in triangle {
+            for (axis, value) in vertices[index as usize].into_iter().enumerate() {
+                low[axis] = low[axis].min(value);
+                high[axis] = high[axis].max(value);
+            }
+        }
     }
+    let size = |piece: usize| {
+        let (low, high) = bounds[piece];
+        (0..3).map(|axis| high[axis] - low[axis]).product::<f64>()
+    };
     (0..pieces.count)
-        .max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
+        .max_by(|a, b| size(*a).total_cmp(&size(*b)))
         .map_or(0.0, |piece| area[piece])
 }
 
@@ -882,6 +909,31 @@ mod tests {
         assert_eq!(report.cavities_filled, 1);
         // Both survive, facing outwards.
         assert!((report.volume_mm3 - 1064.0).abs() < 30.0, "{report:?}");
+    }
+
+    #[test]
+    fn bodies_sharing_a_welded_edge_both_survive_whatever_their_facing() {
+        // A tall inward-facing block shares a vertical edge of a larger one,
+        // so four faces meet at that edge and the two form one piece.
+        let (small, small_triangles) = cuboid([10.0, 10.0, 0.0], [4.0, 4.0, 10.0]);
+        let inward: Vec<[u32; 3]> = small_triangles
+            .iter()
+            .map(|[a, b, c]| [*a, *c, *b])
+            .collect();
+        let (mut vertices, mut triangles) = cuboid([0.0; 3], [10.0; 3]);
+        let offset = vertices.len() as u32;
+        vertices.extend(small);
+        // The small block's corners 0 and 4 are the large one's 3 and 7.
+        triangles.extend(inward.iter().map(|triangle| {
+            triangle.map(|index| match index {
+                0 => 3,
+                4 => 7,
+                index => index + offset,
+            })
+        }));
+        let (_, report) = prepare((vertices, triangles), &request(0.25)).unwrap();
+        assert_eq!(report.source.shells, 1);
+        assert!((report.volume_mm3 - 1160.0).abs() < 40.0, "{report:?}");
     }
 
     #[test]

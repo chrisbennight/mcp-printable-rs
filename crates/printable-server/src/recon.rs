@@ -1053,10 +1053,12 @@ impl ReconWorker {
         let workspace = Arc::clone(&self.workspace);
         let image = snapshot.path().to_path_buf();
         let wants_focal = request.fov_degrees.is_none();
+        let cancel = control.map(|control| control.cancel.clone());
         let (image_sha256, analysis) = tokio::task::spawn_blocking(move || {
             let digest = file_digest(&image)?;
+            let cancelled = || cancel.as_ref().is_some_and(|token| token.is_cancelled());
             let analysis = wants_focal
-                .then(|| cached_focal_length(&workspace, &digest))
+                .then(|| cached_focal_length(&workspace, &digest, cancelled))
                 .transpose()?;
             Ok::<_, ToolError>((digest, analysis))
         })
@@ -1218,11 +1220,8 @@ impl ReconWorker {
         result["triangles"] = report["triangles"].clone();
         result["size_mm"] = report["size_mm"].clone();
         result["preparation"] = report;
-        result["validation"] = json!({
-            "solid_geometry": validation["solid_geometry"],
-            "self_intersections": validation["topology"]["self_intersections"],
-            "assessment": validation["assessment"],
-        });
+        // The whole report, so the assessment's evidence pointers resolve.
+        result["validation"] = validation;
         Ok(())
     }
 
@@ -1290,6 +1289,7 @@ impl ReconWorker {
 fn cached_focal_length(
     workspace: &Workspace,
     image_sha256: &str,
+    cancelled: impl Fn() -> bool,
 ) -> Result<Option<CachedFocal>, ToolError> {
     let root = match workspace.resolve(analysis::CACHE_ROOT, true) {
         Ok(root) => root,
@@ -1302,6 +1302,12 @@ fn cached_focal_length(
     keys.sort_unstable();
     let mut estimate = None;
     for key in keys {
+        if cancelled() {
+            return Err(reconstruction_error(
+                "cancelled",
+                "photograph job was cancelled before publication",
+            ));
+        }
         let path = format!("{}/{key}/manifest.json", analysis::CACHE_ROOT);
         // A directory without a readable manifest is not a cached result.
         let Ok((_, bytes)) = workspace.read_generated_bytes(&path) else {

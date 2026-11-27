@@ -10760,7 +10760,14 @@ async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_k
     assert!((report["volume_mm3"].as_f64().unwrap() - 8000.0).abs() < 300.0);
     assert!(report["thin"].is_object());
     assert_eq!(result["validation"]["solid_geometry"], true);
-    assert_eq!(result["validation"]["self_intersections"], 0);
+    assert_eq!(result["validation"]["topology"]["self_intersections"], 0);
+    // The assessment comes with the measurements it points to, and walls
+    // were measured against the 0.4 mm nozzle.
+    assert!(result["validation"]["overhang"].is_object());
+    assert_ne!(
+        result["validation"]["assessment"]["criteria"]["wall_thickness"]["status"],
+        "unmeasured"
+    );
     // Nothing was cached for this photograph, and the report says so.
     assert!(result["photo_analysis"]["note"].is_string());
     let (_, written) = worker

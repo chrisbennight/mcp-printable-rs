@@ -444,8 +444,9 @@ therefore rebuilds it before writing it, with the same preparation as the
   FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
   with the shells, volume and what was changed.
 - The result must pass the strict check, a valid solid known to be free of
-  self-intersections and of shells touching or crossing, reported in
-  `validation`. A result that fails is not
+  self-intersections and of shells touching or crossing. `validation` is the
+  `validate_mesh` report of the written mesh, with walls measured against
+  0.4 mm. A result that fails is not
   written: the request or job fails with `print_check_failed`.
 - When the rebuild is refused or the geometry worker fails, for example by
   running out of memory, the generated surface is not lost. It is written
@@ -458,7 +459,7 @@ therefore rebuilds it before writing it, with the same preparation as the
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
-A one-million-triangle surface took about 3 seconds and 490 MiB at the default
+A one-million-triangle surface took about 7 seconds and 550 MiB, including the check, at the default
 facet size in the [measurements](../evidence/print-prep-rebuild.md). The
 strict check runs there too. The rebuild has whatever remains of the
 generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or
