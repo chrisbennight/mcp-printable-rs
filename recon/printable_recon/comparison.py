@@ -28,7 +28,7 @@ import numpy
 
 import scoring
 
-from .photo_analysis import read_png16, resize_map, resize_mask
+from .photo_analysis import read_png16, resize_map
 
 # A heightmap pixel counts as subject when it stands this share of the
 # height range above the lowest height: the flat background of a relief
@@ -83,8 +83,10 @@ def load(name: str, path: Path, kind: str) -> Input:
                 levels = read_png16(path).astype(numpy.float64)
             except ValueError as error:
                 raise CompareError(f"{name}: {error}") from None
-            normals = _unit(levels / 65535.0 * 2.0 - 1.0)
-            return Input(name, "normal map", None, normals, numpy.linalg.norm(normals, axis=-1) > 0.5, kind)
+            raw = levels / 65535.0 * 2.0 - 1.0
+            # An encoded zero vector marks a pixel without a normal; it is not a direction.
+            valid = numpy.linalg.norm(raw, axis=-1) > 0.5
+            return Input(name, "normal map", None, numpy.where(valid[..., None], _unit(raw), 0.0), valid, kind)
         if kind == scoring.METRIC:
             raise CompareError(f"{name} is a 16-bit PNG, which holds relative heights; use relative or logrel")
         levels = _image_array(path).astype(numpy.float64)
@@ -101,6 +103,8 @@ def load(name: str, path: Path, kind: str) -> Input:
 
 
 def _check_pixels(name: str, width: int, height: int) -> None:
+    if width < 1 or height < 1:
+        raise CompareError(f"{name} has no pixels")
     if width * height > MAX_PIXELS:
         raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
 
@@ -208,12 +212,28 @@ def load_photograph(path: Path, height: int, width: int) -> numpy.ndarray:
 
 # ------------------------------------------------------------------ geometry
 def resized(item: Input, height: int, width: int) -> Input:
-    """The input resampled to height x width: bilinear for values, nearest for coverage."""
+    """The input resampled to height x width from its valid pixels alone.
+
+    Values and coverage are resampled together and the values divided by the
+    coverage, so pixels without a value never blend into valid ones. A pixel
+    stays valid where at least half of its resampled weight came from valid
+    pixels.
+    """
     if item.shape == (height, width):
         return item
-    depth = None if item.depth is None else resize_map(item.depth, height, width).astype(numpy.float64)
-    normals = None if item.normals is None else _unit(resize_map(item.normals, height, width).astype(numpy.float64))
-    return Input(item.name, item.source, depth, normals, resize_mask(item.valid, height, width), item.kind)
+    weight = resize_map(item.valid.astype(numpy.float32), height, width).astype(numpy.float64)
+    valid = weight >= 0.5
+    safe = numpy.where(valid, weight, 1.0)
+
+    def resample(values: numpy.ndarray) -> numpy.ndarray:
+        inside = numpy.where(item.valid[..., None] if values.ndim == 3 else item.valid, values, 0.0)
+        out = resize_map(inside, height, width).astype(numpy.float64)
+        out = out / (safe[..., None] if values.ndim == 3 else safe)
+        return numpy.where(valid[..., None] if values.ndim == 3 else valid, out, 0.0)
+
+    depth = None if item.depth is None else resample(item.depth)
+    normals = None if item.normals is None else _unit(resample(item.normals))
+    return Input(item.name, item.source, depth, normals, valid, item.kind)
 
 
 def centre_crop(shape: tuple[int, int], aspect: float) -> tuple[slice, slice]:

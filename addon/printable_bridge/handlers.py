@@ -2125,7 +2125,7 @@ class BlenderHandlers:
                 self._bpy.context.scene.camera = camera_object
             with self._workspace.stage_output(request) as output:
                 with output.path.open("wb") as stream:
-                    numpy.savez(stream, depth=depth, normals=normals, mask=mask,
+                    numpy.savez_compressed(stream, depth=depth, normals=normals, mask=mask,
                                 focal_px=numpy.float64(camera["focal_px"] or 0.0))
                 with output.path.open("rb") as stored:
                     sha256 = hashlib.file_digest(stored, "sha256").hexdigest()

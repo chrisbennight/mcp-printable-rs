@@ -77,7 +77,7 @@ the size of a flat plate's.
 
 | Parameter | Values | Default |
 | --- | --- | --- |
-| `image` or `test_strip` | a workspace `.jpg`, `.jpeg`, `.png` or `.webp` image, in any letter case, or `true` for a [test strip](#measure-your-filament) | one is required |
+| `image` or `test_strip` | a workspace `.jpg`, `.jpeg`, `.png` or `.webp` image, with a lowercase suffix, or `true` for a [test strip](#measure-your-filament) | one is required |
 | `path` | a new workspace `.stl` | required; `NAME.preview.png` and `NAME.report.json` are written beside it |
 | `overwrite` | `true` to replace existing files | `false` |
 | `width_mm` or `height_mm` | 10 to 300; the other follows the image's proportions | one is required |
