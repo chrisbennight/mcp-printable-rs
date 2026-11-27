@@ -29,14 +29,6 @@ const PLATE_TOLERANCE_MM: f64 = 0.2;
 /// 100 mm, matches a 0.4 mm nozzle; but no finer than the minimum.
 const DEFAULT_EDGE_SHARE: f64 = 0.004;
 const MIN_DEFAULT_EDGE_MM: f64 = 0.1;
-/// Keeping only the largest part, a first rebuild at facets this share of
-/// the longest side finds it cheaply.
-const COARSE_EDGE_SHARE: f64 = 0.015;
-/// The fine rebuild keeps every surface within this many of its facet edges
-/// of the coarse part's bounds, besides the coarse grid step the coarse
-/// surface can be off by, so surfaces that the fine rebuild would join to
-/// the part stay.
-const CROP_EDGES: f64 = 2.0;
 
 /// Choices for [`prepare_print`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -184,11 +176,6 @@ pub struct PrintPrepReport {
     /// With only the largest part kept, the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smaller_parts: Option<Parts>,
-    /// With only the largest part kept, source surfaces left out of the
-    /// fine rebuild because they lie apart from the part a coarse rebuild
-    /// found enclosing the most volume.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub dropped_before_rebuild: usize,
     /// Separate parts lying wholly within the slice the plinth's flat base
     /// cuts off, which are removed with it.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -237,16 +224,14 @@ pub fn prepare_print(
     if triangles.is_empty() {
         return Err(GeometryError::EmptyMesh);
     }
-    let source_pieces = pieces(&triangles);
+    let pieces = pieces(&triangles);
     let (open_edges, _) = edge_counts(&triangles);
     let source = SourceSummary {
         triangles: triangles.len(),
-        shells: source_pieces.count,
+        shells: pieces.count,
         open_edges,
         volume_mm3: (open_edges == 0).then(|| signed_volume(&vertices, &triangles)),
     };
-    drop(source_pieces);
-    let pieces = pieces(&triangles);
     let flipped_triangles = orient(&mut triangles, &pieces);
     let (openings_closed, openings_left) = close_openings(&mut vertices, &mut triangles);
     drop(pieces);
@@ -264,25 +249,8 @@ pub fn prepare_print(
     } else {
         remesh::InsideRule::NonZero
     };
-    // Keeping only the largest part, a coarse rebuild of everything finds
-    // it, ranked by enclosed volume as the final choice is, and the fine
-    // rebuild meshes only the surfaces near it.
-    // The margin allows for the coarse surface's error and for the fine
-    // rebuild bridging gaps up to a few of its facets, whose size is at most
-    // the one the whole source would give.
-    let dropped_before_rebuild = if request.parts == KeptParts::Largest {
-        let subject = coarse_subject(&vertices, &triangles, rule)?;
-        let widest = fine_edge(
-            request,
-            surface_area(&vertices, &triangles),
-            print_check::extent(&vertices),
-        );
-        let margin = subject.spacing + CROP_EDGES * widest;
-        crop_to(&mut vertices, &mut triangles, subject.bounds, margin)
-    } else {
-        0
-    };
-    // Sized from what the rebuild meshes.
+    // Sized from the whole source, whichever parts are kept afterwards: no
+    // choice of part made before the rebuild is reliable.
     let edge = fine_edge(
         request,
         surface_area(&vertices, &triangles),
@@ -446,7 +414,6 @@ pub fn prepare_print(
         floating_parts,
         would_remove,
         smaller_parts,
-        dropped_before_rebuild,
         removed_by_base_cut,
         plinth,
         hollow,
@@ -710,80 +677,6 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
     inward.iter().filter(|inward| **inward).count()
 }
 
-/// Each surface of a mesh, a set of triangles joined through shared
-/// vertices whatever their edges, with its bounds. Generated
-/// surfaces often have edges used by more than two triangles, which split
-/// them into many small pieces, but they still share vertices.
-struct Surfaces {
-    of_triangle: Vec<u32>,
-    bounds: Vec<([f64; 3], [f64; 3])>,
-}
-
-fn surfaces(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> Surfaces {
-    let mut parent: Vec<usize> = (0..vertices.len()).collect();
-    for [a, b, c] in triangles {
-        for (p, q) in [(*a, *b), (*b, *c)] {
-            let (p, q) = (root(&mut parent, p as usize), root(&mut parent, q as usize));
-            parent[p] = q;
-        }
-    }
-    let mut numbers: HashMap<usize, u32> = HashMap::new();
-    let of_triangle: Vec<u32> = triangles
-        .iter()
-        .map(|triangle| {
-            let next = numbers.len() as u32;
-            *numbers
-                .entry(root(&mut parent, triangle[0] as usize))
-                .or_insert(next)
-        })
-        .collect();
-    let count = numbers.len();
-    let mut bounds = vec![([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]); count];
-    for (triangle, &surface) in triangles.iter().zip(&of_triangle) {
-        let surface = surface as usize;
-        let (low, high) = &mut bounds[surface];
-        for &index in triangle {
-            for (axis, value) in vertices[index as usize].into_iter().enumerate() {
-                low[axis] = low[axis].min(value);
-                high[axis] = high[axis].max(value);
-            }
-        }
-    }
-    Surfaces {
-        of_triangle,
-        bounds,
-    }
-}
-
-/// The part a coarse rebuild finds enclosing the most volume.
-struct Subject {
-    bounds: ([f64; 3], [f64; 3]),
-    /// The coarse rebuild's grid step, which its surface can be off by.
-    spacing: f64,
-}
-
-/// Rebuild the whole surface at a coarse facet size and return the part
-/// enclosing the most volume.
-fn coarse_subject(
-    vertices: &[[f64; 3]],
-    triangles: &[[u32; 3]],
-    rule: remesh::InsideRule,
-) -> Result<Subject, GeometryError> {
-    let edge = (COARSE_EDGE_SHARE * print_check::extent(vertices)).max(MIN_DEFAULT_EDGE_MM);
-    let coarse = remesh::remesh_union_with(vertices.to_vec(), triangles.to_vec(), edge, rule)?;
-    let part = solids(&coarse)
-        .into_iter()
-        .max_by(|a, b| a.volume().total_cmp(&b.volume()))
-        .ok_or_else(|| GeometryError::Kernel("remeshing produced no solid".into()))?;
-    let bounds = part
-        .bounding_box()
-        .ok_or_else(|| GeometryError::Kernel("remeshing produced no solid".into()))?;
-    Ok(Subject {
-        bounds: (bounds.min(), bounds.max()),
-        spacing: edge / remesh::EDGE_PER_SPACING,
-    })
-}
-
 /// The facet edge for a surface of this area and longest side.
 fn fine_edge(request: &PrintPrepOptions, area: f64, extent: f64) -> f64 {
     match (request.edge_length_mm, request.target_triangles) {
@@ -794,48 +687,6 @@ fn fine_edge(request: &PrintPrepOptions, area: f64, extent: f64) -> f64 {
             .max(MIN_DEFAULT_EDGE_MM),
         (None, None) => (DEFAULT_EDGE_SHARE * extent).max(MIN_DEFAULT_EDGE_MM),
     }
-}
-
-/// Keep the surfaces, triangles joined through shared vertices, whose bounds
-/// meet `bounds` grown by `margin`, and the vertices they use. Returns how
-/// many surfaces were removed.
-fn crop_to(
-    vertices: &mut Vec<[f64; 3]>,
-    triangles: &mut Vec<[u32; 3]>,
-    (low, high): ([f64; 3], [f64; 3]),
-    margin: f64,
-) -> usize {
-    let surfaces = surfaces(vertices, triangles);
-    let kept: Vec<bool> = surfaces
-        .bounds
-        .iter()
-        .map(|(other_low, other_high)| {
-            (0..3).all(|axis| {
-                other_low[axis] <= high[axis] + margin && low[axis] - margin <= other_high[axis]
-            })
-        })
-        .collect();
-    let dropped = kept.iter().filter(|kept| !**kept).count();
-    if dropped == 0 {
-        return 0;
-    }
-    let mut surface = surfaces.of_triangle.iter();
-    triangles.retain(|_| kept[*surface.next().expect("one surface per triangle") as usize]);
-    // The rebuild sizes its grid over every vertex, so unused ones go too.
-    let mut remap = vec![u32::MAX; vertices.len()];
-    let mut compact = Vec::new();
-    for triangle in triangles.iter_mut() {
-        for index in triangle.iter_mut() {
-            let slot = &mut remap[*index as usize];
-            if *slot == u32::MAX {
-                *slot = compact.len() as u32;
-                compact.push(vertices[*index as usize]);
-            }
-            *index = *slot;
-        }
-    }
-    *vertices = compact;
-    dropped
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -999,8 +850,8 @@ mod tests {
         let mut largest = request(0.5);
         largest.parts = KeptParts::Largest;
         let (prepared, report) = prepare(mesh, &largest).unwrap();
-        // Neither touches the subject's bounds, so both go before the rebuild.
-        assert_eq!(report.dropped_before_rebuild, 2, "{report:?}");
+        let smaller = report.smaller_parts.unwrap();
+        assert_eq!((smaller.count, smaller.removed), (2, true));
         assert_eq!(report.shells, 1);
         assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
         let low = prepared
@@ -1198,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_facet_size_follows_the_kept_part_and_its_final_size() {
+    fn the_default_facet_size_follows_the_whole_source_and_the_final_size() {
         // Distant debris makes the source 200 mm long; the kept block is
         // 20 mm, rescaled to 40 mm.
         let mesh = joined(&[
@@ -1210,8 +1061,8 @@ mod tests {
         sized.parts = KeptParts::Largest;
         sized.longest_side_mm = Some(40.0);
         let (_, report) = prepare(mesh, &sized).unwrap();
-        // 0.4% of the block's 20 mm is 0.1 mm, doubled by the rescale.
-        assert!((report.edge_length_mm - 0.2).abs() < 1e-9, "{report:?}");
+        // 0.4% of the source's 200 mm is 0.8 mm, doubled by the rescale.
+        assert!((report.edge_length_mm - 1.6).abs() < 1e-9, "{report:?}");
         assert!((report.size_mm[0] - 40.0).abs() < 1e-6, "{report:?}");
     }
 
@@ -1463,30 +1314,6 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_near_the_coarse_part_are_kept_and_the_rest_dropped_before_the_rebuild() {
-        // The three overlapping blocks are one part in the coarse rebuild,
-        // so all three stay; the speck far away goes, with its vertices.
-        let mesh = joined(&[
-            cuboid([0.0; 3], [20.0; 3]),
-            cuboid([18.0, 0.0, 0.0], [10.0, 5.0, 5.0]),
-            cuboid([26.0, 0.0, 0.0], [10.0, 5.0, 5.0]),
-            cuboid([200.0, 0.0, 0.0], [2.0; 3]),
-        ]);
-        let (mut vertices, mut triangles) = mesh.clone();
-        let blocks = ([0.0; 3], [36.0, 20.0, 20.0]);
-        assert_eq!(crop_to(&mut vertices, &mut triangles, blocks, 1.0), 1);
-        assert_eq!((vertices.len(), triangles.len()), (24, 36));
-        assert!(vertices.iter().all(|vertex| vertex[0] <= 36.0));
-        let mut largest = request(0.5);
-        largest.parts = KeptParts::Largest;
-        let (_, report) = prepare(mesh, &largest).unwrap();
-        assert_eq!(report.dropped_before_rebuild, 1, "{report:?}");
-        assert_eq!(report.shells, 1);
-        // The three blocks join: 8000 + 250 + 250, less 10 overlapping.
-        assert!((report.volume_mm3 - 8490.0).abs() < 200.0, "{report:?}");
-    }
-
-    #[test]
     fn a_long_diagonal_rod_does_not_displace_the_cube() {
         // The rod's bounds are larger than the cube's, but it encloses far
         // less.
@@ -1507,33 +1334,24 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_close_to_the_subject_reach_the_fine_rebuild() {
-        // Two blocks whose facing sides are 0.1 mm apart, much less than a
-        // grid step: whether the rebuild joins them depends only on where
-        // its samples fall, so both must reach it, and the part kept is the
-        // one a single rebuild of everything gives.
-        for gap in [0.1, 0.3] {
-            let mesh = joined(&[
-                cuboid([0.0; 3], [20.0; 3]),
-                cuboid([20.0 + gap, 0.0, 0.0], [19.9, 20.0, 20.0]),
-            ]);
-            let mut largest = request(0.4);
-            largest.parts = KeptParts::Largest;
-            let (_, kept) = prepare(mesh.clone(), &largest).unwrap();
-            assert_eq!(kept.dropped_before_rebuild, 0, "{kept:?}");
-            let (_, all) = prepare(mesh, &request(0.4)).unwrap();
-            // Joined, the part is both blocks; apart, the larger block.
-            let expected = if all.shells == 1 {
-                all.volume_mm3
-            } else {
-                8_000.0
-            };
-            assert_eq!(kept.shells, 1);
-            assert!(
-                (kept.volume_mm3 - expected).abs() < 100.0,
-                "{kept:?} {all:?}"
-            );
-        }
+    fn a_thin_plate_enclosing_more_is_the_part_kept() {
+        // A 5 mm cube and, beside it, a 1 mm plate enclosing far more,
+        // between grid samples of any coarse look. The plate is kept.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [5.0; 3]),
+            cuboid([10.0, 0.0, 1.0], [80.0, 90.0, 1.0]),
+        ]);
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 7_200.0).abs() < 400.0, "{report:?}");
+        assert!(
+            report.size_mm[0] > 79.0 && report.size_mm[1] > 89.0,
+            "{report:?}"
+        );
+        assert_eq!(report.smaller_parts.unwrap().count, 1, "{report:?}");
     }
 
     #[test]
@@ -1551,7 +1369,7 @@ mod tests {
         assert_eq!(report.shells, 1);
         assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
         assert!((report.size_mm[2] - 40.0).abs() < 0.5, "{report:?}");
-        assert_eq!(report.dropped_before_rebuild, 1, "{report:?}");
+        assert_eq!(report.smaller_parts.unwrap().count, 1, "{report:?}");
     }
 
     #[test]

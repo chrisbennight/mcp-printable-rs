@@ -14,16 +14,15 @@ Each surface was passed to the release `printable-geometry-worker
 only the largest part kept, longest side 100 mm, overhangs checked at 45
 degrees and walls at 0.4 mm, under `ulimit -v 1048576` (1 GiB). The host was an
 aarch64 Linux container (Debian trixie, `rust:1.97.1-trixie`); the table gives
-the median of three runs, which include the coarse first rebuild that finds
-the largest part. The same binary cross-built for x86-64 and run in an
+the median of three runs. The same binary cross-built for x86-64 and run in an
 emulated amd64 container gave the same meshes, with the peak memory shown in
 the last column; its times are not comparable.
 
 | Surface | Source shells / open edges | Result triangles | Facet edge | Result size (mm) | Wall s | CPU s | Peak memory | Peak memory, x86-64 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Marble bust | 20,847 / 21,472 | 420,988 | 0.40 mm | 64.0 × 60.6 × 100.0 | 4.2 | 6.0 | 416 MiB | 551 MiB |
-| Bicycle | 141,853 / 84,198 | 60,472 | 0.43 mm | 100.0 × 26.8 × 76.6 | 4.4 | 5.3 | 404 MiB | 520 MiB |
-| Chess set | 13,108 / 15,942 | 211,928 | 0.40 mm | 40.8 × 51.0 × 100.0 | 2.4 | 2.9 | 403 MiB | 463 MiB |
+| Marble bust | 20,847 / 21,472 | 420,988 | 0.40 mm | 64.0 × 60.6 × 100.0 | 3.7 | 5.1 | 407 MiB | 547 MiB |
+| Bicycle | 141,853 / 84,198 | 61,312 | 0.43 mm | 100.0 × 26.8 × 76.6 | 3.9 | 4.6 | 381 MiB | 430 MiB |
+| Chess set | 13,108 / 15,942 | 22,236 | 1.22 mm | 40.7 × 50.8 × 100.0 | 2.4 | 3.1 | 383 MiB | 436 MiB |
 
 Every result was one shell and passed the strict check: a valid solid with no
 self-intersections and no shells touching or crossing. "Source shells" counts
@@ -38,13 +37,14 @@ What the results show:
   rebuilt one, measured without rescaling. About 1% of the rebuilt surface lies
   1 to 9 mm from the raw one, at heights between 21 and 34 mm, most likely
   where it spans openings in the raw surface.
-- Only the largest part is kept, so the chess set's result is the largest
-  piece the coarse rebuild found, rescaled to 100 mm. Its other 11 surfaces lie
-  apart from that piece and are left out of the fine rebuild. Rebuilding the
-  whole set finely at that piece's facet size ran out of the 1 GiB address
-  space.
+- Only the largest part is kept, so the chess set's result is its largest
+  piece, rescaled to 100 mm. The facet size follows the whole scene, 0.4 mm
+  for its 100 mm, so after rescaling the piece's facets are 1.2 mm long:
+  crop such a photograph to the subject for more detail. Sizing the facets
+  from the piece itself made the rebuild of the whole set run out of the
+  1 GiB address space.
 - At the default facet size the bicycle's thinnest parts break away and are
   removed with the other pieces: the kept part is 94 mm long before rescaling,
-  against the generated 100 mm, and 1,294 mm³ in volume. With `edge_length_mm: 0.2` the kept
-  part is 99 × 44 × 73 mm, in 20 seconds and 491 MiB, still within the 1 GiB
+  against the generated 100 mm, and 1,308 mm³ in volume. With `edge_length_mm: 0.2` the kept
+  part is 99 × 44 × 73 mm, in 26 seconds and 517 MiB, still within the 1 GiB
   limit.

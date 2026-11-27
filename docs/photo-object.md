@@ -438,23 +438,25 @@ therefore rebuilds it before writing it, with the same preparation as the
 `scene` tool's [`prepare_print`](mesh-assessment.md#prepare-a-mesh-for-printing):
 
 - Openings are closed, inconsistent facing is fixed, every closed piece is
-  turned to face outwards, and the surface is rebuilt as one exact solid in
-  two passes. A coarse rebuild, with facets 1.5% of the longest side, finds
-  the part enclosing the most volume. The fine rebuild then meshes only the
-  surfaces, triangles joined through shared vertices, whose bounds come
-  within a coarse grid step and two fine facets of that part's bounds; the
-  others are counted in `solid_rebuild.dropped_before_rebuild`. Its facets
-  are 0.4% of the longest side of what it meshes, at least 0.1 mm; after
-  rescaling to `size_mm` that is about 0.4% of `size_mm`.
-  `solid_rebuild.edge_length_mm` gives the facet size on the written mesh.
-  With `target_triangles`, the facet length is chosen instead to give about
-  that many triangles over the area of what the fine rebuild meshes, at least
+  turned to face outwards, and the surface is rebuilt as one exact solid
+  with facets 0.4% of the generated surface's longest side, at least 0.1 mm;
+  after rescaling to `size_mm` that is about 0.4% of `size_mm` for a
+  photograph of a single subject. `solid_rebuild.edge_length_mm` gives the
+  facet size on the written mesh. With `target_triangles`, the facet length
+  is chosen instead to give about that many triangles over the generated
+  surface's area, at least
   0.1 mm. Finer
   detail is smoothed away; thin parts such as spokes and stems narrower than
   about two facets can break off and are then removed with the other pieces.
 - Only the largest part of the rebuilt solid, the one enclosing the most
   volume, is kept, since a photograph shows one subject and separate pieces
   are generator debris; `solid_rebuild.smaller_parts` counts those removed.
+  The facet size follows the whole generated scene, so in a cluttered
+  photograph a small subject gets fewer facets for its size: in the chess
+  photograph measured in the [rebuild evidence](../evidence/photo-object-rebuild.md),
+  the kept piece ended with facets 1.2 mm long after rescaling. Crop the
+  photograph to the subject, or set a smaller `edge_length_mm` with
+  `raw_surface: true` and `scene` `prepare_print`, for more detail.
   The result is then scaled again so that its longest side is
   `size_mm`, centred on the origin and standing on Z = 0, since the generator
   sized the surface with the removed pieces included. `solid_rebuild.size_mm`
