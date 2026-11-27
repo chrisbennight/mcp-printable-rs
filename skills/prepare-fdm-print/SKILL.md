@@ -83,8 +83,10 @@ with geometry and printer information for the clearance assessment below.
 When `validate_mesh` reports open edges, inconsistent facing,
 self-intersections, or more shells than the design has, as scans and generated
 objects often do, rebuild it with `scene` `prepare_print` and the printer's
-nozzle, then validate the new file. Set `remove_floating_parts` when the
-reported floating parts are debris rather than intended parts, set
+nozzle, then validate the new file. Before setting `remove_floating_parts`,
+read `would_remove`, the parts it would delete, rather than
+`floating_parts`, which is judged from the lowest part and can name the main
+part; set it when those parts are debris rather than intended parts, set
 `keep_cavities` only when inward-facing pieces are intended cavities, and lower `edge_length_mm` when the default would
 smooth away detail that matters. A refused result (`print_check_failed`) wrote
 nothing; report its problems rather than slicing the original. Do not rebuild a

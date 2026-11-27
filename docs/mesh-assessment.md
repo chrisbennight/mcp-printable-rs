@@ -86,7 +86,9 @@ The source is read in millimetres with Z up. The preparation:
    and the floating parts, which would print in mid-air, are reported. With
    `remove_floating_parts`, the plate is under the largest part and every
    other part not resting on it, above or below, is removed; such parts are
-   usually debris. Separate parts resting on the plate are kept and counted.
+   usually debris. The default report lists those parts as `would_remove`,
+   which can differ from `floating_parts`: a small fragment below the largest
+   part makes the largest part float, but removal would delete the fragment. Separate parts resting on the plate are kept and counted.
    The detection resolution is max(0.2 mm, one grid step), where a grid step
    is about 1.7 edge lengths: at a coarse edge, a part closer to the plate
    than one grid step counts as resting on it.
