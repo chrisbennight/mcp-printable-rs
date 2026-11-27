@@ -14,7 +14,10 @@ use std::{
     sync::Arc,
 };
 
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader, imageops::FilterType};
+use image::{
+    DynamicImage, GenericImageView, ImageBuffer, ImageFormat, ImageReader, Luma,
+    imageops::FilterType,
+};
 use printable_geom::relief::{
     DEFAULT_MAX_PIXELS, Grid, PrintabilityOptions, ReliefMap, check_relief,
     lithophane::{
@@ -43,8 +46,10 @@ const STL_FILE: &str = "lithophane.stl";
 const PREVIEW_FILE: &str = "preview.png";
 /// Largest image snapshotted for a lithophane.
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
-/// Largest image side decoded, in pixels.
-const MAX_IMAGE_SIDE: u32 = 12_000;
+/// Largest image side decoded, in pixels. The decoded image, its two-byte
+/// brightness and a turned copy of that stay well within the geometry
+/// worker's memory at this size.
+const MAX_IMAGE_SIDE: u32 = 8_192;
 /// The layer height the narrow-detail check counts losses in.
 const LAYER_MM: f64 = 0.2;
 /// A test strip's steps, and its width over its height.
@@ -467,12 +472,16 @@ fn invalid(message: String) -> WorkerError {
     }
 }
 
-/// The image, turned upright as its EXIF orientation says, and the
-/// `[left, top, width, height]` pixels of it to use.
+/// A linear-light brightness of 0 to 1 stored in 16 bits.
+type LinearImage = ImageBuffer<Luma<u16>, Vec<u16>>;
+
+/// The image's linear-light brightness, turned upright as its EXIF
+/// orientation says, and the `[left, top, width, height]` pixels of it to
+/// use.
 fn read_image(
     path: &Path,
     settings: &LithophaneSettings,
-) -> Result<(DynamicImage, [u32; 4]), WorkerError> {
+) -> Result<(LinearImage, [u32; 4]), WorkerError> {
     let mut reader = ImageReader::open(path)
         .map_err(io_error("cannot open the image"))?
         .with_guessed_format()
@@ -481,55 +490,71 @@ fn read_image(
     limits.max_image_width = Some(MAX_IMAGE_SIDE);
     limits.max_image_height = Some(MAX_IMAGE_SIDE);
     reader.limits(limits);
-    // Turned upright as the photograph decoder does, so crop_px and the
-    // proportions refer to the image as it is viewed.
     let mut decoder = reader.into_decoder().map_err(invalid_image)?;
     let orientation = image::ImageDecoder::orientation(&mut decoder).map_err(invalid_image)?;
-    let mut image = DynamicImage::from_decoder(decoder).map_err(invalid_image)?;
-    image.apply_orientation(orientation);
+    let decoded = DynamicImage::from_decoder(decoder).map_err(invalid_image)?;
+    let mut linear = DynamicImage::ImageLuma16(linear_luminance(&decoded));
+    drop(decoded);
+    // Turned upright as the photograph decoder does, so crop_px and the
+    // proportions refer to the image as it is viewed.
+    linear.apply_orientation(orientation);
+    let DynamicImage::ImageLuma16(linear) = linear else {
+        unreachable!("turning keeps the pixel type")
+    };
     let crop = settings
         .crop_px
-        .unwrap_or([0, 0, image.width(), image.height()]);
+        .unwrap_or([0, 0, linear.width(), linear.height()]);
     let [left, top, width, height] = crop;
     let inside = |start: u32, length: u32, limit: u32| {
         start.checked_add(length).is_some_and(|end| end <= limit)
     };
-    if !inside(left, width, image.width()) || !inside(top, height, image.height()) {
+    if !inside(left, width, linear.width()) || !inside(top, height, linear.height()) {
         return Err(invalid(format!(
             "crop_px reaches outside the {} x {} pixel image",
-            image.width(),
-            image.height()
+            linear.width(),
+            linear.height()
         )));
     }
-    Ok((image, crop))
+    Ok((linear, crop))
 }
 
-/// The cropped image's linear-light brightness at `columns` x `rows`
-/// samples, with its contrast adjusted. The crop is first resized to the
-/// samples with a triangle filter, which averages the pixels each sample
-/// covers when reducing, so memory follows the samples rather than the
-/// image. Transparent parts count as white.
+/// Each pixel's linear-light brightness, `Y = 0.2126 R + 0.7152 G +
+/// 0.0722 B` composited over white, so transparent parts count as white
+/// whatever colour they hide. Read one pixel at a time, so the only copy is
+/// the two-byte result.
+fn linear_luminance(image: &DynamicImage) -> LinearImage {
+    let linear: Vec<f64> = (0..=255u8)
+        .map(|value| srgb_to_linear(f64::from(value) / 255.0))
+        .collect();
+    let mut out = LinearImage::new(image.width(), image.height());
+    for (x, y, pixel) in image.pixels() {
+        let [red, green, blue, alpha] = pixel.0;
+        let colour = 0.2126 * linear[usize::from(red)]
+            + 0.7152 * linear[usize::from(green)]
+            + 0.0722 * linear[usize::from(blue)];
+        let alpha = f64::from(alpha) / 255.0;
+        let brightness = alpha * colour + (1.0 - alpha);
+        out.put_pixel(x, y, Luma([(brightness * 65535.0).round() as u16]));
+    }
+    out
+}
+
+/// The cropped brightness at `columns` x `rows` samples, with its contrast
+/// adjusted. The crop is resized in linear light with a triangle filter,
+/// which averages the pixels each sample covers when reducing.
 fn brightness(
-    image: &DynamicImage,
+    linear: &LinearImage,
     [left, top, width, height]: [u32; 4],
     (columns, rows): (usize, usize),
     contrast: f64,
 ) -> Result<Grid<f64>, WorkerError> {
-    let view = image.view(left, top, width, height);
+    let view = linear.view(left, top, width, height);
     let resized =
         image::imageops::resize(&*view, columns as u32, rows as u32, FilterType::Triangle);
-    let linear: Vec<f64> = (0..=255u8)
-        .map(|value| srgb_to_linear(f64::from(value) / 255.0))
-        .collect();
     let values = resized
         .pixels()
         .map(|pixel| {
-            let [red, green, blue, alpha] = pixel.0;
-            let colour = 0.2126 * linear[usize::from(red)]
-                + 0.7152 * linear[usize::from(green)]
-                + 0.0722 * linear[usize::from(blue)];
-            let alpha = f64::from(alpha) / 255.0;
-            let brightness = alpha * colour + (1.0 - alpha);
+            let brightness = f64::from(pixel.0[0]) / 65535.0;
             if contrast == 1.0 {
                 brightness
             } else {
@@ -568,18 +593,19 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     let target = settings.nozzle_mm / 2.0;
     let count = |length: f64| (length / target).round().max(1.0) as usize + 1;
     let (columns, rows) = (count(width_mm), count(height_mm));
-    let border_count = (settings.border_mm / target).round() as usize;
-    let bordered = |samples: usize| samples + 2 * border_count;
-    if bordered(columns).saturating_mul(bordered(rows)) > DEFAULT_MAX_PIXELS {
-        return Err(invalid(format!(
-            "a {width_mm:.0} x {height_mm:.0} mm lithophane needs {} samples at half the nozzle's width, more than {DEFAULT_MAX_PIXELS}; make it smaller or use a larger nozzle_mm",
-            bordered(columns).saturating_mul(bordered(rows))
-        )));
-    }
     let spacing_mm = [
         width_mm / (columns - 1) as f64,
         height_mm / (rows - 1) as f64,
     ];
+    // The border takes the grid's own spacing along each axis, which can be
+    // much finer than the nominal one, so the whole grid is counted.
+    let border = spacing_mm.map(|spacing| (settings.border_mm / spacing).round());
+    let samples = (columns as f64 + 2.0 * border[0]) * (rows as f64 + 2.0 * border[1]);
+    if samples > DEFAULT_MAX_PIXELS as f64 {
+        return Err(invalid(format!(
+            "a {width_mm:.0} x {height_mm:.0} mm lithophane with its border needs {samples:.0} samples, more than {DEFAULT_MAX_PIXELS}; make it or its border smaller, or use a larger nozzle_mm"
+        )));
+    }
     let (map, steps) = match &image {
         Some((image, crop)) => (
             lithophane_map(
@@ -680,7 +706,8 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             high[axis] = high[axis].max(vertex[axis]);
         }
     }
-    fs::write(output.join(STL_FILE), printable_geom::bust_stl(&mesh))
+    fs::File::create(output.join(STL_FILE))
+        .and_then(|file| printable_geom::write_stl(&mesh, std::io::BufWriter::new(file)))
         .map_err(io_error("cannot write the lithophane STL"))?;
     let darkest = tone.transmission(settings.max_thickness_mm);
     let brightest = tone.transmission(settings.min_thickness_mm);
@@ -871,6 +898,24 @@ mod tests {
                 "{case:?}"
             );
         }
+    }
+
+    #[test]
+    fn fine_detail_averages_in_linear_light() {
+        // A one-pixel black and white checkerboard is half as bright as
+        // white in linear light; averaging sRGB values would give 0.214.
+        let checkerboard = image::RgbImage::from_fn(64, 64, |x, y| {
+            image::Rgb([if (x + y) % 2 == 0 { 255 } else { 0 }; 3])
+        });
+        let linear = linear_luminance(&DynamicImage::ImageRgb8(checkerboard));
+        let grid = brightness(&linear, [0, 0, 64, 64], (8, 8), 1.0).unwrap();
+        for value in grid.values() {
+            assert!((value - 0.5).abs() < 0.01, "{value}");
+        }
+        // Transparent pixels count as white whatever colour they hide.
+        let hidden = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0]));
+        let linear = linear_luminance(&DynamicImage::ImageRgba8(hidden));
+        assert!(linear.pixels().all(|pixel| pixel.0[0] == u16::MAX));
     }
 
     #[test]

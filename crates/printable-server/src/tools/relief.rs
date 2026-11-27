@@ -920,7 +920,8 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             high[axis] = high[axis].max(vertex[axis]);
         }
     }
-    fs::write(output.join(STL_FILE), printable_geom::bust_stl(&mesh))
+    fs::File::create(output.join(STL_FILE))
+        .and_then(|file| printable_geom::write_stl(&mesh, std::io::BufWriter::new(file)))
         .map_err(io_error("cannot write the relief STL"))?;
     Ok(json!({
         "size_mm": [high[0] - low[0], high[1] - low[1], high[2] - low[2]],

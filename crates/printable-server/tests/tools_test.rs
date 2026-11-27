@@ -8220,6 +8220,41 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
     // Only lithophane, which needs no worker, is offered.
     let schema = serde_json::to_string(&advertised(&server).unwrap().input_schema).unwrap();
     assert!(schema.contains("max_thickness_mm") && !schema.contains("depth_path"));
+    // An action the tool has but does not offer here is refused like an
+    // unknown one, before it runs.
+    let refused = |action: &str| {
+        let server = &server;
+        let action = action.to_owned();
+        async move {
+            let result = server
+                .invoke_tool(photo_call(json!({
+                    "action": action,
+                    "params": {"analysis": "ab".repeat(32), "path": "relief/plaque.stl",
+                        "preset": "plaque", "width_mm": 40.0}
+                })))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            result.structured_content.unwrap()["error"].clone()
+        }
+    };
+    let relief = refused("relief").await;
+    let unknown = refused("carve").await;
+    assert_eq!(relief["code"], unknown["code"]);
+    assert!(
+        relief["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown variant `relief`, expected one of `lithophane`"),
+        "{relief}"
+    );
+    assert!(
+        unknown["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown variant `carve`"),
+        "{unknown}"
+    );
     task.abort();
 
     let (endpoint, seen, task) = fake_depth_worker().await;
@@ -10415,6 +10450,23 @@ async fn photo_lithophane_builds_flat_curved_and_test_strip_plates_without_the_p
     assert_eq!(error.code(), "relief_not_printable", "{error}");
     assert!(error.to_string().contains("radius of at least"), "{error}");
     assert!(ws.stat_artifact("lithophanes/tight.stl").is_err());
+
+    // A narrow image's border is counted at the grid's own fine spacing,
+    // so a plate too large with its border is refused before it is built.
+    ws.write_artifact("photos/sliver.png", &grey_ramp_png(2000, 2), false)
+        .unwrap();
+    let call = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "lithophane", "params": {"image": "photos/sliver.png",
+            "path": "lithophanes/sliver.stl", "width_mm": 10.0, "border_mm": 50.0}}),
+    )
+    .unwrap();
+    let error = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "validation", "{error}");
+    assert!(error.to_string().contains("with its border"), "{error}");
+    assert!(ws.stat_artifact("lithophanes/sliver.stl").is_err());
 
     // A crop outside the image is refused, and nothing is written.
     let call = printable_server::tools::workflows::resolve(

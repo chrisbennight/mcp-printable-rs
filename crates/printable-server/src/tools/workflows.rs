@@ -459,6 +459,50 @@ pub fn resolve(name: &str, arguments: Value) -> Result<ResolvedCall, ToolError> 
     }
 }
 
+/// The actions a workflow input schema offers.
+fn schema_actions(schema: &JsonObject) -> Vec<String> {
+    ["oneOf", "anyOf"]
+        .iter()
+        .filter_map(|key| schema.get(*key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|variant| {
+            let action = &variant["properties"]["action"];
+            action["const"].as_str().or_else(|| {
+                action["enum"]
+                    .as_array()
+                    .filter(|names| names.len() == 1)
+                    .and_then(|names| names[0].as_str())
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Refuse an action that the tool has but `advertised`, the form of it
+/// this server currently offers, leaves out, with the error an unknown
+/// action gets.
+pub fn refuse_unoffered(advertised: &ToolDef, arguments: &Value) -> Result<(), ToolError> {
+    let (Some(action), Some(full)) = (arguments["action"].as_str(), lookup(advertised.name)) else {
+        return Ok(());
+    };
+    if std::ptr::eq(advertised, full) {
+        return Ok(());
+    }
+    let offered = schema_actions(&(advertised.schema)());
+    if offered.iter().any(|name| name == action)
+        || !schema_actions(&(full.schema)())
+            .iter()
+            .any(|name| name == action)
+    {
+        return Ok(());
+    }
+    let expected: Vec<String> = offered.iter().map(|name| format!("`{name}`")).collect();
+    Err(ToolError::Validation(format!(
+        "unknown variant `{action}`, expected one of {}",
+        expected.join(", ")
+    )))
+}
+
 pub fn lookup(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|tool| tool.name == name)
 }

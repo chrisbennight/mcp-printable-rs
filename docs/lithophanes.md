@@ -21,19 +21,18 @@ after a storage error, inspect the paths before repeating the request.
 
 ## From brightness to thickness
 
-1. The image is decoded, turned upright as its EXIF orientation says, and
-   cropped; `crop_px` and the proportions refer to the upright image.
-   Transparent parts count as white.
-2. The crop is resized with a triangle filter to samples half the nozzle's
-   diameter apart, averaging the 8-bit pixels each sample covers. The nozzle
-   cannot draw finer detail, and this is the only smoothing applied. The
-   average is taken of sRGB-encoded values, which keeps memory to the samples
-   rather than the image; it makes fine light-and-dark detail slightly darker
-   than an average in linear light would.
-3. Each sample is converted from sRGB to linear light, and its brightness is
-   `Y = 0.2126 R + 0.7152 G + 0.0722 B`.
-4. `contrast`, when given, stretches the tones about middle grey on the sRGB
-   scale.
+1. The image is decoded, and each pixel is converted from sRGB to linear
+   light and composited over white, so transparent parts count as white
+   whatever colour they hide. Its brightness is
+   `Y = 0.2126 R + 0.7152 G + 0.0722 B`, kept in 16 bits.
+2. The brightness is turned upright as the image's EXIF orientation says,
+   and cropped; `crop_px` and the proportions refer to the upright image.
+3. The crop is resized with a triangle filter to samples half the nozzle's
+   diameter apart, averaging in linear light the pixels each sample covers,
+   so fine black-and-white detail shows as mid grey. The nozzle cannot draw
+   finer detail, and this is the only smoothing applied.
+4. `contrast`, when given, stretches each sample's tone about middle grey on
+   the sRGB scale.
 5. Light keeps a fraction `T = exp(-k t)` of its intensity through `t`
    millimetres of filament, where `k` is the filament's attenuation per
    millimetre (the Beer-Lambert law). With `T_dark` the transmission of the
@@ -66,8 +65,9 @@ every cell's flat face becomes a chord one sample spacing wide. A chord falls
 inside the cylinder by its sag, `R (1 - cos(s / 2R))` for spacing `s` and
 radius `R`. While the sag is at most a hundredth of the minimum thickness, and
 the radius exceeds the maximum thickness, the bent plate is a closed solid
-without self-intersections by construction and keeps its thickness to within
-that hundredth. A tighter curve is refused with `relief_not_printable` and the
+without self-intersections by construction, and its wall is never thinner
+than `min_thickness_mm` less that sag: up to 1% under the minimum on a curved
+plate. A tighter curve is refused with `relief_not_printable` and the
 smallest radius that fits; the report gives the curve's `chord_sag_mm` and its
 `minimum_wall_mm`, the thinnest thickness less the sag. The flat face of a
 curved plate has as many triangles as its relief, so its STL is about twice
@@ -105,8 +105,11 @@ The defaults are recommended starting points, not measured optima:
 
 The samples are half a nozzle apart, so a 100 mm wide lithophane with a 0.4 mm
 nozzle has 501 samples across. A plate needing more than 4,194,304 samples is
-refused; make it smaller or use a larger nozzle. The image may be at most
-64 MiB and 12,000 pixels on a side.
+refused, counting the border at the grid's own spacing; make it or its border
+smaller, or use a larger nozzle. The image may be at most 64 MiB and 8,192
+pixels on a side, and its decoded pixels must fit in 512 MiB, which keeps the
+decoded image, its brightness and a turned copy well within the geometry
+worker's memory.
 
 ## Filament attenuation
 
@@ -178,8 +181,9 @@ backlight, relative to the thinnest part, as seen from the flat face, one pixel
 per sample. It shows the limited contrast: the thickest parts are
 `1 / contrast_ratio` as bright, not black. The border is not shown.
 
-A 100 mm wide lithophane from a 1024 x 1024 pixel image took under a tenth of
-a second in the geometry worker on the CPU, and a 200 mm one under a quarter
-of a second, in [one recorded run](../evidence/lithophane-cpu-time.md) on an
-Apple silicon Linux container; amd64 times were not measured. The STL is
-large, about 25 MB for the 100 mm plate.
+A 100 mm wide lithophane from a 1024 x 1024 pixel image took about 0.2
+seconds in the geometry worker on the CPU, a curved one about 0.4 seconds and
+a 200 mm flat one under a second, each using under 100 MiB, in
+[one recorded run](../evidence/lithophane-cpu-time.md) on an Apple silicon
+Linux container; amd64 times were not measured. The STL is large: about 25 MB
+for the 100 mm flat plate and 50 MB curved.

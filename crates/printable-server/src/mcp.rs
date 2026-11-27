@@ -240,15 +240,20 @@ impl PrintableServer {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        if !tools::workflows::advertised(self.availability()).any(|tool| tool.name == params.name) {
+        let Some(advertised) =
+            tools::workflows::advertised(self.availability()).find(|tool| tool.name == params.name)
+        else {
             return Err(McpError::method_not_found::<
                 rmcp::model::CallToolRequestMethod,
             >());
-        }
+        };
         let args = params
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Map::new()));
+        if let Err(error) = tools::workflows::refuse_unoffered(advertised, &args) {
+            return Ok(error_result(&params.name, &error));
+        }
 
         let ingest_requested = params.name == "artifact"
             && args.get("action").and_then(Value::as_str) == Some("ingest");
