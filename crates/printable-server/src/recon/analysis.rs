@@ -226,6 +226,7 @@ impl ReconWorker {
             "analyzer": code(&config.analyze_script)?,
             "photo_analysis": code(&directory.join("printable_recon/photo_analysis.py"))?,
             "geometry_models": code(&directory.join("printable_recon/geometry_models.py"))?,
+            "marigold": code(&directory.join("printable_recon/marigold.py"))?,
             // The photograph decoder and scaler the analyzer imports.
             "estimate_depth": code(&directory.join("estimate_depth.py"))?,
             "estimate_geometry": code(&directory.join("estimate_geometry.py"))?,

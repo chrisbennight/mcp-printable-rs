@@ -138,7 +138,9 @@ def _run_models(chosen, photograph, snapshots: dict, uses_gpu: bool):
         try:
             rgb = scaled(photograph, run.side)
             height, width = rgb.shape[:2]
-            runner = geometry_models.load(run.entry, snapshots[run.entry], torch.device(run.device))
+            focal_fraction = (settings.focal_length_px / photograph.width
+                              if settings.focal_length_px is not None else None)
+            runner = geometry_models.load(run.entry, snapshots[run.entry], torch.device(run.device), focal_fraction)
             outcome = photo_analysis.Outcome(runner(rgb), width, height)
             if "flip" in run.passes:
                 mirrored = runner(numpy.ascontiguousarray(rgb[:, ::-1]))
