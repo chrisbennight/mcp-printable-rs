@@ -104,7 +104,9 @@ def _analyse(chosen, settings, image_path: Path, snapshots: dict, threads, outpu
     # Model code may print progress; only the final answer goes to stdout.
     try:
         with redirect_stdout(sys.stderr):
-            outcomes, timings = _run_models(chosen, photograph, snapshots, uses_gpu)
+            focal_fraction = (settings.focal_length_px / photograph.width
+                              if settings.focal_length_px is not None else None)
+            outcomes, timings = _run_models(chosen, photograph, snapshots, uses_gpu, focal_fraction)
     except Failure as failure:
         return _fail(failure.code, failure.message)
 
@@ -123,7 +125,7 @@ def _analyse(chosen, settings, image_path: Path, snapshots: dict, threads, outpu
     return 0
 
 
-def _run_models(chosen, photograph, snapshots: dict, uses_gpu: bool):
+def _run_models(chosen, photograph, snapshots: dict, uses_gpu: bool, focal_fraction: float | None):
     """Each run's outcome and timing; a failure is raised as Failure."""
     import numpy
     import torch
@@ -138,8 +140,6 @@ def _run_models(chosen, photograph, snapshots: dict, uses_gpu: bool):
         try:
             rgb = scaled(photograph, run.side)
             height, width = rgb.shape[:2]
-            focal_fraction = (settings.focal_length_px / photograph.width
-                              if settings.focal_length_px is not None else None)
             runner = geometry_models.load(run.entry, snapshots[run.entry], torch.device(run.device), focal_fraction)
             outcome = photo_analysis.Outcome(runner(rgb), width, height)
             if "flip" in run.passes:

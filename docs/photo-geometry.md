@@ -126,8 +126,8 @@ downloaded inside the analysis job.
 
 Every model parameter is optional and defaults to the
 [recommendations](#recommendations). Name a model to choose differently, for
-example `"depth_model": "dp2-l", "side": 1024` for a deep subject on a GPU
-with about 3 GB free.
+example `"depth_model": "dp2-l", "side": 1024, "mask_model": "moge3-vitl"` for
+a deep subject on a GPU with about 3 GB free.
 
 | Parameter | Values | Default |
 | --- | --- | --- |
@@ -149,8 +149,8 @@ once for both. MoGe-3 needs a GPU, so it is refused with `device: cpu`.
 
 Depth from a MoGe model reads painted artwork as the flat object it is;
 Depth Anything 3 invents sculpted depth for a painting, which suits reliefs
-made from artwork. Choosing `depth_model: moge3-vitl` with the default mask
-model runs one model for depth and mask.
+made from artwork. Choosing `"depth_model": "moge3-vitl", "mask_model":
+"moge3-vitl"` runs one model for depth and mask.
 
 `best` runs the depth model twice more: on the photograph mirrored left to
 right and at three quarters of its size, and uses the results as consistency

@@ -291,7 +291,7 @@ class RunTests(unittest.TestCase):
 
         calls = []
 
-        def load(entry, snapshot, device):
+        def load(entry, snapshot, device, focal_fraction=None):
             def run(rgb):
                 calls.append((entry, rgb.shape))
                 height, width = rgb.shape[:2]
