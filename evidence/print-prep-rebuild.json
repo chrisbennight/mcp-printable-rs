@@ -5,14 +5,15 @@
   "includes": "rebuild, strict validation of the written STL and writing it, in the geometry worker",
   "runs": [
     {"edge_length_mm": 0.47661335754394535, "address_space_limit_bytes": 1073741824, "exit": 0,
-     "output_triangles": 499060, "shells": 1, "turned_inside_out": true, "cavities": 2, "openings_closed": 5,
-     "solid_geometry": true, "self_intersections": 0,
-     "wall_seconds": [2.80, 2.78, 2.78], "user_seconds": [3.11, 3.09, 3.10], "system_seconds": [0.25, 0.23, 0.24],
-     "peak_rss_kib": [467384, 467576, 422344]},
+     "output_triangles": 507332, "shells": 2, "cavities_filled": 1, "openings_closed": 5,
+     "floating_parts": {"count": 1, "removed": false},
+     "solid_geometry": true, "self_intersections": 0, "shell_intersections": 0,
+     "wall_seconds": [2.91, 2.89, 2.92], "user_seconds": [3.23, 3.20, 3.20], "system_seconds": [0.24, 0.24, 0.24],
+     "peak_rss_kib": [502292, 502292, 498344]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": null, "exit": 0,
-     "output_triangles": 2896744, "shells": 1, "solid_geometry": true, "self_intersections": 0,
-     "wall_seconds": [13.92, 13.64, 13.55], "user_seconds": [14.35, 14.39, 14.32], "system_seconds": [1.57, 1.26, 1.25],
-     "peak_rss_kib": [2258144, 2248712, 2252400]},
+     "output_triangles": 2945256, "shells": 2, "floating_parts": {"count": 1, "removed": false}, "solid_geometry": true,
+     "wall_seconds": [14.74, 14.84, 16.74], "user_seconds": [15.09, 15.10, 17.07], "system_seconds": [1.65, 1.62, 1.62],
+     "peak_rss_kib": [2568716, 2568716, 2568716]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": 1073741824, "exit": 139, "output_triangles": null}
   ]
 }

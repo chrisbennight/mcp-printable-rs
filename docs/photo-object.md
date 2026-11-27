@@ -428,9 +428,12 @@ inconsistently and self-intersections. Unless `raw_surface` is true, the worker
 therefore rebuilds it before writing it, with the same preparation as the
 `scene` tool's [`prepare_print`](mesh-assessment.md#prepare-a-mesh-for-printing):
 
-- Openings are closed, inconsistent facing is fixed and the surface is rebuilt
-  as one exact solid with facets 0.4% of `size_mm` long (0.4 mm at the default
-  100 mm), at least 0.1 mm. Finer detail is smoothed away.
+- Openings are closed, inconsistent facing is fixed, every closed piece is
+  turned to face outwards, and the surface is rebuilt as one exact solid with
+  facets 0.4% of `size_mm` long (0.4 mm at the default 100 mm), at least
+  0.1 mm. With `target_triangles`, the facet length is chosen instead to give
+  about that many triangles over the generated surface's area, at least
+  0.1 mm. Finer detail is smoothed away.
 - Only the largest part is kept, since a photograph shows one subject and
   separate pieces are generator debris; `preparation.smaller_parts` counts
   those removed. The result is then scaled again so that its longest side is
@@ -441,7 +444,8 @@ therefore rebuilds it before writing it, with the same preparation as the
   FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
   with the shells, volume and what was changed.
 - The result must pass the strict check, a valid solid known to be free of
-  self-intersections, reported in `validation`. A result that fails is not
+  self-intersections and of shells touching or crossing, reported in
+  `validation`. A result that fails is not
   written: the request or job fails with `print_check_failed`.
 - When the rebuild is refused or the geometry worker fails, for example by
   running out of memory, the generated surface is not lost. It is written
@@ -454,7 +458,7 @@ therefore rebuilds it before writing it, with the same preparation as the
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
-A one-million-triangle surface took about 3 seconds and 460 MiB at the default
+A one-million-triangle surface took about 3 seconds and 490 MiB at the default
 facet size in the [measurements](../evidence/print-prep-rebuild.md). The
 strict check runs there too. The rebuild has whatever remains of the
 generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or

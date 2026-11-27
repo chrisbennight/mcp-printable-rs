@@ -21,15 +21,15 @@ times; the table gives the median.
 
 | Edge | Address-space limit | Output triangles | Wall seconds | CPU seconds (user + system) | Peak resident memory |
 | --- | --- | --- | --- | --- | --- |
-| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 499,060 | 2.8 | 3.3 | 456 MiB |
-| 0.2 mm | none | 2,896,744 | 13.6 | 15.7 | 2,200 MiB |
+| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 507,332 | 2.9 | 3.4 | 491 MiB |
+| 0.2 mm | none | 2,945,256 | 14.8 | 16.7 | 2,508 MiB |
 | 0.2 mm | 1 GiB | none: the worker was stopped when it ran out of address space | | | |
 
-Both runs closed the five openings and, since the surface as a whole enclosed
-negative volume, turned all of it around. That turned the block and the cube,
-which had faced outwards, inwards: the report counts them as two cavities and
-they leave no separate part. Each result was one shell, a valid solid with no
-self-intersections. The default edge fits within the geometry worker's
+Both runs closed the five openings, turned the inward-facing surface to face
+outwards (`cavities_filled: 1`), merged the overlapping block into it and kept
+the floating cube, which the report lists as one floating part, since every
+part is kept by default. Each result was two shells, a valid solid with no
+self-intersections and no shells touching or crossing. The default edge fits within the geometry worker's
 default 1 GiB limit. Finer edges need more memory: raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. Measured values are in
 [print-prep-rebuild.json](print-prep-rebuild.json).

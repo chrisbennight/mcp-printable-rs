@@ -50,6 +50,9 @@ pub(super) struct MeshPreparePrintParams {
     /// Remove floating parts; default false keeps and reports them.
     #[serde(default)]
     remove_floating_parts: bool,
+    /// Keep inward-facing pieces as cavities; default false fills them.
+    #[serde(default)]
+    keep_cavities: bool,
     /// Plinth added below, 2 to 100 mm; none by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
@@ -154,14 +157,18 @@ pub(super) fn hollow_options(
 }
 
 /// Validate a prepared STL and refuse it unless it is a valid solid known to
-/// be free of self-intersections, not merely one where none were found.
+/// be free of self-intersections and of shells touching or crossing one
+/// another, not merely one where none were found.
 pub(crate) fn strict_check(
     bytes: &[u8],
     options: ValidationOptions,
     subject: &str,
 ) -> Result<ValidationReport, ToolError> {
     let validation = analyze_stl(bytes, options)?;
-    if !validation.solid_geometry || validation.topology.self_intersections != Some(0) {
+    if !validation.solid_geometry
+        || validation.topology.self_intersections != Some(0)
+        || validation.topology.shell_intersections != Some(0)
+    {
         let issues: Vec<_> = validation
             .issues
             .iter()
@@ -250,6 +257,8 @@ pub(super) async fn prepare_print(
     let fdm = printer.is_some_and(|printer| printer.process == PrintProcess::Fdm);
     let options = PrintPrepOptions {
         edge_length_mm,
+        target_triangles: None,
+        keep_cavities: params.keep_cavities,
         parts: if params.remove_floating_parts {
             printable_geom::KeptParts::Grounded
         } else {
@@ -304,4 +313,57 @@ pub(super) async fn prepare_print(
         Ok::<_, ToolError>(response)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cube(low: f64) -> printable_geom::TriangleMesh {
+        printable_geom::TriangleMesh {
+            vertices: (0..8)
+                .map(|corner| [0, 1, 2].map(|axis| low + f64::from((corner >> axis) & 1) * 10.0))
+                .collect(),
+            triangles: vec![
+                [0, 2, 1],
+                [1, 2, 3],
+                [4, 5, 6],
+                [5, 7, 6],
+                [0, 1, 4],
+                [1, 5, 4],
+                [2, 6, 3],
+                [3, 6, 7],
+                [0, 4, 2],
+                [2, 4, 6],
+                [1, 3, 5],
+                [3, 7, 5],
+            ],
+        }
+    }
+
+    #[test]
+    fn the_strict_check_refuses_shells_that_cross_each_other() {
+        let mut overlapping = cube(0.0);
+        let other = cube(5.0);
+        overlapping.triangles.extend(
+            other
+                .triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + 8)),
+        );
+        overlapping.vertices.extend(other.vertices);
+        let single = strict_check(
+            &printable_geom::bust_stl(&cube(0.0)),
+            ValidationOptions::default(),
+            "mesh",
+        );
+        assert!(single.is_ok());
+        let error = strict_check(
+            &printable_geom::bust_stl(&overlapping),
+            ValidationOptions::default(),
+            "mesh",
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "print_check_failed");
+    }
 }

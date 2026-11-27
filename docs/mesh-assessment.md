@@ -60,12 +60,12 @@ not use Blender:
 The source is read in millimetres with Z up. The preparation:
 
 1. Turns triangles to face the same way as most of their piece and closes
-   each opening whose rim is a simple loop. When the surface as a whole faces
-   inwards, as some exporters write one, all of it is turned around
-   (`turned_inside_out`). Otherwise each closed piece keeps its facing, and
-   one facing inwards is a cavity; `cavities` counts them. A piece facing
-   inwards that lies inside no other part disappears in the rebuild, so
-   check that count when you expect none.
+   each opening whose rim is a simple loop. Every closed piece is then turned
+   to face outwards, so no material is lost; an inward-facing piece meant as
+   a cavity is filled, and `cavities_filled` counts them. Set
+   `keep_cavities` to keep each piece's facing instead, so that inward-facing
+   pieces stay cavities, counted in `cavities`; a piece facing inwards that
+   lies inside no other part then disappears in the rebuild.
 2. Rebuilds the union of everything as one exact solid with facets about
    `edge_length_mm` long. Overlapping and touching parts merge and
    self-intersections disappear. Detail finer than about one and a half edges
@@ -73,12 +73,13 @@ The source is read in millimetres with Z up. The preparation:
    0.1 mm, keeps the result at a few hundred thousand triangles at any size
    and is about a 0.4 mm nozzle's width on a 100 mm part; choose a smaller
    edge for fine detail.
-3. Reports parts that float above the build plate, which lies under the
-   largest part: a part floats when its lowest point is more than 0.2 mm,
-   about one layer, or one grid step if that is more, above the plate. They
-   would print in mid-air and are usually debris. Every part is kept by
-   default; set `remove_floating_parts` to remove the floating ones. Separate
-   parts resting on the plate are always kept and counted.
+3. Reports parts that float: those whose lowest point is more than 0.2 mm,
+   about one layer, or one grid step if that is more, above the build plate.
+   By default every part is kept, the plate is where the lowest part sits,
+   and the floating parts, which would print in mid-air, are reported. With
+   `remove_floating_parts`, the plate is under the largest part and every
+   other part not resting on it, above or below, is removed; such parts are
+   usually debris. Separate parts resting on the plate are kept and counted.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
    cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
    `plinth_chamfer_mm`), and optionally hollows the solid with drain holes
@@ -93,7 +94,7 @@ The source is read in millimetres with Z up. The preparation:
 
 The result stands on Z = 0. `preparation` reports the source's triangles,
 shells, open edges and, when it was closed, its volume; what was turned and
-closed and any cavities; the result's triangles, shells, volume and size;
+closed and the cavities filled or kept; the result's triangles, shells, volume and size;
 the floating parts found and whether they were removed; any plinth and cavity; and the overhang
 and thin-wall areas with their largest regions. `validation` is the
 `validate_mesh` report of the written file. The rebuild and this check both
@@ -101,11 +102,12 @@ run in the geometry worker, so the full mesh is decoded only under its memory
 limit.
 
 A prepared mesh is written only when it passes the strict check: a valid solid
-known to be free of self-intersections. Otherwise the request fails with
+known to be free of self-intersections and of separate shells touching or
+crossing one another. Otherwise the request fails with
 `print_check_failed`, names the problems and writes nothing. `head`
 `prepare_print` and photo objects follow the same rule. Rebuilding and
 checking a one-million-triangle mesh at the default edge took about
-3 seconds and 460 MiB on a processor; finer edges need more memory, so raise
+3 seconds and 490 MiB on a processor; finer edges need more memory, so raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. See the
 [measurements](../evidence/print-prep-rebuild.md).
 

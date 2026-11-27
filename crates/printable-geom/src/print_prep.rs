@@ -39,9 +39,18 @@ pub struct PrintPrepOptions {
     /// side, at least 0.1 mm.
     #[serde(default)]
     pub edge_length_mm: Option<f64>,
+    /// Without an edge length, choose one that gives about this many
+    /// triangles over the source's surface area.
+    #[serde(default)]
+    pub target_triangles: Option<u64>,
     /// Which parts of the rebuilt solid are kept.
     #[serde(default)]
     pub parts: KeptParts,
+    /// Keep each closed piece's facing, so that one facing inwards stays a
+    /// cavity. By default every closed piece is turned to face outwards,
+    /// which never loses material but fills intended cavities.
+    #[serde(default)]
+    pub keep_cavities: bool,
     #[serde(default)]
     pub plinth: Option<Plinth>,
     #[serde(default)]
@@ -58,10 +67,12 @@ pub struct PrintPrepOptions {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeptParts {
-    /// Every part; floating parts are reported.
+    /// Every part. The build plate is under the lowest of them, and parts
+    /// above it are reported as floating.
     #[default]
     All,
-    /// Parts resting on the build plate.
+    /// The largest part and those resting on the build plate under it, above
+    /// or below; the others are removed as floating.
     Grounded,
     /// Only the largest part, for a single photographed subject.
     Largest,
@@ -128,11 +139,12 @@ pub struct PrintPrepReport {
     pub source: SourceSummary,
     /// Triangles turned to face the same way as most of their piece.
     pub flipped_triangles: usize,
-    /// Whether the whole surface faced inwards and was turned around.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub turned_inside_out: bool,
-    /// Closed pieces facing inwards, kept as cavities. A piece facing
-    /// inwards that is not inside another part disappears in the rebuild.
+    /// Closed pieces facing inwards that were turned to face outwards, which
+    /// fills any that were meant as cavities.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cavities_filled: usize,
+    /// With `keep_cavities`, closed pieces facing inwards kept as cavities.
+    /// One that is inside no other part disappears in the rebuild.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cavities: usize,
     /// Openings closed before the rebuild.
@@ -184,9 +196,17 @@ pub fn prepare_print(
     {
         return Err(GeometryError::NonFiniteVertex { index });
     }
-    let edge = request.edge_length_mm.unwrap_or_else(|| {
-        (DEFAULT_EDGE_SHARE * print_check::extent(&vertices)).max(MIN_DEFAULT_EDGE_MM)
-    });
+    let edge = match (request.edge_length_mm, request.target_triangles) {
+        (Some(edge), _) => edge,
+        // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
+        (None, Some(target)) => (4.0 * surface_area(&vertices, &triangles)
+            / (3f64.sqrt() * target.max(1) as f64))
+            .sqrt()
+            .max(MIN_DEFAULT_EDGE_MM),
+        (None, None) => {
+            (DEFAULT_EDGE_SHARE * print_check::extent(&vertices)).max(MIN_DEFAULT_EDGE_MM)
+        }
+    };
     if !(edge.is_finite() && edge > 0.0) {
         return Err(GeometryError::InvalidOptions(
             "edge length must be a positive number of millimetres".into(),
@@ -215,45 +235,59 @@ pub fn prepare_print(
     let flipped_triangles = orient(&mut triangles, &pieces);
     let (openings_closed, openings_left) = close_openings(&mut vertices, &mut triangles);
     drop(pieces);
-    // A surface enclosing negative volume as a whole faces inwards, as some
-    // exporters write one; turn it all around. Otherwise each closed piece
-    // keeps its facing, and one facing inwards is a cavity.
-    let turned_inside_out = signed_volume(&vertices, &triangles) < 0.0;
-    if turned_inside_out {
-        for triangle in &mut triangles {
-            triangle.swap(1, 2);
-        }
-    }
-    let cavities = inward_pieces(&vertices, &triangles);
+    let inward = inward_pieces(&vertices, &mut triangles, !request.keep_cavities);
+    let (cavities_filled, cavities) = if request.keep_cavities {
+        (0, inward)
+    } else {
+        (inward, 0)
+    };
 
     let solid = remesh::remesh_union(vertices, triangles, edge)?;
     let spacing = edge / remesh::EDGE_PER_SPACING;
     let mut parts = solids(&solid);
     parts.sort_by(|a, b| b.volume().total_cmp(&a.volume()));
     let lowest_of = |part: &Manifold| part.bounding_box().map_or(f64::INFINITY, |b| b.min()[2]);
-    // The build plate is under the largest part.
-    let plate = parts.first().map_or(0.0, lowest_of);
     let tolerance = PLATE_TOLERANCE_MM.max(spacing);
-    let (floating, others): (Vec<Manifold>, Vec<Manifold>) = parts
-        .into_iter()
-        .skip(1)
-        .partition(|part| lowest_of(part) > plate + tolerance);
-    let floating_parts = (!floating.is_empty()).then(|| Parts {
-        count: floating.len(),
-        volume_mm3: floating.iter().map(Manifold::volume).sum(),
-        removed: request.parts != KeptParts::All,
-    });
-    let smaller_parts = (request.parts == KeptParts::Largest
-        && !(floating.is_empty() && others.is_empty()))
-    .then(|| Parts {
-        count: floating.len() + others.len(),
-        volume_mm3: floating.iter().chain(&others).map(Manifold::volume).sum(),
-        removed: true,
-    });
-    let removed = match request.parts {
-        KeptParts::All => Vec::new(),
-        KeptParts::Grounded => floating,
-        KeptParts::Largest => [floating, others].concat(),
+    let (floating_parts, smaller_parts, removed) = match request.parts {
+        KeptParts::All => {
+            // Every part stays, so the plate is where the lowest one sits.
+            let plate = parts.iter().map(lowest_of).fold(f64::INFINITY, f64::min);
+            let floating: Vec<&Manifold> = parts
+                .iter()
+                .filter(|part| lowest_of(part) > plate + tolerance)
+                .collect();
+            let report = (!floating.is_empty()).then(|| Parts {
+                count: floating.len(),
+                volume_mm3: floating.iter().map(|part| part.volume()).sum(),
+                removed: false,
+            });
+            (report, None, Vec::new())
+        }
+        KeptParts::Grounded => {
+            // The plate is under the largest part; any other part not
+            // resting on it, above or below, goes.
+            let plate = parts.first().map_or(0.0, lowest_of);
+            let floating: Vec<Manifold> = parts
+                .into_iter()
+                .skip(1)
+                .filter(|part| (lowest_of(part) - plate).abs() > tolerance)
+                .collect();
+            let report = (!floating.is_empty()).then(|| Parts {
+                count: floating.len(),
+                volume_mm3: floating.iter().map(Manifold::volume).sum(),
+                removed: true,
+            });
+            (report, None, floating)
+        }
+        KeptParts::Largest => {
+            let others: Vec<Manifold> = parts.into_iter().skip(1).collect();
+            let report = (!others.is_empty()).then(|| Parts {
+                count: others.len(),
+                volume_mm3: others.iter().map(Manifold::volume).sum(),
+                removed: true,
+            });
+            (None, report, others)
+        }
     };
     // Subtracting removed parts keeps any cavity inside the others.
     let solid = if removed.is_empty() {
@@ -323,7 +357,7 @@ pub fn prepare_print(
     let report = PrintPrepReport {
         source,
         flipped_triangles,
-        turned_inside_out,
+        cavities_filled,
         cavities,
         openings_closed,
         openings_left,
@@ -546,15 +580,48 @@ fn is_zero(count: &usize) -> bool {
     *count == 0
 }
 
-/// Closed pieces enclosing negative volume: they face inwards.
-fn inward_pieces(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> usize {
+/// The pieces enclosing negative volume, which face inwards, turned to face
+/// outwards when `turn` is set. Returns how many there are.
+fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) -> usize {
     let pieces = pieces(vertices.len(), triangles);
     let mut volume = vec![0.0; pieces.count];
     for (face, triangle) in triangles.iter().enumerate() {
         volume[pieces.of_triangle[face] as usize] +=
             signed_volume(vertices, std::slice::from_ref(triangle));
     }
+    if turn {
+        for (face, triangle) in triangles.iter_mut().enumerate() {
+            if volume[pieces.of_triangle[face] as usize] < 0.0 {
+                triangle.swap(1, 2);
+            }
+        }
+    }
     volume.iter().filter(|volume| **volume < 0.0).count()
+}
+
+/// The total area of the triangles that refer to valid vertices.
+fn surface_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
+    triangles
+        .iter()
+        .filter(|triangle| {
+            triangle
+                .iter()
+                .all(|&index| (index as usize) < vertices.len())
+        })
+        .map(|triangle| {
+            let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let normal = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt() / 2.0
+        })
+        .sum()
 }
 
 /// Volume enclosed by a closed surface, positive when it faces outwards.
@@ -638,7 +705,9 @@ mod tests {
     fn request(edge: f64) -> PrintPrepOptions {
         PrintPrepOptions {
             edge_length_mm: Some(edge),
+            target_triangles: None,
             parts: KeptParts::All,
+            keep_cavities: false,
             plinth: None,
             hollow: None,
             checks: None,
@@ -717,6 +786,51 @@ mod tests {
     }
 
     #[test]
+    fn a_fragment_below_the_largest_part_sets_the_plate_unless_floating_parts_go() {
+        let mesh = joined(&[
+            cuboid([0.0, 0.0, 5.0], [20.0; 3]),
+            cuboid([30.0, 0.0, 0.0], [2.0; 3]),
+        ]);
+        // Kept, the fragment is where the STL sits, so the largest part is
+        // the one floating above the plate.
+        let (_, kept) = prepare(mesh.clone(), &request(0.5)).unwrap();
+        let floating = kept.floating_parts.unwrap();
+        assert_eq!(
+            (floating.count, floating.removed, kept.shells),
+            (1, false, 2)
+        );
+        assert!(floating.volume_mm3 > 7000.0, "{floating:?}");
+        // Removing floating parts puts the plate under the largest part and
+        // removes the fragment below it.
+        let mut grounded = request(0.5);
+        grounded.parts = KeptParts::Grounded;
+        let (prepared, report) = prepare(mesh, &grounded).unwrap();
+        let removed = report.floating_parts.unwrap();
+        assert_eq!(
+            (removed.count, removed.removed, report.shells),
+            (1, true, 1)
+        );
+        assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
+        let low = prepared
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f64::INFINITY, f64::min);
+        assert!(low.abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_triangle_target_sets_the_edge_length() {
+        let mut target = request(1.0);
+        target.edge_length_mm = None;
+        target.target_triangles = Some(50_000);
+        let (_, report) = prepare(cuboid([0.0; 3], [40.0; 3]), &target).unwrap();
+        // Close to the target, though the rebuild's triangles are not all
+        // equilateral.
+        assert!((25_000..=100_000).contains(&report.triangles), "{report:?}");
+    }
+
+    #[test]
     fn separate_parts_on_the_plate_are_reported_not_removed() {
         let mesh = joined(&[
             cuboid([0.0; 3], [10.0; 3]),
@@ -745,41 +859,39 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_facing_inwards_is_turned_around_and_inward_pieces_are_cavities() {
+    fn inward_pieces_face_outwards_by_default_and_stay_cavities_when_kept() {
         let (vertices, triangles) = cuboid([0.0; 3], [10.0; 3]);
         let inverted: Vec<[u32; 3]> = triangles.iter().map(|[a, b, c]| [*a, *c, *b]).collect();
-        let (_, report) = prepare((vertices.clone(), inverted.clone()), &request(0.5)).unwrap();
-        assert!(report.turned_inside_out);
-        assert!((report.volume_mm3 - 1000.0).abs() < 30.0, "{report:?}");
-        // A 4 mm cavity facing inwards inside the block stays empty.
         let inner: Vec<[f64; 3]> = vertices.iter().map(|v| v.map(|x| 3.0 + 0.4 * x)).collect();
+        // An inside-out block is turned to face outwards.
+        let (_, report) = prepare((vertices.clone(), inverted.clone()), &request(0.5)).unwrap();
+        assert_eq!(report.cavities_filled, 1);
+        assert!((report.volume_mm3 - 1000.0).abs() < 30.0, "{report:?}");
+        // A hollow block with its cavity facing inwards is filled by default,
+        // so no material is lost, and keeps its cavity when asked.
         let hollow = joined(&[
             (vertices.clone(), triangles.clone()),
             (inner.clone(), inverted.clone()),
         ]);
-        let (_, report) = prepare(hollow, &request(0.5)).unwrap();
-        assert!(!report.turned_inside_out);
-        assert_eq!(report.cavities, 1);
-        assert!((report.volume_mm3 - 936.0).abs() < 30.0, "{report:?}");
-        // A hollow part written wholly inside out is turned around with its
-        // cavity, which stays empty.
-        let (_, report) = prepare(
-            joined(&[
-                (vertices.clone(), inverted.clone()),
-                (inner, triangles.clone()),
-            ]),
+        let (_, filled) = prepare(hollow.clone(), &request(0.5)).unwrap();
+        assert_eq!((filled.cavities_filled, filled.cavities), (1, 0));
+        assert!((filled.volume_mm3 - 1000.0).abs() < 30.0, "{filled:?}");
+        let mut keep = request(0.5);
+        keep.keep_cavities = true;
+        let (_, kept) = prepare(hollow, &keep).unwrap();
+        assert_eq!((kept.cavities_filled, kept.cavities), (0, 1));
+        assert!((kept.volume_mm3 - 936.0).abs() < 30.0, "{kept:?}");
+        // A hollow block written wholly inside out is filled by default.
+        let (_, inverted_hollow) = prepare(
+            joined(&[(vertices, inverted), (inner, triangles)]),
             &request(0.5),
         )
         .unwrap();
-        assert!(report.turned_inside_out);
-        assert_eq!(report.cavities, 1);
-        assert!((report.volume_mm3 - 936.0).abs() < 30.0, "{report:?}");
-        // An inward piece beside an outward block is reported as a cavity
-        // and, being inside nothing, disappears.
-        let beside = joined(&[(vertices, inverted), cuboid([20.0, 0.0, 0.0], [12.0; 3])]);
-        let (_, report) = prepare(beside, &request(0.5)).unwrap();
-        assert_eq!((report.cavities, report.shells), (1, 1));
-        assert!((report.volume_mm3 - 1728.0).abs() < 60.0, "{report:?}");
+        assert_eq!(inverted_hollow.cavities_filled, 1);
+        assert!(
+            (inverted_hollow.volume_mm3 - 1000.0).abs() < 30.0,
+            "{inverted_hollow:?}"
+        );
     }
 
     #[test]

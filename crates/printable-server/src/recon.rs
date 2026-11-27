@@ -1047,12 +1047,22 @@ impl ReconWorker {
         if let Some(control) = control {
             control.verify_input(snapshot.path())?;
         }
-        let image_sha256 = file_digest(snapshot.path())?;
-        // Read before taking the shared photograph lane.
-        let analysis = match request.fov_degrees {
-            Some(_) => None,
-            None => Some(self.cached_focal_length(&image_sha256)?),
-        };
+        // Hashing and reading the cache block, so they run off the async
+        // threads, before taking the shared photograph lane.
+        let workspace = Arc::clone(&self.workspace);
+        let image = snapshot.path().to_path_buf();
+        let wants_focal = request.fov_degrees.is_none();
+        let (image_sha256, analysis) = tokio::task::spawn_blocking(move || {
+            let digest = file_digest(&image)?;
+            let analysis = wants_focal
+                .then(|| cached_focal_length(&workspace, &digest))
+                .transpose()?;
+            Ok::<_, ToolError>((digest, analysis))
+        })
+        .await
+        .map_err(|_| {
+            reconstruction_error("failed", "reading the photograph stopped unexpectedly")
+        })??;
         let _permit = self.job_permit(control).await?;
         let staging = tempfile::Builder::new()
             .prefix("printable-object-")
@@ -1155,16 +1165,22 @@ impl ReconWorker {
         let memory = self.config.geometry_worker_memory_bytes;
         let source = mesh.to_path_buf();
         let cancel = control.map(|control| control.cancel.clone());
+        // A request that goes away stops the rebuild and its worker.
+        let dropped = tokio_util::sync::CancellationToken::new();
+        let _stop_when_dropped = dropped.clone().drop_guard();
         let time_limit = deadline.saturating_duration_since(std::time::Instant::now());
         let size_mm = request.size_mm.unwrap_or(OBJECT_DEFAULT_SIZE_MM);
+        let target_triangles = request.target_triangles;
         let rebuilt = tokio::task::spawn_blocking(move || {
             let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
-                cancel.as_ref().is_some_and(|token| token.is_cancelled())
+                dropped.is_cancelled() || cancel.as_ref().is_some_and(|token| token.is_cancelled())
             });
             limit.apply(|| -> Result<_, ToolError> {
                 let output = source.with_file_name("prepared.stl");
                 let options = printable_geom::PrintPrepOptions {
                     edge_length_mm: None,
+                    target_triangles: target_triangles.map(u64::from),
+                    keep_cavities: false,
                     // One photographed subject: generator debris goes.
                     parts: printable_geom::KeptParts::Largest,
                     plinth: None,
@@ -1266,54 +1282,58 @@ impl ReconWorker {
             ),
         )
     }
+}
 
-    /// The focal length of a cached analysis of the photograph with this
-    /// digest. Only each cache directory's manifest is read. A focal length
-    /// the caller gave the analysis is returned at once; otherwise the first
-    /// estimate found.
-    fn cached_focal_length(&self, image_sha256: &str) -> Result<Option<CachedFocal>, ToolError> {
-        let root = match self.workspace.resolve(analysis::CACHE_ROOT, true) {
-            Ok(root) => root,
-            Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
-            Err(error) => return Err(error.into()),
+/// The focal length of a cached analysis of the photograph with this digest.
+/// Only each cache directory's manifest is read. A focal length the caller
+/// gave the analysis is returned at once; otherwise the first estimate found.
+fn cached_focal_length(
+    workspace: &Workspace,
+    image_sha256: &str,
+) -> Result<Option<CachedFocal>, ToolError> {
+    let root = match workspace.resolve(analysis::CACHE_ROOT, true) {
+        Ok(root) => root,
+        Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut keys: Vec<String> = std::fs::read_dir(root)?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .collect();
+    keys.sort_unstable();
+    let mut estimate = None;
+    for key in keys {
+        let path = format!("{}/{key}/manifest.json", analysis::CACHE_ROOT);
+        // A directory without a readable manifest is not a cached result.
+        let Ok((_, bytes)) = workspace.read_generated_bytes(&path) else {
+            continue;
         };
-        let mut keys: Vec<String> = std::fs::read_dir(root)?
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .collect();
-        keys.sort_unstable();
-        let mut estimate = None;
-        for key in keys {
-            let path = format!("{}/{key}/manifest.json", analysis::CACHE_ROOT);
-            // A directory without a readable manifest is not a cached result.
-            let Ok((_, bytes)) = self.workspace.read_generated_bytes(&path) else {
-                continue;
-            };
-            let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
-                continue;
-            };
-            let focal = &manifest["focal_length"];
-            let Some(px) = focal["photograph_px"].as_f64() else {
-                continue;
-            };
-            if manifest["image_sha256"] != image_sha256
-                || manifest["cache"]["key"] != key.as_str()
-                || !(px.is_finite() && px > 0.0)
-            {
-                continue;
-            }
-            let found = CachedFocal {
-                key,
-                px,
-                given: focal["source"] == "given",
-            };
-            if found.given {
-                return Ok(Some(found));
-            }
-            estimate.get_or_insert(found);
+        let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let focal = &manifest["focal_length"];
+        let Some(px) = focal["photograph_px"].as_f64() else {
+            continue;
+        };
+        if manifest["image_sha256"] != image_sha256
+            || manifest["cache"]["key"] != key.as_str()
+            || !(px.is_finite() && px > 0.0)
+        {
+            continue;
         }
-        Ok(estimate)
+        let found = CachedFocal {
+            key,
+            px,
+            given: focal["source"] == "given",
+        };
+        if found.given {
+            return Ok(Some(found));
+        }
+        estimate.get_or_insert(found);
     }
+    Ok(estimate)
+}
 
+impl ReconWorker {
     /// Run one job in a fresh Python process with a deadline and return the
     /// result object it prints. The process and any helpers it starts are
     /// killed if the deadline passes, and its memory returns when it exits.

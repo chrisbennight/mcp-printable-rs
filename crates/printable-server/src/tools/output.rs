@@ -776,7 +776,7 @@ fn mesh_preparation() -> Value {
         json!({
             "source": object(json!({"triangles": count, "shells": count, "open_edges": count,
                 "volume_mm3": {"type": "number"}}), &["triangles", "shells", "open_edges"]),
-            "flipped_triangles": count, "turned_inside_out": {"type": "boolean"},
+            "flipped_triangles": count, "cavities_filled": count,
             "cavities": count,
             "openings_closed": count, "openings_left": count,
             "edge_length_mm": {"type": "number", "exclusiveMinimum": 0},
