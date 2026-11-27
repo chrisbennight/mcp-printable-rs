@@ -127,7 +127,8 @@ downloaded inside the analysis job.
 Every model parameter is optional and defaults to the
 [recommendations](#recommendations). Name a model to choose differently, for
 example `"depth_model": "dp2-l", "side": 1024, "mask_model": "moge3-vitl"` for
-a deep subject on a GPU with about 3 GB free.
+a deep subject on a GPU with about 3.5 GB free (Depth Pro 2 L allocates
+about 3.1 GB when nothing limits it).
 
 | Parameter | Values | Default |
 | --- | --- | --- |
