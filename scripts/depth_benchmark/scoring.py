@@ -157,15 +157,19 @@ def edge_map(depth: np.ndarray, ratio: float) -> np.ndarray:
 def boundary_f1(pred: np.ndarray, truth: np.ndarray, mask: np.ndarray) -> float | None:
     """Mean F1 of depth-jump edges over several jump ratios, with one pixel of tolerance.
 
-    Returns None when the truth has no depth jumps inside the mask.
+    A ratio at which the truth has no jumps scores 0 when the prediction invents
+    jumps there, and is skipped when neither has any. Returns None when no
+    ratio is scored.
     """
     inner = erode(mask, 2)
     scores = []
     for ratio in EDGE_RATIOS:
         g = edge_map(truth, ratio) & inner
-        if not g.any():
-            continue
         p = edge_map(pred, ratio) & inner
+        if not g.any():
+            if p.any():
+                scores.append(0.0)
+            continue
         precision = (p & dilate(g)).sum() / max(p.sum(), 1)
         recall = (g & dilate(p)).sum() / g.sum()
         scores.append(0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall))
@@ -199,6 +203,63 @@ def relief_error(pred: np.ndarray, truth: np.ndarray, region: np.ndarray, kind: 
     rmse = float(np.sqrt(np.mean(residual[region] ** 2)))
     relief = float(np.percentile(height[region], 99) - np.percentile(height[region], 1))
     return {"rmse": rmse, "relief": relief, "rmse_pct": 100.0 * rmse / relief if relief > 0 else None}
+
+
+def scene_scores(pred: dict, truth: dict) -> dict:
+    """Every score of one prediction against one scene's truth, as the benchmark report tabulates it.
+
+    pred: "depth" and its "kind", optional "normals" and "focal_px".
+    truth: "depth", "normals", "valid", "focal" and "region" (None when the
+    scene has no relief region).
+    """
+    valid = truth["valid"]
+    smooth = smooth_mask(truth["depth"], valid)
+    kind = pred["kind"]
+    aligned, _ = align(pred["depth"], truth["depth"], valid, kind)
+    shaped, _ = align(pred["depth"], truth["depth"], valid, shape_kind(kind))
+    row = {"kind": kind,
+           "absrel": depth_errors(shaped, truth["depth"], valid)["absrel"],
+           "edge_f1": boundary_f1(aligned, truth["depth"], valid),
+           "depth_normal_deg": normal_errors(
+               normals_from_depth(aligned, truth["focal"]), truth["normals"], smooth)["median_deg"]}
+    if kind == METRIC:
+        row["scale_error_pct"] = float((np.median(pred["depth"][valid] / truth["depth"][valid]) - 1) * 100)
+    row["focal_error_pct"] = focal_error_pct(pred.get("focal_px"), truth["focal"])
+    if pred.get("normals") is not None:
+        row["normal_deg"] = normal_errors(pred["normals"], truth["normals"], smooth)["median_deg"]
+    region = truth.get("region")
+    if region is not None and region.sum() > 100:
+        relief = relief_error(pred["depth"], truth["depth"], region, kind)
+        row.update({"relief_rmse_mm": relief["rmse"] * 1000, "relief_mm": relief["relief"] * 1000,
+                    "relief_pct": relief["rmse_pct"]})
+    return row
+
+
+TRUTH_KEYS = ("depth", "normals", "valid", "focal", "region")
+
+
+def save_truth(path, truth: dict) -> None:
+    """Store a scene's truth as scene_scores reads it, in a NumPy archive (a zip file).
+
+    Depth is in metres; an absent relief region is stored as an empty mask.
+    """
+    region = truth["region"] if truth["region"] is not None else np.zeros(truth["valid"].shape, bool)
+    with open(path, "wb") as stream:
+        np.savez_compressed(stream, depth=np.asarray(truth["depth"], np.float64),
+                            normals=np.asarray(truth["normals"], np.float32), valid=np.asarray(truth["valid"], bool),
+                            focal=np.float64(truth["focal"]), region=np.asarray(region, bool))
+
+
+def load_truth(path) -> dict:
+    """A scene's truth as save_truth stored it."""
+    with np.load(path, allow_pickle=False) as data:
+        if sorted(data.files) != sorted(TRUTH_KEYS):
+            raise ValueError(f"a truth archive holds {', '.join(TRUTH_KEYS)}")
+        truth = {key: data[key] for key in TRUTH_KEYS}
+    truth["focal"] = float(truth["focal"])
+    if not truth["region"].any():
+        truth["region"] = None
+    return truth
 
 
 def focal_error_pct(estimate: float | None, truth: float | None) -> float | None:

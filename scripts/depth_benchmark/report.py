@@ -2,8 +2,8 @@
 
 Usage: python report.py [--out DIR]
 Reads work/gt/<scene>/{passes.exr,camera.json}, work/inputs/*.png,
-results/<tier>/<model>/*.npz and each results directory's logs; writes <out>/report.md, <out>/metrics.json and
-<out>/sheets/*.jpg (default out: results/).
+results/<tier>/<model>/*.npz and each results directory's logs; writes <out>/report.md, <out>/metrics.json,
+<out>/sheets/*.jpg (default out: results/) and each scene's converted truth, work/gt/<scene>/truth.zip.
 """
 
 from __future__ import annotations
@@ -13,14 +13,19 @@ import json
 import math
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-from scipy import ndimage
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 import checkpoints
 import common
 import scoring
+
+# Pillow and SciPy are imported where they are used, so the scoring path loads
+# with NumPy alone.
 
 CPU_LIMIT_SECONDS = 15 * 60
 # (depth model, normal model): every depth model with metric or log-relative output, paired with the
@@ -69,6 +74,8 @@ def layer(channels: dict, name: str) -> np.ndarray:
 
 
 def load_truth(scene: str) -> dict:
+    from PIL import Image
+
     d = common.GT / scene
     cam = json.loads((d / "camera.json").read_text())
     ch = read_exr(d / "passes.exr")
@@ -110,6 +117,8 @@ def fuse(depth: np.ndarray, normals: np.ndarray, focal: float, sigma: float) -> 
     Gradients come from the normals except across depth jumps, where the depth
     map's own gradient is used, so integration does not bridge occlusions.
     """
+    from scipy import ndimage
+
     height = -depth.astype(np.float64)
     nz = np.clip(normals[..., 2], 0.1, None)
     pixel = depth / focal
@@ -157,30 +166,11 @@ def model_units(pred: dict) -> np.ndarray | None:
 # ---------------------------------------------------------------------- scoring
 def score_scene(scene: str, truth: dict, tier: str) -> list[dict]:
     rows = []
-    valid = truth["valid"]
-    smooth = scoring.smooth_mask(truth["depth"], valid)
     for model in models(tier):
         pred = load_run(tier, model, f"gt-{scene}")
         if pred is None:
             continue
-        kind = pred["kind"]
-        aligned, _ = scoring.align(pred["depth"], truth["depth"], valid, kind)
-        shaped, _ = scoring.align(pred["depth"], truth["depth"], valid, scoring.shape_kind(kind))
-        row = {"tier": tier, "scene": scene, "model": model, "kind": kind,
-               "absrel": scoring.depth_errors(shaped, truth["depth"], valid)["absrel"],
-               "edge_f1": scoring.boundary_f1(aligned, truth["depth"], valid),
-               "depth_normal_deg": scoring.normal_errors(
-                   scoring.normals_from_depth(aligned, truth["focal"]), truth["normals"], smooth)["median_deg"]}
-        if kind == scoring.METRIC:
-            row["scale_error_pct"] = float((np.median(pred["depth"][valid] / truth["depth"][valid]) - 1) * 100)
-        row["focal_error_pct"] = scoring.focal_error_pct(pred.get("focal_px"), truth["focal"])
-        if "normals" in pred:
-            row["normal_deg"] = scoring.normal_errors(pred["normals"], truth["normals"], smooth)["median_deg"]
-        if truth["region"] is not None and truth["region"].sum() > 100:
-            relief = scoring.relief_error(pred["depth"], truth["depth"], truth["region"], kind)
-            row.update({"relief_rmse_mm": relief["rmse"] * 1000, "relief_mm": relief["relief"] * 1000,
-                        "relief_pct": relief["rmse_pct"]})
-        rows.append(row)
+        rows.append({"tier": tier, "scene": scene, "model": model, **scoring.scene_scores(pred, truth)})
     return rows
 
 
@@ -224,6 +214,8 @@ def score_fusion(scene: str, truth: dict, tier: str) -> list[dict]:
 
 
 def score_photos(tier: str) -> list[dict]:
+    from PIL import Image
+
     rows = []
     for f in common.inputs():
         if f.stem.startswith("gt-"):
@@ -248,6 +240,8 @@ def score_photos(tier: str) -> list[dict]:
 
 
 def exif_focal(name: str, w: int, h: int) -> float | None:
+    from PIL import Image
+
     src = common.IMAGES / f"{name}.jpg"
     if not src.exists():
         return None
@@ -339,6 +333,8 @@ def shade(n: np.ndarray) -> np.ndarray:
 
 
 def grid(rows: list[list[np.ndarray]], labels: list[str], columns: list[str], width: int) -> Image.Image:
+    from PIL import Image, ImageDraw, ImageFont
+
     font = ImageFont.load_default(size=16)
     tiles = [[Image.fromarray(a).resize((width, round(a.shape[0] * width / a.shape[1])), Image.LANCZOS) for a in r]
              for r in rows]
@@ -483,6 +479,8 @@ def main():
     scene_rows, fusion_rows, photo_rows = [], [], []
     for scene in scenes:
         truth = load_truth(scene)
+        # The converted truth, so photo.compare can score a map against this scene.
+        scoring.save_truth(common.GT / scene / "truth.zip", truth)
         for tier in tiers:
             scene_rows += score_scene(scene, truth, tier)
             fusion_rows += score_fusion(scene, truth, tier)

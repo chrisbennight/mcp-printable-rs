@@ -21,10 +21,15 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 use crate::error::ToolError;
 
 mod analysis;
+mod compare;
 mod geometry;
 mod photo_jobs;
 mod trellis;
 pub(crate) use analysis::CACHE_ROOT as ANALYSIS_CACHE_ROOT;
+pub use compare::{
+    CompanionPaths, CompareInput, CompareJob, CompareMode, CompareRequest, DepthKind,
+    MAX_COMPARE_INPUTS, MESH_SUFFIXES,
+};
 pub use geometry::{GeometryConfig, GeometryOutputs, GeometryReadiness, GeometryRun};
 use photo_jobs::{JobControl, Phase, PhotoJobs};
 pub use photo_jobs::{PhotoJobListRequest, PhotoJobRequest};

@@ -33,6 +33,7 @@ def _request_budget_seconds(
         "export_project_blender": 120,
         "job_measure_sequence_bounds": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_import_model": DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS,
+        "job_render_geometry": DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS,
         "job_prepare_mechanical_rotation": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_frame": DEFAULT_RENDER_TIMEOUT_SECONDS,
         "job_render_product": DEFAULT_RENDER_TIMEOUT_SECONDS,

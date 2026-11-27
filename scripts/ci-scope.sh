@@ -51,6 +51,8 @@ else
       Dockerfile|docker-bake.hcl|.dockerignore|blender/*|cad/*|slicer/*|recon/*|LICENSE|THIRD_PARTY_NOTICES.md|smoke/*|release/*)
         images=true ;;
       compose.yaml|compose.photo.yaml) images=true ;;
+      # The photograph worker image installs the depth benchmark's scores.
+      scripts/depth_benchmark/scoring.py) images=true ;;
       acceptance/products/*) rust=true; images=true ;;
     esac
     case "$path" in
