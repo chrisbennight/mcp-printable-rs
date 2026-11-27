@@ -227,7 +227,8 @@ impl PrintableServer {
     }
 
     /// The photograph worker's readiness changes the catalog: it gates the
-    /// `photo` tool, and `reconstruct` when a FLAME 2020 model is mounted.
+    /// `photo` tool's worker actions, and `reconstruct` when a FLAME 2020
+    /// model is mounted.
     fn tool_list_can_change(&self) -> bool {
         self.settings.recon.is_some()
     }
@@ -1023,7 +1024,7 @@ mod tests {
         ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
-        ("photo", 8_300, 0),
+        ("photo", 9_950, 0),
         ("library", 3_000, 0),
         ("artifact", 6_400, 0),
     ];
@@ -1031,7 +1032,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 200_700;
+    const CATALOG_BUDGET: usize = 202_300;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {

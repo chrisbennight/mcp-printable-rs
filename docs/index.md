@@ -28,6 +28,7 @@ own Linux NVIDIA host; your client provides the assistant and conversation.
 | Bambuddy | Send printer-ready packages, review materials/hardware, stage/start jobs, and read status or camera frames | [Configure the printer integration](printer-integration.md); a printer is unnecessary for modeling or slicing |
 | Marigold V2 | Estimate relative photo depth and normals for relief work | [Optional photograph worker and model files](photo-depth.md) |
 | Photograph geometry models | Prepare depth, subject mask, focal length and normal models, with benchmark-based recommendations for choosing among them, and build plaque, coin, mold or artwork reliefs from a photograph | [Optional photograph worker cache](photo-geometry.md); each model's preparation state appears in status |
+| Lithophanes | Turn any image into a flat or curved backlit plate on the CPU, and measure a filament's attenuation with a test strip | [Lithophanes](lithophanes.md); needs no photograph worker |
 | Pixal3D or TRELLIS.2 | Generate an object's shape from an image | [Optional object generator](photo-object.md); available models appear in status |
 | FLAME and reconstruction models | Create parametric heads and prepare busts, optionally from photographs | [Separately obtained models](flame-models.md); reconstruction also needs the photograph worker |
 | Client-run skills | Guide FDM preparation, image-to-mold work, and printer-camera assessment | Load through `skill`; the client runs the instructions and supplies any required vision or scheduling |

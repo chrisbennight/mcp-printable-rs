@@ -8217,7 +8217,9 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
 
     let (endpoint, _, task) = fake_recon_worker(true).await;
     let server = recon_server(root.path(), &endpoint).await;
-    assert!(advertised(&server).is_none());
+    // Only lithophane, which needs no worker, is offered.
+    let schema = serde_json::to_string(&advertised(&server).unwrap().input_schema).unwrap();
+    assert!(schema.contains("max_thickness_mm") && !schema.contains("depth_path"));
     task.abort();
 
     let (endpoint, seen, task) = fake_depth_worker().await;
@@ -10225,4 +10227,148 @@ async fn photo_relief_refuses_a_changed_or_missing_analysis() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "validation");
+}
+
+/// A grey ramp, black at the left and white at the right, as a PNG.
+fn grey_ramp_png(width: u32, height: u32) -> Vec<u8> {
+    let image = image::GrayImage::from_fn(width, height, |x, _| {
+        image::Luma([(x * 255 / (width - 1)) as u8])
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+    bytes.into_inner()
+}
+
+#[tokio::test]
+async fn photo_lithophane_builds_flat_curved_and_test_strip_plates_without_the_photograph_worker() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    ws.write_artifact("photos/ramp.png", &grey_ramp_png(64, 32), false)
+        .unwrap();
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    assert!(config.recon.is_none());
+    let output = printable_server::tools::output::schema("photo");
+    let validator = jsonschema::validator_for(&Value::Object((*output).clone())).unwrap();
+    for (name, params) in [
+        (
+            "flat",
+            json!({"image": "photos/ramp.png", "width_mm": 20.0, "border_mm": 1.0}),
+        ),
+        (
+            "curved",
+            json!({"image": "photos/ramp.png", "height_mm": 10.0, "shape": "curved",
+                "radius_mm": 30.0, "attenuation_per_mm": 1.2, "crop_px": [8, 0, 48, 32],
+                "contrast": 1.5}),
+        ),
+        (
+            "strip",
+            json!({"test_strip": true, "width_mm": 40.0, "filament": "white_petg"}),
+        ),
+    ] {
+        let mut params = params;
+        params["path"] = json!(format!("lithophanes/{name}.stl"));
+        let call = printable_server::tools::workflows::resolve(
+            "photo",
+            json!({"action": "lithophane", "params": params}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_lithophane");
+        let report = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(validator.is_valid(&report), "{name}: {report}");
+        let built = &report["lithophane"];
+        let checks = &built["checks"];
+        assert_eq!(checks["passed"], true, "{name}: {checks}");
+        assert_eq!(checks["thickness_within_range"], true, "{name}: {checks}");
+        let (low, high) = (
+            built["thickness_mm"]["min"].as_f64().unwrap(),
+            built["thickness_mm"]["max"].as_f64().unwrap(),
+        );
+        assert!(low >= 0.8 && high <= 3.0, "{name}: {built}");
+
+        let (_, stl) = ws
+            .read_generated_bytes(&format!("lithophanes/{name}.stl"))
+            .unwrap();
+        let validation =
+            printable_geom::analyze_stl(&stl, printable_geom::ValidationOptions::default())
+                .unwrap();
+        assert!(validation.topology.watertight, "{name}");
+        assert!(validation.topology.manifold, "{name}");
+        assert_eq!(
+            validation.topology.self_intersections.unwrap_or(0),
+            0,
+            "{name}"
+        );
+        let size: Vec<f64> = built["size_mm"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap())
+            .collect();
+        match name {
+            // The border widens the plate, and the plate stands 3 mm at most.
+            "flat" => {
+                assert!((size[0] - 22.0).abs() < 1e-6, "{size:?}");
+                assert!((size[1] - 12.0).abs() < 1e-6, "{size:?}");
+                assert!(size[2] <= 3.0 + 1e-9, "{size:?}");
+            }
+            "curved" => {
+                assert_eq!(built["shape"]["kind"], "curved");
+                assert!((size[2] - 10.0).abs() < 1e-6, "{size:?}");
+                // 15 mm of arc on a 30 mm radius.
+                let arc = built["shape"]["arc_degrees"].as_f64().unwrap();
+                assert!((arc - 15.0 / 30.0 * 180.0 / std::f64::consts::PI).abs() < 1e-6);
+                assert_eq!(report["settings"]["filament"], Value::Null);
+            }
+            _ => {
+                let steps = built["test_strip"]["steps"].as_array().unwrap();
+                assert_eq!(steps.len(), 10);
+                assert!((steps[0]["thickness_mm"].as_f64().unwrap() - 0.8).abs() < 1e-9);
+                assert!((steps[9]["thickness_mm"].as_f64().unwrap() - 3.0).abs() < 1e-9);
+                assert!((size[0] - 40.0).abs() < 1e-6 && (size[1] - 8.0).abs() < 1e-6);
+                assert_eq!(built["tone_mapping"]["attenuation_per_mm"], 1.0);
+            }
+        }
+
+        let (_, png) = ws
+            .read_generated_bytes(&format!("lithophanes/{name}.preview.png"))
+            .unwrap();
+        let preview = image::load_from_memory(&png).unwrap().to_luma8();
+        let samples = &built["samples"];
+        assert_eq!(preview.width() as u64, samples[0].as_u64().unwrap());
+        assert_eq!(preview.height() as u64, samples[1].as_u64().unwrap());
+        // The ramp brightens to the right; the strip's thinnest, brightest
+        // step is at its left.
+        let (left, right) = (
+            preview.get_pixel(0, 0).0[0],
+            preview.get_pixel(preview.width() - 1, 0).0[0],
+        );
+        if name == "strip" {
+            assert!(left > right, "{left} {right}");
+        } else {
+            assert!(left < right, "{left} {right}");
+        }
+        let (_, saved) = ws
+            .read_generated_bytes(&format!("lithophanes/{name}.report.json"))
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(saved["lithophane"], report["lithophane"]);
+    }
+
+    // A crop outside the image is refused, and nothing is written.
+    let call = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "lithophane", "params": {"image": "photos/ramp.png",
+            "path": "lithophanes/cropped.stl", "width_mm": 20.0, "crop_px": [60, 0, 10, 10]}}),
+    )
+    .unwrap();
+    let error = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "validation", "{error}");
+    assert!(error.to_string().contains("crop_px"), "{error}");
+    assert!(ws.stat_artifact("lithophanes/cropped.stl").is_err());
 }
