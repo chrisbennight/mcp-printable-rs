@@ -337,6 +337,8 @@ import moge.model.v2, depth_pro_2, depth_anything_3.cfg, depth_anything_3.model,
 depth_anything_3.utils.io.input_processor, depth_anything_3.utils.io.output_processor" \
  && /opt/recon/bin/python -I -m compileall -q moge/moge/model/v3.py moge-flex-gemm/flex_gemm
 COPY --from=build /app/target/release/printable-recon-worker /usr/local/bin/printable-recon-worker
+# Generated objects are rebuilt as printable solids in the isolated geometry worker.
+COPY --from=build /app/target/release/printable-geometry-worker /usr/local/bin/printable-geometry-worker
 COPY LICENSE /usr/share/doc/printable/LICENSE
 COPY recon/NOTICE /usr/share/doc/printable/NOTICE-recon
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \

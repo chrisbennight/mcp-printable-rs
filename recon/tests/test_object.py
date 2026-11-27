@@ -624,6 +624,21 @@ class GenerationTest(unittest.TestCase):
         self.assertAlmostEqual(float(corners[:, 2].min()), 0.0, places=4)
         numpy.testing.assert_allclose(extent, result["size_mm"], atol=1e-3)
 
+    def test_a_cached_focal_length_sets_the_view(self):
+        mesh = self.root / "focal.stl"
+        width = features.open_photograph(self.root / "disc.png")[0].width
+        request = {"image": str(self.root / "disc.png"), "model": str(self.models), "mesh": str(mesh),
+                   "resolution": 512, "steps": 1, "target_triangles": 20000, "device": "cpu",
+                   "focal_length_px": width / 2}
+        result = self._run(request)["result"]
+        self.assertEqual(result["fov_source"], "analysis")
+        # The focal length is half the photograph's width, a 90-degree view,
+        # narrowed to the part of it that frames the subject.
+        self.assertNotAlmostEqual(result["fov_degrees"], features.DEFAULT_FOV_DEGREES)
+        self.assertLess(result["fov_degrees"], 90.0)
+        given = self._run({**request, "fov_degrees": 30})["result"]
+        self.assertEqual((given["fov_source"], given["fov_degrees"]), ("request", 30.0))
+
     def test_a_surface_lost_in_simplification_is_reported(self):
         photo, photo_fov = features.open_photograph(self.root / "disc.png")
         reduce = meshes.reduce
@@ -646,6 +661,7 @@ class GenerationTest(unittest.TestCase):
             ({"size_mm": 1}, "size_mm"),
             ({"target_triangles": 100}, "target_triangles"),
             ({"seed": True}, "invalid"),
+            ({"focal_length_px": 0}, "focal_length_px"),
         ]:
             answer = self._run({**base, **change})
             self.assertEqual(answer["error"]["code"], "validation", change)

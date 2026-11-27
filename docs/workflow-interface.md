@@ -61,7 +61,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `inspect` | `scene`, `object`, `node_tree`, `editing_state`, `dependencies` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
-| `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
+| `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export`, and `prepare_print` (rebuild a workspace STL as a checked printable solid without Blender; see [prepare a mesh for printing](mesh-assessment.md#prepare-a-mesh-for-printing)) |
 | `scad_build` | `mesh`, `image`, `section` |
 | `cad_build` | `inspect`, `export`, `model`, `import_step`, `status`, `cancel` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |

@@ -65,11 +65,14 @@ def main(argv: list[str]) -> int:
         seed = _whole(request.get("seed", DEFAULT_SEED))
         fov = float(request["fov_degrees"]) if request.get("fov_degrees") is not None else None
         size_mm = float(request.get("size_mm", DEFAULT_SIZE_MM))
+        focal_px = float(request["focal_length_px"]) if request.get("focal_length_px") is not None else None
         target = _whole(request.get("target_triangles", DEFAULT_TARGET_TRIANGLES))
         device = str(request.get("device", "auto"))
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail("validation", f"the request is invalid: {error}")
     problem = _check(resolution, steps, seed, fov, size_mm, target)
+    if focal_px is not None and not focal_px > 0:
+        problem = "focal_length_px must be positive"
     if problem:
         return _fail("validation", problem)
 
@@ -93,6 +96,10 @@ def main(argv: list[str]) -> int:
         photo, photo_fov = features.open_photograph(image_path)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         return _fail("validation", f"the photograph could not be read: {error}")
+    if fov is None and focal_px is not None:
+        # A cached analysis's focal length, in the photograph's pixels, takes
+        # the place of the photograph's own metadata.
+        photo_fov = 2.0 * math.atan(photo.width / (2.0 * focal_px))
     started = time.monotonic()
     try:
         shape = objects.generate(
@@ -125,7 +132,7 @@ def main(argv: list[str]) -> int:
         "steps": shape.steps,
         "seed": seed,
         "fov_degrees": round(math.degrees(shape.fov), 3),
-        "fov_source": shape.fov_source,
+        "fov_source": "analysis" if fov is None and focal_px is not None else shape.fov_source,
         "background": shape.background,
         "device": device,
         "seconds": round(time.monotonic() - started, 3),

@@ -1652,19 +1652,22 @@ fn percentile(values: &mut [f64], rank: f64) -> Option<f64> {
 }
 
 /// Raise the bust onto a cylinder centred under its flat base.
-fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport), GeometryError> {
+pub(crate) fn add_plinth(
+    bust: Manifold,
+    plinth: Plinth,
+) -> Result<(Manifold, PlinthReport), GeometryError> {
     let (centre, reach) = section_centre(&bust.slice_at_z(SECTION_OFFSET_MM))
-        .ok_or_else(|| GeometryError::Kernel("the bust has no flat base for a plinth".into()))?;
+        .ok_or_else(|| GeometryError::Kernel("the solid has no flat base for a plinth".into()))?;
     let size = bust
         .bounding_box()
         .map(|bounds| bounds.dimensions())
-        .ok_or_else(|| GeometryError::Kernel("the bust has no extent".into()))?;
+        .ok_or_else(|| GeometryError::Kernel("the solid has no extent".into()))?;
     let diameter = plinth.diameter_mm.unwrap_or_else(|| {
         (PLINTH_WIDTH_FRACTION * size[0].max(size[1])).max(2.0 * (reach + PLINTH_MARGIN_MM))
     });
     if diameter < 2.0 * reach {
         return Err(GeometryError::InvalidOptions(format!(
-            "a plinth {diameter} mm across does not cover the {:.1} mm neck section",
+            "a plinth {diameter} mm across does not cover the {:.1} mm base section",
             2.0 * reach
         )));
     }
@@ -1704,7 +1707,7 @@ fn add_plinth(bust: Manifold, plinth: Plinth) -> Result<(Manifold, PlinthReport)
 /// Remove the region deeper than the wall, with drain holes from the base
 /// into the lowest part of it. Pockets that no drain hole reaches stay solid,
 /// so no liquid resin is sealed inside.
-fn hollow_out(
+pub(crate) fn hollow_out(
     solid: Manifold,
     hollow: Hollow,
     budget: usize,
@@ -1720,7 +1723,7 @@ fn hollow_out(
     let cavity = remesh::inner_offset(mesh.vertices, mesh.triangles, hollow.wall_mm, spacing)?;
     if cavity.is_empty() {
         return Err(GeometryError::InvalidOptions(format!(
-            "no part of the bust is thicker than two {} mm walls",
+            "no part of the solid is thicker than two {} mm walls",
             hollow.wall_mm
         )));
     }
@@ -2538,7 +2541,7 @@ fn displaced(
 }
 
 /// The mesh as an STL stores it, checked to still be a closed solid.
-fn single_precision(manifold: &Manifold) -> Result<TriangleMesh, GeometryError> {
+pub(crate) fn single_precision(manifold: &Manifold) -> Result<TriangleMesh, GeometryError> {
     let mut mesh = mesh_from(manifold);
     separate_pinches(&mut mesh);
     // An STL reader joins vertices with equal coordinates, so do the same.
@@ -2570,14 +2573,14 @@ fn single_precision(manifold: &Manifold) -> Result<TriangleMesh, GeometryError> 
         for edge in [(*a, *b), (*b, *c), (*c, *a)] {
             if edge.0 == edge.1 || !directed.insert(edge) {
                 return Err(GeometryError::Kernel(
-                    "the bust is not a consistently oriented surface at STL precision".into(),
+                    "the solid is not a consistently oriented surface at STL precision".into(),
                 ));
             }
         }
     }
     if directed.iter().any(|(a, b)| !directed.contains(&(*b, *a))) {
         return Err(GeometryError::Kernel(
-            "the bust is not a closed surface at STL precision".into(),
+            "the solid is not a closed surface at STL precision".into(),
         ));
     }
     Ok(mesh)

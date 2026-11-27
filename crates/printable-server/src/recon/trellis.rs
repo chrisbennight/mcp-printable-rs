@@ -250,6 +250,8 @@ impl ReconWorker {
                 _ => unreachable!(),
             }
         }
+        self.prepare_object(&request, &mesh, &mut result, control)
+            .await?;
         // The workspace admits storage and rechecks overwrite atomically when
         // publishing. Generated files stream independently of inline MCP limits.
         if let Some(control) = control {

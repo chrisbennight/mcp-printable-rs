@@ -513,6 +513,10 @@ pub const OBJECT_FOV_DEGREES: std::ops::RangeInclusive<f64> = 5.0..=90.0;
 pub const OBJECT_SIZES_MM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
 /// Triangle counts an object request may simplify its mesh towards.
 pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_000_000;
+/// Generated objects are checked for overhangs steeper than this, and for
+/// walls thinner than a common FDM nozzle.
+const OBJECT_OVERHANG_DEGREES: f64 = 45.0;
+const OBJECT_MINIMUM_WALL_MM: f64 = 0.4;
 /// Largest object mesh committed to the workspace: a binary STL of about 5
 /// million triangles.
 const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
@@ -569,12 +573,22 @@ pub struct ObjectRequest {
     /// GB and excludes `target_triangles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simplify: Option<bool>,
+    /// Skip the solid rebuild; default false, true with `simplify` false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_surface: Option<bool>,
     /// Replace an existing file at `mesh_path`.
     #[serde(default)]
     pub overwrite: bool,
 }
 
 impl ObjectRequest {
+    /// Whether the generator's surface is written without the rebuild: by
+    /// default only TRELLIS.2's full-detail output, which exists to keep
+    /// every generated triangle.
+    fn keeps_raw_surface(&self) -> bool {
+        self.raw_surface.unwrap_or(self.simplify == Some(false))
+    }
+
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
         if self.model == ObjectModel::Trellis2 && self.background == Some(false) {
@@ -714,6 +728,10 @@ pub struct ReconConfig {
     /// CPU threads each photograph script may use for numerical work.
     pub cpu_threads: u16,
     pub photo_queue_depth: usize,
+    /// The isolated geometry worker that rebuilds generated objects as
+    /// printable solids, and its address-space limit.
+    pub geometry_worker: PathBuf,
+    pub geometry_worker_memory_bytes: u64,
 }
 
 pub struct ReconWorker {
@@ -1021,6 +1039,11 @@ impl ReconWorker {
             .prefix("printable-object-")
             .tempdir()?;
         let mesh = staging.path().join("object.stl");
+        let image_sha256 = file_digest(snapshot.path())?;
+        let analysis = match request.fov_degrees {
+            Some(_) => None,
+            None => Some(self.cached_focal_length(&image_sha256)?),
+        };
         let mut job = json!({
             "image": snapshot.path(),
             "model": self.config.object_model,
@@ -1042,6 +1065,9 @@ impl ReconWorker {
                 job[key] = value;
             }
         }
+        if let Some(Some((_, focal_px))) = &analysis {
+            job["focal_length_px"] = json!(focal_px);
+        }
         if let Some(control) = control {
             control.enter(Phase::Generating)?;
         }
@@ -1055,6 +1081,17 @@ impl ReconWorker {
                 control,
             )
             .await?;
+        match analysis {
+            Some(Some((key, focal_px))) => {
+                result["photo_analysis"] = json!({"cache_key": key, "focal_length_px": focal_px});
+            }
+            Some(None) => {
+                result["photo_analysis"] = json!({"note": "no cached photo analyze result for this photograph, so its field of view came from its metadata or the default"});
+            }
+            None => {}
+        }
+        self.prepare_object(&request, &mesh, &mut result, control)
+            .await?;
         if let Some(control) = control {
             control.enter(Phase::Publishing)?;
         }
@@ -1065,8 +1102,118 @@ impl ReconWorker {
             MAX_OBJECT_MESH_BYTES,
         )?;
         result["artifact"] = json!(artifact);
-        result["image_sha256"] = json!(file_digest(snapshot.path())?);
+        result["image_sha256"] = json!(image_sha256);
         Ok(result)
+    }
+
+    /// Unless the request keeps the raw surface, rebuild the generated
+    /// surface at `mesh` in place as a printable solid with the isolated
+    /// geometry worker, and refuse a result that fails the strict print check.
+    /// Thin walls are measured against a 0.4 mm nozzle.
+    async fn prepare_object(
+        &self,
+        request: &ObjectRequest,
+        mesh: &Path,
+        result: &mut Value,
+        control: Option<&JobControl>,
+    ) -> Result<(), ToolError> {
+        if request.keeps_raw_surface() {
+            result["raw_surface"] = json!(true);
+            return Ok(());
+        }
+        if let Some(control) = control {
+            control.enter(Phase::Delivering)?;
+        }
+        let worker = self.config.geometry_worker.clone();
+        let memory = self.config.geometry_worker_memory_bytes;
+        let source = mesh.to_path_buf();
+        let cancel = control.map(|control| control.cancel.clone());
+        let time_limit = self.config.object_timeout;
+        let (report, validation) = tokio::task::spawn_blocking(move || {
+            let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
+                cancel.as_ref().is_some_and(|token| token.is_cancelled())
+            });
+            limit.apply(|| -> Result<_, ToolError> {
+                let output = source.with_file_name("prepared.stl");
+                let options = printable_geom::PrintPrepOptions {
+                    edge_length_mm: None,
+                    keep_floating_parts: false,
+                    plinth: None,
+                    hollow: None,
+                    checks: Some(printable_geom::PrintChecks {
+                        overhang_degrees: OBJECT_OVERHANG_DEGREES,
+                        min_feature_mm: Some(OBJECT_MINIMUM_WALL_MM),
+                    }),
+                };
+                let report = crate::tools::print_prep::run_worker(
+                    &worker, memory, &source, options, &output,
+                )?;
+                let bytes = std::fs::read(&output)?;
+                let validation = crate::tools::print_prep::strict_check(
+                    &bytes,
+                    printable_geom::ValidationOptions::default(),
+                    "object",
+                )?;
+                std::fs::rename(&output, &source)?;
+                Ok((report, validation))
+            })
+        })
+        .await
+        .map_err(|_| reconstruction_error("failed", "the solid rebuild stopped unexpectedly"))??;
+        result["preparation"] = report;
+        result["validation"] = json!({
+            "solid_geometry": validation.solid_geometry,
+            "self_intersections": validation.topology.self_intersections,
+            "assessment": validation.assessment,
+        });
+        Ok(())
+    }
+
+    /// The focal length, in the photograph's pixels, of a cached analysis of
+    /// the photograph with this digest, and the analysis's cache key. A focal
+    /// length the caller gave the analysis is preferred to an estimate.
+    fn cached_focal_length(&self, image_sha256: &str) -> Result<Option<(String, f64)>, ToolError> {
+        let manifests = match self
+            .workspace
+            .list_artifacts(analysis::CACHE_ROOT, usize::MAX)
+        {
+            Ok(found) => found,
+            Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut best: Option<(bool, String, f64)> = None;
+        for meta in manifests {
+            if !meta.path.ends_with("/manifest.json") {
+                continue;
+            }
+            let Ok((_, bytes)) = self.workspace.read_generated_bytes(&meta.path) else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            let focal = &manifest["focal_length"];
+            let (Some(key), Some(px)) = (
+                manifest["cache"]["key"].as_str(),
+                focal["photograph_px"].as_f64(),
+            ) else {
+                continue;
+            };
+            if manifest["image_sha256"] != image_sha256
+                || !(px.is_finite() && px > 0.0)
+                || meta.path != format!("{}/{key}/manifest.json", analysis::CACHE_ROOT)
+            {
+                continue;
+            }
+            let given = focal["source"] == "given";
+            if best
+                .as_ref()
+                .is_none_or(|(best_given, ..)| given && !best_given)
+            {
+                best = Some((given, key.to_owned(), px));
+            }
+        }
+        Ok(best.map(|(_, key, px)| (key, px)))
     }
 
     /// Run one job in a fresh Python process with a deadline and return the
@@ -1360,7 +1507,7 @@ if "blank" in request["image"]:
 open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
 result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
     "device": request["device"], "model": request["model"],
-    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles") if key in request}}
+    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles", "focal_length_px") if key in request}}
 print(json.dumps({"result": result}))
 "#;
 
@@ -1409,6 +1556,8 @@ print(json.dumps({"result": result}))
                 geometry: None,
                 cpu_threads: 4,
                 photo_queue_depth: 8,
+                geometry_worker: runtime.join("absent-geometry-worker"),
+                geometry_worker_memory_bytes: 1 << 30,
             },
         );
         (root, worker)
@@ -1571,6 +1720,8 @@ print(json.dumps({"result": result}))
             size_mm: None,
             target_triangles: None,
             simplify: None,
+            // The stand-in runtime writes no surface to rebuild.
+            raw_surface: Some(true),
             overwrite: false,
         }
     }
@@ -1614,6 +1765,46 @@ print(json.dumps({"result": result}))
             result["options"],
             json!({"steps": 8, "fov_degrees": 35.0, "size_mm": 60.0, "target_triangles": 200_000})
         );
+    }
+
+    #[tokio::test]
+    async fn a_cached_analysis_supplies_the_focal_length() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let digest = file_digest(&root.path().join("workspace/side.png")).unwrap();
+        for (key, image, source, px) in [
+            ("aaa", digest.as_str(), "estimated", 900.0),
+            ("bbb", digest.as_str(), "given", 1200.0),
+            ("ccc", "another photograph", "given", 600.0),
+        ] {
+            let manifest = json!({"image_sha256": image, "cache": {"key": key},
+                "focal_length": {"source": source, "photograph_px": px}});
+            worker
+                .workspace
+                .write_reserved_artifact(
+                    &format!(".printable/photo-analysis/{key}/manifest.json"),
+                    &serde_json::to_vec(&manifest).unwrap(),
+                    true,
+                )
+                .unwrap();
+        }
+        let result = worker
+            .generate_object(object_request("side.png"))
+            .await
+            .unwrap();
+        // A focal length given to the analysis is preferred to an estimate.
+        assert_eq!(result["options"]["focal_length_px"], 1200.0);
+        assert_eq!(
+            result["photo_analysis"],
+            json!({"cache_key": "bbb", "focal_length_px": 1200.0})
+        );
+        let given = ObjectRequest {
+            fov_degrees: Some(30.0),
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let result = worker.generate_object(given).await.unwrap();
+        assert!(result["options"].get("focal_length_px").is_none());
+        assert!(result.get("photo_analysis").is_none());
     }
 
     #[tokio::test]

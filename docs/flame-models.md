@@ -344,7 +344,9 @@ the head with `pose.neck`.
 The geometry work runs in the isolated geometry worker under
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB`. The server validates the result,
 including a check for self-intersections. A bust that fails validation is
-reported as an error and not written.
+reported as a `print_check_failed` error and not written. The plinth, hollowing
+and this check are shared with the general
+[mesh preparation](mesh-assessment.md#prepare-a-mesh-for-printing).
 
 ```json
 {"action": "prepare_print", "params": {

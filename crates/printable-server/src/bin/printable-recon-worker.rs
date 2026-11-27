@@ -122,6 +122,14 @@ async fn main() -> anyhow::Result<()> {
                 .ok()
                 .filter(|depth| *depth > 0)
                 .context("PRINTABLE_RECON_PHOTO_QUEUE_DEPTH must be positive")?,
+            geometry_worker: path(
+                "PRINTABLE_GEOMETRY_WORKER_BIN",
+                "/usr/local/bin/printable-geometry-worker",
+            ),
+            geometry_worker_memory_bytes: printable_server::config::geometry_worker_memory_bytes(
+                &|name| std::env::var(name).ok(),
+            )
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
         },
     ));
     if worker.initialize_photo_jobs().is_err() {

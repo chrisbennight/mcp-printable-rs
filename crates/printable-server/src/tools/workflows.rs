@@ -245,6 +245,7 @@ workflow!(SceneRequest {
     Restore(SceneRestoreParams) => "printable_scene_restore",
     Import(StlImportParams) => "printable_stl_import",
     Export(StlExportParams) => "printable_stl_export",
+    PreparePrint(print_prep::MeshPreparePrintParams) => "printable_mesh_prepare_print",
 });
 
 workflow!(ScadRequest {
@@ -714,7 +715,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "scene",
-        description: "Manage the live Blender scene: open a project, attach CAD GLB assemblies, clear, checkpoint, restore, and import or export STL. Switching projects needs the current scene state and an explicit backup or discard. Restore disables embedded scripts.",
+        description: "Manage the live Blender scene: open a project, attach CAD GLB assemblies, clear, checkpoint, restore, and import or export STL. Switching projects needs the current scene state and an explicit backup or discard. Restore disables embedded scripts. prepare_print rebuilds a workspace STL as a checked printable solid without Blender.",
         schema: workflow_schema_of::<SceneRequest>,
         annotations: write_annotations,
     },

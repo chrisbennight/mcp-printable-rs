@@ -31,7 +31,9 @@ A request names a workspace photograph and the STL to write:
 The STL is binary, in millimetres, with Z up and the subject facing -Y, as the
 camera saw it. It is centred on the origin and stands on Z = 0. Its longest
 side is `size_mm` long, 5 to 2000 mm (default 100). Existing files are kept
-unless `overwrite` is true.
+unless `overwrite` is true. By default the generated surface is rebuilt as one
+checked, printable solid before it is written; see
+[from the mesh to a print](#from-the-mesh-to-a-print).
 
 The other choices are:
 
@@ -54,6 +56,10 @@ The other choices are:
   [Mesh size](#mesh-size).
 - `simplify`: TRELLIS.2 only, true by default. False writes every generated
   triangle. Omit `target_triangles` when false. Full-detail files can exceed 1 GB.
+- `raw_surface`: true writes the generator's surface without the solid
+  rebuild. The default, false, is recommended for printing; with
+  `simplify: false` the default is true, since that output exists to keep
+  every generated triangle.
 - `background`: true runs Pixal3D as a retained job. By default Pixal3D returns
   its result in the same request. TRELLIS.2 always uses a retained job;
   `background: false` is rejected for that model.
@@ -64,7 +70,11 @@ resolution reached, the steps used, the voxel counts of the structure and last
 shape stages, the seed, the field of view and where it came from, whether the
 background was removed, the device, the time taken, each stage's time and,
 on a GPU, its peak memory, the photograph's SHA-256 and the written
-artifact.
+artifact. A rebuilt object adds `preparation` and `validation`, described in
+[from the mesh to a print](#from-the-mesh-to-a-print); a raw one reports
+`raw_surface: true`. A Pixal3D request without `fov_degrees` adds
+`photo_analysis`, which names the cached analysis whose focal length set the
+view or says that none was found.
 
 ## Retained generation jobs
 
@@ -262,10 +272,15 @@ field of view decides how much perspective the shape inherits from the
 photograph. The worker chooses it in this order:
 
 1. `fov_degrees` in the request.
-2. The photograph's 35 mm equivalent focal length, from its Exif metadata,
-   scaled to the part of the picture that frames the subject. Phone and camera
-   photographs usually carry it; screenshots and edited images often do not.
-3. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
+2. The focal length from a cached [`analyze`](photo-geometry.md#analyse-a-photograph)
+   result for the same photograph, matched by its SHA-256, scaled to the part
+   of the picture that frames the subject. A focal length given to `analyze`
+   is preferred to an estimated one. `fov_source` is `analysis`. No new
+   analysis is started: run `analyze` first to use one.
+3. The photograph's 35 mm equivalent focal length, from its Exif metadata,
+   scaled the same way. Phone and camera photographs usually carry it;
+   screenshots and edited images often do not.
+4. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
    an assumption, and the result says so in `fov_source`.
 
 A shape that looks stretched towards or away from the camera usually means
@@ -398,33 +413,36 @@ under `missing.object`.
 
 ## From the mesh to a print
 
-The STL is the generator's surface, optionally simplified and never checked or repaired.
-Like Pixal3D's own raw surface, it may have holes, small separate pieces,
-edges shared by more than two triangles, triangles facing inconsistently
-and self-intersections. Repair it in Blender before slicing:
+The generator's surface, like Pixal3D's own, may have holes, small separate
+pieces, edges shared by more than two triangles, triangles facing
+inconsistently and self-intersections. Unless `raw_surface` is true, the worker
+therefore rebuilds it before writing it, with the same preparation as the
+`scene` tool's [`prepare_print`](mesh-assessment.md#prepare-a-mesh-for-printing):
 
-1. Import it into the scene with the `scene` tool's `import` action.
-2. Remesh it into a watertight solid with `blender_execute`, choosing a
-   voxel size near your printer's detail, for example 0.2 mm for FDM. Use the
-   object name the import reports:
+- Openings are closed, inconsistent facing is fixed and the surface is rebuilt
+  as one exact solid with facets 0.4% of `size_mm` long (0.4 mm at the default
+  100 mm), at least 0.1 mm. Finer detail is smoothed away.
+- Pieces that do not rest on the build plate are removed. The physical size is
+  still set by `size_mm`, though the rebuild and removed pieces can change the
+  extent slightly; `preparation.size_mm` gives the result's size.
+- Overhangs steeper than 45 degrees and walls thinner than 0.4 mm, a common
+  FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
+  with the shells, volume and what was changed.
+- The result must pass the strict check, a valid solid known to be free of
+  self-intersections, reported in `validation`. A result that fails is not
+  written: the request or job fails with `print_check_failed`. Generate again
+  with `raw_surface: true` to keep the raw surface instead.
 
-   ```python
-   import bpy
-   shape = bpy.data.objects["figure"]
-   remesh = shape.modifiers.new("Remesh", "REMESH")
-   remesh.mode = "VOXEL"
-   remesh.voxel_size = 0.2
-   bpy.context.view_layer.objects.active = shape
-   bpy.ops.object.modifier_apply(modifier=remesh.name)
-   ```
+The rebuild runs in the isolated geometry worker inside the photograph worker,
+on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
+A one-million-triangle surface took about 2 seconds and 400 MiB at the default
+facet size in the [measurements](../evidence/print-prep-rebuild.md). Retained
+jobs report the rebuild as their `delivering` phase.
 
-   Voxel remeshing closes small holes, joins nearby pieces and removes
-   self-intersections. A larger voxel size gives a lighter mesh and softens
-   detail.
-3. Export it with the `scene` tool's `export` action.
-4. Check it with `validate_mesh`, and look at the overhang report before
-   choosing supports.
-5. Slice it with `slice`.
+Then check the object with `validate_mesh` and the printer's own settings, look
+at the overhang report before choosing supports, and slice it with `slice`. For
+another facet size, a plinth or hollowing, generate with `raw_surface: true`
+and run `scene` `prepare_print` on the result.
 
 ## Limits
 
