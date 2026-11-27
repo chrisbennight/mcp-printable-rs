@@ -157,6 +157,7 @@ pub struct PrintPrepReport {
     /// Openings whose rim crosses itself or meets another, left for the
     /// rebuild to resolve.
     pub openings_left: usize,
+    /// Facet size of the solid as written, after any rescaling.
     pub edge_length_mm: f64,
     pub triangles: usize,
     /// Separate solids in the result, each printable on its own.
@@ -237,16 +238,21 @@ pub fn prepare_print(
         // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
         (None, Some(target)) => {
             (4.0 * if request.parts == KeptParts::Largest {
-                largest_piece_area(&vertices, &triangles)
+                largest_piece(&vertices, &triangles).0
             } else {
                 surface_area(&vertices, &triangles)
             } / (3f64.sqrt() * target.max(1) as f64))
                 .sqrt()
                 .max(MIN_DEFAULT_EDGE_MM)
         }
-        (None, None) => {
-            (DEFAULT_EDGE_SHARE * print_check::extent(&vertices)).max(MIN_DEFAULT_EDGE_MM)
-        }
+        // Only the largest part is kept, so its size sets the default.
+        (None, None) => (DEFAULT_EDGE_SHARE
+            * if request.parts == KeptParts::Largest {
+                largest_piece(&vertices, &triangles).1
+            } else {
+                print_check::extent(&vertices)
+            })
+        .max(MIN_DEFAULT_EDGE_MM),
     };
     if !(edge.is_finite() && edge > 0.0) {
         return Err(GeometryError::InvalidOptions(
@@ -319,18 +325,19 @@ pub fn prepare_print(
         .bounding_box()
         .ok_or_else(|| GeometryError::Kernel("the prepared solid is empty".into()))?;
     let (low, high) = (bounds.min(), bounds.max());
-    let solid = match request.longest_side_mm {
+    let (solid, scale) = match request.longest_side_mm {
         Some(longest) => {
             let scale = longest / bounds.dimensions().into_iter().fold(0.0, f64::max);
-            solid
+            let solid = solid
                 .translate(
                     -(low[0] + high[0]) / 2.0,
                     -(low[1] + high[1]) / 2.0,
                     -low[2],
                 )
-                .scale(scale, scale, scale)
+                .scale(scale, scale, scale);
+            (solid, scale)
         }
-        None => solid.translate(0.0, 0.0, -low[2]),
+        None => (solid.translate(0.0, 0.0, -low[2]), 1.0),
     };
     let (solid, plinth) = match request.plinth {
         Some(plinth) => {
@@ -384,7 +391,8 @@ pub fn prepare_print(
         cavities,
         openings_closed,
         openings_left,
-        edge_length_mm: edge,
+        // The facets' size on the solid as written, after any rescaling.
+        edge_length_mm: edge * scale,
         triangles: mesh.triangles.len(),
         shells,
         volume_mm3,
@@ -607,27 +615,47 @@ fn is_zero(count: &usize) -> bool {
     *count == 0
 }
 
-/// The pieces enclosing negative volume, which face inwards, turned to face
-/// outwards when `turn` is set. Returns how many there are.
+/// The closed pieces enclosing negative volume, which face inwards, turned
+/// to face outwards when `turn` is set. A piece is closed when each of its
+/// edges is used by exactly two of its triangles; an open piece, such as a
+/// face two bodies share, encloses no definite volume and keeps its facing.
+/// Returns how many there are.
 fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) -> usize {
     let pieces = pieces(triangles);
+    let mut closed = vec![true; pieces.count];
+    for group in undirected_edges(triangles).chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        // Each piece using this edge must use it exactly twice.
+        for &(_, _, face) in group {
+            let piece = pieces.of_triangle[face as usize];
+            let uses = group
+                .iter()
+                .filter(|(_, _, other)| pieces.of_triangle[*other as usize] == piece)
+                .count();
+            if uses != 2 {
+                closed[piece as usize] = false;
+            }
+        }
+    }
     let mut volume = vec![0.0; pieces.count];
     for (face, triangle) in triangles.iter().enumerate() {
         volume[pieces.of_triangle[face] as usize] +=
             signed_volume(vertices, std::slice::from_ref(triangle));
     }
+    let inward: Vec<bool> = (0..pieces.count)
+        .map(|piece| closed[piece] && volume[piece] < 0.0)
+        .collect();
     if turn {
         for (face, triangle) in triangles.iter_mut().enumerate() {
-            if volume[pieces.of_triangle[face] as usize] < 0.0 {
+            if inward[pieces.of_triangle[face] as usize] {
                 triangle.swap(1, 2);
             }
         }
     }
-    volume.iter().filter(|volume| **volume < 0.0).count()
+    inward.iter().filter(|inward| **inward).count()
 }
 
-/// The area of the piece enclosing the most volume.
-fn largest_piece_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
+/// The area and longest side of the piece enclosing the most volume.
+fn largest_piece(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) {
     let pieces = pieces(triangles);
     let mut volume = vec![0.0; pieces.count];
     let mut area = vec![0.0; pieces.count];
@@ -637,9 +665,18 @@ fn largest_piece_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
         volume[piece] += signed_volume(vertices, one);
         area[piece] += surface_area(vertices, one);
     }
-    (0..pieces.count)
-        .max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
-        .map_or(0.0, |piece| area[piece])
+    let Some(largest) =
+        (0..pieces.count).max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
+    else {
+        return (0.0, 0.0);
+    };
+    let corners: Vec<[f64; 3]> = triangles
+        .iter()
+        .enumerate()
+        .filter(|(face, _)| pieces.of_triangle[*face] as usize == largest)
+        .flat_map(|(_, triangle)| triangle.map(|index| vertices[index as usize]))
+        .collect();
+    (area[largest], print_check::extent(&corners))
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -952,6 +989,31 @@ mod tests {
     }
 
     #[test]
+    fn boxes_stacked_on_a_shared_welded_face_become_one_closed_solid() {
+        // Two outward boxes, the upper standing on the lower's top face,
+        // with that face's triangles written once for each box. The face's
+        // edges are used by four triangles, so it is no closed piece and
+        // keeps its facing.
+        let (lower, lower_triangles) = cuboid([0.0, 0.0, 2.0], [10.0; 3]);
+        let (upper, upper_triangles) = cuboid([0.0, 0.0, 12.0], [10.0; 3]);
+        let mut vertices = lower;
+        let mut triangles = lower_triangles;
+        let offset = vertices.len() as u32;
+        vertices.extend(upper);
+        // The upper box's bottom corners 0 to 3 are the lower box's 4 to 7.
+        triangles.extend(upper_triangles.iter().map(|triangle| {
+            triangle.map(|index| if index < 4 { index + 4 } else { index + offset })
+        }));
+        let (prepared, report) = prepare((vertices, triangles), &request(0.25)).unwrap();
+        assert_eq!(report.cavities_filled, 0);
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 2000.0).abs() < 40.0, "{report:?}");
+        assert!((report.size_mm[2] - 20.0).abs() < 0.5, "{report:?}");
+        let analysed = crate::analyze_mesh(&prepared, crate::ValidationOptions::default()).unwrap();
+        assert!(analysed.solid_geometry, "{:?}", analysed.issues);
+    }
+
+    #[test]
     fn a_long_thin_fragment_does_not_set_the_facet_size() {
         // A thin diagonal rod has the larger bounds but little volume; the
         // cube, which is kept, sets the facet size from its own area.
@@ -969,6 +1031,24 @@ mod tests {
         let (_, report) = prepare(mesh, &target).unwrap();
         assert_eq!(report.shells, 1);
         assert!((25_000..=100_000).contains(&report.triangles), "{report:?}");
+    }
+
+    #[test]
+    fn the_default_facet_size_follows_the_kept_part_and_its_final_size() {
+        // Distant debris makes the source 200 mm long; the kept block is
+        // 20 mm, rescaled to 40 mm.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [20.0; 3]),
+            cuboid([198.0, 0.0, 0.0], [2.0; 3]),
+        ]);
+        let mut sized = request(1.0);
+        sized.edge_length_mm = None;
+        sized.parts = KeptParts::Largest;
+        sized.longest_side_mm = Some(40.0);
+        let (_, report) = prepare(mesh, &sized).unwrap();
+        // 0.4% of the block's 20 mm is 0.1 mm, doubled by the rescale.
+        assert!((report.edge_length_mm - 0.2).abs() < 1e-9, "{report:?}");
+        assert!((report.size_mm[0] - 40.0).abs() < 1e-6, "{report:?}");
     }
 
     #[test]

@@ -1115,13 +1115,25 @@ impl ReconWorker {
                 control,
             )
             .await?;
+        let source = match result["fov_source"].as_str() {
+            Some("photograph") => "the photograph's own focal length",
+            _ => "the default field of view",
+        };
         match analysis {
-            Some(Some(focal)) => {
+            // The runtime reports whether the cached focal length set the view.
+            Some(Some(focal)) if result["fov_source"] == "analysis" => {
                 result["photo_analysis"] = json!({"cache_key": focal.key,
                     "focal_length_px": focal.px, "given": focal.given});
             }
+            Some(Some(_)) => {
+                result["photo_analysis"] = json!({"note": format!(
+                    "a cached photo analyze estimate was not used; the view came from {source}"
+                )});
+            }
             Some(None) => {
-                result["photo_analysis"] = json!({"note": "no cached photo analyze result for this photograph, so its field of view came from its metadata or the default"});
+                result["photo_analysis"] = json!({"note": format!(
+                    "no cached photo analyze result for this photograph; the view came from {source}"
+                )});
             }
             None => {}
         }
@@ -1636,6 +1648,7 @@ if "blank" in request["image"]:
 open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
 result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
     "device": request["device"], "model": request["model"],
+    "fov_source": "analysis" if request.get("focal_length_given") else "photograph",
     "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles", "focal_length_px", "focal_length_given") if key in request}}
 print(json.dumps({"result": result}))
 "#;
@@ -1926,6 +1939,23 @@ print(json.dumps({"result": result}))
         assert_eq!(
             result["photo_analysis"],
             json!({"cache_key": "bbb", "focal_length_px": 1200.0, "given": true})
+        );
+        // With only an estimate cached, a photograph with its own focal
+        // length keeps it, and the result does not name the analysis.
+        std::fs::remove_dir_all(root.path().join("workspace/.printable/photo-analysis/bbb"))
+            .unwrap();
+        let estimated = ObjectRequest {
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let result = worker.generate_object(estimated).await.unwrap();
+        assert_eq!(result["options"]["focal_length_given"], false);
+        assert!(result["photo_analysis"].get("cache_key").is_none());
+        assert!(
+            result["photo_analysis"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("photograph's own focal length")
         );
         let given = ObjectRequest {
             fov_degrees: Some(30.0),

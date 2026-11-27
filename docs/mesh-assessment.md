@@ -61,8 +61,10 @@ The source is read in millimetres with Z up. The preparation:
 
 1. Turns triangles to face the same way as most of their piece, a piece being
    the triangles joined through edges that exactly two of them use, and closes
-   each opening whose rim is a simple loop. By default every closed piece is
-   then turned to face outwards, and the rebuild counts everything inside any
+   each opening whose rim is a simple loop. By default every closed piece,
+   one whose edges are each used by exactly two of its triangles, is then
+   turned to face outwards; open pieces, such as a face two bodies share,
+   keep their facing. The rebuild then counts everything inside any
    closed surface as solid, whichever way it faces, so no body is lost even
    where its facing is misjudged; an inward-facing piece meant as a cavity is
    filled, and `cavities_filled` counts them. Set `keep_cavities` to trust the

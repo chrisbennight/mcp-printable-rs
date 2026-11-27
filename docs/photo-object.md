@@ -289,8 +289,9 @@ photograph. The worker chooses it in this order:
 
 Each focal length is scaled to the part of the picture that frames the
 subject. No new analysis is started: run `analyze` first to use one.
-`photo_analysis` in the result names the cached analysis and whether its focal
-length was given, even when the Exif value took precedence.
+`photo_analysis` in the result names the cached analysis, its focal length and
+whether it was given only when that focal length set the view; otherwise it
+says that the photograph's own focal length or the default was used.
 
 A shape that looks stretched towards or away from the camera usually means
 the field of view is wrong. Try again with a narrower view, such as 15 degrees,
@@ -430,8 +431,10 @@ therefore rebuilds it before writing it, with the same preparation as the
 
 - Openings are closed, inconsistent facing is fixed, every closed piece is
   turned to face outwards, and the surface is rebuilt as one exact solid with
-  facets 0.4% of `size_mm` long (0.4 mm at the default 100 mm), at least
-  0.1 mm. With `target_triangles`, the facet length is chosen instead to give
+  facets 0.4% of the longest side of the piece enclosing the most volume, the
+  part that is kept, at least 0.1 mm; after rescaling to `size_mm` that is
+  about 0.4% of `size_mm`. `preparation.edge_length_mm` gives the facet size
+  on the written mesh. With `target_triangles`, the facet length is chosen instead to give
   about that many triangles over the area of the piece enclosing the most
   volume, which is the part kept, at least
   0.1 mm. Finer detail is smoothed away.
