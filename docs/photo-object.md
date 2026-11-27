@@ -243,8 +243,9 @@ provides disk-backed named volumes, download egress, 8 CPUs and a 24 GiB memory
 limit with no additional swap; set `PRINTABLE_RECON_MEMORY` (for example `32g`)
 to change it. The default GPU photograph analysis was measured at about
 10.5 GiB of memory, so the limit leaves room for one analysis or generation at a
-time. Kernels compiled at run time are cached on the `compile-cache` volume
-through `TRITON_CACHE_DIR`, because `/tmp` does not allow executable files.
+time. Kernels the photograph analysis compiles at run time are cached on the
+`compile-cache` volume through `TRITON_CACHE_DIR`, because `/tmp` does not
+allow executable files; TRELLIS.2 keeps its own caches on `trellis-scratch`.
 These are configurable starting allocations; qualify them against actual
 workloads and reserve disk capacity separately.
 It adds no public worker port.
