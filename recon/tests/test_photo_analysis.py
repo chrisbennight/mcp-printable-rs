@@ -101,6 +101,12 @@ class ArithmeticTests(unittest.TestCase):
         bent[0, 0] *= 2
         self.assertGreater(float(photo_analysis.relative_difference(bent, target, mask)[0, 0]), 0.3)
 
+    def test_reversed_depth_is_complete_disagreement(self):
+        target = numpy.linspace(1, 3, 64, dtype=numpy.float32).reshape(8, 8)
+        mask = numpy.ones((8, 8), bool)
+        difference = photo_analysis.relative_difference(-target + 10, target, mask)
+        self.assertEqual(float(difference.min()), 1.0)
+
     def test_a_plane_facing_the_camera_has_normals_towards_it(self):
         mask = numpy.ones((9, 11), bool)
         normals, defined = photo_analysis.normals_from_depth(numpy.full((9, 11), 2.0), 500.0, mask)

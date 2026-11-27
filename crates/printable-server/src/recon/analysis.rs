@@ -51,7 +51,7 @@ fn normalized(request: &AnalyzeRequest, worker_device: &str) -> Result<Value, To
     let mask_model = request.mask_model.unwrap_or(if cpu {
         MaskModel::Moge2VitlNormal
     } else {
-        MaskModel::Moge3Vitl
+        MaskModel::Moge3Vitg
     });
     if cpu
         && (matches!(depth_model, DepthModel::Moge3Vitg | DepthModel::Moge3Vitl)
@@ -226,6 +226,9 @@ impl ReconWorker {
             "analyzer": code(&config.analyze_script)?,
             "photo_analysis": code(&directory.join("printable_recon/photo_analysis.py"))?,
             "geometry_models": code(&directory.join("printable_recon/geometry_models.py"))?,
+            // The photograph decoder and scaler the analyzer imports.
+            "estimate_depth": code(&directory.join("estimate_depth.py"))?,
+            "estimate_geometry": code(&directory.join("estimate_geometry.py"))?,
         });
         Ok(hex(&Sha256::digest(serde_json::to_vec(&identity)?)))
     }
@@ -569,7 +572,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         assert_eq!(
             shallow,
             json!({"subject": "shallow", "quality": "best", "depth_model": "da3-mono-large",
-                "mask_model": "moge3-vitl", "focal_model": "dp2-l", "normals_model": null,
+                "mask_model": "moge3-vitg", "focal_model": "dp2-l", "normals_model": null,
                 "side": 1024, "device": "cuda", "focal_length_px": null})
         );
         let mut deep = request("head.jpg");
@@ -583,7 +586,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
             ),
             (&json!("dp2-h"), &json!("dp2-h"), &json!(2048))
         );
-        assert_eq!(models_of(&on_gpu), ["dp2-h", "moge3-vitl"]);
+        assert_eq!(models_of(&on_gpu), ["dp2-h", "moge3-vitg"]);
         let on_cpu = settings(&deep, "cpu");
         assert_eq!(
             (&on_cpu["mask_model"], &on_cpu["side"], &on_cpu["device"]),
@@ -624,7 +627,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         let mut explicit = request("face.jpg");
         explicit.quality = Some(AnalysisQuality::Best);
         explicit.depth_model = Some(DepthModel::Da3MonoLarge);
-        explicit.mask_model = Some(MaskModel::Moge3Vitl);
+        explicit.mask_model = Some(MaskModel::Moge3Vitg);
         explicit.side = Some(1024);
         explicit.device = Some(AnalysisDevice::Cuda);
         assert_eq!(base, key("a", &explicit));
@@ -632,7 +635,7 @@ print(json.dumps({'result': {'manifest': {'width': 2, 'height': 2, 'settings': r
         let changes: [fn(&mut AnalyzeRequest); 7] = [
             |r| r.quality = Some(AnalysisQuality::Fast),
             |r| r.depth_model = Some(DepthModel::Moge3Vitl),
-            |r| r.mask_model = Some(MaskModel::Moge3Vitg),
+            |r| r.mask_model = Some(MaskModel::Moge3Vitl),
             |r| r.side = Some(2048),
             |r| r.device = Some(AnalysisDevice::Cpu),
             |r| r.normals = true,

@@ -421,7 +421,7 @@ pub struct AnalyzeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "analysis_side_schema")]
     pub side: Option<u32>,
-    /// Default moge3-vitl (2.5 GB); moge3-vitg ranks higher (6.7 GB).
+    /// Default moge3-vitg (best, 6.7 GB); moge3-vitl uses 2.5 GB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "MaskModel")]
     pub mask_model: Option<MaskModel>,

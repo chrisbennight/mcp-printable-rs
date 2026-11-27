@@ -240,6 +240,10 @@ def relative_difference(source: numpy.ndarray, target: numpy.ndarray, mask: nump
     mask = mask & (target > 0) & numpy.isfinite(source) & numpy.isfinite(target)
     scale, shift = fit_scale_shift(source, target, mask)
     difference = numpy.zeros(target.shape, dtype=numpy.float32)
+    if scale <= 0:
+        # Near and far reversed is complete disagreement, not a fit.
+        difference[mask] = 1.0
+        return difference
     difference[mask] = numpy.abs(scale * source[mask] + shift - target[mask]) / target[mask]
     return difference
 
@@ -335,7 +339,9 @@ def combine(plan: Plan, settings: Settings, outcomes: dict, photograph_width: in
             region = mask & numpy.asarray(other_valid, bool)
             difference = relative_difference(numpy.asarray(other, numpy.float32), depth, region)
             scores[label] = summary(difference, region, DEPTH_AGREEMENT, "median_relative_difference")
-            factors.append(numpy.where(region, numpy.clip(1 - difference / DEPTH_TOLERANCE, 0, 1), 1.0))
+            # A subject pixel the other pass lost is unconfirmed, so it scores 0.
+            factors.append(numpy.where(region, numpy.clip(1 - difference / DEPTH_TOLERANCE, 0, 1),
+                                       numpy.where(mask, 0.0, 1.0)))
             checks.append(label)
 
     # A relative depth is aligned to the mask model's depth, when it has one,
@@ -396,7 +402,7 @@ def combine(plan: Plan, settings: Settings, outcomes: dict, photograph_width: in
             "depth": {"file": FILES["depth"], "format": "tiff", "sample": "float32", "bit_depth": 32, "channels": 1,
                       "units": "metres, estimated" if depth_kind == "metric" else "relative, unknown scale",
                       "convention": "distance along the optical axis, larger is farther; pixels outside the "
-                                    "mask hold the largest depth inside it"},
+                                    "mask hold the model's prediction and are not subject surface"},
             "normals": {"file": FILES["normals"], "format": "png", "sample": "uint16", "bit_depth": 16,
                         "channels": 3, "frame": "x right, y up, z towards the camera",
                         "encoding": "c = 2 * p / 65535 - 1", "source": normals_source},

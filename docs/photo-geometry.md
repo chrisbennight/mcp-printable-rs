@@ -135,7 +135,7 @@ with about 3 GB free.
 | `subject` | `shallow` (reliefs, coins, lettering, artwork) or `deep` (heads, figures, objects) | required |
 | `depth_model` | `da3-mono-large`, `dp2-h`, `dp2-l`, `moge3-vitg`, `moge3-vitl`, `moge2-vitl-normal` | `da3-mono-large` for shallow subjects, `dp2-h` for deep ones |
 | `side` | `1024` or `2048`: the longest side the depth model processes the photograph at | `2048` for deep subjects on a GPU, otherwise `1024` |
-| `mask_model` | `moge3-vitg`, `moge3-vitl`, `moge2-vitl-normal` | `moge3-vitl` on a GPU, `moge2-vitl-normal` on the CPU |
+| `mask_model` | `moge3-vitg`, `moge3-vitl`, `moge2-vitl-normal` | `moge3-vitg` on a GPU (the benchmark's best; about 6.7 GB), `moge2-vitl-normal` on the CPU |
 | `focal_model` | `dp2-h` or `dp2-l` | the depth model when it is a Depth Pro 2 model, which then serves both from one run; otherwise `dp2-l` |
 | `normals` | `false` or `true` | `false`: normals are derived from depth |
 | `normals_model` | `marigold-v2`, with `normals: true` | `marigold-v2` |
