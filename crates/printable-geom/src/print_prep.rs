@@ -170,6 +170,10 @@ pub struct PrintPrepReport {
     /// With only the largest part kept, the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smaller_parts: Option<Parts>,
+    /// Separate parts lying wholly within the slice the plinth's flat base
+    /// cuts off, which are removed with it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub removed_by_base_cut: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plinth: Option<PlinthReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -339,13 +343,18 @@ pub fn prepare_print(
         }
         None => (solid.translate(0.0, 0.0, -low[2]), 1.0),
     };
+    let mut removed_by_base_cut = 0;
     let (solid, plinth) = match request.plinth {
         Some(plinth) => {
             // A flat base one grid step above the lowest point, so the solid
             // meets the plinth over a whole section rather than at points.
             // Cutting at exactly zero puts the base exactly on the plinth.
+            // The grid step on the solid as rescaled. A part lying wholly
+            // below the cut is lost with it.
+            let cut = spacing * scale;
+            removed_by_base_cut = parts_below(&solid, cut);
             let base = solid
-                .translate(0.0, 0.0, -spacing)
+                .translate(0.0, 0.0, -cut)
                 .trim_by_plane([0.0, 0.0, 1.0], 0.0);
             drop(solid);
             let (solid, report) = add_plinth(base, plinth)?;
@@ -399,12 +408,21 @@ pub fn prepare_print(
         size_mm,
         floating_parts,
         smaller_parts,
+        removed_by_base_cut,
         plinth,
         hollow,
         overhang,
         thin,
     };
     Ok((mesh, report))
+}
+
+/// How many separate parts of `solid` lie wholly at or below `height`.
+fn parts_below(solid: &Manifold, height: f64) -> usize {
+    solids(solid)
+        .iter()
+        .filter(|part| part.bounding_box().is_some_and(|b| b.max()[2] <= height))
+        .count()
 }
 
 /// The separate solids of `solid`, without the closed cavities inside them,
@@ -1186,6 +1204,18 @@ mod tests {
         assert!((report.size_mm[2] - (30.0 - 0.5 / remesh::EDGE_PER_SPACING + 4.0)).abs() < 0.6);
         let analysed = crate::analyze_mesh(&prepared, crate::ValidationOptions::default()).unwrap();
         assert!(analysed.solid_geometry, "{:?}", analysed.issues);
+    }
+
+    #[test]
+    fn parts_within_the_base_cut_are_counted() {
+        // A 0.5 mm tab beside a block, both on the plate: a cut 1 mm up
+        // removes the tab whole.
+        let solid = Manifold::compose(&[
+            Manifold::cube(20.0, 20.0, 20.0, false),
+            Manifold::cube(4.0, 4.0, 0.5, false).translate(0.0, 25.0, 0.0),
+        ]);
+        assert_eq!(parts_below(&solid, 1.0), 1);
+        assert_eq!(parts_below(&solid, 0.25), 0);
     }
 
     #[test]

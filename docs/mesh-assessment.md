@@ -92,7 +92,8 @@ The source is read in millimetres with Z up. The preparation:
    than one grid step counts as resting on it.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
    cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
-   `plinth_chamfer_mm`), and optionally hollows the solid with drain holes
+   `plinth_chamfer_mm`); a separate part lying wholly within the slice cut
+   off is removed with it and counted in `removed_by_base_cut`, and optionally hollows the solid with drain holes
    through the base (`hollow_wall_mm`, `drain_hole_diameter_mm`). Hollowing
    suits resin; FDM infill already saves material. It needs one solid, so join
    separate parts with a plinth first.

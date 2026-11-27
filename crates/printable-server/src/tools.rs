@@ -5309,7 +5309,10 @@ fn run_geometry_worker_process(
 ) -> Result<Value, ToolError> {
     let mut stdout = tempfile::tempfile()?;
     let mut command = Command::new(worker_bin);
+    // The worker parses untrusted geometry and needs no environment, so it
+    // inherits none of the parent's settings or credentials.
     command
+        .env_clear()
         .args(args)
         .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(stdout.try_clone()?)
@@ -6573,6 +6576,29 @@ mod schema_portability_tests {
 mod visual_contract_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[cfg(unix)]
+    #[test]
+    fn the_geometry_worker_starts_with_an_empty_environment() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let worker = directory.path().join("fake-worker");
+        // Reports a variable Cargo sets for every test process, if it sees it.
+        std::fs::write(
+            &worker,
+            "#!/bin/sh\nprintf '{\"report\":{\"seen\":\"%s\"}}' \"${CARGO_MANIFEST_DIR-unset}\"\n",
+        )
+        .expect("write fake worker");
+        let mut permissions = std::fs::metadata(&worker)
+            .expect("fake worker metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&worker, permissions).expect("make fake worker executable");
+        assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
+        let report = run_geometry_worker_process(&worker, 1 << 30, &[], None).expect("report");
+        assert_eq!(report["seen"], "unset", "{report}");
+    }
 
     #[cfg(unix)]
     #[test]

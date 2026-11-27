@@ -464,7 +464,9 @@ therefore rebuilds it before writing it, with the same preparation as the
   publishing, so an interrupted publication still names it.
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
-on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
+on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024). The
+geometry worker starts with an empty environment, so no setting or credential
+of the photograph worker, such as a model-download token, reaches it.
 A one-million-triangle surface took about 3 seconds and 490 MiB, including the check, at the default
 facet size in the [measurements](../evidence/print-prep-rebuild.md). The
 strict check runs there too. The rebuild has whatever remains of the
