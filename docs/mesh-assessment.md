@@ -59,9 +59,12 @@ not use Blender:
 
 The source is read in millimetres with Z up. The preparation:
 
-1. Turns triangles to face the same way as most of their piece, turns around a
-   closed piece that faces inwards unless it lies inside another piece, where
-   it is a cavity, and closes each opening whose rim is a simple loop.
+1. Turns triangles to face the same way as most of their piece and closes
+   each opening whose rim is a simple loop. A closed piece that faces inwards
+   with nothing around it is turned around together with the pieces nested
+   inside it, so the cavity of an inverted hollow part stays empty. A piece
+   inside another keeps its facing relative to the piece around it, so a
+   cavity stays a cavity.
 2. Rebuilds the union of everything as one exact solid with facets about
    `edge_length_mm` long. Overlapping and touching parts merge and
    self-intersections disappear. Detail finer than about one and a half edges
@@ -69,8 +72,10 @@ The source is read in millimetres with Z up. The preparation:
    0.1 mm, keeps the result at a few hundred thousand triangles at any size
    and is about a 0.4 mm nozzle's width on a 100 mm part; choose a smaller
    edge for fine detail.
-3. Removes parts that do not rest on the build plate, since they would print
-   in mid-air. They are usually debris. Set `keep_floating_parts` to keep them.
+3. Removes parts that do not rest on the build plate, which lies under the
+   largest part, since they would print in mid-air; a small fragment below the
+   largest part counts as such a part. They are usually debris. Set
+   `keep_floating_parts` to keep them.
    Separate parts that do rest on the plate are kept and counted.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
    cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
@@ -87,7 +92,9 @@ shells, open edges and, when it was closed, its volume; what was turned and
 closed; the result's triangles, shells, volume and size; the floating parts
 found and whether they were removed; any plinth and cavity; and the overhang
 and thin-wall areas with their largest regions. `validation` is the
-`validate_mesh` report of the written file.
+`validate_mesh` report of the written file. The rebuild and this check both
+run in the geometry worker, so the full mesh is decoded only under its memory
+limit.
 
 A prepared mesh is written only when it passes the strict check: a valid solid
 known to be free of self-intersections. Otherwise the request fails with

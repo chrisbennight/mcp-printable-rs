@@ -77,6 +77,18 @@ pub struct WorkerRequest {
     /// A private copy of the source STL.
     pub source: PathBuf,
     pub options: PrintPrepOptions,
+    /// The overhang angle the strict check's validation report uses.
+    pub overhang_angle_degrees: f64,
+    /// What the prepared mesh is called in a refusal.
+    pub subject: String,
+}
+
+/// What the geometry worker returns: the preparation report and the
+/// validation report of the written STL, which passed the strict check.
+#[derive(Deserialize)]
+pub(crate) struct Prepared {
+    pub preparation: Value,
+    pub validation: Value,
 }
 
 /// The plinth a request describes; `default_height_mm` applies when no
@@ -166,15 +178,17 @@ pub(crate) fn strict_check(
     Ok(validation)
 }
 
-/// Prepare `source` in the geometry worker, writing the result to `output`.
-/// Returns the worker's report. Blocking; the caller's work limit stops it.
+/// Prepare `source` in the geometry worker, writing the result to `output`
+/// only when it passes the strict check, which also runs in the worker so
+/// that the full mesh is decoded only within its address-space limit.
+/// Blocking; the caller's work limit stops it.
 pub(crate) fn run_worker(
     worker_bin: &Path,
     memory_bytes: u64,
     source: &Path,
-    options: PrintPrepOptions,
+    (options, overhang_angle_degrees, subject): (PrintPrepOptions, f64, &str),
     output: &Path,
-) -> Result<Value, ToolError> {
+) -> Result<Prepared, ToolError> {
     let staging = tempfile::Builder::new()
         .prefix("printable-print-prep-")
         .tempdir()?;
@@ -184,24 +198,36 @@ pub(crate) fn run_worker(
         serde_json::to_vec(&WorkerRequest {
             source: source.to_path_buf(),
             options,
+            overhang_angle_degrees,
+            subject: subject.to_owned(),
         })?,
     )?;
-    run_geometry_worker_process(
+    Ok(serde_json::from_value(run_geometry_worker_process(
         worker_bin,
         memory_bytes,
         &[FLAG.as_ref(), request_path.as_os_str(), output.as_os_str()],
         None,
-    )
+    )?)?)
 }
 
 /// Run in the disposable geometry worker: read the request and source STL,
-/// prepare it and write the binary STL to `output`.
+/// prepare it, check it strictly and write the binary STL to `output`.
 pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, ToolError> {
     let request: WorkerRequest = serde_json::from_slice(&std::fs::read(request_path)?)?;
     let mesh = printable_geom::decode_stl(&std::fs::read(&request.source)?)?;
     let (prepared, report) = printable_geom::prepare_print(mesh, &request.options)?;
-    std::fs::write(output, printable_geom::bust_stl(&prepared))?;
-    Ok(serde_json::to_value(report)?)
+    let bytes = printable_geom::bust_stl(&prepared);
+    drop(prepared);
+    let validation = strict_check(
+        &bytes,
+        ValidationOptions {
+            overhang_angle_degrees: request.overhang_angle_degrees,
+            ..ValidationOptions::default()
+        },
+        &request.subject,
+    )?;
+    std::fs::write(output, &bytes)?;
+    Ok(json!({"preparation": report, "validation": validation}))
 }
 
 /// Prepare a workspace STL for printing.
@@ -238,13 +264,10 @@ pub(super) async fn prepare_print(
             min_feature_mm: printer.minimum_wall_mm,
         }),
     };
-    let validation_options = ValidationOptions {
-        overhang_angle_degrees: printer.map_or(
-            ValidationOptions::default().overhang_angle_degrees,
-            |printer| printer.maximum_overhang_degrees,
-        ),
-        ..ValidationOptions::default()
-    };
+    let overhang_angle_degrees = printer.map_or(
+        ValidationOptions::default().overhang_angle_degrees,
+        |printer| printer.maximum_overhang_degrees,
+    );
     let worker_bin = geometry_worker_path(settings)?;
     let memory_bytes = settings.geometry_worker_memory_bytes;
     geometry_blocking(move || {
@@ -253,17 +276,22 @@ pub(super) async fn prepare_print(
             .prefix("printable-print-prep-")
             .tempdir()?;
         let output = staging.path().join("prepared.stl");
-        let report = run_worker(&worker_bin, memory_bytes, snapshot.path(), options, &output)?;
+        let prepared = run_worker(
+            &worker_bin,
+            memory_bytes,
+            snapshot.path(),
+            (options, overhang_angle_degrees, "mesh"),
+            &output,
+        )?;
         drop(snapshot);
-        let bytes = std::fs::read(&output)?;
-        let validation = strict_check(&bytes, validation_options, "mesh")?;
         printable_geom::limit::check()?;
-        let artifact = workspace.write_generated_bytes(&params.path, &bytes, params.overwrite)?;
+        let artifact =
+            workspace.commit_generated_artifact(&params.path, &output, params.overwrite)?;
         let mut response = json!({
             "artifact": artifact,
             "units": "millimetres",
-            "preparation": report,
-            "validation": validation,
+            "preparation": prepared.preparation,
+            "validation": prepared.validation,
         });
         if let Some(printer) = printer {
             response["printer"] = serde_json::to_value(printer)?;

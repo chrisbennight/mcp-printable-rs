@@ -26,7 +26,8 @@ parameters directly: `status`, `blender_execute`, `compare_renders`,
 its action contract. The response identifies its output schema scope:
 `action` when the contract describes that action's results alone, which is
 the case for every `printer`, `print` and `catalog` action, CAD `inspect` and
-`export`, and `project` `update`, `cover` and `reindex`; `tool` when it
+`export`, `project` `update`, `cover` and `reindex`, and `scene`
+`prepare_print`; `tool` when it
 describes every result the tool can return. Contract resources
 for printer workflows also describe the rejected-call envelope, including typed
 filament deficits and validation fields. Rejections retain the MCP `isError`

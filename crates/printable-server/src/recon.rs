@@ -1084,6 +1084,8 @@ impl ReconWorker {
         if let Some(control) = control {
             control.enter(Phase::Generating)?;
         }
+        // Generation and the rebuild share the request's deadline.
+        let deadline = std::time::Instant::now() + self.config.object_timeout;
         let mut result = self
             .run_command(
                 self.python_command(&self.config.object_script),
@@ -1104,8 +1106,14 @@ impl ReconWorker {
             }
             None => {}
         }
-        self.prepare_object(&request, &mesh, &mut result, control)
-            .await?;
+        self.prepare_object(
+            &request,
+            &mesh,
+            &mut result,
+            control,
+            (deadline, MAX_OBJECT_MESH_BYTES),
+        )
+        .await?;
         if let Some(control) = control {
             control.enter(Phase::Publishing)?;
         }
@@ -1123,13 +1131,16 @@ impl ReconWorker {
     /// Unless the request keeps the raw surface, rebuild the generated
     /// surface at `mesh` in place as a printable solid with the isolated
     /// geometry worker, and refuse a result that fails the strict print check.
-    /// Thin walls are measured against a 0.4 mm nozzle.
+    /// Thin walls are measured against a 0.4 mm nozzle. The rebuild has
+    /// until `deadline`; `max_bytes` bounds the generated surface published
+    /// when the rebuild fails, as the backend bounds its own publication.
     async fn prepare_object(
         &self,
         request: &ObjectRequest,
         mesh: &Path,
         result: &mut Value,
         control: Option<&JobControl>,
+        (deadline, max_bytes): (std::time::Instant, u64),
     ) -> Result<(), ToolError> {
         if request.keeps_raw_surface() {
             result["raw_surface"] = json!(true);
@@ -1142,7 +1153,7 @@ impl ReconWorker {
         let memory = self.config.geometry_worker_memory_bytes;
         let source = mesh.to_path_buf();
         let cancel = control.map(|control| control.cancel.clone());
-        let time_limit = self.config.object_timeout;
+        let time_limit = deadline.saturating_duration_since(std::time::Instant::now());
         let rebuilt = tokio::task::spawn_blocking(move || {
             let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
                 cancel.as_ref().is_some_and(|token| token.is_cancelled())
@@ -1159,32 +1170,36 @@ impl ReconWorker {
                         min_feature_mm: Some(OBJECT_MINIMUM_WALL_MM),
                     }),
                 };
-                let report = crate::tools::print_prep::run_worker(
-                    &worker, memory, &source, options, &output,
-                )?;
-                let bytes = std::fs::read(&output)?;
-                let validation = crate::tools::print_prep::strict_check(
-                    &bytes,
-                    printable_geom::ValidationOptions::default(),
-                    "object",
+                let prepared = crate::tools::print_prep::run_worker(
+                    &worker,
+                    memory,
+                    &source,
+                    (options, OBJECT_OVERHANG_DEGREES, "object"),
+                    &output,
                 )?;
                 std::fs::rename(&output, &source)?;
-                Ok((report, validation))
+                Ok(prepared)
             })
         })
         .await
         .map_err(|_| reconstruction_error("failed", "the solid rebuild stopped unexpectedly"))
         .and_then(|rebuilt| rebuilt);
-        let (report, validation) = match rebuilt {
-            Ok(rebuilt) => rebuilt,
+        let prepared = match rebuilt {
+            Ok(prepared) => prepared,
             Err(error) if error.code() == "cancelled" => return Err(error),
-            Err(error) => return Err(self.keep_raw_surface(request, mesh, error)),
+            Err(error) => {
+                return Err(self.keep_raw_surface(request, mesh, error, control, max_bytes));
+            }
         };
+        let (report, validation) = (prepared.preparation, prepared.validation);
+        // The published mesh is the rebuilt one.
+        result["triangles"] = report["triangles"].clone();
+        result["size_mm"] = report["size_mm"].clone();
         result["preparation"] = report;
         result["validation"] = json!({
-            "solid_geometry": validation.solid_geometry,
-            "self_intersections": validation.topology.self_intersections,
-            "assessment": validation.assessment,
+            "solid_geometry": validation["solid_geometry"],
+            "self_intersections": validation["topology"]["self_intersections"],
+            "assessment": validation["assessment"],
         });
         Ok(())
     }
@@ -1198,7 +1213,15 @@ impl ReconWorker {
         request: &ObjectRequest,
         mesh: &Path,
         error: ToolError,
+        control: Option<&JobControl>,
+        max_bytes: u64,
     ) -> ToolError {
+        // A cancelled job publishes nothing.
+        if let Some(control) = control
+            && let Err(cancelled) = control.enter(Phase::Publishing)
+        {
+            return cancelled;
+        }
         let stem = request
             .mesh_path
             .strip_suffix(".stl")
@@ -1211,7 +1234,7 @@ impl ReconWorker {
                     &raw_path,
                     mesh,
                     request.overwrite,
-                    MAX_OBJECT_MESH_BYTES,
+                    max_bytes,
                 )?)
             });
         let note = match kept {
@@ -2588,6 +2611,7 @@ impl ReconClient {
             Some("validation") => "validation",
             Some("already_exists") => "already_exists",
             Some("unavailable") => "unavailable",
+            Some("print_check_failed") => "print_check_failed",
             _ => "failed",
         };
         let message = value

@@ -10290,6 +10290,17 @@ async fn scene_prepare_print_rebuilds_a_mesh_and_reports_what_changed() {
     assert_eq!(result["validation"]["topology"]["self_intersections"], 0);
     let (_, written) = ws.read_generated_bytes("parts/ready.stl").unwrap();
     assert_eq!(result["artifact"]["size_bytes"], written.len());
+    // The response matches the action's published output contract.
+    let contract = printable_server::resources::contracts::read(
+        "printable://contracts/scene/prepare_print",
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(contract["output_schema_scope"], "action");
+    let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+    validator
+        .validate(&prepare.response.apply(result.clone()))
+        .unwrap();
 
     // The destination is kept unless replaced, and hollowing needs one solid.
     let again = call(json!({"source_path": "parts/raw.stl", "path": "parts/ready.stl"}));
@@ -10404,6 +10415,9 @@ async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_k
     assert_eq!(report["source"]["open_edges"], 4, "{result}");
     assert_eq!(report["openings_closed"], 1);
     assert_eq!(report["shells"], 1);
+    // The top-level counts describe the rebuilt mesh that was written.
+    assert_eq!(result["triangles"], report["triangles"]);
+    assert_eq!(result["size_mm"], report["size_mm"]);
     assert!((report["volume_mm3"].as_f64().unwrap() - 8000.0).abs() < 300.0);
     assert!(report["thin"].is_object());
     assert_eq!(result["validation"]["solid_geometry"], true);

@@ -444,14 +444,19 @@ therefore rebuilds it before writing it, with the same preparation as the
   running out of memory, the generated surface is not lost. It is written
   beside the requested path as `NAME.raw.stl`, under the same `overwrite`
   rule, and the error message names it. Run `scene` `prepare_print` on it
-  with other settings, such as a larger `edge_length_mm`. A cancelled job
-  keeps nothing.
+  with other settings, such as a larger `edge_length_mm`. It is published in
+  the job's publishing phase, so a job cancelled before then keeps nothing.
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
 A one-million-triangle surface took about 2 seconds and 400 MiB at the default
-facet size in the [measurements](../evidence/print-prep-rebuild.md). Retained
-jobs report the rebuild as their `delivering` phase.
+facet size in the [measurements](../evidence/print-prep-rebuild.md). The
+strict check runs there too. The rebuild has whatever remains of the
+generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or
+`PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS` for TRELLIS.2). Retained jobs report
+the rebuild as their `delivering` phase. The result's `triangles` and
+`size_mm` describe the rebuilt mesh that was written; `generated_triangles`
+is the generator's own count.
 
 Then check the object with `validate_mesh` and the printer's own settings, look
 at the overhang report before choosing supports, and slice it with `slice`. For

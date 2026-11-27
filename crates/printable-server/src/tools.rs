@@ -5433,6 +5433,7 @@ fn worker_error_code(code: &str) -> &'static str {
         "relief_missing_input" => "relief_missing_input",
         "relief_invalid_map" => "relief_invalid_map",
         "relief_not_printable" => "relief_not_printable",
+        "print_check_failed" => "print_check_failed",
         _ => "geometry",
     }
 }

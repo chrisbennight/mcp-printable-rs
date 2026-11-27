@@ -727,6 +727,48 @@ fn native_bundle() -> Value {
     )
 }
 
+/// The result of `scene` `prepare_print`, which does not use Blender and so
+/// reports no scene state.
+fn mesh_preparation() -> Value {
+    let count = json!({"type": "integer", "minimum": 0});
+    let size = json!({"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3});
+    let preparation = object(
+        json!({
+            "source": object(json!({"triangles": count, "shells": count, "open_edges": count,
+                "volume_mm3": {"type": "number"}}), &["triangles", "shells", "open_edges"]),
+            "flipped_triangles": count, "shells_turned": count,
+            "openings_closed": count, "openings_left": count,
+            "edge_length_mm": {"type": "number", "exclusiveMinimum": 0},
+            "triangles": count, "shells": count,
+            "volume_mm3": {"type": "number"}, "size_mm": size,
+            "floating_parts": object(json!({"count": count, "volume_mm3": {"type": "number"},
+                "removed": {"type": "boolean"}}), &["count", "volume_mm3", "removed"]),
+            "plinth": {"type": "object"}, "hollow": {"type": "object"},
+            "overhang": {"type": "object"}, "thin": {"type": "object"}
+        }),
+        &[
+            "source",
+            "flipped_triangles",
+            "openings_closed",
+            "openings_left",
+            "edge_length_mm",
+            "triangles",
+            "shells",
+            "volume_mm3",
+            "size_mm",
+        ],
+    );
+    object(
+        json!({
+            "artifact": artifact(), "units": {"const": "millimetres"},
+            "preparation": preparation,
+            "validation": object(json!({"solid_geometry": {"const": true}}), &["solid_geometry"]),
+            "printer": {"type": "object"}
+        }),
+        &["artifact", "units", "preparation", "validation"],
+    )
+}
+
 /// A typed result's schema with the shared execution-failure contract.
 fn typed<T: schemars::JsonSchema>(name: &str) -> Value {
     let mut schema =
@@ -759,6 +801,7 @@ pub fn action_schema(name: &str, action: &str) -> Option<Value> {
         ("project", "family_put" | "family") => typed::<crate::projects::families::Response>(name),
         ("project", "families") => typed::<crate::projects::families::Listing>(name),
         ("project", "family_select") => typed::<crate::projects::families::Selection>(name),
+        ("scene", "prepare_print") => with_errors(name, mesh_preparation()),
         _ => return None,
     };
     compact_schema(&mut schema);
@@ -1165,7 +1208,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                         "tokens": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
                         "seed": {"type": "integer", "minimum": 0},
                         "fov_degrees": {"type": "number"},
-                        "fov_source": {"enum": ["request", "photograph", "assumed"]},
+                        "fov_source": {"enum": ["request", "analysis", "photograph", "assumed"]},
                         "background": {"enum": ["removed", "transparency"]},
                         "device": {"type": "string"},
                         "seconds": {"type": "number", "minimum": 0},

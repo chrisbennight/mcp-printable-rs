@@ -119,7 +119,11 @@ fn run() -> Result<Value, WorkerFailure> {
         return print_prep::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {
             WorkerFailure {
                 code: error.code(),
-                message: error.to_string(),
+                message: match error {
+                    // The parent adds its own prefix to a worker failure.
+                    printable_server::error::ToolError::GeometryWorker { message, .. } => message,
+                    other => other.to_string(),
+                },
             }
         });
     }
