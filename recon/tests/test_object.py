@@ -630,6 +630,7 @@ class GenerationTest(unittest.TestCase):
         request = {"image": str(self.root / "disc.png"), "model": str(self.models), "mesh": str(mesh),
                    "resolution": 512, "steps": 1, "target_triangles": 20000, "device": "cpu",
                    "focal_length_px": width / 2}
+        # The disc has no Exif focal length, so even an estimate is used.
         result = self._run(request)["result"]
         self.assertEqual(result["fov_source"], "analysis")
         # The focal length is half the photograph's width, a 90-degree view,
@@ -638,6 +639,14 @@ class GenerationTest(unittest.TestCase):
         self.assertLess(result["fov_degrees"], 90.0)
         given = self._run({**request, "fov_degrees": 30})["result"]
         self.assertEqual((given["fov_source"], given["fov_degrees"]), ("request", 30.0))
+
+    def test_exif_comes_before_an_estimated_focal_length_but_not_a_given_one(self):
+        exif_fov, focal = math.radians(60), 1000.0
+        self.assertFalse(generate_object._uses_analysis(None, exif_fov, focal, False))
+        self.assertTrue(generate_object._uses_analysis(None, exif_fov, focal, True))
+        self.assertTrue(generate_object._uses_analysis(None, None, focal, False))
+        self.assertFalse(generate_object._uses_analysis(30.0, None, focal, True))
+        self.assertFalse(generate_object._uses_analysis(None, exif_fov, None, False))
 
     def test_a_surface_lost_in_simplification_is_reported(self):
         photo, photo_fov = features.open_photograph(self.root / "disc.png")

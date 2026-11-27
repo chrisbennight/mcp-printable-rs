@@ -734,6 +734,17 @@ pub struct ReconConfig {
     pub geometry_worker_memory_bytes: u64,
 }
 
+/// A focal length from a cached photograph analysis.
+struct CachedFocal {
+    /// The analysis's cache key.
+    key: String,
+    /// In the photograph's pixels.
+    px: f64,
+    /// Whether the caller gave it to the analysis, rather than a model
+    /// estimating it.
+    given: bool,
+}
+
 pub struct ReconWorker {
     pub workspace: Arc<Workspace>,
     pub config: ReconConfig,
@@ -1065,8 +1076,9 @@ impl ReconWorker {
                 job[key] = value;
             }
         }
-        if let Some(Some((_, focal_px))) = &analysis {
-            job["focal_length_px"] = json!(focal_px);
+        if let Some(Some(focal)) = &analysis {
+            job["focal_length_px"] = json!(focal.px);
+            job["focal_length_given"] = json!(focal.given);
         }
         if let Some(control) = control {
             control.enter(Phase::Generating)?;
@@ -1082,8 +1094,9 @@ impl ReconWorker {
             )
             .await?;
         match analysis {
-            Some(Some((key, focal_px))) => {
-                result["photo_analysis"] = json!({"cache_key": key, "focal_length_px": focal_px});
+            Some(Some(focal)) => {
+                result["photo_analysis"] = json!({"cache_key": focal.key,
+                    "focal_length_px": focal.px, "given": focal.given});
             }
             Some(None) => {
                 result["photo_analysis"] = json!({"note": "no cached photo analyze result for this photograph, so its field of view came from its metadata or the default"});
@@ -1129,7 +1142,7 @@ impl ReconWorker {
         let source = mesh.to_path_buf();
         let cancel = control.map(|control| control.cancel.clone());
         let time_limit = self.config.object_timeout;
-        let (report, validation) = tokio::task::spawn_blocking(move || {
+        let rebuilt = tokio::task::spawn_blocking(move || {
             let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
                 cancel.as_ref().is_some_and(|token| token.is_cancelled())
             });
@@ -1159,7 +1172,13 @@ impl ReconWorker {
             })
         })
         .await
-        .map_err(|_| reconstruction_error("failed", "the solid rebuild stopped unexpectedly"))??;
+        .map_err(|_| reconstruction_error("failed", "the solid rebuild stopped unexpectedly"))
+        .and_then(|rebuilt| rebuilt);
+        let (report, validation) = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) if error.code() == "cancelled" => return Err(error),
+            Err(error) => return Err(self.keep_raw_surface(request, mesh, error)),
+        };
         result["preparation"] = report;
         result["validation"] = json!({
             "solid_geometry": validation.solid_geometry,
@@ -1169,10 +1188,48 @@ impl ReconWorker {
         Ok(())
     }
 
-    /// The focal length, in the photograph's pixels, of a cached analysis of
-    /// the photograph with this digest, and the analysis's cache key. A focal
-    /// length the caller gave the analysis is preferred to an estimate.
-    fn cached_focal_length(&self, image_sha256: &str) -> Result<Option<(String, f64)>, ToolError> {
+    /// After a failed rebuild, publish the generated surface beside the
+    /// requested path as `NAME.raw.stl`, under the request's overwrite rule,
+    /// and name it in the error, so that it can be prepared with other
+    /// settings without generating it again.
+    fn keep_raw_surface(
+        &self,
+        request: &ObjectRequest,
+        mesh: &Path,
+        error: ToolError,
+    ) -> ToolError {
+        let stem = request
+            .mesh_path
+            .strip_suffix(".stl")
+            .unwrap_or(&request.mesh_path);
+        let raw_path = format!("{stem}.raw.stl");
+        let kept = self
+            .check_destination(&raw_path, request.overwrite)
+            .and_then(|()| {
+                Ok(self.workspace.commit_generated_artifact_bounded(
+                    &raw_path,
+                    mesh,
+                    request.overwrite,
+                    MAX_OBJECT_MESH_BYTES,
+                )?)
+            });
+        let note = match kept {
+            Ok(_) => format!(
+                "; the generated surface was kept at {raw_path}: prepare it with scene prepare_print and other settings"
+            ),
+            Err(kept) => format!(
+                "; the generated surface could not be kept at {raw_path}: {}",
+                worker_message(&kept)
+            ),
+        };
+        let code = error.code();
+        reconstruction_error(code, format!("{}{note}", worker_message(&error)))
+    }
+
+    /// The focal length of a cached analysis of the photograph with this
+    /// digest. A focal length the caller gave the analysis is preferred to an
+    /// estimate.
+    fn cached_focal_length(&self, image_sha256: &str) -> Result<Option<CachedFocal>, ToolError> {
         let manifests = match self
             .workspace
             .list_artifacts(analysis::CACHE_ROOT, usize::MAX)
@@ -1181,7 +1238,7 @@ impl ReconWorker {
             Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let mut best: Option<(bool, String, f64)> = None;
+        let mut best: Option<CachedFocal> = None;
         for meta in manifests {
             if !meta.path.ends_with("/manifest.json") {
                 continue;
@@ -1206,14 +1263,15 @@ impl ReconWorker {
                 continue;
             }
             let given = focal["source"] == "given";
-            if best
-                .as_ref()
-                .is_none_or(|(best_given, ..)| given && !best_given)
-            {
-                best = Some((given, key.to_owned(), px));
+            if best.as_ref().is_none_or(|best| given && !best.given) {
+                best = Some(CachedFocal {
+                    key: key.to_owned(),
+                    px,
+                    given,
+                });
             }
         }
-        Ok(best.map(|(_, key, px)| (key, px)))
+        Ok(best)
     }
 
     /// Run one job in a fresh Python process with a deadline and return the
@@ -1507,7 +1565,7 @@ if "blank" in request["image"]:
 open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
 result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
     "device": request["device"], "model": request["model"],
-    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles", "focal_length_px") if key in request}}
+    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles", "focal_length_px", "focal_length_given") if key in request}}
 print(json.dumps({"result": result}))
 "#;
 
@@ -1793,9 +1851,10 @@ print(json.dumps({"result": result}))
             .unwrap();
         // A focal length given to the analysis is preferred to an estimate.
         assert_eq!(result["options"]["focal_length_px"], 1200.0);
+        assert_eq!(result["options"]["focal_length_given"], true);
         assert_eq!(
             result["photo_analysis"],
-            json!({"cache_key": "bbb", "focal_length_px": 1200.0})
+            json!({"cache_key": "bbb", "focal_length_px": 1200.0, "given": true})
         );
         let given = ObjectRequest {
             fov_degrees: Some(30.0),
@@ -1805,6 +1864,38 @@ print(json.dumps({"result": result}))
         let result = worker.generate_object(given).await.unwrap();
         assert!(result["options"].get("focal_length_px").is_none());
         assert!(result.get("photo_analysis").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_keeps_the_generated_surface_beside_the_request() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        // The stand-in worker has no geometry worker, so the rebuild fails.
+        let rebuilt = ObjectRequest {
+            raw_surface: None,
+            ..object_request("side.png")
+        };
+        let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
+        assert_eq!(error.code(), "geometry_worker_unavailable");
+        let message = worker_message(&error);
+        assert!(
+            message.contains("was kept at objects/figure.raw.stl"),
+            "{message}"
+        );
+        let workspace = root.path().join("workspace/objects");
+        assert!(workspace.join("figure.raw.stl").is_file());
+        assert!(!workspace.join("figure.stl").exists());
+        // An existing raw surface is replaced only with overwrite.
+        let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
+        assert!(
+            worker_message(&error).contains("could not be kept at objects/figure.raw.stl"),
+            "{error}"
+        );
+        let replaced = ObjectRequest {
+            overwrite: true,
+            ..rebuilt
+        };
+        let error = worker.generate_object(replaced).await.unwrap_err();
+        assert!(worker_message(&error).contains("was kept at objects/figure.raw.stl"));
     }
 
     #[tokio::test]

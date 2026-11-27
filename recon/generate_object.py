@@ -66,6 +66,7 @@ def main(argv: list[str]) -> int:
         fov = float(request["fov_degrees"]) if request.get("fov_degrees") is not None else None
         size_mm = float(request.get("size_mm", DEFAULT_SIZE_MM))
         focal_px = float(request["focal_length_px"]) if request.get("focal_length_px") is not None else None
+        focal_given = request.get("focal_length_given", False) is True
         target = _whole(request.get("target_triangles", DEFAULT_TARGET_TRIANGLES))
         device = str(request.get("device", "auto"))
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -96,9 +97,8 @@ def main(argv: list[str]) -> int:
         photo, photo_fov = features.open_photograph(image_path)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         return _fail("validation", f"the photograph could not be read: {error}")
-    if fov is None and focal_px is not None:
-        # A cached analysis's focal length, in the photograph's pixels, takes
-        # the place of the photograph's own metadata.
+    use_analysis = _uses_analysis(fov, photo_fov, focal_px, focal_given)
+    if use_analysis:
         photo_fov = 2.0 * math.atan(photo.width / (2.0 * focal_px))
     started = time.monotonic()
     try:
@@ -132,7 +132,7 @@ def main(argv: list[str]) -> int:
         "steps": shape.steps,
         "seed": seed,
         "fov_degrees": round(math.degrees(shape.fov), 3),
-        "fov_source": "analysis" if fov is None and focal_px is not None else shape.fov_source,
+        "fov_source": "analysis" if use_analysis else shape.fov_source,
         "background": shape.background,
         "device": device,
         "seconds": round(time.monotonic() - started, 3),
@@ -142,6 +142,13 @@ def main(argv: list[str]) -> int:
         result["peak_gpu_memory_bytes"] = max(stage.get("peak_gpu_memory_bytes", 0) for stage in shape.report.stages)
     print(json.dumps({"result": result}))
     return 0
+
+
+def _uses_analysis(fov: float | None, photo_fov: float | None, focal_px: float | None, focal_given: bool) -> bool:
+    """Whether a cached analysis's focal length sets the view. A focal length
+    the user gave the analysis comes before the photograph's own metadata; an
+    estimate only replaces missing metadata."""
+    return fov is None and focal_px is not None and (focal_given or photo_fov is None)
 
 
 def _whole(value) -> int:

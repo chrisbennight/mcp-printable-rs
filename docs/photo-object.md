@@ -272,16 +272,25 @@ field of view decides how much perspective the shape inherits from the
 photograph. The worker chooses it in this order:
 
 1. `fov_degrees` in the request.
-2. The focal length from a cached [`analyze`](photo-geometry.md#analyse-a-photograph)
-   result for the same photograph, matched by its SHA-256, scaled to the part
-   of the picture that frames the subject. A focal length given to `analyze`
-   is preferred to an estimated one. `fov_source` is `analysis`. No new
-   analysis is started: run `analyze` first to use one.
-3. The photograph's 35 mm equivalent focal length, from its Exif metadata,
-   scaled the same way. Phone and camera photographs usually carry it;
-   screenshots and edited images often do not.
-4. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
+2. A focal length the user gave to [`analyze`](photo-geometry.md#analyse-a-photograph)
+   as `focal_length_px`, recorded in a cached analysis of the same
+   photograph, matched by its SHA-256. `fov_source` is `analysis`.
+3. The photograph's 35 mm equivalent focal length, from its Exif metadata.
+   This is the camera's own value. Phone and camera photographs usually carry
+   it; screenshots and edited images often do not. `fov_source` is
+   `photograph`.
+4. A focal length a cached analysis estimated. Depth Pro 2's estimates were
+   8.3% from the Exif values on average in the
+   [depth benchmark](../evidence/depth-benchmark.md#focal-length), so they are
+   used only when the photograph has no Exif focal length. `fov_source` is
+   `analysis`.
+5. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
    an assumption, and the result says so in `fov_source`.
+
+Each focal length is scaled to the part of the picture that frames the
+subject. No new analysis is started: run `analyze` first to use one.
+`photo_analysis` in the result names the cached analysis and whether its focal
+length was given, even when the Exif value took precedence.
 
 A shape that looks stretched towards or away from the camera usually means
 the field of view is wrong. Try again with a narrower view, such as 15 degrees,
@@ -430,8 +439,13 @@ therefore rebuilds it before writing it, with the same preparation as the
   with the shells, volume and what was changed.
 - The result must pass the strict check, a valid solid known to be free of
   self-intersections, reported in `validation`. A result that fails is not
-  written: the request or job fails with `print_check_failed`. Generate again
-  with `raw_surface: true` to keep the raw surface instead.
+  written: the request or job fails with `print_check_failed`.
+- When the rebuild is refused or the geometry worker fails, for example by
+  running out of memory, the generated surface is not lost. It is written
+  beside the requested path as `NAME.raw.stl`, under the same `overwrite`
+  rule, and the error message names it. Run `scene` `prepare_print` on it
+  with other settings, such as a larger `edge_length_mm`. A cancelled job
+  keeps nothing.
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
