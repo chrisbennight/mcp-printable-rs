@@ -239,26 +239,36 @@ impl Field {
     /// Outward-facing minus inward-facing crossings of the ray from `point`
     /// along +z.
     fn winding(&self, point: Point) -> i32 {
-        let mut winding = 0;
-        for &triangle in self.columns.candidates(point) {
-            let [a, b, c] = self.surface.indices()[triangle as usize]
-                .map(|index| self.surface.vertices()[index as usize].to_array());
-            let facing = orient2(a, b, c);
-            if facing == 0.0 {
-                continue;
-            }
-            // Order the corners counterclockwise in projection.
-            let (a, b, c) = if facing > 0.0 { (a, b, c) } else { (a, c, b) };
-            if !covers(a, b, point) || !covers(b, c, point) || !covers(c, a, point) {
-                continue;
-            }
-            // Positive when `point` lies below the plane of the reordered corners.
-            if orient3d(coord3(a), coord3(b), coord3(c), coord3(point)) > 0.0 {
-                winding += if facing > 0.0 { 1 } else { -1 };
-            }
-        }
-        winding
+        winding(
+            point,
+            self.columns.candidates(point).iter().map(|&triangle| {
+                self.surface.indices()[triangle as usize]
+                    .map(|index| self.surface.vertices()[index as usize].to_array())
+            }),
+        )
     }
+}
+
+/// Outward-facing minus inward-facing crossings of the ray from `point`
+/// along +z with the `triangles` that may cross it.
+pub(crate) fn winding(point: Point, triangles: impl Iterator<Item = [Point; 3]>) -> i32 {
+    let mut winding = 0;
+    for [a, b, c] in triangles {
+        let facing = orient2(a, b, c);
+        if facing == 0.0 {
+            continue;
+        }
+        // Order the corners counterclockwise in projection.
+        let (a, b, c) = if facing > 0.0 { (a, b, c) } else { (a, c, b) };
+        if !covers(a, b, point) || !covers(b, c, point) || !covers(c, a, point) {
+            continue;
+        }
+        // Positive when `point` lies below the plane of the reordered corners.
+        if orient3d(coord3(a), coord3(b), coord3(c), coord3(point)) > 0.0 {
+            winding += if facing > 0.0 { 1 } else { -1 };
+        }
+    }
+    winding
 }
 
 /// Whether `point` projects onto the closed side of the counterclockwise edge

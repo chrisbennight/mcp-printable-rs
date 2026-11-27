@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use manifold_csg::Manifold;
+use parry3d_f64::math::Vector;
 use serde::{Deserialize, Serialize};
 
 use crate::bust::{add_plinth, hollow_out, mesh_from, single_precision};
@@ -62,7 +63,8 @@ pub struct SourceSummary {
     pub volume_mm3: Option<f64>,
 }
 
-/// Parts of the rebuilt solid that do not rest on the build plate.
+/// Parts of the rebuilt solid that do not rest on the build plate, which
+/// lies under the largest part: those above it, and fragments below it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FloatingParts {
     pub count: usize,
@@ -108,8 +110,8 @@ pub struct PrintPrepReport {
     pub source: SourceSummary,
     /// Triangles turned to face the same way as most of their piece.
     pub flipped_triangles: usize,
-    /// Closed pieces that faced inwards, with nothing around them, and were
-    /// turned around.
+    /// Closed pieces turned around: those that faced inwards with nothing
+    /// around them, and the pieces nested inside those.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub shells_turned: usize,
     /// Openings closed before the rebuild.
@@ -195,10 +197,16 @@ pub fn prepare_print(
     let spacing = edge / remesh::EDGE_PER_SPACING;
     let parts = solids(&solid);
     let lowest_of = |part: &Manifold| part.bounding_box().map_or(f64::INFINITY, |b| b.min()[2]);
+    // The build plate is under the largest part, so that a small fragment
+    // lower down cannot take its place.
+    let plate = parts
+        .iter()
+        .max_by(|a, b| a.volume().total_cmp(&b.volume()))
+        .map_or(0.0, lowest_of);
     let lowest = parts.iter().map(lowest_of).fold(f64::INFINITY, f64::min);
     let floating: Vec<Manifold> = parts
         .into_iter()
-        .filter(|part| lowest_of(part) > lowest + FLOATING_STEPS * spacing)
+        .filter(|part| (lowest_of(part) - plate).abs() > FLOATING_STEPS * spacing)
         .collect();
     let floating_parts = (!floating.is_empty()).then(|| FloatingParts {
         count: floating.len(),
@@ -206,12 +214,15 @@ pub fn prepare_print(
         removed: !request.keep_floating_parts,
     });
     // Subtracting the floating parts keeps any cavity inside the others.
-    let solid = if request.keep_floating_parts || floating.is_empty() {
-        solid
+    let (solid, base) = if request.keep_floating_parts || floating.is_empty() {
+        (solid, lowest)
     } else {
-        Manifold::batch_difference(&[vec![solid], floating].concat())
-    }
-    .translate(0.0, 0.0, -lowest);
+        (
+            Manifold::batch_difference(&[vec![solid], floating].concat()),
+            plate,
+        )
+    };
+    let solid = solid.translate(0.0, 0.0, -base);
 
     // The overhang check sees the solid before a plinth, whose chamfer is
     // meant to slope.
@@ -486,16 +497,19 @@ fn is_zero(count: &usize) -> bool {
     *count == 0
 }
 
-/// Turn around each piece that encloses negative volume, as some exporters
-/// write a whole part, unless it lies within the bounds of a piece facing
-/// outwards, where it is a cavity. Returns how many were turned.
+/// Turn around each closed piece that faces inwards, as some exporters
+/// write a whole part, together with everything nested inside it, so that a
+/// cavity inside it stays a cavity. A piece inside another keeps its facing
+/// relative to the piece around it. Returns how many were turned.
 fn turn_inside_out_shells(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]]) -> usize {
     let pieces = pieces(vertices.len(), triangles);
     let mut volume = vec![0.0; pieces.count];
     let mut bounds = vec![([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]); pieces.count];
+    let mut members: Vec<Vec<[u32; 3]>> = vec![Vec::new(); pieces.count];
     for (face, triangle) in triangles.iter().enumerate() {
         let piece = pieces.of_triangle[face] as usize;
         volume[piece] += signed_volume(vertices, std::slice::from_ref(triangle));
+        members[piece].push(*triangle);
         for &index in triangle {
             let (low, high) = &mut bounds[piece];
             for (axis, value) in vertices[index as usize].into_iter().enumerate() {
@@ -504,24 +518,93 @@ fn turn_inside_out_shells(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]]) -> 
             }
         }
     }
-    let within = |inner: usize, outer: usize| {
-        (0..3).all(|axis| {
-            bounds[outer].0[axis] <= bounds[inner].0[axis]
-                && bounds[inner].1[axis] <= bounds[outer].1[axis]
-        })
+    let size = |piece: usize| {
+        (0..3)
+            .map(|axis| bounds[piece].1[axis] - bounds[piece].0[axis])
+            .product::<f64>()
     };
-    let turned: Vec<bool> = (0..pieces.count)
-        .map(|piece| {
-            volume[piece] < 0.0
-                && !(0..pieces.count).any(|other| volume[other] > 0.0 && within(piece, other))
-        })
+    let within = |inner: usize, outer: usize| {
+        inner != outer
+            && (0..3).all(|axis| {
+                bounds[outer].0[axis] <= bounds[inner].0[axis]
+                    && bounds[inner].1[axis] <= bounds[outer].1[axis]
+            })
+    };
+    // The piece directly around each piece: the smallest that contains one
+    // of its vertices, by the winding count of a ray from that vertex.
+    let points: Vec<Vector> = vertices
+        .iter()
+        .map(|vertex| Vector::from_array(*vertex))
         .collect();
+    let mut columns: HashMap<usize, remesh::Columns> = HashMap::new();
+    let mut parent: Vec<Option<usize>> = vec![None; pieces.count];
+    for inner in 0..pieces.count {
+        let probe = vertices[members[inner][0][0] as usize];
+        for outer in (0..pieces.count).filter(|&outer| within(inner, outer)) {
+            let (low, high) = bounds[outer];
+            let cell = (0..2)
+                .map(|axis| high[axis] - low[axis])
+                .fold(0.0, f64::max)
+                / (members[outer].len() as f64).sqrt().max(1.0);
+            let Some(grid) = (match columns.entry(outer) {
+                std::collections::hash_map::Entry::Occupied(found) => Some(found.into_mut()),
+                std::collections::hash_map::Entry::Vacant(slot) => remesh::Columns::new(
+                    &points,
+                    &members[outer],
+                    low,
+                    high,
+                    cell.max(f64::MIN_POSITIVE),
+                    u32::MAX as usize,
+                )
+                .map(|grid| slot.insert(grid)),
+            }) else {
+                continue;
+            };
+            let crossing = grid
+                .candidates(probe)
+                .iter()
+                .map(|&face| members[outer][face as usize].map(|index| vertices[index as usize]));
+            if remesh::winding(probe, crossing) != 0
+                && parent[inner].is_none_or(|current| size(outer) < size(current))
+            {
+                parent[inner] = Some(outer);
+            }
+        }
+    }
+    drop(columns);
+    // A piece with nothing around it is turned when it faces inwards; a
+    // nested piece is turned with the piece around it.
+    let mut turned: Vec<Option<bool>> = vec![None; pieces.count];
+    fn decide(
+        piece: usize,
+        parent: &[Option<usize>],
+        volume: &[f64],
+        turned: &mut [Option<bool>],
+        depth: usize,
+    ) -> bool {
+        if let Some(known) = turned[piece] {
+            return known;
+        }
+        let known = match parent[piece] {
+            // A containment cycle can only come from coincident pieces.
+            Some(outer) if depth < parent.len() => decide(outer, parent, volume, turned, depth + 1),
+            _ => volume[piece] < 0.0,
+        };
+        turned[piece] = Some(known);
+        known
+    }
+    for piece in 0..pieces.count {
+        decide(piece, &parent, &volume, &mut turned, 0);
+    }
     for (face, triangle) in triangles.iter_mut().enumerate() {
-        if turned[pieces.of_triangle[face] as usize] {
+        if turned[pieces.of_triangle[face] as usize] == Some(true) {
             triangle.swap(1, 2);
         }
     }
-    turned.iter().filter(|turned| **turned).count()
+    turned
+        .iter()
+        .filter(|turned| **turned == Some(true))
+        .count()
 }
 
 /// Volume enclosed by a closed surface, positive when it faces outwards.
@@ -646,6 +729,25 @@ mod tests {
     }
 
     #[test]
+    fn a_small_fragment_below_the_subject_does_not_become_the_plate() {
+        let mesh = joined(&[
+            cuboid([0.0, 0.0, 5.0], [20.0; 3]),
+            cuboid([30.0, 0.0, 0.0], [2.0; 3]),
+        ]);
+        let (prepared, report) = prepare(mesh, &request(0.5)).unwrap();
+        let floating = report.floating_parts.unwrap();
+        assert_eq!((floating.count, floating.removed), (1, true));
+        assert!(floating.volume_mm3 < 20.0, "{floating:?}");
+        assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
+        let low = prepared
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f64::INFINITY, f64::min);
+        assert!(low.abs() < 1e-6);
+    }
+
+    #[test]
     fn separate_parts_on_the_plate_are_reported_not_removed() {
         let mesh = joined(&[
             cuboid([0.0; 3], [10.0; 3]),
@@ -692,6 +794,19 @@ mod tests {
         );
         let (_, report) = prepare(joined(&[(vertices, triangles), cavity]), &request(0.5)).unwrap();
         assert_eq!(report.shells_turned, 0);
+        assert!((report.volume_mm3 - 936.0).abs() < 30.0, "{report:?}");
+    }
+
+    #[test]
+    fn an_inverted_hollow_part_is_turned_around_with_its_cavity() {
+        let (vertices, triangles) = cuboid([0.0; 3], [10.0; 3]);
+        let inner: Vec<[f64; 3]> = vertices.iter().map(|v| v.map(|x| 3.0 + 0.4 * x)).collect();
+        let inward: Vec<[u32; 3]> = triangles.iter().map(|[a, b, c]| [*a, *c, *b]).collect();
+        // The whole part faces the wrong way: its outside inwards and its
+        // cavity outwards.
+        let mesh = joined(&[(vertices, inward), (inner, triangles)]);
+        let (_, report) = prepare(mesh, &request(0.5)).unwrap();
+        assert_eq!(report.shells_turned, 2);
         assert!((report.volume_mm3 - 936.0).abs() < 30.0, "{report:?}");
     }
 
