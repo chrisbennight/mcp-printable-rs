@@ -7,6 +7,7 @@
 
 #[doc(hidden)]
 pub mod bake_texture;
+mod compare;
 mod head;
 pub mod lithophane;
 mod native;
@@ -2436,6 +2437,9 @@ async fn dispatch_value(
         }
         "printable_photo_lithophane" => {
             lithophane::lithophane(Arc::clone(workspace), settings, de(args)?).await
+        }
+        "printable_photo_compare" => {
+            compare::compare(Arc::clone(workspace), settings, jobs, de(args)?).await
         }
         "printable_photo_job_status" => photo::job_status(settings, de(args)?).await,
         "printable_photo_job_list" => photo::job_list(settings, de(args)?).await,

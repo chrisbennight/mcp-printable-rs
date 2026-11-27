@@ -120,6 +120,60 @@ class HandlerStartupError(RuntimeError):
     """A safe operator-visible Blender initialization error."""
 
 
+# The comparison camera: a 50 mm lens on a 36 mm wide sensor, looking straight
+# down at the model with the image's top towards +Y.
+GEOMETRY_LENS_MM = 50.0
+GEOMETRY_SENSOR_MM = 36.0
+# The perspective camera stands back this much further than the distance at
+# which the model's top fills the frame, so its outline is not cut off.
+GEOMETRY_MARGIN = 1.1
+GEOMETRY_MAX_SIDE = 4096
+
+
+def geometry_camera(
+    bounds: tuple[float, float, float, float, float],
+    width: int,
+    height: int,
+    projection: str,
+) -> dict[str, Any]:
+    """The view of a comparison render from the model's (min x, max x, min y,
+    max y, max z) bounds: the frame covers the bounds' footprint, widened to
+    the image's proportions, and looks straight down.
+
+    Orthographic rays start above the model on a grid of pixel centres;
+    perspective rays leave one point. ``ray(row, column)`` gives a pixel's
+    origin and direction, and depth is measured along the viewing axis from
+    ``origin_z``.
+    """
+    min_x, max_x, min_y, max_y, top = bounds
+    aspect = width / height
+    frame_width = max(max_x - min_x, (max_y - min_y) * aspect, 1e-6)
+    frame_height = frame_width / aspect
+    centre_x, centre_y = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    if projection == "orthographic":
+        origin_z = top + frame_width
+
+        def ray(row: int, column: int) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+            x = centre_x + (column + 0.5 - width / 2.0) * frame_width / width
+            y = centre_y - (row + 0.5 - height / 2.0) * frame_height / height
+            return (x, y, origin_z), (0.0, 0.0, -1.0)
+
+        return {"projection": projection, "origin_z": origin_z, "focal_px": None,
+                "pixel_size": frame_width / width, "centre": (centre_x, centre_y), "ray": ray}
+    if projection != "perspective":
+        raise HandlerError("projection must be orthographic or perspective")
+    focal_px = width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
+    origin_z = top + GEOMETRY_MARGIN * frame_width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
+
+    def ray(row: int, column: int) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        u = (column + 0.5 - width / 2.0) / focal_px
+        v = (row + 0.5 - height / 2.0) / focal_px
+        return (centre_x, centre_y, origin_z), (u, -v, -1.0)
+
+    return {"projection": projection, "origin_z": origin_z, "focal_px": focal_px,
+            "pixel_size": None, "centre": (centre_x, centre_y), "ray": ray}
+
+
 def _string(params: dict[str, Any], name: str) -> str:
     value = params.get(name)
     if not isinstance(value, str) or not value:
@@ -614,6 +668,7 @@ class BlenderHandlers:
             "job_measure_sequence_bounds": self._job_measure_sequence_bounds,
             "job_render_product": self._job_render_product,
             "job_import_model": self._job_import_model,
+            "job_render_geometry": self._job_render_geometry,
             "job_render_frame": self._job_render_frame,
             "job_render_still": self._job_render_still,
             "job_render_views": self._job_render_views,
@@ -1951,6 +2006,120 @@ class BlenderHandlers:
                             obj.matrix_world = Matrix.Scale(scale, 4) @ obj.matrix_world
                     self._bpy.context.view_layer.update()
             return {"objects": self._renderable_product_names()}
+        finally:
+            try:
+                self._execution_watchdog.disarm()
+            except WatchdogError as error:
+                raise HandlerError("render watchdog is unavailable") from error
+
+    def _job_render_geometry(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Exact depth, normals and coverage of the imported model seen from
+        above, by casting one ray through each pixel centre, stored as a NumPy
+        archive (a zip file): ``depth`` (scene units, along the viewing axis), ``normals``
+        (unit, x right, y up, z towards the camera), ``mask`` and
+        ``focal_px`` (0 for an orthographic view). A perspective render also
+        leaves its camera as the scene camera, so a later product render with
+        a preserved camera photographs the same view.
+        """
+        _only_keys(params, {"path", "width", "height", "projection", "timeout_seconds"})
+        if self._config.role != "render_worker" or not self._bpy.app.background:
+            raise HandlerError("geometry rendering requires the background render worker")
+        # A NumPy archive is a zip file; the workspace accepts it as one.
+        request = self._workspace.validate_reserved(params.get("path"), ".zip")
+        width = _positive_integer(params, "width", 1024, GEOMETRY_MAX_SIDE)
+        height = _positive_integer(params, "height", 768, GEOMETRY_MAX_SIDE)
+        projection = params.get("projection")
+        if projection not in {"orthographic", "perspective"}:
+            raise HandlerError("projection must be orthographic or perspective")
+        timeout_seconds = _positive_float(
+            params, "timeout_seconds", DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS
+        )
+        try:
+            self._execution_watchdog.arm(time.monotonic() + timeout_seconds)
+        except WatchdogError as error:
+            raise HandlerError("render watchdog is unavailable") from error
+        try:
+            import numpy
+            from mathutils import Vector  # type: ignore[import-not-found]
+            from mathutils.bvhtree import BVHTree  # type: ignore[import-not-found]
+
+            vertices: list[Any] = []
+            triangles: list[tuple[int, int, int]] = []
+            depsgraph = self._bpy.context.evaluated_depsgraph_get()
+            for obj in self._bpy.context.scene.objects:
+                if obj.type != "MESH" or obj.hide_render:
+                    continue
+                evaluated = obj.evaluated_get(depsgraph)
+                mesh = evaluated.to_mesh()
+                try:
+                    mesh.calc_loop_triangles()
+                    offset = len(vertices)
+                    vertices.extend(evaluated.matrix_world @ vertex.co for vertex in mesh.vertices)
+                    triangles.extend(
+                        tuple(offset + index for index in triangle.vertices)
+                        for triangle in mesh.loop_triangles
+                    )
+                finally:
+                    evaluated.to_mesh_clear()
+            if not triangles:
+                raise HandlerError("the model has no triangles to render")
+            bounds = (
+                min(v.x for v in vertices), max(v.x for v in vertices),
+                min(v.y for v in vertices), max(v.y for v in vertices),
+                max(v.z for v in vertices),
+            )
+            camera = geometry_camera(bounds, width, height, projection)
+            tree = BVHTree.FromPolygons(vertices, triangles, all_triangles=True)
+            depth = numpy.zeros((height, width), numpy.float32)
+            normals = numpy.zeros((height, width, 3), numpy.float32)
+            mask = numpy.zeros((height, width), bool)
+            ray = camera["ray"]
+            origin_z = camera["origin_z"]
+            for row in range(height):
+                for column in range(width):
+                    origin, direction = ray(row, column)
+                    direction = Vector(direction).normalized()
+                    location, normal, _index, _distance = tree.ray_cast(Vector(origin), direction)
+                    if location is None:
+                        continue
+                    if normal.dot(direction) > 0:
+                        normal = -normal
+                    mask[row, column] = True
+                    depth[row, column] = origin_z - location.z
+                    normals[row, column] = normal
+            if projection == "perspective":
+                camera_data = self._bpy.data.cameras.new("PrintableCompareCamera")
+                camera_data.lens = GEOMETRY_LENS_MM
+                camera_data.sensor_fit = "HORIZONTAL"
+                camera_data.sensor_width = GEOMETRY_SENSOR_MM
+                reach = origin_z - min(v.z for v in vertices)
+                camera_data.clip_start = max(reach * 1e-4, 1e-6)
+                camera_data.clip_end = reach * 2.0
+                camera_object = self._bpy.data.objects.new("PrintableCompareCamera", camera_data)
+                self._bpy.context.scene.collection.objects.link(camera_object)
+                camera_object.location = (*camera["centre"], origin_z)
+                camera_object.rotation_euler = (0.0, 0.0, 0.0)
+                self._bpy.context.scene.camera = camera_object
+            with self._workspace.stage_output(request) as output:
+                with output.path.open("wb") as stream:
+                    numpy.savez(stream, depth=depth, normals=normals, mask=mask,
+                                focal_px=numpy.float64(camera["focal_px"] or 0.0))
+                with output.path.open("rb") as stored:
+                    sha256 = hashlib.file_digest(stored, "sha256").hexdigest()
+                size_bytes = output.path.stat().st_size
+                output.commit()
+            return {
+                "path": request.relative,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "width": width,
+                "height": height,
+                "projection": projection,
+                "focal_px": camera["focal_px"],
+                "pixel_size": camera["pixel_size"],
+                "covered_pixels": int(mask.sum()),
+                "triangles": len(triangles),
+            }
         finally:
             try:
                 self._execution_watchdog.disarm()

@@ -72,7 +72,23 @@ default depth model invents sculpted depth; name a MoGe model in
 the `depth` action, with `normals_path` when fine surface detail matters, and
 calibrate it as described next; without either, author or infer a relief.
 Either way, label the result an interpretation rather than recovered physical
-geometry. Preserve calibrated depth data instead of replacing it with a display
+geometry.
+
+Check a photograph relief in this order. First the hard checks: the report's
+`checks` and, for the exported mesh, `validate_mesh`. Then measure it against
+the photograph with the `photo` tool's `compare` action in `photo` mode: give
+the relief's heightmap as an input, the analysis `cache_key` from the report
+and the photograph. Read each measure on its own: silhouette overlap and
+outline distance for placement, normal angle for relief direction (an inverted
+relief scores as flat), shading correlation beside the analysis's own, and the
+analysis's confidence scores for where the reference itself is uncertain.
+Only then judge the rendering and the comparison sheet by eye; never accept a
+relief on appearance alone. To choose between settings or routes, compare
+their heightmaps with `compare` in `outputs` mode. To test an unvalidated
+route, render a known mesh with `synthetic` mode, run the route on the
+scene's photograph and score its map. If the same check fails twice after
+adjusting settings, change route (depth model, `subject`, preset, or
+hand-assigned heights) instead of tuning further. Preserve calibrated depth data instead of replacing it with a display
 preview or an image generated for appearance. Keep hand-assigned heights for
 flat artwork, logos and lettering.
 

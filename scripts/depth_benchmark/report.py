@@ -157,30 +157,11 @@ def model_units(pred: dict) -> np.ndarray | None:
 # ---------------------------------------------------------------------- scoring
 def score_scene(scene: str, truth: dict, tier: str) -> list[dict]:
     rows = []
-    valid = truth["valid"]
-    smooth = scoring.smooth_mask(truth["depth"], valid)
     for model in models(tier):
         pred = load_run(tier, model, f"gt-{scene}")
         if pred is None:
             continue
-        kind = pred["kind"]
-        aligned, _ = scoring.align(pred["depth"], truth["depth"], valid, kind)
-        shaped, _ = scoring.align(pred["depth"], truth["depth"], valid, scoring.shape_kind(kind))
-        row = {"tier": tier, "scene": scene, "model": model, "kind": kind,
-               "absrel": scoring.depth_errors(shaped, truth["depth"], valid)["absrel"],
-               "edge_f1": scoring.boundary_f1(aligned, truth["depth"], valid),
-               "depth_normal_deg": scoring.normal_errors(
-                   scoring.normals_from_depth(aligned, truth["focal"]), truth["normals"], smooth)["median_deg"]}
-        if kind == scoring.METRIC:
-            row["scale_error_pct"] = float((np.median(pred["depth"][valid] / truth["depth"][valid]) - 1) * 100)
-        row["focal_error_pct"] = scoring.focal_error_pct(pred.get("focal_px"), truth["focal"])
-        if "normals" in pred:
-            row["normal_deg"] = scoring.normal_errors(pred["normals"], truth["normals"], smooth)["median_deg"]
-        if truth["region"] is not None and truth["region"].sum() > 100:
-            relief = scoring.relief_error(pred["depth"], truth["depth"], truth["region"], kind)
-            row.update({"relief_rmse_mm": relief["rmse"] * 1000, "relief_mm": relief["relief"] * 1000,
-                        "relief_pct": relief["rmse_pct"]})
-        rows.append(row)
+        rows.append({"tier": tier, "scene": scene, "model": model, **scoring.scene_scores(pred, truth)})
     return rows
 
 

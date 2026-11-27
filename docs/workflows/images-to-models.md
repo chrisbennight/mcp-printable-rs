@@ -11,6 +11,11 @@ image and your scale choices with the project so you can revise the result.
 | An object, figure, or character from one image | [Pixal3D or TRELLIS.2](../photo-object.md) | Scaled STL, generation settings and input hash; repair and validate before slicing |
 | A recognizable head and printable bust from portraits | [FLAME reconstruction and print preparation](../flame-models.md#from-photographs-to-a-bust-in-one-step) | Fitted coefficients/detail maps, optional viewing texture, watertight bust STL and print-related reports |
 
+Check every result in the same order: hard checks such as the relief report
+and `validate_mesh` first, then [`photo.compare`](../validation.md) against the
+photograph or another result, then visual review. Change route when the same
+check fails twice.
+
 Apart from lithophanes, these routes use the
 [optional photograph worker](../index.md#engines-and-integrations), which needs its
 model files and GPU setup. `status` and the available tool actions tell you
@@ -68,7 +73,9 @@ report with the analysis models, settings, dimensions and printability checks.
 Presets are `plaque`, `coin`, `mold` (mirrored and inverted, inside a wall) and
 `artwork`; their values are starting points, not measured optima. See
 [Build a relief](../photo-geometry.md#build-a-relief) for every option.
-The depth is an estimate: review the result against the photograph.
+The depth is an estimate: measure the result against the photograph with
+`photo.compare` before judging it by eye, as [Validate photograph
+results](../validation.md) describes.
 
 Without `relief`, `photo.depth` can supply relative depth and optional surface
 normals. Its values are estimates, not millimetres. Calibrate the selected range

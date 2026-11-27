@@ -60,12 +60,16 @@ python3 scripts/depth_benchmark/compare_sides.py \
   from the Position and Normal passes, converted to the camera frame.
 - **Photographs** (`photos.json`): fifteen Wikimedia Commons images with their
   licences and SHA-1 digests, downloaded at run time and verified.
-- **Scores** (`scoring.py`, NumPy only, tested in `scripts/tests`):
+- **Scores** (`scoring.py`, NumPy only, tested in `scripts/tests`; the
+  photograph worker's `photo.compare` uses the same `scene_scores` for its
+  synthetic mode, see [validation](../../docs/validation.md)):
   - depth error after scale and offset alignment;
   - median angle of the model's normals and of normals computed from its depth;
   - relief height error in each scene's relief region, after the scale and
     offset a user would choose and removal of a best-fit plane;
-  - depth-edge F1;
+  - depth-edge F1, which scores 0 at a jump ratio where the prediction invents
+    edges and the truth has none (the results in the evidence file were
+    recorded when such ratios were skipped);
   - focal length error against the render camera and against EXIF;
   - means over scenes with 95 % bootstrap intervals.
 - **Cost**: time, peak GPU memory, peak resident memory and bytes read from

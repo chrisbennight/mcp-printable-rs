@@ -350,7 +350,9 @@ where `full_scale_mm` is the relief depth, recorded in the report.
 The three files are published in turn: the STL, the heightmap, then the
 report. After a storage error, inspect the paths before repeating the request.
 A rendered preview is not produced; render the STL with the `view` or `render`
-tools.
+tools. To measure the relief against the photograph, give its heightmap and the
+analysis's cache key to `photo.compare`; see
+[Validate photograph results](validation.md).
 
 ## Licences of bundled code
 

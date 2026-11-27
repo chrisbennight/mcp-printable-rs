@@ -176,6 +176,62 @@ fn photo_analysis() -> Value {
 }
 
 /// A relief built from an analysis, or the analysis job it waits for.
+/// A `photo compare` report: each input's measures, separately, with the
+/// analysis's own confidence scores in photo mode.
+fn photo_comparison() -> Value {
+    let number = json!({"type":["number","null"]});
+    let outline = object(
+        json!({"mean_px":number,"p95_px":number,"percent_of_diagonal":number}),
+        &["mean_px", "p95_px", "percent_of_diagonal"],
+    );
+    let photo = object(
+        json!({
+            "input":{"type":"string"}, "source":{"type":"string"}, "crop":{"type":"object"},
+            "silhouette_iou":number, "outline_distance":outline,
+            "normal_angle":object(json!({"median_deg":{"type":"number"},"within_15_deg":{"type":"number"},
+                "height_scale":{"type":"number","minimum":0}}), &["median_deg","within_15_deg","height_scale"]),
+            "shading":object(json!({"correlation":number,"analysis_correlation":number}),
+                &["correlation","analysis_correlation"])
+        }),
+        &[
+            "input",
+            "silhouette_iou",
+            "outline_distance",
+            "normal_angle",
+            "shading",
+        ],
+    );
+    let difference = json!({"type":"object","properties":{"pixels":{"type":"integer","minimum":0},
+        "rmse":{"type":"number"},"rmse_percent_of_range":number},"required":["pixels"]});
+    let outputs = object(
+        json!({"input":{"type":"string"},"reference":{"type":"string"},"alignment":{"type":"object"},
+            "correlation":number,"whole":difference,
+            "regions":{"type":"object","additionalProperties":difference}}),
+        &["input", "reference", "alignment", "whole", "regions"],
+    );
+    let synthetic = object(
+        json!({"input":{"type":"string"},"source":{"type":"string"},"absrel":{"type":"number"},
+            "edge_f1":number,"depth_normal_deg":{"type":"number"},"normal_deg":{"type":"number"},
+            "relief_pct":number}),
+        &["input", "source"],
+    );
+    object(
+        json!({
+            "mode":{"enum":["outputs","photo","synthetic"]},
+            "kind":{"enum":["relative","metric","logrel"]},
+            "inputs":{"type":"array","items":{"type":"string"},"maxItems":6},
+            "results":{"type":"array","maxItems":6,"items":{"anyOf":[photo, outputs, synthetic]}},
+            "analysis":object(json!({"cache_key":{"type":"string"},"scores":{"type":"object"},
+                "warnings":{"type":"array"}}), &["cache_key","scores","warnings"]),
+            "renders":{"type":"object"},
+            "artifacts":object(json!({"report":artifact(),"sheet":artifact(),
+                "differences":{"type":"array","items":artifact()},"scene_photograph":artifact()}),
+                &["report","sheet"])
+        }),
+        &["mode", "kind", "inputs", "results", "artifacts"],
+    )
+}
+
 fn photo_relief() -> [Value; 2] {
     let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
     let size =
@@ -1221,6 +1277,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 relief,
                 waiting,
                 photo_lithophane(),
+                photo_comparison(),
                 object(json!({
                     "jobs":{"type":"array","items":{"anyOf":[photo_job(),analysis_job()]}},
                     "requested_limit":{"type":"integer","minimum":1},

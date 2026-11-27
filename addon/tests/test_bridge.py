@@ -3864,6 +3864,55 @@ class HandlerValidationTests(unittest.TestCase):
                 handlers._job_import_model(params)
             handlers.close()
 
+    def test_geometry_camera_looks_down_through_pixel_centres(self) -> None:
+        from printable_bridge.handlers import geometry_camera
+
+        bounds = (-10.0, 30.0, 0.0, 20.0, 5.0)
+        flat = geometry_camera(bounds, 4, 2, "orthographic")
+        # The 40 x 20 footprint fills a 4 x 2 frame; rays start above the top.
+        self.assertEqual(flat["ray"](0, 0), ((-5.0, 15.0, 45.0), (0.0, 0.0, -1.0)))
+        self.assertEqual(flat["ray"](1, 3), ((25.0, 5.0, 45.0), (0.0, 0.0, -1.0)))
+        self.assertEqual((flat["pixel_size"], flat["focal_px"]), (10.0, None))
+        # A narrow footprint is widened to the image's proportions.
+        self.assertEqual(geometry_camera((0.0, 10.0, 0.0, 20.0, 0.0), 4, 2, "orthographic")["pixel_size"], 10.0)
+        lens = geometry_camera(bounds, 4, 2, "perspective")
+        focal = 4 * 50.0 / 36.0
+        self.assertAlmostEqual(lens["focal_px"], focal)
+        origin, direction = lens["ray"](0, 3)
+        self.assertEqual(origin, (10.0, 10.0, lens["origin_z"]))
+        self.assertAlmostEqual(direction[0], 1.5 / focal)
+        self.assertAlmostEqual(direction[1], 0.5 / focal)
+        self.assertEqual(direction[2], -1.0)
+        # The top of the footprint is inside the view, with a margin.
+        reach = (lens["origin_z"] - 5.0) * (2.0 / focal)
+        self.assertGreater(reach, 20.0)
+        with self.assertRaisesRegex(HandlerError, "projection"):
+            geometry_camera(bounds, 4, 2, "fisheye")
+
+    def test_geometry_render_is_only_for_the_render_worker_and_checks_its_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = replace(config(root, 9876), role="render_worker")
+            bpy = SimpleNamespace(
+                app=SimpleNamespace(version_string="5.2.0", background=True),
+                data=SimpleNamespace(scenes=[SimpleNamespace(cycles=SimpleNamespace(device=None))]),
+            )
+            watchdog = Mock()
+            handlers = BlenderHandlers(value, lambda: False, bpy, watchdog)
+            valid = {"path": ".printable/photo-compare/work/view.zip", "width": 8, "height": 6,
+                     "projection": "orthographic"}
+            for change, message in [({"path": "view.zip"}, "internal state"),
+                                    ({"path": ".printable/photo-compare/view.png"}, ".zip"),
+                                    ({"width": 0}, "width"), ({"height": 5000}, "height"),
+                                    ({"projection": "fisheye"}, "projection"), ({"lens": 1}, "unknown")]:
+                with self.subTest(change=change), self.assertRaisesRegex(Exception, message):
+                    handlers._job_render_geometry({**valid, **change})
+            watchdog.arm.assert_not_called()
+            handlers._config = replace(value, role="live")
+            with self.assertRaisesRegex(HandlerError, "background render worker"):
+                handlers._job_render_geometry(valid)
+            handlers.close()
+
     def test_picture_import_restores_optix_preferences_after_factory_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

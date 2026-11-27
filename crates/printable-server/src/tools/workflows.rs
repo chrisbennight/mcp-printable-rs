@@ -152,6 +152,7 @@ workflow!(PhotoRequest {
     Analyze(crate::recon::AnalyzeRequest) => "printable_photo_analyze",
     Relief(relief::ReliefRequest) => "printable_photo_relief",
     Lithophane(lithophane::LithophaneRequest) => "printable_photo_lithophane",
+    Compare(crate::recon::CompareRequest) => "printable_photo_compare",
     Status(crate::recon::PhotoJobRequest) => "printable_photo_job_status",
     List(crate::recon::PhotoJobListRequest) => "printable_photo_job_list",
     Cancel(crate::recon::PhotoJobRequest) => "printable_photo_job_cancel",
@@ -172,12 +173,14 @@ fn head_schema() -> Arc<JsonObject> {
 /// The `photo` input schema with the retained-job actions and only the
 /// generation actions the worker can serve.
 fn photo_schema<const DEPTH: bool, const OBJECT: bool, const ANALYZE: bool>() -> Arc<JsonObject> {
-    // A relief reads an analysis, so it is offered with analyze.
+    // A relief reads an analysis, and a comparison runs beside the analysis
+    // code, so both are offered with analyze.
     let removed: Vec<&str> = [
         ("depth", DEPTH),
         ("object", OBJECT),
         ("analyze", ANALYZE),
         ("relief", ANALYZE),
+        ("compare", ANALYZE),
     ]
     .into_iter()
     .filter(|(_, served)| !served)
@@ -192,7 +195,7 @@ fn photo_lithophane_schema() -> Arc<JsonObject> {
     without_actions(
         &workflow_schema_of::<PhotoRequest>(),
         &[
-            "depth", "object", "analyze", "relief", "status", "list", "cancel",
+            "depth", "object", "analyze", "relief", "compare", "status", "list", "cancel",
         ],
     )
 }
@@ -573,12 +576,12 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
 // The parts of the `photo` description, as macros so `concat!` can join them.
 macro_rules! photo_prefix {
     () => {
-        "Geometry from workspace images. lithophane makes a backlit lithophane, or an attenuation test strip, as an STL, preview and report on the CPU."
+        "Geometry from workspace images. lithophane makes a lithophane or attenuation test strip STL, preview and report on CPU."
     };
 }
 macro_rules! photo_depth_text {
     () => {
-        "depth writes a 16-bit relative depth PNG and optional normals; calibrate heights per the image-to-mold skill."
+        "depth writes a 16-bit relative depth PNG and optional normals; calibrate heights per image-to-mold."
     };
 }
 macro_rules! photo_object_text {
@@ -589,12 +592,12 @@ macro_rules! photo_object_text {
 
 macro_rules! photo_analyze_text {
     () => {
-        "analyze caches depth, normals, subject mask, focal length and confidence; relief builds a checked relief STL, heightmap and report from it."
+        "analyze caches depth, normals, mask, focal length and confidence; relief builds a checked STL from it; compare scores results against each other, the photograph or a synthetic scene."
     };
 }
 macro_rules! photo_jobs_text {
     () => {
-        "Photograph worker jobs return a job_id: follow with status, find with list, stop with cancel."
+        "Worker jobs return a job_id: follow with status, find with list, stop with cancel."
     };
 }
 
@@ -1106,6 +1109,37 @@ mod tests {
                 "{params}"
             );
         }
+    }
+
+    #[test]
+    fn photo_compare_is_offered_with_analyze_and_resolves() {
+        let call = resolve(
+            PHOTO,
+            json!({"action": "compare", "params": {"mode": "photo", "inputs": ["r.height.png"],
+                "analysis": "a".repeat(64), "image": "coin.jpg", "path": "r.compare.json"}}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_compare");
+        assert_eq!(call.arguments["mode"], "photo");
+        assert!(
+            resolve(
+                PHOTO,
+                json!({"action": "compare", "params": {"mode": "photo", "path": "r.json", "score": 1}})
+            )
+            .is_err()
+        );
+        let with = schema_actions(&photo_schema::<false, false, true>());
+        let without = schema_actions(&photo_schema::<true, true, false>());
+        assert!(with.iter().any(|action| action == "compare"), "{with:?}");
+        assert!(
+            !without.iter().any(|action| action == "compare"),
+            "{without:?}"
+        );
+        assert!(
+            !schema_actions(&photo_lithophane_schema())
+                .iter()
+                .any(|action| action == "compare")
+        );
     }
 
     #[test]
