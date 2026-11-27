@@ -439,11 +439,13 @@ therefore rebuilds it before writing it, with the same preparation as the
   about that many triangles over the subject's area, at least 0.1 mm. Finer
   detail is smoothed away; thin parts such as spokes and stems narrower than
   about two facets can break off and are then removed with the other pieces.
-- Only the largest part is kept, since a photograph shows one subject and
-  separate pieces are generator debris. Surfaces lying wholly apart from the
-  subject are dropped before the rebuild, counted in
-  `solid_rebuild.dropped_before_rebuild`, and the parts the rebuild leaves
-  beside the largest are counted in `solid_rebuild.smaller_parts`. The result is then scaled again so that its longest side is
+- Only the largest part of the rebuilt solid, the one enclosing the most
+  volume, is kept, since a photograph shows one subject and separate pieces
+  are generator debris; `solid_rebuild.smaller_parts` counts those removed.
+  Before the rebuild, surfaces that cannot join the one with the largest
+  bounds, because no chain of overlapping bounds links them to it, are
+  dropped and counted in `solid_rebuild.dropped_before_rebuild`, so the
+  rebuild does not spend memory on them. The result is then scaled again so that its longest side is
   `size_mm`, centred on the origin and standing on Z = 0, since the generator
   sized the surface with the removed pieces included. `solid_rebuild.size_mm`
   gives the final size.

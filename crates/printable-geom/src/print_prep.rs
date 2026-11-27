@@ -176,8 +176,9 @@ pub struct PrintPrepReport {
     /// With only the largest part kept, the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smaller_parts: Option<Parts>,
-    /// With only the largest part kept, separate source surfaces dropped
-    /// before the rebuild because they lie wholly apart from the largest.
+    /// With only the largest part kept, source surfaces dropped before the
+    /// rebuild because no chain of overlapping bounds joins them to the
+    /// surface with the largest bounds.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub dropped_before_rebuild: usize,
     /// Separate parts lying wholly within the slice the plinth's flat base
@@ -237,11 +238,11 @@ pub fn prepare_print(
         volume_mm3: (open_edges == 0).then(|| signed_volume(&vertices, &triangles)),
     };
     drop(source_pieces);
-    // Keeping only the largest part, surfaces that cannot touch it are
+    // Keeping only the largest part, surfaces that cannot join it are
     // dropped before the rebuild, which would otherwise spend its memory
     // meshing them only for them to be removed.
     let dropped_before_rebuild = if request.parts == KeptParts::Largest {
-        drop_distant_surfaces(&vertices, &mut triangles)
+        drop_distant_surfaces(&mut vertices, &mut triangles)
     } else {
         0
     };
@@ -255,8 +256,8 @@ pub fn prepare_print(
     } else {
         (inward, 0)
     };
-    // Sized after facing is settled, so the largest piece is the one that
-    // encloses the most volume, as the part finally kept is.
+    // Sized from the surface with the most area, which does not depend on
+    // the surface's facing.
     let edge = match (request.edge_length_mm, request.target_triangles) {
         (Some(edge), _) => edge,
         // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
@@ -758,10 +759,74 @@ fn surfaces(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> Surfaces {
 }
 
 impl Surfaces {
-    /// The surface with the most area: for a generated object, its subject.
+    /// The surface with the most area.
     fn largest(&self) -> Option<usize> {
         (0..self.area.len()).max_by(|a, b| self.area[*a].total_cmp(&self.area[*b]))
     }
+
+    /// The volume of a surface's bounds.
+    fn bounds_volume(&self, surface: usize) -> f64 {
+        let (low, high) = self.bounds[surface];
+        (0..3)
+            .map(|axis| (high[axis] - low[axis]).max(0.0))
+            .product()
+    }
+
+    fn overlap(&self, first: usize, second: usize) -> bool {
+        let ((first_low, first_high), (second_low, second_high)) =
+            (self.bounds[first], self.bounds[second]);
+        (0..3).all(|axis| {
+            first_low[axis] <= second_high[axis] && second_low[axis] <= first_high[axis]
+        })
+    }
+}
+
+/// Keep the subject, the surface with the largest bounds, and every surface
+/// joined to it through a chain of overlapping bounds, which are all that the
+/// rebuild can join to it; remove the other surfaces' triangles and the
+/// vertices only they used. Returns how many surfaces were removed.
+fn drop_distant_surfaces(vertices: &mut Vec<[f64; 3]>, triangles: &mut Vec<[u32; 3]>) -> usize {
+    let surfaces = surfaces(vertices, triangles);
+    let count = surfaces.area.len();
+    let Some(subject) = (0..count).max_by(|a, b| {
+        surfaces
+            .bounds_volume(*a)
+            .total_cmp(&surfaces.bounds_volume(*b))
+    }) else {
+        return 0;
+    };
+    let mut kept = vec![false; count];
+    kept[subject] = true;
+    let mut pending = vec![subject];
+    while let Some(surface) = pending.pop() {
+        for (other, joined) in kept.iter_mut().enumerate() {
+            if !*joined && surfaces.overlap(surface, other) {
+                *joined = true;
+                pending.push(other);
+            }
+        }
+    }
+    let dropped = kept.iter().filter(|kept| !**kept).count();
+    if dropped == 0 {
+        return 0;
+    }
+    let mut surface = surfaces.of_triangle.iter();
+    triangles.retain(|_| kept[*surface.next().expect("one surface per triangle") as usize]);
+    // The rebuild sizes its grid over every vertex, so unused ones go too.
+    let mut remap = vec![u32::MAX; vertices.len()];
+    let mut compact = Vec::new();
+    for triangle in triangles.iter_mut() {
+        for index in triangle.iter_mut() {
+            let slot = &mut remap[*index as usize];
+            if *slot == u32::MAX {
+                *slot = compact.len() as u32;
+                compact.push(vertices[*index as usize]);
+            }
+            *index = *slot;
+        }
+    }
+    *vertices = compact;
+    dropped
 }
 
 /// The area and longest side of the surface with the most area.
@@ -775,27 +840,6 @@ fn largest_piece(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) {
         .map(|axis| high[axis] - low[axis])
         .fold(0.0, f64::max);
     (surfaces.area[largest], extent)
-}
-
-/// Remove the triangles of surfaces whose bounds do not meet those of the
-/// surface with the most area, which cannot join it. Returns how many
-/// surfaces were removed.
-fn drop_distant_surfaces(vertices: &[[f64; 3]], triangles: &mut Vec<[u32; 3]>) -> usize {
-    let surfaces = surfaces(vertices, triangles);
-    let Some(largest) = surfaces.largest() else {
-        return 0;
-    };
-    let (low, high) = surfaces.bounds[largest];
-    let meets: Vec<bool> = surfaces
-        .bounds
-        .iter()
-        .map(|(other_low, other_high)| {
-            (0..3).all(|axis| other_low[axis] <= high[axis] && low[axis] <= other_high[axis])
-        })
-        .collect();
-    let mut kept = surfaces.of_triangle.iter();
-    triangles.retain(|_| meets[*kept.next().expect("one surface per triangle") as usize]);
-    meets.iter().filter(|meets| !**meets).count()
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -959,7 +1003,7 @@ mod tests {
         let mut largest = request(0.5);
         largest.parts = KeptParts::Largest;
         let (prepared, report) = prepare(mesh, &largest).unwrap();
-        // Both lie apart from the subject and go before the rebuild.
+        // Neither touches the subject's bounds, so both go before the rebuild.
         assert_eq!(report.dropped_before_rebuild, 2, "{report:?}");
         assert_eq!(report.shells, 1);
         assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
@@ -1097,15 +1141,15 @@ mod tests {
 
     #[test]
     fn a_triangle_target_counts_only_the_largest_part_when_only_it_is_kept() {
-        // A second block beside the first has half its surface; only the
-        // first, the surface with the most area, counts and is kept.
+        // The plate has more surface than the block, so it sets the facet
+        // size, but the block, which encloses more, is the part kept.
         let mut target = request(1.0);
         target.edge_length_mm = None;
         target.target_triangles = Some(50_000);
         target.parts = KeptParts::Largest;
         let mesh = joined(&[
             cuboid([0.0; 3], [40.0; 3]),
-            cuboid([60.0, 0.0, 0.0], [28.3; 3]),
+            cuboid([60.0, 0.0, 0.0], [80.0, 80.0, 0.5]),
         ]);
         let (_, report) = prepare(mesh, &target).unwrap();
         assert_eq!(report.shells, 1);
@@ -1423,20 +1467,44 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_apart_from_the_largest_are_dropped_before_the_rebuild() {
+    fn surfaces_joined_to_the_subject_are_kept_and_the_rest_dropped_before_the_rebuild() {
+        // The middle block overlaps the subject's bounds and the far block's,
+        // so all three stay; the speck far away goes, with its vertices.
         let mesh = joined(&[
             cuboid([0.0; 3], [20.0; 3]),
-            cuboid([50.0, 0.0, 0.0], [2.0; 3]),
-            cuboid([5.0, 5.0, 5.0], [2.0; 3]),
+            cuboid([18.0, 0.0, 0.0], [10.0, 5.0, 5.0]),
+            cuboid([26.0, 0.0, 0.0], [10.0, 5.0, 5.0]),
+            cuboid([200.0, 0.0, 0.0], [2.0; 3]),
         ]);
+        let (mut vertices, mut triangles) = mesh.clone();
+        assert_eq!(drop_distant_surfaces(&mut vertices, &mut triangles), 1);
+        assert_eq!((vertices.len(), triangles.len()), (24, 36));
+        assert!(vertices.iter().all(|vertex| vertex[0] <= 36.0));
         let mut largest = request(0.5);
         largest.parts = KeptParts::Largest;
         let (_, report) = prepare(mesh, &largest).unwrap();
-        // The distant cube goes before the rebuild; the one inside the block
-        // joins it.
         assert_eq!(report.dropped_before_rebuild, 1, "{report:?}");
-        assert!(report.smaller_parts.is_none(), "{report:?}");
-        assert!((report.volume_mm3 - 8000.0).abs() < 200.0, "{report:?}");
+        assert_eq!(report.shells, 1);
+        // The three blocks join: 8000 + 250 + 250, less 10 overlapping.
+        assert!((report.volume_mm3 - 8490.0).abs() < 200.0, "{report:?}");
+    }
+
+    #[test]
+    fn a_slab_with_more_surface_does_not_displace_the_cube() {
+        // A disjoint slab has more surface than the cube beside it, but the
+        // cube has the larger bounds, so it is the subject and is kept.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [40.0; 3]),
+            cuboid([60.0, 0.0, 0.0], [80.0, 80.0, 2.0]),
+        ]);
+        let mut largest = request(1.0);
+        largest.edge_length_mm = None;
+        largest.parts = KeptParts::Largest;
+        let (_, report) = prepare(mesh, &largest).unwrap();
+        assert_eq!(report.shells, 1);
+        assert!((report.volume_mm3 - 64_000.0).abs() < 1_000.0, "{report:?}");
+        assert!((report.size_mm[2] - 40.0).abs() < 0.5, "{report:?}");
+        assert_eq!(report.dropped_before_rebuild, 1, "{report:?}");
     }
 
     #[test]

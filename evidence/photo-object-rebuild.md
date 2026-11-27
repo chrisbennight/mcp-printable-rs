@@ -21,8 +21,8 @@ the last column; its times are not comparable.
 | Surface | Source shells / open edges | Result triangles | Facet edge | Result size (mm) | Wall s | CPU s | Peak memory | Peak memory, x86-64 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Marble bust | 20,847 / 21,472 | 420,988 | 0.40 mm | 64.0 × 60.6 × 100.0 | 3.7 | 5.0 | 407 MiB | 548 MiB |
-| Bicycle | 141,853 / 84,198 | 61,312 | 0.43 mm | 100.0 × 26.8 × 76.6 | 3.9 | 4.7 | 391 MiB | 430 MiB |
-| Chess set | 13,108 / 15,942 | 177,116 | 0.40 mm | 37.5 × 44.3 × 100.0 | 1.4 | 1.7 | 181 MiB | 278 MiB |
+| Bicycle | 141,853 / 84,198 | 61,312 | 0.43 mm | 100.0 × 26.8 × 76.6 | 3.9 | 4.6 | 391 MiB | 434 MiB |
+| Chess set | 13,108 / 15,942 | 176,896 | 0.40 mm | 37.5 × 44.3 × 100.0 | 1.3 | 1.6 | 173 MiB | 252 MiB |
 
 Every result was one shell and passed the strict check: a valid solid with no
 self-intersections and no shells touching or crossing. "Source shells" counts
@@ -37,8 +37,12 @@ What the results show:
   rebuilt one, measured without rescaling. About 1% of the rebuilt surface lies
   1 to 9 mm from the raw one, at heights between 21 and 34 mm, most likely
   where it spans openings in the raw surface.
-- Only the largest part is kept, so the chess set's result is one piece, the
-  largest, rescaled to 100 mm; the other pieces are dropped before the rebuild.
+- Only the largest part is kept, so the chess set's result is one piece,
+  rescaled to 100 mm. Its other 11 surfaces share no chain of overlapping
+  bounds with the subject, the surface with the largest bounds, and are
+  dropped before the rebuild. Without that, the whole set would be rebuilt at
+  the subject's facet size, 0.14 mm before rescaling, and the worker ran out of
+  its 1 GiB address space.
 - At the default facet size the bicycle's thinnest parts break away and are
   removed with the other pieces: the kept part is 94 mm long before rescaling,
   against the generated 100 mm, and 1,308 mm³ in volume. With `edge_length_mm: 0.2` the kept
