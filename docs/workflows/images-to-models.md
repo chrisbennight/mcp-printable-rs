@@ -6,7 +6,7 @@ image and your scale choices with the project so you can revise the result.
 
 | Goal | Route | Files and checks |
 | --- | --- | --- |
-| Raised artwork, a plaque, a mold master, or a casting cavity | [Image-to-mold skill](../image-to-mold.md); optional Marigold V2 photo depth/normals | Calibrated 16-bit height map, positive/negative geometry, optional tray, mesh checks and sections |
+| Raised artwork, a plaque, a mold master, or a casting cavity | [Image-to-mold skill](../image-to-mold.md); [`photo.relief`](../photo-geometry.md#build-a-relief) for photographs | Calibrated 16-bit height map, positive/negative geometry, optional tray, mesh checks and sections |
 | An object, figure, or character from one image | [Pixal3D or TRELLIS.2](../photo-object.md) | Scaled STL, generation settings and input hash; repair and validate before slicing |
 | A recognizable head and printable bust from portraits | [FLAME reconstruction and print preparation](../flame-models.md#from-photographs-to-a-bust-in-one-step) | Fitted coefficients/detail maps, optional viewing texture, watertight bust STL and print-related reports |
 
@@ -48,7 +48,27 @@ regions, and whether you want a positive master, a negative cavity, or a tray
 for pouring silicone around a master. Clarify casting orientation and the
 smallest details you want to reproduce.
 
-For a photograph, `photo.depth` can supply relative depth and optional surface
+For a photograph, `photo.relief` builds the relief in one request when the
+photograph geometry models are configured:
+
+```json
+{"action":"relief","params":{
+  "image":"projects/plaque/photos/carving.jpg",
+  "path":"projects/plaque/models/carving.stl",
+  "preset":"plaque","width_mm":120,"relief_depth_mm":3
+}}
+```
+
+The first request returns the photograph's analysis job; follow it with
+`photo.status` and repeat the request once it succeeds. The result is a
+binary STL, a 16-bit heightmap whose millimetre scale is in the report, and a
+report with the analysis models, settings, dimensions and printability checks.
+Presets are `plaque`, `coin`, `mold` (mirrored and inverted, inside a wall) and
+`artwork`; their values are starting points, not measured optima. See
+[Build a relief](../photo-geometry.md#build-a-relief) for every option.
+The depth is an estimate: review the result against the photograph.
+
+Without `relief`, `photo.depth` can supply relative depth and optional surface
 normals. Its values are estimates, not millimetres. Calibrate the selected range
 to chosen physical heights, compressing large steps if they would bury fine
 detail. Flat artwork may be better served by deliberately assigned heights.

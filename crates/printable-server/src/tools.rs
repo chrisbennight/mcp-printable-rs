@@ -11,6 +11,7 @@ mod head;
 mod native;
 pub mod output;
 mod photo;
+pub mod relief;
 pub mod workflows;
 use head::{
     HeadCreateParams, HeadExportParams, HeadModelsParams, HeadPhotoToBustParams,
@@ -2428,6 +2429,9 @@ async fn dispatch_value(
         "printable_photo_object" => photo::object(Arc::clone(workspace), settings, de(args)?).await,
         "printable_photo_analyze" => {
             photo::analyze(Arc::clone(workspace), settings, de(args)?).await
+        }
+        "printable_photo_relief" => {
+            relief::relief(Arc::clone(workspace), settings, de(args)?).await
         }
         "printable_photo_job_status" => photo::job_status(settings, de(args)?).await,
         "printable_photo_job_list" => photo::job_list(settings, de(args)?).await,
@@ -5418,6 +5422,12 @@ fn worker_error_code(code: &str) -> &'static str {
         "changed_while_reading" => "changed_while_reading",
         "storage_budget_exceeded" => "storage_budget_exceeded",
         "storage_accounting_incomplete" => "storage_accounting_incomplete",
+        "relief_grid_size" => "relief_grid_size",
+        "relief_too_large" => "relief_too_large",
+        "relief_invalid_value" => "relief_invalid_value",
+        "relief_empty_mask" => "relief_empty_mask",
+        "relief_missing_input" => "relief_missing_input",
+        "relief_invalid_map" => "relief_invalid_map",
         _ => "geometry",
     }
 }
@@ -6837,6 +6847,12 @@ mod visual_contract_tests {
             "validation",
             "invalid_assembly_part",
             "geometry_worker_io",
+            "relief_grid_size",
+            "relief_too_large",
+            "relief_invalid_value",
+            "relief_empty_mask",
+            "relief_missing_input",
+            "relief_invalid_map",
         ] {
             assert_eq!(worker_error_code(code), code);
         }

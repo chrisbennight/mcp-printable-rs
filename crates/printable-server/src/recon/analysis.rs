@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom};
 use super::*;
 use photo_jobs::JobInput;
 
-const CACHE_ROOT: &str = ".printable/photo-analysis";
+pub(crate) const CACHE_ROOT: &str = ".printable/photo-analysis";
 /// Changes whenever the key's inputs or the stored layout change.
 const CACHE_FORMAT: &str = "printable-photo-analysis-cache 1";
 /// Each map the analyzer writes, by manifest name and file name.
