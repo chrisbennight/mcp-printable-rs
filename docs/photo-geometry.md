@@ -80,7 +80,7 @@ a persistent directory writable by uid 10001. The settings are listed in
 | `PRINTABLE_RECON_GEOMETRY_CACHE` | unset (disabled) | Where downloaded and converted model files are kept |
 | `PRINTABLE_RECON_GEOMETRY_TIMEOUT_SECONDS` | 900 | Deadline for one model run |
 | `PRINTABLE_RECON_GEOMETRY_PREPARATION_TIMEOUT_SECONDS` | 86400 | Deadline for downloading and converting models |
-| `PRINTABLE_RECON_CPU_THREADS` | 4 | CPU threads for every photograph script |
+| `PRINTABLE_RECON_CPU_THREADS` | 4 | CPU threads for photograph scripts; TRELLIS.2 generation keeps its own eight |
 
 `PRINTABLE_RECON_DEVICE=cpu` keeps the geometry models off the GPU entirely;
 a run that asks for the GPU is then refused.
@@ -95,7 +95,9 @@ digest, into the cache directory. Downloads use the operator's
 Only a complete, verified copy is published as a snapshot under
 `snapshots/`; later preparations reuse it without contacting the network.
 Marigold V2 is also converted once into the streamed layout the worker reads,
-under `converted/`. Model runs never download anything.
+under `converted/`. A `photo` analyze job prepares the models it needs before
+it runs them, so the first analysis that uses a model downloads it; there is
+no separate preparation command. Model runs never download anything.
 
 ## Status
 

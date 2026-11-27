@@ -30,6 +30,11 @@ impl GeometryConfig {
         else {
             return Ok(None);
         };
+        // Preparation runs in a scratch working directory, so a relative cache
+        // would resolve differently there than for readiness.
+        if !Path::new(&cache).is_absolute() {
+            return Err("PRINTABLE_RECON_GEOMETRY_CACHE must be an absolute path".to_string());
+        }
         let seconds = |name: &str, default: u64, bounds: std::ops::RangeInclusive<u64>| {
             let Some(value) = get(name) else {
                 return Ok(Duration::from_secs(default));
@@ -269,6 +274,10 @@ print(json.dumps({'result': {'entry': request['entry'], 'device': request['devic
         assert_eq!(config.cache, PathBuf::from("/models/geometry"));
         assert_eq!(config.timeout, Duration::from_secs(900));
         assert_eq!(config.preparation_timeout, Duration::from_secs(86400));
+        let relative = |name: &str| {
+            (name == "PRINTABLE_RECON_GEOMETRY_CACHE").then(|| "models/geometry".to_string())
+        };
+        assert!(GeometryConfig::configure(&relative).is_err());
         let with = |key: &'static str, value: &'static str| {
             GeometryConfig::configure(&move |name| {
                 if name == key {
