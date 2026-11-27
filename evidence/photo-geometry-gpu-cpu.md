@@ -130,10 +130,12 @@ relief and lithophane rows, which run in the server and its geometry worker,
 do not include the server's own reads of the cached maps or the image, and the
 CPU relief row has no server memory figure. The relief has 767,250 triangles and the lithophane 769,778.
 
-Every relief and lithophane passed its checks. The relief is built from the
-cached analysis, so a relief request for a photograph that has not been
-analysed takes the analysis time plus the relief time: about 20 s on the GPU
-and 48 s on the processor here. Lithophane needs no analysis and no GPU.
+Every relief and lithophane passed its checks. A relief request for a
+photograph that has not been analysed returns the analysis job; the caller
+repeats the request once that job succeeds. The two steps were timed
+separately, and together they took about 20 s on the GPU and 48 s on the
+processor here; the end-to-end time from the first relief request to the STL
+was not measured as one figure. Lithophane needs no analysis and no GPU.
 
 MoGe-3 ViT-g, the default GPU mask model, takes about four fifths of the
 GPU analysis time. Part of that may be Triton recompiling its kernels: the
@@ -178,20 +180,23 @@ bootstrap intervals from the benchmark's `bootstrap_mean`.
 | #339 benchmark, Marigold V2 depth | 8.13° | 6.07° | 16.9 % |
 
 - **The product reproduces the benchmark.** The default route's analysis
-  depth scored exactly the benchmark's Depth Anything 3 mono large numbers on
-  every scene: 3.75° over nine scenes and 15.3 % over the six shallow scenes,
+  depth scored the benchmark's Depth Anything 3 mono large numbers on every
+  scene, identical at the report's precision (the largest difference is
+  0.0001°, on the lettering scene): 3.75° over nine scenes and 15.3 % over the six shallow scenes,
   the 3.8° and 15.3 % #339 recorded. The Marigold route's maps scored the
   benchmark's Marigold V2 numbers to within 0.02° on every scene.
 - **Cross-check.** The benchmark's own Depth Anything 3 prediction for the
   relief scene, saved as a TIFF and scored by `photo.compare`, gave 3.36° and
   5.69 %, the benchmark report's values for that scene.
 - **Surface angle**: the default route's depth (3.75°, 2.87-4.89) is better
-  than Marigold V2's depth (8.13°, 5.39-10.75); the intervals do not
-  overlap. Marigold V2's own normal map (4.0°) is close to the default
+  than Marigold V2's depth (8.13°, 5.39-10.75). The paired difference over the
+  same nine scenes is -4.38° with a 95 % bootstrap interval of -6.57° to
+  -2.30°, which excludes zero. Marigold V2's own normal map (4.0°) is close to the default
   route's depth-derived normals, as #339 found.
 - **Relief height**: 15.3 % (10.7-19.8) against 16.9 % (11.9-20.9). The
-  intervals overlap, so this measurement does not show the default route to
-  be better or worse on relief height; the difference is not established either way.
+  paired difference over the same six shallow scenes is -1.62 percentage
+  points with a 95 % bootstrap interval of -5.84 to +1.40, which includes
+  zero, so the difference is not established either way.
 - **The written relief scores worse than its analysis.** The heightmap of the
   relief STL compresses slopes on purpose. With the default compression its
   surface error rose to 5.0° on the shallow scenes (9.8° over all nine, where
