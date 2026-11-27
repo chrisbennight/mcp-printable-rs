@@ -20,9 +20,11 @@ use crate::bust::{add_plinth, hollow_out, mesh_from, single_precision};
 use crate::print_check::{self, PrintChecks, SurfaceFinding, root};
 use crate::{GeometryError, Hollow, HollowReport, Plinth, PlinthReport, TriangleMesh, remesh};
 
-/// A part whose lowest point lies more than this many grid steps above the
-/// lowest point of the whole rests on nothing.
-const FLOATING_STEPS: f64 = 1.0;
+/// A part whose lowest point in the source lies farther than this from the
+/// build plate, about one printed layer, does not rest on it. The same band
+/// above the plate counts as resting on it in the overhang check, since the
+/// first layer covers it.
+const PLATE_TOLERANCE_MM: f64 = 0.2;
 /// The default edge is this share of the longest side, which keeps a rebuilt
 /// solid at a few hundred thousand triangles whatever its size and, at
 /// 100 mm, matches a 0.4 mm nozzle; but no finer than the minimum.
@@ -47,6 +49,10 @@ pub struct PrintPrepOptions {
     pub hollow: Option<Hollow>,
     #[serde(default)]
     pub checks: Option<PrintChecks>,
+    /// Scale the result so that its longest side has this length, centred on
+    /// the origin, as a generated object is sized.
+    #[serde(default)]
+    pub longest_side_mm: Option<f64>,
 }
 
 /// The mesh as it was given.
@@ -192,21 +198,38 @@ pub fn prepare_print(
     let (openings_closed, openings_left) = close_openings(&mut vertices, &mut triangles);
     drop(pieces);
     let shells_turned = turn_inside_out_shells(&vertices, &mut triangles);
+    // Where each source piece reaches lowest. Floating parts are judged from
+    // the source, since the rebuild moves surfaces by up to a grid step.
+    let bottoms = piece_bottoms(&vertices, &triangles);
 
     let solid = remesh::remesh_union(vertices, triangles, edge)?;
     let spacing = edge / remesh::EDGE_PER_SPACING;
     let parts = solids(&solid);
-    let lowest_of = |part: &Manifold| part.bounding_box().map_or(f64::INFINITY, |b| b.min()[2]);
+    // A rebuilt part reaches as low as the lowest source piece within it.
+    let base_of = |part: &Manifold| {
+        let Some(bounds) = part.bounding_box() else {
+            return f64::INFINITY;
+        };
+        let (low, high) = (bounds.min(), bounds.max());
+        bottoms
+            .iter()
+            .filter(|point| {
+                (0..3).all(|axis| {
+                    low[axis] - spacing <= point[axis] && point[axis] <= high[axis] + spacing
+                })
+            })
+            .map(|point| point[2])
+            .fold(low[2], f64::min)
+    };
     // The build plate is under the largest part, so that a small fragment
     // lower down cannot take its place.
     let plate = parts
         .iter()
         .max_by(|a, b| a.volume().total_cmp(&b.volume()))
-        .map_or(0.0, lowest_of);
-    let lowest = parts.iter().map(lowest_of).fold(f64::INFINITY, f64::min);
+        .map_or(0.0, base_of);
     let floating: Vec<Manifold> = parts
         .into_iter()
-        .filter(|part| (lowest_of(part) - plate).abs() > FLOATING_STEPS * spacing)
+        .filter(|part| (base_of(part) - plate).abs() > PLATE_TOLERANCE_MM)
         .collect();
     let floating_parts = (!floating.is_empty()).then(|| FloatingParts {
         count: floating.len(),
@@ -214,22 +237,35 @@ pub fn prepare_print(
         removed: !request.keep_floating_parts,
     });
     // Subtracting the floating parts keeps any cavity inside the others.
-    let (solid, base) = if request.keep_floating_parts || floating.is_empty() {
-        (solid, lowest)
+    let solid = if request.keep_floating_parts || floating.is_empty() {
+        solid
     } else {
-        (
-            Manifold::batch_difference(&[vec![solid], floating].concat()),
-            plate,
-        )
+        Manifold::batch_difference(&[vec![solid], floating].concat())
     };
-    let solid = solid.translate(0.0, 0.0, -base);
+    let bounds = solid
+        .bounding_box()
+        .ok_or_else(|| GeometryError::Kernel("the prepared solid is empty".into()))?;
+    let (low, high) = (bounds.min(), bounds.max());
+    let solid = match request.longest_side_mm {
+        Some(longest) => {
+            let scale = longest / bounds.dimensions().into_iter().fold(0.0, f64::max);
+            solid
+                .translate(
+                    -(low[0] + high[0]) / 2.0,
+                    -(low[1] + high[1]) / 2.0,
+                    -low[2],
+                )
+                .scale(scale, scale, scale)
+        }
+        None => solid.translate(0.0, 0.0, -low[2]),
+    };
 
     // The overhang check sees the solid before a plinth, whose chamfer is
     // meant to slope.
     let surface = mesh_from(&solid);
-    let mut overhang = request
-        .checks
-        .map(|checks| print_check::overhang_above(&surface, checks.overhang_degrees, &[], spacing));
+    let mut overhang = request.checks.map(|checks| {
+        print_check::overhang_above(&surface, checks.overhang_degrees, &[], PLATE_TOLERANCE_MM)
+    });
     drop(surface);
     let (solid, plinth) = match request.plinth {
         Some(plinth) => {
@@ -301,6 +337,21 @@ fn solids(solid: &Manifold) -> Vec<Manifold> {
         .into_iter()
         .filter(|piece| piece.volume() > 0.0)
         .collect()
+}
+
+/// The lowest vertex of each connected piece.
+fn piece_bottoms(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> Vec<[f64; 3]> {
+    let pieces = pieces(vertices.len(), triangles);
+    let mut bottoms = vec![[0.0, 0.0, f64::INFINITY]; pieces.count];
+    for (face, triangle) in triangles.iter().enumerate() {
+        let bottom = &mut bottoms[pieces.of_triangle[face] as usize];
+        for &index in triangle {
+            if vertices[index as usize][2] < bottom[2] {
+                *bottom = vertices[index as usize];
+            }
+        }
+    }
+    bottoms
 }
 
 /// Connected pieces of a mesh, joined through shared vertices.
@@ -530,8 +581,9 @@ fn turn_inside_out_shells(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]]) -> 
                     && bounds[inner].1[axis] <= bounds[outer].1[axis]
             })
     };
-    // The piece directly around each piece: the smallest that contains one
-    // of its vertices, by the winding count of a ray from that vertex.
+    // The piece directly around each piece: the smallest that contains every
+    // one of its vertices, by the winding count of a ray from each, so that a
+    // piece reaching out through the surface of another is not nested in it.
     let points: Vec<Vector> = vertices
         .iter()
         .map(|vertex| Vector::from_array(*vertex))
@@ -539,7 +591,9 @@ fn turn_inside_out_shells(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]]) -> 
     let mut columns: HashMap<usize, remesh::Columns> = HashMap::new();
     let mut parent: Vec<Option<usize>> = vec![None; pieces.count];
     for inner in 0..pieces.count {
-        let probe = vertices[members[inner][0][0] as usize];
+        let mut probes: Vec<u32> = members[inner].iter().flatten().copied().collect();
+        probes.sort_unstable();
+        probes.dedup();
         for outer in (0..pieces.count).filter(|&outer| within(inner, outer)) {
             let (low, high) = bounds[outer];
             let cell = (0..2)
@@ -560,11 +614,14 @@ fn turn_inside_out_shells(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]]) -> 
             }) else {
                 continue;
             };
-            let crossing = grid
-                .candidates(probe)
-                .iter()
-                .map(|&face| members[outer][face as usize].map(|index| vertices[index as usize]));
-            if remesh::winding(probe, crossing) != 0
+            let inside = |&index: &u32| {
+                let probe = vertices[index as usize];
+                let crossing = grid.candidates(probe).iter().map(|&face| {
+                    members[outer][face as usize].map(|index| vertices[index as usize])
+                });
+                remesh::winding(probe, crossing) != 0
+            };
+            if probes.iter().all(inside)
                 && parent[inner].is_none_or(|current| size(outer) < size(current))
             {
                 parent[inner] = Some(outer);
@@ -692,6 +749,7 @@ mod tests {
             plinth: None,
             hollow: None,
             checks: None,
+            longest_side_mm: None,
         }
     }
 
@@ -808,6 +866,88 @@ mod tests {
         let (_, report) = prepare(mesh, &request(0.5)).unwrap();
         assert_eq!(report.shells_turned, 2);
         assert!((report.volume_mm3 - 936.0).abs() < 30.0, "{report:?}");
+    }
+
+    /// An L-shaped prism 10 mm tall: a 10 mm square less the 6 mm square
+    /// notch at its far corner.
+    fn notched() -> Soup {
+        let outline = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 4.0],
+            [4.0, 4.0],
+            [4.0, 10.0],
+            [0.0, 10.0],
+        ];
+        let mut vertices: Vec<[f64; 3]> = outline.iter().map(|[x, y]| [*x, *y, 0.0]).collect();
+        vertices.extend(outline.iter().map(|[x, y]| [*x, *y, 10.0]));
+        let mut triangles = Vec::new();
+        for k in 1..5u32 {
+            triangles.push([0, k + 1, k]);
+            triangles.push([6, 6 + k, 7 + k]);
+        }
+        for k in 0..6u32 {
+            let next = (k + 1) % 6;
+            triangles.push([k, next, next + 6]);
+            triangles.push([k, next + 6, k + 6]);
+        }
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn a_piece_reaching_out_of_another_is_not_nested_in_it() {
+        // An inward-facing cube lies partly in the L's material and partly in
+        // its notch, within the L's bounds. It is not a cavity of the L, so
+        // it is turned around on its own and joins it.
+        let (cube, cube_triangles) = cuboid([2.0, 2.0, 2.0], [4.0, 4.0, 3.0]);
+        let inward: Vec<[u32; 3]> = cube_triangles
+            .iter()
+            .map(|[a, b, c]| [*a, *c, *b])
+            .collect();
+        let (_, alone) = prepare(notched(), &request(0.25)).unwrap();
+        assert!((alone.volume_mm3 - 640.0).abs() < 15.0, "{alone:?}");
+        let (_, report) = prepare(joined(&[notched(), (cube, inward)]), &request(0.25)).unwrap();
+        assert_eq!((report.shells_turned, report.shells), (1, 1));
+        // The L's 640 mm^3 and the 12 mm^3 of cube in the notch.
+        assert!((report.volume_mm3 - 652.0).abs() < 15.0, "{report:?}");
+    }
+
+    #[test]
+    fn a_part_a_few_millimetres_above_the_plate_floats_at_a_coarse_facet_size() {
+        // At a 3 mm facet the grid step is 5 mm, more than the 3 mm gap.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [60.0, 60.0, 30.0]),
+            cuboid([80.0, 0.0, 3.0], [12.0; 3]),
+        ]);
+        let (_, report) = prepare(mesh, &request(3.0)).unwrap();
+        assert_eq!(report.floating_parts.unwrap().count, 1, "{report:?}");
+        assert_eq!(report.shells, 1);
+    }
+
+    #[test]
+    fn a_requested_longest_side_rescales_the_result_after_floating_parts_go() {
+        // The speck made the source 50 mm long; the block alone is 20 mm.
+        let mesh = joined(&[
+            cuboid([0.0; 3], [20.0, 10.0, 10.0]),
+            cuboid([48.0, 0.0, 20.0], [2.0; 3]),
+        ]);
+        let mut sized = request(0.25);
+        sized.longest_side_mm = Some(50.0);
+        let (prepared, report) = prepare(mesh, &sized).unwrap();
+        assert!((report.size_mm[0] - 50.0).abs() < 1e-6, "{report:?}");
+        assert!((report.size_mm[1] - 25.0).abs() < 0.5, "{report:?}");
+        let low = prepared
+            .vertices
+            .iter()
+            .map(|v| v[2])
+            .fold(f64::INFINITY, f64::min);
+        let (west, east) = prepared
+            .vertices
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(w, e), v| {
+                (w.min(v[0]), e.max(v[0]))
+            });
+        assert!(low.abs() < 1e-6 && (west + east).abs() < 1e-4);
     }
 
     #[test]

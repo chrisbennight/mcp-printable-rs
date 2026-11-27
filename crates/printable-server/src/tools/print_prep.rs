@@ -263,6 +263,7 @@ pub(super) async fn prepare_print(
             overhang_degrees: printer.maximum_overhang_degrees,
             min_feature_mm: printer.minimum_wall_mm,
         }),
+        longest_side_mm: None,
     };
     let overhang_angle_degrees = printer.map_or(
         ValidationOptions::default().overhang_angle_degrees,

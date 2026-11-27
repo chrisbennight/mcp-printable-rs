@@ -431,9 +431,10 @@ therefore rebuilds it before writing it, with the same preparation as the
 - Openings are closed, inconsistent facing is fixed and the surface is rebuilt
   as one exact solid with facets 0.4% of `size_mm` long (0.4 mm at the default
   100 mm), at least 0.1 mm. Finer detail is smoothed away.
-- Pieces that do not rest on the build plate are removed. The physical size is
-  still set by `size_mm`, though the rebuild and removed pieces can change the
-  extent slightly; `preparation.size_mm` gives the result's size.
+- Pieces that do not rest on the build plate are removed. The result is then
+  scaled again so that its longest side is `size_mm`, centred on the origin
+  and standing on Z = 0, since the generator sized the surface with any
+  removed pieces included. `preparation.size_mm` gives the final size.
 - Overhangs steeper than 45 degrees and walls thinner than 0.4 mm, a common
   FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
   with the shells, volume and what was changed.
@@ -442,8 +443,9 @@ therefore rebuilds it before writing it, with the same preparation as the
   written: the request or job fails with `print_check_failed`.
 - When the rebuild is refused or the geometry worker fails, for example by
   running out of memory, the generated surface is not lost. It is written
-  beside the requested path as `NAME.raw.stl`, under the same `overwrite`
-  rule, and the error message names it. Run `scene` `prepare_print` on it
+  beside the requested path under a new name, `NAME.raw-ID.stl` with a random
+  `ID`, so it never replaces an existing file, and the error message names it.
+  If that publication fails, its own error is returned instead. Run `scene` `prepare_print` on it
   with other settings, such as a larger `edge_length_mm`. It is published in
   the job's publishing phase, so a job cancelled before then keeps nothing.
 

@@ -62,7 +62,7 @@ The source is read in millimetres with Z up. The preparation:
 1. Turns triangles to face the same way as most of their piece and closes
    each opening whose rim is a simple loop. A closed piece that faces inwards
    with nothing around it is turned around together with the pieces nested
-   inside it, so the cavity of an inverted hollow part stays empty. A piece
+   wholly inside it, so the cavity of an inverted hollow part stays empty. A piece
    inside another keeps its facing relative to the piece around it, so a
    cavity stays a cavity.
 2. Rebuilds the union of everything as one exact solid with facets about
@@ -74,7 +74,9 @@ The source is read in millimetres with Z up. The preparation:
    edge for fine detail.
 3. Removes parts that do not rest on the build plate, which lies under the
    largest part, since they would print in mid-air; a small fragment below the
-   largest part counts as such a part. They are usually debris. Set
+   largest part counts as such a part. A part rests on the plate when its
+   lowest point in the source is within 0.2 mm, about one layer, of the
+   plate's. They are usually debris. Set
    `keep_floating_parts` to keep them.
    Separate parts that do rest on the plate are kept and counted.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
@@ -84,7 +86,8 @@ The source is read in millimetres with Z up. The preparation:
    suits resin; FDM infill already saves material. It needs one solid, so join
    separate parts with a plinth first.
 5. With a `printer`, reports surface facing down more steeply than its
-   overhang angle and walls thinner than its minimum wall, which defaults to
+   overhang angle, other than within 0.2 mm of the plate, where the first
+   layer covers it, and walls thinner than its minimum wall, which defaults to
    the nozzle diameter.
 
 The result stands on Z = 0. `preparation` reports the source's triangles,

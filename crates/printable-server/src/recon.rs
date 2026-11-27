@@ -512,6 +512,8 @@ pub const OBJECT_STEPS: std::ops::RangeInclusive<u32> = 1..=50;
 pub const OBJECT_FOV_DEGREES: std::ops::RangeInclusive<f64> = 5.0..=90.0;
 /// Longest sides, in millimetres, an object request may choose.
 pub const OBJECT_SIZES_MM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
+/// The longest side of an object when the request gives none.
+const OBJECT_DEFAULT_SIZE_MM: f64 = 100.0;
 /// Triangle counts an object request may simplify its mesh towards.
 pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_000_000;
 /// Generated objects are checked for overhangs steeper than this, and for
@@ -1039,23 +1041,23 @@ impl ReconWorker {
         if request.model == ObjectModel::Trellis2 {
             return self.generate_trellis(request, control).await;
         }
-        let _permit = self.job_permit(control).await?;
-
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
         if let Some(control) = control {
             control.verify_input(snapshot.path())?;
         }
-        let staging = tempfile::Builder::new()
-            .prefix("printable-object-")
-            .tempdir()?;
-        let mesh = staging.path().join("object.stl");
         let image_sha256 = file_digest(snapshot.path())?;
+        // Read before taking the shared photograph lane.
         let analysis = match request.fov_degrees {
             Some(_) => None,
             None => Some(self.cached_focal_length(&image_sha256)?),
         };
+        let _permit = self.job_permit(control).await?;
+        let staging = tempfile::Builder::new()
+            .prefix("printable-object-")
+            .tempdir()?;
+        let mesh = staging.path().join("object.stl");
         let mut job = json!({
             "image": snapshot.path(),
             "model": self.config.object_model,
@@ -1154,6 +1156,7 @@ impl ReconWorker {
         let source = mesh.to_path_buf();
         let cancel = control.map(|control| control.cancel.clone());
         let time_limit = deadline.saturating_duration_since(std::time::Instant::now());
+        let size_mm = request.size_mm.unwrap_or(OBJECT_DEFAULT_SIZE_MM);
         let rebuilt = tokio::task::spawn_blocking(move || {
             let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
                 cancel.as_ref().is_some_and(|token| token.is_cancelled())
@@ -1169,6 +1172,8 @@ impl ReconWorker {
                         overhang_degrees: OBJECT_OVERHANG_DEGREES,
                         min_feature_mm: Some(OBJECT_MINIMUM_WALL_MM),
                     }),
+                    // Removed debris no longer counts towards the size.
+                    longest_side_mm: Some(size_mm),
                 };
                 let prepared = crate::tools::print_prep::run_worker(
                     &worker,
@@ -1205,9 +1210,11 @@ impl ReconWorker {
     }
 
     /// After a failed rebuild, publish the generated surface beside the
-    /// requested path as `NAME.raw.stl`, under the request's overwrite rule,
-    /// and name it in the error, so that it can be prepared with other
-    /// settings without generating it again.
+    /// requested path under a new name, `NAME.raw-ID.stl` with a random ID,
+    /// which replaces nothing, and name it in the error, so that it can be
+    /// prepared with other settings without generating it again. A failure to
+    /// publish it is returned as it is, so that an interrupted publication is
+    /// reported as such.
     fn keep_raw_surface(
         &self,
         request: &ObjectRequest,
@@ -1226,76 +1233,71 @@ impl ReconWorker {
             .mesh_path
             .strip_suffix(".stl")
             .unwrap_or(&request.mesh_path);
-        let raw_path = format!("{stem}.raw.stl");
-        let kept = self
-            .check_destination(&raw_path, request.overwrite)
-            .and_then(|()| {
-                Ok(self.workspace.commit_generated_artifact_bounded(
-                    &raw_path,
-                    mesh,
-                    request.overwrite,
-                    max_bytes,
-                )?)
-            });
-        let note = match kept {
-            Ok(_) => format!(
-                "; the generated surface was kept at {raw_path}: prepare it with scene prepare_print and other settings"
-            ),
-            Err(kept) => format!(
-                "; the generated surface could not be kept at {raw_path}: {}",
-                worker_message(&kept)
-            ),
+        let id = match crate::upload::random_hex_id() {
+            Ok(id) => id,
+            Err(failed) => return failed,
         };
-        let code = error.code();
-        reconstruction_error(code, format!("{}{note}", worker_message(&error)))
+        let raw_path = format!("{stem}.raw-{}.stl", &id[..12]);
+        if let Err(failed) = self
+            .workspace
+            .commit_generated_artifact_bounded(&raw_path, mesh, false, max_bytes)
+        {
+            return failed.into();
+        }
+        reconstruction_error(
+            error.code(),
+            format!(
+                "{}; the generated surface was kept at {raw_path}: prepare it with scene prepare_print and other settings",
+                worker_message(&error)
+            ),
+        )
     }
 
     /// The focal length of a cached analysis of the photograph with this
-    /// digest. A focal length the caller gave the analysis is preferred to an
-    /// estimate.
+    /// digest. Only each cache directory's manifest is read. A focal length
+    /// the caller gave the analysis is returned at once; otherwise the first
+    /// estimate found.
     fn cached_focal_length(&self, image_sha256: &str) -> Result<Option<CachedFocal>, ToolError> {
-        let manifests = match self
-            .workspace
-            .list_artifacts(analysis::CACHE_ROOT, usize::MAX)
-        {
-            Ok(found) => found,
+        let root = match self.workspace.resolve(analysis::CACHE_ROOT, true) {
+            Ok(root) => root,
             Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let mut best: Option<CachedFocal> = None;
-        for meta in manifests {
-            if !meta.path.ends_with("/manifest.json") {
-                continue;
-            }
-            let Ok((_, bytes)) = self.workspace.read_generated_bytes(&meta.path) else {
+        let mut keys: Vec<String> = std::fs::read_dir(root)?
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .collect();
+        keys.sort_unstable();
+        let mut estimate = None;
+        for key in keys {
+            let path = format!("{}/{key}/manifest.json", analysis::CACHE_ROOT);
+            // A directory without a readable manifest is not a cached result.
+            let Ok((_, bytes)) = self.workspace.read_generated_bytes(&path) else {
                 continue;
             };
             let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
             let focal = &manifest["focal_length"];
-            let (Some(key), Some(px)) = (
-                manifest["cache"]["key"].as_str(),
-                focal["photograph_px"].as_f64(),
-            ) else {
+            let Some(px) = focal["photograph_px"].as_f64() else {
                 continue;
             };
             if manifest["image_sha256"] != image_sha256
+                || manifest["cache"]["key"] != key.as_str()
                 || !(px.is_finite() && px > 0.0)
-                || meta.path != format!("{}/{key}/manifest.json", analysis::CACHE_ROOT)
             {
                 continue;
             }
-            let given = focal["source"] == "given";
-            if best.as_ref().is_none_or(|best| given && !best.given) {
-                best = Some(CachedFocal {
-                    key: key.to_owned(),
-                    px,
-                    given,
-                });
+            let found = CachedFocal {
+                key,
+                px,
+                given: focal["source"] == "given",
+            };
+            if found.given {
+                return Ok(Some(found));
             }
+            estimate.get_or_insert(found);
         }
-        Ok(best)
+        Ok(estimate)
     }
 
     /// Run one job in a fresh Python process with a deadline and return the
@@ -1893,33 +1895,36 @@ print(json.dumps({"result": result}))
     #[tokio::test]
     async fn a_failed_rebuild_keeps_the_generated_surface_beside_the_request() {
         let (root, worker) = worker(Duration::from_secs(60));
+        let objects = root.path().join("workspace/objects");
+        std::fs::create_dir_all(&objects).unwrap();
+        std::fs::write(objects.join("figure.raw.stl"), b"the caller's own file").unwrap();
         // The stand-in worker has no geometry worker, so the rebuild fails.
         let rebuilt = ObjectRequest {
             raw_surface: None,
+            overwrite: true,
             ..object_request("side.png")
         };
-        let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
-        assert_eq!(error.code(), "geometry_worker_unavailable");
-        let message = worker_message(&error);
-        assert!(
-            message.contains("was kept at objects/figure.raw.stl"),
-            "{message}"
+        let mut kept = Vec::new();
+        for _ in 0..2 {
+            let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
+            assert_eq!(error.code(), "geometry_worker_unavailable");
+            let message = worker_message(&error);
+            let path = message
+                .split_once("was kept at ")
+                .and_then(|(_, rest)| rest.split_once(':'))
+                .map(|(path, _)| path.to_owned())
+                .unwrap_or_else(|| panic!("{message}"));
+            assert!(path.starts_with("objects/figure.raw-") && path.ends_with(".stl"));
+            assert!(root.path().join("workspace").join(&path).is_file());
+            kept.push(path);
+        }
+        // Each failure keeps its own copy and replaces nothing.
+        assert_ne!(kept[0], kept[1]);
+        assert_eq!(
+            std::fs::read(objects.join("figure.raw.stl")).unwrap(),
+            b"the caller's own file"
         );
-        let workspace = root.path().join("workspace/objects");
-        assert!(workspace.join("figure.raw.stl").is_file());
-        assert!(!workspace.join("figure.stl").exists());
-        // An existing raw surface is replaced only with overwrite.
-        let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
-        assert!(
-            worker_message(&error).contains("could not be kept at objects/figure.raw.stl"),
-            "{error}"
-        );
-        let replaced = ObjectRequest {
-            overwrite: true,
-            ..rebuilt
-        };
-        let error = worker.generate_object(replaced).await.unwrap_err();
-        assert!(worker_message(&error).contains("was kept at objects/figure.raw.stl"));
+        assert!(!objects.join("figure.stl").exists());
     }
 
     #[tokio::test]
