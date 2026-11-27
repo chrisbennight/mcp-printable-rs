@@ -150,6 +150,7 @@ workflow!(PhotoRequest {
     Depth(crate::recon::DepthRequest) => "printable_photo_depth",
     Object(crate::recon::ObjectRequest) => "printable_photo_object",
     Analyze(crate::recon::AnalyzeRequest) => "printable_photo_analyze",
+    Relief(relief::ReliefRequest) => "printable_photo_relief",
     Status(crate::recon::PhotoJobRequest) => "printable_photo_job_status",
     List(crate::recon::PhotoJobListRequest) => "printable_photo_job_list",
     Cancel(crate::recon::PhotoJobRequest) => "printable_photo_job_cancel",
@@ -170,11 +171,17 @@ fn head_schema() -> Arc<JsonObject> {
 /// The `photo` input schema with the retained-job actions and only the
 /// generation actions the worker can serve.
 fn photo_schema<const DEPTH: bool, const OBJECT: bool, const ANALYZE: bool>() -> Arc<JsonObject> {
-    let removed: Vec<&str> = [("depth", DEPTH), ("object", OBJECT), ("analyze", ANALYZE)]
-        .into_iter()
-        .filter(|(_, served)| !served)
-        .map(|(action, _)| action)
-        .collect();
+    // A relief reads an analysis, so it is offered with analyze.
+    let removed: Vec<&str> = [
+        ("depth", DEPTH),
+        ("object", OBJECT),
+        ("analyze", ANALYZE),
+        ("relief", ANALYZE),
+    ]
+    .into_iter()
+    .filter(|(_, served)| !served)
+    .map(|(action, _)| action)
+    .collect();
     without_actions(&workflow_schema_of::<PhotoRequest>(), &removed)
 }
 
@@ -509,28 +516,28 @@ pub fn advertised(available: Availability) -> impl Iterator<Item = &'static Tool
 // The parts of the `photo` description, as macros so `concat!` can join them.
 macro_rules! photo_prefix {
     () => {
-        "Estimate geometry from a workspace photograph on the photograph worker's GPU, one job at a time."
+        "Estimate geometry from a workspace photograph on the photograph worker's GPU."
     };
 }
 macro_rules! photo_depth_text {
     () => {
-        "depth writes a 16-bit relative depth PNG and optional normal map for reliefs; calibrate heights as the image-to-mold skill describes."
+        "depth writes a 16-bit relative depth PNG and optional normal map; calibrate heights as the image-to-mold skill describes."
     };
 }
 macro_rules! photo_object_text {
     () => {
-        "object generates an STL in millimetres, Z up, with Pixal3D or TRELLIS.2; hidden sides are invented, so validate it before slicing."
+        "object generates an STL in millimetres, Z up, with Pixal3D or TRELLIS.2; hidden sides are invented, so validate before slicing."
     };
 }
 
 macro_rules! photo_analyze_text {
     () => {
-        "analyze caches float depth, normals, a subject mask, focal length and confidence for reuse; a repeat returns the cache at once."
+        "analyze caches float depth, normals, subject mask, focal length and confidence; a repeat returns the cache. relief builds a checked relief STL, heightmap and report."
     };
 }
 macro_rules! photo_jobs_text {
     () => {
-        "Background requests return a job_id: follow it with status, find jobs with list, stop one with cancel."
+        "Background jobs return a job_id: follow it with status, find jobs with list, stop one with cancel."
     };
 }
 
@@ -980,9 +987,11 @@ mod tests {
             assert_eq!(schema.contains("depth_path"), depth);
             assert_eq!(schema.contains("mesh_path"), object);
             assert_eq!(schema.contains("focal_length_px"), analyze);
+            assert_eq!(schema.contains("relief_depth_mm"), analyze);
             assert_eq!(tool.description.contains("depth writes"), depth);
             assert_eq!(tool.description.contains("object generates"), object);
             assert_eq!(tool.description.contains("analyze caches"), analyze);
+            assert_eq!(tool.description.contains("relief builds"), analyze);
             assert!(tool.description.contains("status"));
         }
     }

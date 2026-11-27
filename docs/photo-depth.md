@@ -158,8 +158,11 @@ Each depth request must finish within
 
 ## Turn depth into a relief
 
-Load the [image-to-mold skill](image-to-mold.md) and follow its photograph
-guidance. In short:
+When the geometry models are configured, the `photo` tool's
+[`relief` action](photo-geometry.md#build-a-relief) does these steps in one
+request and checks the result. Otherwise, load the
+[image-to-mold skill](image-to-mold.md) and follow its photograph guidance.
+In short:
 
 1. Estimate depth, and normals if they will help with fine detail.
 2. Choose the part of the depth range that becomes the relief, and which
@@ -173,8 +176,9 @@ guidance. In short:
 ## Relief geometry
 
 The `relief` module of the `printable-geom` crate turns an analysis into a
-printable relief solid. It is a library: no tool calls it yet, and it reads
-and writes no files. It runs in four stages.
+printable relief solid. It reads and writes no files; the `photo` tool's
+[`relief` action](photo-geometry.md#build-a-relief) runs it on a cached
+analysis in the geometry worker. It runs in four stages.
 
 1. **Height field** (`integrate`). Depth alone is the default: each subject
    pixel's height is its distance from the subject's farthest point. Two

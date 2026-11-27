@@ -9998,6 +9998,235 @@ async fn head_prepare_print_applies_a_displacement_map_to_a_real_bust() {
     assert!(value["bust"]["triangles"].as_u64().unwrap() <= 750_000);
 }
 
+/// A cached analysis of a dome rising from a flat background, written as the
+/// photograph worker writes one, with its cache key.
+fn fake_relief_analysis(ws: &Workspace, width: u32, height: u32) -> String {
+    let key = "ab".repeat(32);
+    let directory = format!(".printable/photo-analysis/{key}");
+    let (cx, cy) = ((width - 1) as f32 / 2.0, (height - 1) as f32 / 2.0);
+    let radius = width.min(height) as f32 * 0.4;
+    let inside = |x: u32, y: u32| (x as f32 - cx).hypot(y as f32 - cy) < radius;
+    let depth: Vec<f32> = (0..width * height)
+        .map(|index| {
+            let (x, y) = (index % width, index / width);
+            let r = (x as f32 - cx).hypot(y as f32 - cy) / radius;
+            if r < 1.0 {
+                2.0 - 0.3 * (1.0 - r * r).sqrt()
+            } else {
+                2.0
+            }
+        })
+        .collect();
+    let mut tiff = std::io::Cursor::new(Vec::new());
+    tiff::encoder::TiffEncoder::new(&mut tiff)
+        .unwrap()
+        .write_image::<tiff::encoder::colortype::Gray32Float>(width, height, &depth)
+        .unwrap();
+    let mask = displacement_png(
+        width,
+        height,
+        |x, y| if inside(x, y) { u16::MAX } else { 0 },
+    );
+    let confidence = displacement_png(
+        width,
+        height,
+        |x, y| if inside(x, y) { u16::MAX } else { 0 },
+    );
+    let normals = {
+        let image =
+            image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_fn(width, height, |_, _| {
+                image::Rgb([32768, 32768, u16::MAX])
+            });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    };
+    let mut artifacts = serde_json::Map::new();
+    for (name, file, bytes, format, bits, channels) in [
+        ("depth", "depth.tiff", tiff.into_inner(), "tiff", 32, 1),
+        ("normals", "normals.png", normals, "png", 16, 3),
+        ("mask", "mask.png", mask, "png", 16, 1),
+        ("confidence", "confidence.png", confidence, "png", 16, 1),
+    ] {
+        let path = format!("{directory}/{file}");
+        let artifact = ws.write_reserved_artifact(&path, &bytes, true).unwrap();
+        artifacts.insert(
+            name.into(),
+            json!({"file": file, "format": format, "bit_depth": bits, "channels": channels,
+                "artifact": artifact, "sha256": sha256_hex(&bytes)}),
+        );
+    }
+    let manifest = json!({
+        "width": width, "height": height,
+        "settings": {"subject": "shallow", "depth_model": "da3-mono-large"},
+        "depth": {"model": "da3-mono-large", "kind": "relative"},
+        "focal_length": {"source": "estimated", "model": "dp2-l", "px": 60.0},
+        "scores": {"mask_fraction": 0.5}, "warnings": [],
+        "artifacts": artifacts, "image_sha256": "cd".repeat(32),
+        "cache": {"key": key, "directory": directory},
+    });
+    ws.write_reserved_artifact(
+        &format!("{directory}/manifest.json"),
+        &serde_json::to_vec(&manifest).unwrap(),
+        true,
+    )
+    .unwrap();
+    key
+}
+
+#[tokio::test]
+async fn photo_relief_builds_each_preset_from_a_cached_analysis() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    let key = fake_relief_analysis(&ws, 48, 40);
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    let output = printable_server::tools::output::schema("photo");
+    let validator = jsonschema::validator_for(&Value::Object((*output).clone())).unwrap();
+    for (preset, extra) in [
+        ("plaque", json!({})),
+        ("coin", json!({})),
+        ("mold", json!({})),
+        (
+            "artwork",
+            json!({"advanced": {"integration": "anchored_normals"}}),
+        ),
+    ] {
+        let mut params = json!({"analysis": key, "path": format!("relief/{preset}.stl"),
+            "preset": preset, "width_mm": 40.0});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let call = printable_server::tools::workflows::resolve(
+            "photo",
+            json!({"action": "relief", "params": params}),
+        )
+        .unwrap();
+        assert_eq!(call.name, "printable_photo_relief");
+        let report = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+            .await
+            .unwrap_or_else(|error| panic!("{preset}: {error}"));
+        assert!(validator.is_valid(&report), "{preset}: {report}");
+        assert_eq!(report["settings"]["preset"], preset);
+        assert_eq!(report["analysis"]["cache_key"], key.as_str());
+        let checks = &report["relief"]["checks"];
+        assert_eq!(checks["solid"], true, "{preset}: {checks}");
+        assert_eq!(checks["passed"], true, "{preset}: {checks}");
+
+        let (_, stl) = ws
+            .read_generated_bytes(&format!("relief/{preset}.stl"))
+            .unwrap();
+        let validation =
+            printable_geom::analyze_stl(&stl, printable_geom::ValidationOptions::default())
+                .unwrap();
+        assert!(validation.topology.watertight, "{preset}");
+        let size = &report["relief"]["size_mm"];
+        // A mould's border widens it; every other preset spans width_mm.
+        let width = size[0].as_f64().unwrap();
+        if preset == "mold" {
+            assert!((width - 50.0).abs() < 1e-3, "{size}");
+        } else {
+            assert!((width - 40.0).abs() < 1e-3, "{size}");
+        }
+        if preset == "coin" {
+            assert!((size[1].as_f64().unwrap() - 40.0).abs() < 1e-3, "{size}");
+        }
+
+        let (_, png) = ws
+            .read_generated_bytes(&format!("relief/{preset}.height.png"))
+            .unwrap();
+        let heightmap = image::load_from_memory(&png).unwrap();
+        assert!(matches!(heightmap, image::DynamicImage::ImageLuma16(_)));
+        assert_eq!(
+            heightmap.width(),
+            report["relief"]["heightmap"]["width"].as_u64().unwrap() as u32
+        );
+        let (_, saved) = ws
+            .read_generated_bytes(&format!("relief/{preset}.report.json"))
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(saved["relief"], report["relief"]);
+        assert_eq!(saved["settings"], report["settings"]);
+    }
+
+    // Existing outputs are kept unless overwrite is set.
+    let again = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "relief", "params": {"analysis": key, "path": "relief/plaque.stl",
+            "preset": "plaque", "width_mm": 40.0}}),
+    )
+    .unwrap();
+    let error = dispatch(&ws, &upload, &backend, &config, again.name, again.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "already_exists");
+}
+
+#[tokio::test]
+async fn photo_relief_refuses_a_changed_or_missing_analysis() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    let key = fake_relief_analysis(&ws, 24, 24);
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    let request = |key: &str| {
+        printable_server::tools::workflows::resolve(
+            "photo",
+            json!({"action": "relief", "params": {"analysis": key, "path": "relief/plaque.stl",
+                "preset": "plaque", "width_mm": 30.0}}),
+        )
+        .unwrap()
+    };
+    let missing = request(&"cd".repeat(32));
+    let error = dispatch(
+        &ws,
+        &upload,
+        &backend,
+        &config,
+        missing.name,
+        missing.arguments,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("no finished analysis"),
+        "{error}"
+    );
+    ws.write_reserved_artifact(
+        &format!(".printable/photo-analysis/{key}/mask.png"),
+        &displacement_png(24, 24, |_, _| u16::MAX),
+        true,
+    )
+    .unwrap();
+    let changed = request(&key);
+    let error = dispatch(
+        &ws,
+        &upload,
+        &backend,
+        &config,
+        changed.name,
+        changed.arguments,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("no longer matches"), "{error}");
+    assert!(ws.stat_artifact("relief/plaque.stl").is_err());
+    // A new analysis needs the photograph worker.
+    let image = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "relief", "params": {"image": "photos/coin.jpg",
+            "path": "relief/coin.stl", "preset": "coin", "width_mm": 30.0}}),
+    )
+    .unwrap();
+    let error = dispatch(&ws, &upload, &backend, &config, image.name, image.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "validation");
+}
+
 /// Binary STLs joined into one, as an exporter writing several bodies does.
 fn joined_stl(parts: &[Vec<u8>]) -> Vec<u8> {
     let mut bytes = vec![0; 80];
