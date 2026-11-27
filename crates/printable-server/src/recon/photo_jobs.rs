@@ -522,10 +522,16 @@ impl ReconWorker {
         settings: Value,
     ) -> Result<Value, ToolError> {
         let id = crate::upload::random_hex_id()?;
-        let suffix = Path::new(request.image())
-            .extension()
-            .and_then(|value| value.to_str())
-            .expect("validated photograph extension");
+        // Validation accepts a name that is only a suffix, such as ".jpg",
+        // which has no extension in `Path` terms.
+        let suffix = request
+            .image()
+            .rsplit_once('.')
+            .map(|(_, suffix)| suffix)
+            .filter(|suffix| !suffix.contains('/'))
+            .ok_or_else(|| {
+                ToolError::Validation("the photograph needs a JPEG, PNG or WebP suffix".into())
+            })?;
         let input = format!("{ROOT}/{id}/input.{suffix}");
         let execution = request.with_image(input.clone());
         let cancel = CancellationToken::new();

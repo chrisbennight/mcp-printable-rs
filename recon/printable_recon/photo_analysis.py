@@ -369,7 +369,9 @@ def combine(plan: Plan, settings: Settings, outcomes: dict, photograph_width: in
         angles = normal_angles(derived, normals)
         region = defined & (numpy.linalg.norm(normals, axis=-1) > 0)
         scores["normal_agreement"] = summary(angles, region, NORMAL_AGREEMENT_DEGREES, "median_angle_degrees")
-        factors.append(numpy.where(region, numpy.clip(1 - angles / NORMAL_TOLERANCE_DEGREES, 0, 1), 1.0))
+        # A subject pixel without a derived normal is unconfirmed, so it scores 0.
+        factors.append(numpy.where(region, numpy.clip(1 - angles / NORMAL_TOLERANCE_DEGREES, 0, 1),
+                                   numpy.where(mask, 0.0, 1.0)))
         checks.append("normal_agreement")
         normals_source = normals_run.entry
     else:
