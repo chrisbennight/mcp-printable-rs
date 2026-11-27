@@ -24,13 +24,16 @@ after a storage error, inspect the paths before repeating the request.
 1. The image is decoded, turned upright as its EXIF orientation says, and
    cropped; `crop_px` and the proportions refer to the upright image.
    Transparent parts count as white.
-2. Each pixel is converted from sRGB to linear light, and its brightness is
+2. The crop is resized with a triangle filter to samples half the nozzle's
+   diameter apart, averaging the 8-bit pixels each sample covers. The nozzle
+   cannot draw finer detail, and this is the only smoothing applied. The
+   average is taken of sRGB-encoded values, which keeps memory to the samples
+   rather than the image; it makes fine light-and-dark detail slightly darker
+   than an average in linear light would.
+3. Each sample is converted from sRGB to linear light, and its brightness is
    `Y = 0.2126 R + 0.7152 G + 0.0722 B`.
-3. `contrast`, when given, stretches the tones about middle grey on the sRGB
+4. `contrast`, when given, stretches the tones about middle grey on the sRGB
    scale.
-4. The image is resampled with a triangle filter to samples half the nozzle's
-   diameter apart, averaging the pixels each sample covers. The nozzle cannot
-   draw finer detail, and this is the only smoothing applied.
 5. Light keeps a fraction `T = exp(-k t)` of its intensity through `t`
    millimetres of filament, where `k` is the filament's attenuation per
    millimetre (the Beer-Lambert law). With `T_dark` the transmission of the
@@ -57,6 +60,19 @@ curved lithophane is wrapped around a vertical cylinder whose axis is the Z
 axis: the flat face is the outside, the relief faces the axis, where the light
 goes, and the image's top is at the top. Stand it on its lower edge to print.
 
+A curved plate is built flat with a flat-face vertex under every sample, then
+bent: each sample's flat-face and relief vertices land on one radial line, so
+every cell's flat face becomes a chord one sample spacing wide. A chord falls
+inside the cylinder by its sag, `R (1 - cos(s / 2R))` for spacing `s` and
+radius `R`. While the sag is at most a hundredth of the minimum thickness, and
+the radius exceeds the maximum thickness, the bent plate is a closed solid
+without self-intersections by construction and keeps its thickness to within
+that hundredth. A tighter curve is refused with `relief_not_printable` and the
+smallest radius that fits; the report gives the curve's `chord_sag_mm` and its
+`minimum_wall_mm`, the thinnest thickness less the sag. The flat face of a
+curved plate has as many triangles as its relief, so its STL is about twice
+the size of a flat plate's.
+
 ## Parameters
 
 | Parameter | Values | Default |
@@ -71,7 +87,7 @@ goes, and the image's top is at the top. Stand it on its lower edge to print.
 | `max_thickness_mm` | 0.6 to 10, at least 0.2 above the minimum: the darkest parts | 3 |
 | `filament` | `white_pla`, `natural_pla` or `white_petg` | `white_pla` |
 | `attenuation_per_mm` | 0.05 to 10: a measured `k`, in place of `filament` | none |
-| `border_mm` | 0, or `nozzle_mm` to 50: a frame as thick as the darkest parts | 0 |
+| `border_mm` | 0, or `nozzle_mm` to 50: a frame as thick as the darkest parts, rounded to whole samples | 0 |
 | `crop_px` | `[left, top, width, height]` in image pixels | the whole image |
 | `contrast` | 0.1 to 4; 1 leaves the tones unchanged | 1 |
 | `nozzle_mm` | 0.2 to 1: sets the sample spacing and the narrow-detail check | 0.4 |
@@ -139,8 +155,10 @@ The result holds the following; the saved report holds the same except
 - `settings`: every choice with its default filled in;
 - `image`: the image's workspace path and SHA-256, or `null` for a test strip;
 - `lithophane`: the solid's size in millimetres and triangle count, the
-  image's size, the sample count and spacing, the thinnest and thickest
-  points (a border is as thick as the maximum thickness), the shape (with the radius and arc of a curve), the tone mapping
+  image's size, the border's width along each side, the image's sample count
+  and spacing, the thinnest and thickest points (a border is as thick as the
+  maximum thickness), the shape (with the radius, arc, chord sag and minimum
+  wall of a curve), the tone mapping
   (its formulas, `attenuation_per_mm` and where it came from, the
   transmission range and the contrast ratio), the checks, what the preview
   shows and, for a test strip, its steps;
@@ -151,14 +169,9 @@ plate is closed, manifold and free of self-intersections by construction,
 and narrow ridges and grooves are reported without failing the check.
 `thickness_within_range` confirms every sample lies within the thickness
 range, and `passed` requires it as well as a sound solid. A plate that fails
-is not written; the request returns `relief_not_printable`. Bending a curved
-plate keeps it closed, but on a tight curve its wide flat triangles, such as a
-wide border's, can cut through it. So once bent, the curved plate is checked
-again as the STL stores it, for a closed, manifold solid without
-self-intersections; `solid`, `volume_mm3` and `self_intersections` then
-describe the bent plate, and a plate that fails is refused with
-`relief_not_printable`. Use a larger radius, a smaller arc or a narrower
-border.
+is not written; the request returns `relief_not_printable`. A curved plate
+is checked flat and kept sound by its construction, described under
+[Which side faces the light](#which-side-faces-the-light).
 
 The preview is an 8-bit sRGB image of the plate's brightness against an even
 backlight, relative to the thinnest part, as seen from the flat face, one pixel

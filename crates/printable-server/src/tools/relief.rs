@@ -867,6 +867,7 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             },
             mirror: settings.mirror,
             invert: settings.invert,
+            fine_bottom: false,
         },
     )?;
     // An inverted relief prints upside down, so its narrow ridges are the

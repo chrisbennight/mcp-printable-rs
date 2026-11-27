@@ -14,13 +14,12 @@ use std::{
     sync::Arc,
 };
 
-use image::{GenericImageView, ImageFormat, ImageReader, imageops::FilterType};
-use printable_geom::ValidationOptions;
+use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader, imageops::FilterType};
 use printable_geom::relief::{
-    DEFAULT_MAX_PIXELS, Grid, PrintabilityOptions, ReliefError, ReliefMap, check_relief,
+    DEFAULT_MAX_PIXELS, Grid, PrintabilityOptions, ReliefMap, check_relief,
     lithophane::{
-        ToneMapping, bend_around_cylinder, linear_to_srgb, lithophane_map, lithophane_solid,
-        srgb_to_linear, step_wedge,
+        ToneMapping, bend_around_cylinder, chord_sag_mm, linear_to_srgb, lithophane_map,
+        lithophane_solid, srgb_to_linear, step_wedge, with_border,
     },
 };
 use printable_workspace::Workspace;
@@ -51,6 +50,9 @@ const LAYER_MM: f64 = 0.2;
 /// A test strip's steps, and its width over its height.
 const STRIP_STEPS: usize = 10;
 const STRIP_ASPECT: f64 = 5.0;
+/// How far, as a fraction of the thinnest plate, a curved plate's flat face
+/// may fall inside its cylinder between samples.
+const MAX_SAG_FRACTION: f64 = 0.01;
 const SIZE_MM: std::ops::RangeInclusive<f64> = 10.0..=300.0;
 const MIN_THICKNESS_MM: std::ops::RangeInclusive<f64> = 0.4..=5.0;
 const MAX_THICKNESS_MM: std::ops::RangeInclusive<f64> = 0.6..=10.0;
@@ -257,7 +259,8 @@ impl LithophaneRequest {
             self.max_thickness_mm.unwrap_or(DEFAULT_MAX_THICKNESS_MM),
             &MAX_THICKNESS_MM,
         )?;
-        if max_thickness_mm < min_thickness_mm + LAYER_MM {
+        // Allow for rounding, so 0.4 and 0.6 mm are one layer apart.
+        if max_thickness_mm - min_thickness_mm < LAYER_MM - 1e-9 {
             return refuse(
                 "max_thickness_mm must be at least one 0.2 mm layer above min_thickness_mm",
             );
@@ -464,10 +467,12 @@ fn invalid(message: String) -> WorkerError {
     }
 }
 
-/// The image's linear-light brightness, turned upright as its EXIF
-/// orientation says, cropped and with its contrast adjusted, as a grid of its
-/// pixels. Transparent parts count as white.
-fn read_brightness(path: &Path, settings: &LithophaneSettings) -> Result<Grid<f64>, WorkerError> {
+/// The image, turned upright as its EXIF orientation says, and the
+/// `[left, top, width, height]` pixels of it to use.
+fn read_image(
+    path: &Path,
+    settings: &LithophaneSettings,
+) -> Result<(DynamicImage, [u32; 4]), WorkerError> {
     let mut reader = ImageReader::open(path)
         .map_err(io_error("cannot open the image"))?
         .with_guessed_format()
@@ -480,12 +485,12 @@ fn read_brightness(path: &Path, settings: &LithophaneSettings) -> Result<Grid<f6
     // proportions refer to the image as it is viewed.
     let mut decoder = reader.into_decoder().map_err(invalid_image)?;
     let orientation = image::ImageDecoder::orientation(&mut decoder).map_err(invalid_image)?;
-    let mut image = image::DynamicImage::from_decoder(decoder).map_err(invalid_image)?;
+    let mut image = DynamicImage::from_decoder(decoder).map_err(invalid_image)?;
     image.apply_orientation(orientation);
-    let [left, top, width, height] =
-        settings
-            .crop_px
-            .unwrap_or([0, 0, image.width(), image.height()]);
+    let crop = settings
+        .crop_px
+        .unwrap_or([0, 0, image.width(), image.height()]);
+    let [left, top, width, height] = crop;
     let inside = |start: u32, length: u32, limit: u32| {
         start.checked_add(length).is_some_and(|end| end <= limit)
     };
@@ -496,48 +501,43 @@ fn read_brightness(path: &Path, settings: &LithophaneSettings) -> Result<Grid<f6
             image.height()
         )));
     }
+    Ok((image, crop))
+}
+
+/// The cropped image's linear-light brightness at `columns` x `rows`
+/// samples, with its contrast adjusted. The crop is first resized to the
+/// samples with a triangle filter, which averages the pixels each sample
+/// covers when reducing, so memory follows the samples rather than the
+/// image. Transparent parts count as white.
+fn brightness(
+    image: &DynamicImage,
+    [left, top, width, height]: [u32; 4],
+    (columns, rows): (usize, usize),
+    contrast: f64,
+) -> Result<Grid<f64>, WorkerError> {
+    let view = image.view(left, top, width, height);
+    let resized =
+        image::imageops::resize(&*view, columns as u32, rows as u32, FilterType::Triangle);
     let linear: Vec<f64> = (0..=255u8)
         .map(|value| srgb_to_linear(f64::from(value) / 255.0))
         .collect();
-    let contrast = settings.contrast;
-    let view = image.view(left, top, width, height);
-    let mut values = Vec::with_capacity(width as usize * height as usize);
-    for (_, _, pixel) in view.pixels() {
-        let [red, green, blue, alpha] = pixel.0;
-        let colour = 0.2126 * linear[usize::from(red)]
-            + 0.7152 * linear[usize::from(green)]
-            + 0.0722 * linear[usize::from(blue)];
-        let alpha = f64::from(alpha) / 255.0;
-        let mut brightness = alpha * colour + (1.0 - alpha);
-        if contrast != 1.0 {
-            let shown = 0.5 + contrast * (linear_to_srgb(brightness) - 0.5);
-            brightness = srgb_to_linear(shown);
-        }
-        values.push(brightness);
-    }
-    Ok(Grid::new(width as usize, height as usize, values)?)
-}
-
-/// Resample a brightness grid to `columns` x `rows` samples with a triangle
-/// filter, which averages the pixels each sample covers when reducing.
-fn resample(grid: &Grid<f64>, columns: usize, rows: usize) -> Result<Grid<f64>, WorkerError> {
-    let source = image::ImageBuffer::<image::Luma<f32>, Vec<f32>>::from_raw(
-        grid.width() as u32,
-        grid.height() as u32,
-        grid.values().iter().map(|value| *value as f32).collect(),
-    )
-    .expect("one value per pixel");
-    let resized =
-        image::imageops::resize(&source, columns as u32, rows as u32, FilterType::Triangle);
-    Ok(Grid::new(
-        columns,
-        rows,
-        resized
-            .into_raw()
-            .into_iter()
-            .map(|value| f64::from(value).clamp(0.0, 1.0))
-            .collect(),
-    )?)
+    let values = resized
+        .pixels()
+        .map(|pixel| {
+            let [red, green, blue, alpha] = pixel.0;
+            let colour = 0.2126 * linear[usize::from(red)]
+                + 0.7152 * linear[usize::from(green)]
+                + 0.0722 * linear[usize::from(blue)];
+            let alpha = f64::from(alpha) / 255.0;
+            let brightness = alpha * colour + (1.0 - alpha);
+            if contrast == 1.0 {
+                brightness
+            } else {
+                srgb_to_linear(0.5 + contrast * (linear_to_srgb(brightness) - 0.5))
+            }
+        })
+        .collect();
+    Ok(Grid::new(columns, rows, values)?)
 }
 
 /// Build the lithophane the request describes and write its STL and
@@ -550,14 +550,14 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     })?;
     let settings = &request.settings;
     let tone = settings.tone();
-    let brightness = request
+    let image = request
         .image
         .as_deref()
-        .map(|path| read_brightness(path, settings))
+        .map(|path| read_image(path, settings))
         .transpose()?;
     // The width over the height of the image, or of the test strip.
-    let aspect = brightness.as_ref().map_or(STRIP_ASPECT, |grid| {
-        grid.width() as f64 / grid.height() as f64
+    let aspect = image.as_ref().map_or(STRIP_ASPECT, |(_, crop)| {
+        f64::from(crop[2]) / f64::from(crop[3])
     });
     let (width_mm, height_mm) = match (settings.width_mm, settings.height_mm) {
         (Some(width), _) => (width, width / aspect),
@@ -568,19 +568,25 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     let target = settings.nozzle_mm / 2.0;
     let count = |length: f64| (length / target).round().max(1.0) as usize + 1;
     let (columns, rows) = (count(width_mm), count(height_mm));
-    if columns.saturating_mul(rows) > DEFAULT_MAX_PIXELS {
+    let border_count = (settings.border_mm / target).round() as usize;
+    let bordered = |samples: usize| samples + 2 * border_count;
+    if bordered(columns).saturating_mul(bordered(rows)) > DEFAULT_MAX_PIXELS {
         return Err(invalid(format!(
             "a {width_mm:.0} x {height_mm:.0} mm lithophane needs {} samples at half the nozzle's width, more than {DEFAULT_MAX_PIXELS}; make it smaller or use a larger nozzle_mm",
-            columns * rows
+            bordered(columns).saturating_mul(bordered(rows))
         )));
     }
     let spacing_mm = [
         width_mm / (columns - 1) as f64,
         height_mm / (rows - 1) as f64,
     ];
-    let (map, steps) = match &brightness {
-        Some(grid) => (
-            lithophane_map(&resample(grid, columns, rows)?, spacing_mm, &tone)?,
+    let (map, steps) = match &image {
+        Some((image, crop)) => (
+            lithophane_map(
+                &brightness(image, *crop, (columns, rows), settings.contrast)?,
+                spacing_mm,
+                &tone,
+            )?,
             None,
         ),
         None => {
@@ -588,11 +594,20 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             (map, Some(thicknesses))
         }
     };
-    drop(brightness);
+    drop(image);
 
-    let solid = lithophane_solid(&map, &tone, settings.border_mm)?;
+    // The border is part of the thickness map, at the image's sample
+    // spacing, as thick as the darkest parts may be.
+    let (plate, border_samples) = with_border(&map, settings.border_mm, settings.max_thickness_mm)?;
+    let border_mm = [
+        border_samples[0] as f64 * spacing_mm[0],
+        border_samples[1] as f64 * spacing_mm[1],
+    ];
+    let curved = settings.shape == LithophaneShape::Curved;
+    // A plate to be bent has a flat-face vertex under every sample.
+    let solid = lithophane_solid(&plate, &tone, curved)?;
     let mut checks = serde_json::to_value(check_relief(
-        &map,
+        &plate,
         &solid,
         &PrintabilityOptions {
             nozzle_mm: settings.nozzle_mm,
@@ -603,18 +618,9 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
         },
     )?)
     .expect("checks serialize");
-    let heights = map.heights_mm.values();
+    let heights = plate.heights_mm.values();
     let thinnest = heights.iter().copied().fold(f64::INFINITY, f64::min);
-    // A border is as thick as the darkest parts may be.
-    let thickest = heights
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(if settings.border_mm > 0.0 {
-            settings.max_thickness_mm
-        } else {
-            f64::NEG_INFINITY
-        });
+    let thickest = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let within_range =
         thinnest >= settings.min_thickness_mm && thickest <= settings.max_thickness_mm;
     checks["thickness_within_range"] = json!(within_range);
@@ -630,45 +636,41 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     }
 
     let mut mesh = solid.into_mesh();
-    let shape = match settings.shape {
-        LithophaneShape::Flat => json!({"kind": "flat"}),
-        LithophaneShape::Curved => {
-            let total_width = width_mm + 2.0 * settings.border_mm;
-            let radius = match (settings.radius_mm, settings.arc_degrees) {
-                (Some(radius), _) => radius,
-                (None, Some(arc)) => total_width / arc.to_radians(),
-                (None, None) => return Err(invalid("give radius_mm or arc_degrees".into())),
-            };
-            bend_around_cylinder(&mut mesh, radius)?;
-            json!({
-                "kind": "curved",
-                "radius_mm": radius,
-                "arc_degrees": total_width / radius * 180.0 / PI,
-                "axis": "the Z axis; the flat face is outside, facing the viewer",
-            })
-        }
-    };
-    let stl = printable_geom::bust_stl(&mesh);
-    if settings.shape == LithophaneShape::Curved {
-        // Bending keeps the plate closed but can make wide flat triangles
-        // cut through it, so the bent mesh, as the STL stores it, is checked
-        // in full and replaces the flat plate's solid check.
-        let bent = printable_geom::analyze_stl(&stl, ValidationOptions::default())
-            .map_err(ReliefError::from)?;
-        let self_intersections = bent.topology.self_intersections;
-        checks["solid"] = json!(bent.solid_geometry);
-        checks["volume_mm3"] = json!(bent.signed_volume_mm3);
-        checks["self_intersections"] = json!(self_intersections);
-        if !bent.solid_geometry {
+    let shape = if curved {
+        let total_width = width_mm + 2.0 * border_mm[0];
+        let radius = match (settings.radius_mm, settings.arc_degrees) {
+            (Some(radius), _) => radius,
+            (None, Some(arc)) => total_width / arc.to_radians(),
+            (None, None) => return Err(invalid("give radius_mm or arc_degrees".into())),
+        };
+        // Each cell's flat face becomes a chord one sample spacing wide.
+        // While that chord falls inside the cylinder by no more than a
+        // hundredth of the thinnest plate, the bent plate is a sound solid
+        // and keeps its thickness.
+        let sag = chord_sag_mm(spacing_mm[0], radius);
+        if sag > MAX_SAG_FRACTION * settings.min_thickness_mm {
+            let smallest =
+                spacing_mm[0].powi(2) / (8.0 * MAX_SAG_FRACTION * settings.min_thickness_mm);
             return Err(WorkerError {
                 code: "relief_not_printable",
                 message: format!(
-                    "the curved lithophane is not a sound solid once bent (self-intersections: {}); use a larger radius_mm, a smaller arc_degrees or a narrower border_mm",
-                    self_intersections.map_or("not counted".into(), |count| count.to_string())
+                    "a {radius:.1} mm radius is too tight for samples {:.2} mm apart: the flat face would fall {sag:.4} mm inside the curve; use a radius of at least {smallest:.1} mm, a smaller arc_degrees or a larger min_thickness_mm",
+                    spacing_mm[0]
                 ),
             });
         }
-    }
+        bend_around_cylinder(&mut mesh, radius)?;
+        json!({
+            "kind": "curved",
+            "radius_mm": radius,
+            "arc_degrees": total_width / radius * 180.0 / PI,
+            "axis": "the Z axis; the flat face is outside, facing the viewer",
+            "chord_sag_mm": sag,
+            "minimum_wall_mm": thinnest - sag,
+        })
+    } else {
+        json!({"kind": "flat"})
+    };
     write_preview(&map, &tone, &output.join(PREVIEW_FILE))?;
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
@@ -678,12 +680,14 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             high[axis] = high[axis].max(vertex[axis]);
         }
     }
-    fs::write(output.join(STL_FILE), stl).map_err(io_error("cannot write the lithophane STL"))?;
+    fs::write(output.join(STL_FILE), printable_geom::bust_stl(&mesh))
+        .map_err(io_error("cannot write the lithophane STL"))?;
     let darkest = tone.transmission(settings.max_thickness_mm);
     let brightest = tone.transmission(settings.min_thickness_mm);
     let mut report = json!({
         "size_mm": [high[0] - low[0], high[1] - low[1], high[2] - low[2]],
         "image_mm": [width_mm, height_mm],
+        "border_mm": border_mm,
         "triangles": mesh.triangles.len(),
         "samples": [columns, rows],
         "sample_spacing_mm": spacing_mm,

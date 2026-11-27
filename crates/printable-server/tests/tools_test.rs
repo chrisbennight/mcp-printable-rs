@@ -10358,20 +10358,63 @@ async fn photo_lithophane_builds_flat_curved_and_test_strip_plates_without_the_p
         assert_eq!(saved["lithophane"], report["lithophane"]);
     }
 
-    // A wide border on a tight curve cuts through the bent plate, so it is
-    // refused and nothing is written.
+    // Curves the bent plate keeps sound: half a turn of a small thin
+    // plate, a wide border on a tight curve, and a large plate.
+    for (name, params) in [
+        (
+            "half-turn",
+            json!({"width_mm": 10.0, "arc_degrees": 180.0, "min_thickness_mm": 0.4}),
+        ),
+        (
+            "bordered",
+            json!({"width_mm": 20.0, "border_mm": 50.0, "arc_degrees": 120.0, "nozzle_mm": 1.0}),
+        ),
+        (
+            "large",
+            json!({"width_mm": 250.0, "arc_degrees": 120.0, "nozzle_mm": 1.0}),
+        ),
+    ] {
+        let mut params = params;
+        params["image"] = json!("photos/ramp.png");
+        params["shape"] = json!("curved");
+        params["path"] = json!(format!("lithophanes/{name}.stl"));
+        let call = printable_server::tools::workflows::resolve(
+            "photo",
+            json!({"action": "lithophane", "params": params}),
+        )
+        .unwrap();
+        let report = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let shape = &report["lithophane"]["shape"];
+        let sag = shape["chord_sag_mm"].as_f64().unwrap();
+        let minimum = report["settings"]["min_thickness_mm"].as_f64().unwrap();
+        assert!(sag <= 0.01 * minimum, "{name}: {shape}");
+        let thinnest = report["lithophane"]["thickness_mm"]["min"]
+            .as_f64()
+            .unwrap();
+        assert!(thinnest >= minimum, "{name}: {thinnest}");
+        assert!(
+            (shape["minimum_wall_mm"].as_f64().unwrap() - (thinnest - sag)).abs() < 1e-9,
+            "{name}: {shape}"
+        );
+    }
+    // Too tight a curve for the sample spacing is refused, and nothing is
+    // written.
     let call = printable_server::tools::workflows::resolve(
         "photo",
         json!({"action": "lithophane", "params": {"image": "photos/ramp.png",
-            "path": "lithophanes/bordered.stl", "width_mm": 20.0, "border_mm": 50.0,
-            "shape": "curved", "arc_degrees": 120.0}}),
+            "path": "lithophanes/tight.stl", "width_mm": 10.0, "shape": "curved",
+            "arc_degrees": 359.0, "nozzle_mm": 1.0, "min_thickness_mm": 0.4,
+            "max_thickness_mm": 0.6}}),
     )
     .unwrap();
     let error = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
         .await
         .unwrap_err();
     assert_eq!(error.code(), "relief_not_printable", "{error}");
-    assert!(ws.stat_artifact("lithophanes/bordered.stl").is_err());
+    assert!(error.to_string().contains("radius of at least"), "{error}");
+    assert!(ws.stat_artifact("lithophanes/tight.stl").is_err());
 
     // A crop outside the image is refused, and nothing is written.
     let call = printable_server::tools::workflows::resolve(

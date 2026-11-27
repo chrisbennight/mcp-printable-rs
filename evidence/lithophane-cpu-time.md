@@ -22,5 +22,7 @@ three times.
 The work follows the number of samples, which the size and nozzle set, not the
 image's pixel count. Times on an amd64 host were not measured.
 
-The curved times above were measured before curved plates gained a full
-mesh check after bending, so a curved request now takes longer than shown.
+These times were measured before the image was resized to the samples
+before conversion to linear light, and before a curved plate's flat face
+gained a vertex under every sample, which about doubles a curved plate's
+triangles and STL size. They have not been measured again.
