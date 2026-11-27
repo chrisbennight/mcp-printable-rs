@@ -3,13 +3,14 @@
 //!
 //! `printable-geometry-worker <fixed.stl> <moving.stl> <options.json>` analyses
 //! an assembly; `printable-geometry-worker --bust <request.json> <output.stl>`
-//! writes a closed, upright bust. Both print `{"report": ...}` or
-//! `{"error": {"code", "message"}}` on stdout.
+//! writes a closed, upright bust; `printable-geometry-worker --relief
+//! <request.json> <output-directory>` builds a relief from analysis maps. All
+//! print `{"report": ...}` or `{"error": {"code", "message"}}` on stdout.
 
 use std::{ffi::OsString, fs, io, process::ExitCode};
 
 use printable_geom::{AssemblyOptions, BustRequest, analyze_assembly_stl, bust_stl, prepare_bust};
-use printable_server::tools::bake_texture;
+use printable_server::tools::{bake_texture, relief};
 use serde_json::{Value, json};
 
 const BUST_FLAG: &str = "--bust";
@@ -112,6 +113,14 @@ fn run() -> Result<Value, WorkerFailure> {
     }
     if first == BUST_FLAG {
         return run_bust(&second, &third);
+    }
+    if first == relief::FLAG {
+        return relief::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {
+            WorkerFailure {
+                code: error.code,
+                message: error.message,
+            }
+        });
     }
     if first == bake_texture::FLAG {
         return bake_texture::worker_run(second.as_ref(), third.as_ref()).map_err(|error| {

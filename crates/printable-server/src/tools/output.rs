@@ -175,6 +175,57 @@ fn photo_analysis() -> Value {
     )
 }
 
+/// A relief built from an analysis, or the analysis job it waits for.
+fn photo_relief() -> [Value; 2] {
+    let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
+    let size =
+        json!({"type":"array","items":{"type":"number","minimum":0},"minItems":3,"maxItems":3});
+    let checks = object(
+        json!({
+            "solid":{"type":"boolean"}, "volume_mm3":{"type":["number","null"]},
+            "relief_height_mm":{"type":"number","minimum":0},
+            "relief_height_within_limits":{"type":"boolean"},
+            "narrow_ridges":{"type":"object"}, "narrow_grooves":{"type":"object"},
+            "passed":{"type":"boolean"}
+        }),
+        &[
+            "solid",
+            "relief_height_mm",
+            "narrow_ridges",
+            "narrow_grooves",
+            "passed",
+        ],
+    );
+    let heightmap = object(
+        json!({
+            "width":{"type":"integer","minimum":2}, "height":{"type":"integer","minimum":2},
+            "bit_depth":{"const":16}, "full_scale_mm":{"type":"number","exclusiveMinimum":0},
+            "encoding":{"type":"string"}, "describes":{"type":"string"}
+        }),
+        &["width", "height", "bit_depth", "full_scale_mm", "encoding"],
+    );
+    let relief = object(
+        json!({
+            "units":{"const":"millimetres"},
+            "settings":object(json!({"preset":{"enum":["plaque","coin","mold","artwork"]},
+                "shape":{"enum":["rectangle","round"]}}), &["preset","shape"]),
+            "analysis":object(json!({"cache_key":digest,"image_sha256":digest,
+                "depth":{"type":"object"},"settings":{"type":"object"}}), &["cache_key","depth","settings"]),
+            "relief":object(json!({"size_mm":size,"triangles":{"type":"integer","minimum":1},
+                "checks":checks,"heightmap":heightmap,"integration":{"type":"object"},
+                "compression":{"type":"object"}}), &["size_mm","triangles","checks","heightmap"]),
+            "artifacts":object(json!({"stl":artifact(),"heightmap":artifact(),"report":artifact()}),
+                &["stl","heightmap","report"])
+        }),
+        &["units", "settings", "analysis", "relief", "artifacts"],
+    );
+    let waiting = object(
+        json!({"analysis_job":analysis_job(), "next":{"type":"string"}}),
+        &["analysis_job", "next"],
+    );
+    [relief, waiting]
+}
+
 fn analysis_job() -> Value {
     object(
         json!({
@@ -1083,59 +1134,64 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
             json!({"type": "object", "anyOf": [page, detail, download, sign_in],
                 "$defs": generator.take_definitions(true)})
         }
-        "photo" => json!({"type": "object", "anyOf": [
-            object(
-                json!({
-                    "width": {"type": "integer", "minimum": 1},
-                    "height": {"type": "integer", "minimum": 1},
-                    "depth": {"type": "object", "required": ["artifact", "near", "far"], "properties": {
-                        "artifact": artifact(), "near": {"type": "number"}, "far": {"type": "number"}
-                    }},
-                    "normals": {"type": "object", "required": ["artifact", "encoding", "frame"], "properties": {
-                        "artifact": artifact(), "encoding": {"type": "string"}, "frame": {"type": "string"}
-                    }},
-                    "device": {"type": "string"},
-                    "seconds": {"type": "number", "minimum": 0},
-                    "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
-                    "image_sha256": {"type": "string"}
-                }),
-                &["width", "height", "depth", "device", "image_sha256"],
-            ),
-            object(
-                json!({
-                    "artifact": artifact(),
-                    "triangles": {"type": "integer", "minimum": 1},
-                    "generated_triangles": {"type": "integer", "minimum": 1},
-                    "size_mm": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
-                    "resolution": {"type": "integer", "minimum": 1},
-                    "steps": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
-                    "tokens": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
-                    "seed": {"type": "integer", "minimum": 0},
-                    "fov_degrees": {"type": "number"},
-                    "fov_source": {"enum": ["request", "photograph", "assumed"]},
-                    "background": {"enum": ["removed", "transparency"]},
-                    "device": {"type": "string"},
-                    "seconds": {"type": "number", "minimum": 0},
-                    "stages": {"type": "array", "items": object(json!({
-                        "stage": {"type": "string"},
+        "photo" => {
+            let [relief, waiting] = photo_relief();
+            json!({"type": "object", "anyOf": [
+                object(
+                    json!({
+                        "width": {"type": "integer", "minimum": 1},
+                        "height": {"type": "integer", "minimum": 1},
+                        "depth": {"type": "object", "required": ["artifact", "near", "far"], "properties": {
+                            "artifact": artifact(), "near": {"type": "number"}, "far": {"type": "number"}
+                        }},
+                        "normals": {"type": "object", "required": ["artifact", "encoding", "frame"], "properties": {
+                            "artifact": artifact(), "encoding": {"type": "string"}, "frame": {"type": "string"}
+                        }},
+                        "device": {"type": "string"},
                         "seconds": {"type": "number", "minimum": 0},
-                        "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0}
-                    }), &["stage", "seconds"])},
-                    "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
-                    "image_sha256": {"type": "string"}
-                }),
-                &["artifact", "triangles", "generated_triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
-            ),
-            photo_job(),
-            analysis_job(),
-            photo_analysis(),
-            object(json!({
-                "jobs":{"type":"array","items":{"anyOf":[photo_job(),analysis_job()]}},
-                "requested_limit":{"type":"integer","minimum":1},
-                "returned":{"type":"integer","minimum":0},
-                "next_offset":{"type":["integer","null"],"minimum":0}
-            }), &["jobs","requested_limit","returned","next_offset"])
-        ]}),
+                        "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
+                        "image_sha256": {"type": "string"}
+                    }),
+                    &["width", "height", "depth", "device", "image_sha256"],
+                ),
+                object(
+                    json!({
+                        "artifact": artifact(),
+                        "triangles": {"type": "integer", "minimum": 1},
+                        "generated_triangles": {"type": "integer", "minimum": 1},
+                        "size_mm": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+                        "resolution": {"type": "integer", "minimum": 1},
+                        "steps": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
+                        "tokens": object(json!({"structure": {"type": "integer"}, "shape": {"type": "integer"}}), &["structure", "shape"]),
+                        "seed": {"type": "integer", "minimum": 0},
+                        "fov_degrees": {"type": "number"},
+                        "fov_source": {"enum": ["request", "photograph", "assumed"]},
+                        "background": {"enum": ["removed", "transparency"]},
+                        "device": {"type": "string"},
+                        "seconds": {"type": "number", "minimum": 0},
+                        "stages": {"type": "array", "items": object(json!({
+                            "stage": {"type": "string"},
+                            "seconds": {"type": "number", "minimum": 0},
+                            "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0}
+                        }), &["stage", "seconds"])},
+                        "peak_gpu_memory_bytes": {"type": "integer", "minimum": 0},
+                        "image_sha256": {"type": "string"}
+                    }),
+                    &["artifact", "triangles", "generated_triangles", "size_mm", "resolution", "steps", "tokens", "seed", "fov_degrees", "fov_source", "background", "device", "image_sha256"],
+                ),
+                photo_job(),
+                analysis_job(),
+                photo_analysis(),
+                relief,
+                waiting,
+                object(json!({
+                    "jobs":{"type":"array","items":{"anyOf":[photo_job(),analysis_job()]}},
+                    "requested_limit":{"type":"integer","minimum":1},
+                    "returned":{"type":"integer","minimum":0},
+                    "next_offset":{"type":["integer","null"],"minimum":0}
+                }), &["jobs","requested_limit","returned","next_offset"])
+            ]})
+        }
         "artifact" => json!({"type": "object", "anyOf": [
             artifact(),
             object(json!({"format_version":{"const":1},"logical_bytes":{"type":"integer"},"reserved_remaining_bytes":{"type":"integer"},"charged_bytes":{"type":"integer"},"complete":{"type":"boolean"},"by_project":{"type":"object"},"by_class":{"type":"object"},"accounting":{"type":"string"}}), &["format_version","logical_bytes","reserved_remaining_bytes","charged_bytes","complete","by_project","by_class","accounting"]),

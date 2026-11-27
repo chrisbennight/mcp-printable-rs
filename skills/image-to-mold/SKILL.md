@@ -60,14 +60,24 @@ they improve release without erasing useful detail. Keep foreground features and
 shallow background texture independently adjustable.
 
 For photographs, use supplied measured depth when available. Otherwise, when
-the `photo` tool is offered, estimate depth with its `depth` action, with
-`normals_path` when fine surface detail matters; without it, author or infer a
-relief. Either way, label the result an interpretation rather than recovered
-physical geometry. Preserve calibrated depth data instead of replacing it with a
-display preview or an image generated for appearance.
+the `photo` tool offers its `relief` action, use it: choose the preset (`plaque`,
+`coin`, `mold` or `artwork`), the width or coin diameter and the relief depth,
+and it returns a checked STL, a 16-bit heightmap with its millimetre scale and
+a report. The first request for a photograph returns an analysis job; follow it
+with `photo.status` and repeat the same request once it succeeds. Review the
+report's `checks`, narrow ridges and grooves, and the analysis warnings, then
+continue with the validation and slicing below. For painted artwork, the
+default depth model invents sculpted depth; name a MoGe model in
+`advanced.depth_model` for a flat reading. Without `relief`, estimate depth with
+the `depth` action, with `normals_path` when fine surface detail matters, and
+calibrate it as described next; without either, author or infer a relief.
+Either way, label the result an interpretation rather than recovered physical
+geometry. Preserve calibrated depth data instead of replacing it with a display
+preview or an image generated for appearance. Keep hand-assigned heights for
+flat artwork, logos and lettering.
 
-An estimated depth map is relative log depth, nearest brightest. Decode it with
-the reported `near` and `far` before calibrating:
+An estimated depth map from the `depth` action is relative log depth, nearest
+brightest. Decode it with the reported `near` and `far` before calibrating:
 
 - Choose the depth that becomes the flat background and flatten everything
   beyond it. An outline of the subject keeps the background flat where the

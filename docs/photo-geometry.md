@@ -22,7 +22,8 @@ free fails with a `resource_limit` error, and each run reports its peak GPU
 memory, so the cost of a choice stays visible.
 
 The `photo` tool's [`analyze` action](#analyse-a-photograph) runs them on
-your photographs.
+your photographs, and its [`relief` action](#build-a-relief) builds a
+printable relief from the result.
 
 ## Recommendations
 
@@ -239,6 +240,117 @@ When no check ran, the map is the mask alone and a warning says so.
 The checks measure whether the models agree with themselves and each other,
 not whether they are right. How well the scores separate good regions from
 bad ones on real photographs has not yet been measured.
+
+## Build a relief
+
+The `relief` action turns a photograph into a printable relief in one request:
+an STL, a 16-bit heightmap and a JSON report. It is offered with `analyze`.
+
+```json
+{"action": "relief", "params": {
+  "image": "photos/coin.jpg",
+  "path": "relief/coin.stl",
+  "preset": "coin",
+  "width_mm": 40
+}}
+```
+
+The relief reads a shallow-subject analysis of the photograph, with the
+[recommended](#recommendations) Depth Anything 3 mono large depth. When that
+analysis is not yet cached, the response is the analysis job and a `next`
+instruction instead of a relief:
+follow the job with `status`, and repeat the same request once it succeeds,
+which then reads the analysis from its cache. Give `analysis`, the `cache.key`
+of a finished analysis, in place of `image` to use one directly.
+
+The relief itself is built synchronously in the memory-isolated geometry
+worker, so the request may take a while for a large analysis; cancelling the
+request stops it. Before the worker runs, every map it reads is copied and
+checked against the SHA-256 in the analysis manifest; an analysis whose maps
+have changed is refused.
+
+| Parameter | Values | Default |
+| --- | --- | --- |
+| `image` or `analysis` | a workspace photograph, or an analysis cache key | one is required |
+| `path` | a new workspace `.stl` | required; `NAME.height.png` and `NAME.report.json` are written beside it |
+| `overwrite` | `true` to replace existing files | `false` |
+| `preset` | `plaque`, `coin`, `mold` or `artwork` | required |
+| `width_mm` | 5 to 1000; a coin's diameter | required |
+| `height_mm` | 5 to 1000; not for a coin | the image's proportions |
+| `relief_depth_mm` | 0.2 to 50: lowest to highest point of the relief | the preset's |
+| `base_mm` | 0.4 to 50: the flat base under the relief | the preset's |
+| `border_mm` | 0, or `nozzle_mm` to 100: a flat border level with the relief's top, added outside `width_mm` and `height_mm`, or a coin's rim inside its diameter | the preset's |
+| `quality` | `best` or `fast`, passed to the analysis | `best` |
+| `nozzle_mm` | 0.1 to 2: the nozzle; samples are kept at least half its width apart, and the narrow-detail check uses it | 0.4 |
+| `advanced` | see below | none |
+
+The presets set these starting values. None has been measured on printed
+reliefs yet; adjust them for the subject and the printer.
+
+| Preset | Outline | Relief depth | Base | Border | Compression | Mirrored and inverted |
+| --- | --- | --- | --- | --- | --- | --- |
+| `plaque` | rectangle | 3 mm | 2 mm | none | 1 | no |
+| `coin` | round | 1.2 mm | 2 mm | 1.5 mm rim | 2 | no |
+| `mold` | rectangle | 3 mm | 3 mm | 5 mm wall | 1 | yes |
+| `artwork` | rectangle | 3 mm | 2 mm | none | 3 | no |
+
+- A **coin** uses the central square of the photograph. Its face is the
+  circle inscribed in that square, inside a raised rim `border_mm` wide and
+  level with the relief's top. The square plate's corners outside the circle
+  stay at the base; cut the outline round when slicing or modelling if the
+  coin must be round.
+- A **mold** is the relief mirrored and inverted, so a cast taken from it
+  reads the right way round, inside a wall level with its top. Its narrow
+  detail is checked on the cavity it prints.
+- **artwork** names Depth Anything 3 mono large, which gives painted artwork
+  a sculpted reading, and compresses its invented depth harder. For a flat
+  reading of the artwork, name a MoGe model in `advanced.depth_model`.
+
+`advanced` holds the relief geometry's other choices:
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `integration` | `depth_only`, `anchored_normals` or `frankot_chellappa` | `depth_only`, the best measured route for shallow subjects; the normal methods are not yet measured |
+| `compression` | 0 to 100; 0 keeps slopes in proportion | the preset's |
+| `detail_gain` | 0 to 10: multiplier for fine detail | 1 |
+| `mirror`, `invert` | `true` or `false` | the preset's |
+| `depth_model` | as for `analyze` | the analysis default, or the preset's depth model |
+| `normals` | `true` analyses with Marigold V2 normals, for the normal methods | `false` |
+
+The analysis model choices and `quality` apply only with `image`. The stages,
+their options and their checks are described under
+[Relief geometry](photo-depth.md#relief-geometry). The analysis's subject mask
+decides which pixels are the subject; the rest becomes the flat background.
+
+### Relief results
+
+The result holds the following; the saved report holds the same except
+`artifacts`:
+
+- `settings`: every choice with the preset's values filled in;
+- `analysis`: the cache key, the photograph's SHA-256, the size of its maps,
+  the depth model and kind, the analysis settings, the focal length, its
+  scores and warnings;
+- `relief`: the solid's size in millimetres and triangle count, the sample
+  count and spacing, the integration and compression reports, the checks
+  from `check_relief`, and the heightmap's scale;
+- `artifacts`: the STL, the heightmap and the report.
+
+`checks.passed` is true when the solid is sound and the relief is at least
+one 0.2 mm layer high. A relief that fails is not written; the request
+returns `relief_not_printable`. Ridges and grooves narrower than the nozzle
+still print, with less detail, so they are reported in `narrow_ridges` and
+`narrow_grooves` without failing the check.
+
+The heightmap is a 16-bit greyscale PNG of the relief, including a coin's rim
+but not a rectangular border, before mirroring or inversion, with the image's top row at the top. A pixel value `p`
+is a height of `p / 65535 * full_scale_mm` above the relief's lowest point,
+where `full_scale_mm` is the relief depth, recorded in the report.
+
+The three files are published in turn: the STL, the heightmap, then the
+report. After a storage error, inspect the paths before repeating the request.
+A rendered preview is not produced; render the STL with the `view` or `render`
+tools.
 
 ## Licences of bundled code
 
