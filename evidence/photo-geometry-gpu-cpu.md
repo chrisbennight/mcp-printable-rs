@@ -13,7 +13,7 @@ records and the scene scores are in
 
 | Criterion | Result |
 | --- | --- |
-| Each action under 15 minutes on a 1024 px photograph, GPU and CPU routes | **Pass** once the worker can run the default analysis (slowest: 54 s on the CPU) |
+| Each action under 15 minutes on a 1024 px photograph, GPU and CPU routes | **Pass for every measured step** once the worker can run the default analysis (slowest: 54 s on the CPU). The time from a first relief request to the STL, and the server's disk reads and some server memory peaks, were not measured as such (see below) |
 | The default GPU analysis runs in the installation the overlay describes | **Miss**: it fails in `compose.photo.yaml` as published, for two reasons below |
 | Default relief route against the Marigold-only route | **Analysis depth: better** on surface angle, **not distinguishable** on relief height. **Written relief: not compared like for like** (no Marigold relief was written); the default relief heightmap scores worse than Marigold depth on surface angle because the relief compresses slopes on purpose |
 | Every relief STL passes the hard checks | **Pass**: 22 of 22 |
@@ -161,7 +161,9 @@ workspace and run through:
   Marigold V2 for depth and normals at 1024 px.
 
 Each map was scored with `photo.compare` in `synthetic` mode against the
-scene's `truth.zip`, written by
+scene's `truth.zip`, with `kind: relative` for the analysis depth, the relief
+heightmaps and the cross-check, and `kind: logrel` for Marigold V2's depth
+PNG, which encodes relative log depth. The truth archives were written by
 [the benchmark's report code](../scripts/depth_benchmark/report.py) from the
 benchmark's own rendered passes. Surface error is the median angle between
 the true normals and normals derived from the map; relief height error is
