@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import math
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -271,6 +272,51 @@ class OutputsTests(unittest.TestCase):
 
 
 class LoadingTests(unittest.TestCase):
+    def test_an_encoded_zero_normal_is_not_a_direction(self):
+        normals = numpy.zeros((3, H, W))
+        normals[2] = 1.0
+        normals[:, :, :10] = 0.0
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "n.png"
+            write_normals(normals, path)
+            loaded = comparison.load("n.png", path, "relative")
+        self.assertFalse(loaded.valid[:, :10].any())
+        self.assertTrue(loaded.valid[:, 10:].all())
+        self.assertFalse(loaded.normals[:, :10].any())
+
+    def test_missing_pixels_do_not_blend_into_valid_ones(self):
+        valid = numpy.ones((H, W), bool)
+        valid[:, : W // 2] = False
+        item = comparison.Input("d.tiff", "depth map", numpy.where(valid, 2.0, 0.0), None, valid, "relative")
+        for size in ((2 * H, 2 * W), (H // 2, W // 2), (H + 7, W - 5)):
+            out = comparison.resized(item, *size)
+            self.assertTrue(out.valid.any(), size)
+            numpy.testing.assert_allclose(out.depth[out.valid], 2.0, rtol=1e-6)
+            self.assertFalse(out.depth[~out.valid].any())
+
+    def test_maps_without_pixels_are_refused_before_decoding(self):
+        with self.assertRaisesRegex(comparison.CompareError, "no pixels"):
+            comparison._check_pixels("empty.png", 0, 5)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "empty.png"
+            header = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">IIBBBBB", 0, 4, 16, 0, 0, 0, 0)
+            path.write_bytes(header + bytes(8))
+            with self.assertRaisesRegex(comparison.CompareError, "no pixels"):
+                comparison.load("empty.png", path, "relative")
+
+    def test_a_compressed_rendered_view_loads_within_its_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "view.zip"
+            with path.open("wb") as stream:
+                numpy.savez_compressed(stream, depth=numpy.full((H, W), 100.0, numpy.float32),
+                                       normals=numpy.zeros((H, W, 3), numpy.float32), mask=dome() > 0,
+                                       focal_px=numpy.float64(0.0))
+            mesh = comparison.load("part.stl", path, "relative")
+            self.assertEqual(mesh.source, "mesh")
+            with mock.patch.object(comparison, "MAX_PIXELS", 100):
+                with self.assertRaisesRegex(comparison.CompareError, "more than 100 pixels"):
+                    comparison.load("part.stl", path, "relative")
+
     def test_formats(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
