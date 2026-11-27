@@ -34,6 +34,7 @@ pub mod limit;
 pub mod plate;
 mod print_check;
 pub mod print_collision;
+pub mod relief;
 mod remesh;
 mod thickness;
 mod volume;

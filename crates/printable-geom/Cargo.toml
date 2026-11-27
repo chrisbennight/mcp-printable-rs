@@ -19,6 +19,9 @@ parry3d-f64 = { version = "0.30.0", default-features = false, features = ["alloc
 # Adaptive exact orientation predicates for self-intersection detection and
 # winding counts.
 robust = "1.2.0"
+# Discrete cosine transforms for the Neumann Poisson solve in relief
+# integration; already in the workspace through imageproc.
+rustdct = "0.7.1"
 serde = { version = "1", features = ["derive"] }
 stl_io = "0.11.0"
 thiserror = "2"
