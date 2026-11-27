@@ -763,6 +763,17 @@ fn native_bundle() -> Value {
     )
 }
 
+/// A Blender scene operation's result.
+fn scene_result() -> Value {
+    object(
+        json!({
+            "scene_state": scene_state(), "name": {"type": "string"},
+            "path": {"type": "string"}
+        }),
+        &["scene_state"],
+    )
+}
+
 /// The result of `scene` `prepare_print`, which does not use Blender and so
 /// reports no scene state.
 fn mesh_preparation() -> Value {
@@ -997,13 +1008,9 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 }}
             }}
         ]}),
-        "edit" | "scene" => object(
-            json!({
-                "scene_state": scene_state(), "name": {"type": "string"},
-                "path": {"type": "string"}
-            }),
-            &["scene_state"],
-        ),
+        "edit" => scene_result(),
+        // `prepare_print` does not use Blender and reports no scene state.
+        "scene" => json!({"type": "object", "anyOf": [scene_result(), mesh_preparation()]}),
         "blender_execute" => object(
             json!({
                 "scene_state": scene_state(), "result": {},

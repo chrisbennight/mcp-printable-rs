@@ -82,7 +82,7 @@ pub enum KeptParts {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceSummary {
     pub triangles: usize,
-    /// Pieces connected through shared vertices.
+    /// Pieces connected through shared edges.
     pub shells: usize,
     /// Edges used by only one triangle: the rims of holes.
     pub open_edges: usize,
@@ -199,10 +199,15 @@ pub fn prepare_print(
     let edge = match (request.edge_length_mm, request.target_triangles) {
         (Some(edge), _) => edge,
         // An equilateral triangle with edge e has area e^2 * sqrt(3) / 4.
-        (None, Some(target)) => (4.0 * surface_area(&vertices, &triangles)
-            / (3f64.sqrt() * target.max(1) as f64))
-            .sqrt()
-            .max(MIN_DEFAULT_EDGE_MM),
+        (None, Some(target)) => {
+            (4.0 * if request.parts == KeptParts::Largest {
+                largest_piece_area(&vertices, &triangles)
+            } else {
+                surface_area(&vertices, &triangles)
+            } / (3f64.sqrt() * target.max(1) as f64))
+                .sqrt()
+                .max(MIN_DEFAULT_EDGE_MM)
+        }
         (None, None) => {
             (DEFAULT_EDGE_SHARE * print_check::extent(&vertices)).max(MIN_DEFAULT_EDGE_MM)
         }
@@ -224,7 +229,7 @@ pub fn prepare_print(
     if triangles.is_empty() {
         return Err(GeometryError::EmptyMesh);
     }
-    let pieces = pieces(vertices.len(), &triangles);
+    let pieces = pieces(&triangles);
     let (open_edges, _) = edge_counts(&triangles);
     let source = SourceSummary {
         triangles: triangles.len(),
@@ -386,29 +391,31 @@ fn solids(solid: &Manifold) -> Vec<Manifold> {
         .collect()
 }
 
-/// Connected pieces of a mesh, joined through shared vertices.
+/// Connected pieces of a mesh, joined through shared edges.
 struct Pieces {
     /// The piece of each triangle, numbered from zero.
     of_triangle: Vec<u32>,
     count: usize,
 }
 
-fn pieces(vertices: usize, triangles: &[[u32; 3]]) -> Pieces {
-    let mut parent: Vec<usize> = (0..vertices).collect();
-    for [a, b, c] in triangles {
-        for (p, q) in [(*a, *b), (*b, *c)] {
-            let (p, q) = (root(&mut parent, p as usize), root(&mut parent, q as usize));
+fn pieces(triangles: &[[u32; 3]]) -> Pieces {
+    // Triangles sharing an edge belong together; bodies that only touch at
+    // a vertex stay apart, so each closed body is oriented on its own.
+    let mut parent: Vec<usize> = (0..triangles.len()).collect();
+    for group in undirected_edges(triangles).chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        for pair in group.windows(2) {
+            let (p, q) = (
+                root(&mut parent, pair[0].2 as usize),
+                root(&mut parent, pair[1].2 as usize),
+            );
             parent[p] = q;
         }
     }
     let mut numbers = HashMap::new();
-    let of_triangle = triangles
-        .iter()
-        .map(|triangle| {
+    let of_triangle = (0..triangles.len())
+        .map(|face| {
             let next = numbers.len() as u32;
-            *numbers
-                .entry(root(&mut parent, triangle[0] as usize))
-                .or_insert(next)
+            *numbers.entry(root(&mut parent, face)).or_insert(next)
         })
         .collect();
     Pieces {
@@ -583,7 +590,7 @@ fn is_zero(count: &usize) -> bool {
 /// The pieces enclosing negative volume, which face inwards, turned to face
 /// outwards when `turn` is set. Returns how many there are.
 fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) -> usize {
-    let pieces = pieces(vertices.len(), triangles);
+    let pieces = pieces(triangles);
     let mut volume = vec![0.0; pieces.count];
     for (face, triangle) in triangles.iter().enumerate() {
         volume[pieces.of_triangle[face] as usize] +=
@@ -597,6 +604,30 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
         }
     }
     volume.iter().filter(|volume| **volume < 0.0).count()
+}
+
+/// The area of the piece enclosing the most volume, either way round.
+fn largest_piece_area(vertices: &[[f64; 3]], triangles: &[[u32; 3]]) -> f64 {
+    let valid: Vec<[u32; 3]> = triangles
+        .iter()
+        .filter(|triangle| {
+            triangle
+                .iter()
+                .all(|&index| (index as usize) < vertices.len())
+        })
+        .copied()
+        .collect();
+    let pieces = pieces(&valid);
+    let mut volume = vec![0.0; pieces.count];
+    let mut area = vec![0.0; pieces.count];
+    for (face, triangle) in valid.iter().enumerate() {
+        let piece = pieces.of_triangle[face] as usize;
+        volume[piece] += signed_volume(vertices, std::slice::from_ref(triangle));
+        area[piece] += surface_area(vertices, std::slice::from_ref(triangle));
+    }
+    (0..pieces.count)
+        .max_by(|a, b| volume[*a].abs().total_cmp(&volume[*b].abs()))
+        .map_or(0.0, |piece| area[piece])
 }
 
 /// The total area of the triangles that refer to valid vertices.
@@ -827,6 +858,46 @@ mod tests {
         let (_, report) = prepare(cuboid([0.0; 3], [40.0; 3]), &target).unwrap();
         // Close to the target, though the rebuild's triangles are not all
         // equilateral.
+        assert!((25_000..=100_000).contains(&report.triangles), "{report:?}");
+    }
+
+    #[test]
+    fn bodies_touching_at_a_corner_are_oriented_on_their_own() {
+        // A small inward-facing cube touches a larger one at a corner.
+        let (small, small_triangles) = cuboid([10.0; 3], [4.0; 3]);
+        let inward: Vec<[u32; 3]> = small_triangles
+            .iter()
+            .map(|[a, b, c]| [*a, *c, *b])
+            .collect();
+        let (mut vertices, mut triangles) = cuboid([0.0; 3], [10.0; 3]);
+        // Share the corner vertex, as a welded STL does.
+        let offset = vertices.len() as u32;
+        vertices.extend(small);
+        let corner = 7;
+        triangles.extend(inward.iter().map(|triangle| {
+            triangle.map(|index| if index == 0 { corner } else { index + offset })
+        }));
+        let (_, report) = prepare((vertices, triangles), &request(0.25)).unwrap();
+        assert_eq!(report.source.shells, 2);
+        assert_eq!(report.cavities_filled, 1);
+        // Both survive, facing outwards.
+        assert!((report.volume_mm3 - 1064.0).abs() < 30.0, "{report:?}");
+    }
+
+    #[test]
+    fn a_triangle_target_counts_only_the_largest_part_when_only_it_is_kept() {
+        // The second block has as much surface as the first; only the
+        // first, which encloses more, is kept.
+        let mut target = request(1.0);
+        target.edge_length_mm = None;
+        target.target_triangles = Some(50_000);
+        target.parts = KeptParts::Largest;
+        let mesh = joined(&[
+            cuboid([0.0; 3], [40.0; 3]),
+            cuboid([60.0, 0.0, 0.0], [80.0, 80.0, 0.5]),
+        ]);
+        let (_, report) = prepare(mesh, &target).unwrap();
+        assert_eq!(report.shells, 1);
         assert!((25_000..=100_000).contains(&report.triangles), "{report:?}");
     }
 

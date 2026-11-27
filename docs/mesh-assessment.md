@@ -59,7 +59,8 @@ not use Blender:
 
 The source is read in millimetres with Z up. The preparation:
 
-1. Turns triangles to face the same way as most of their piece and closes
+1. Turns triangles to face the same way as most of their piece, a piece being
+   the triangles joined through shared edges, and closes
    each opening whose rim is a simple loop. Every closed piece is then turned
    to face outwards, so no material is lost; an inward-facing piece meant as
    a cavity is filled, and `cavities_filled` counts them. Set
@@ -80,6 +81,9 @@ The source is read in millimetres with Z up. The preparation:
    `remove_floating_parts`, the plate is under the largest part and every
    other part not resting on it, above or below, is removed; such parts are
    usually debris. Separate parts resting on the plate are kept and counted.
+   The detection resolution is max(0.2 mm, one grid step), where a grid step
+   is about 1.7 edge lengths: at a coarse edge, a part closer to the plate
+   than one grid step counts as resting on it.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
    cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
    `plinth_chamfer_mm`), and optionally hollows the solid with drain holes
@@ -90,7 +94,9 @@ The source is read in millimetres with Z up. The preparation:
    plinth and cavity, facing down more steeply than its overhang angle, other
    than within 0.2 mm of the plate, where the first
    layer covers it, and walls thinner than its minimum wall, which defaults to
-   the nozzle diameter.
+   the nozzle diameter. The thin-wall check does not measure through faces
+   resting on the build plate, so a thin flat part lying on the plate, such as
+   a plate or tab thinner than the minimum, is not reported as thin.
 
 The result stands on Z = 0. `preparation` reports the source's triangles,
 shells, open edges and, when it was closed, its volume; what was turned and

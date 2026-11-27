@@ -10629,6 +10629,17 @@ async fn scene_prepare_print_rebuilds_a_mesh_and_reports_what_changed() {
     validator
         .validate(&prepare.response.apply(result.clone()))
         .unwrap();
+    // The tool-wide contract accepts it too.
+    let tool = printable_server::resources::contracts::read(
+        "printable://contracts/scene",
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(tool["output_schema_scope"], "tool");
+    jsonschema::validator_for(&tool["outputSchema"])
+        .unwrap()
+        .validate(&prepare.response.apply(result.clone()))
+        .unwrap();
 
     // The destination is kept unless replaced, and hollowing needs one solid.
     let again = call(json!({"source_path": "parts/raw.stl", "path": "parts/ready.stl"}));

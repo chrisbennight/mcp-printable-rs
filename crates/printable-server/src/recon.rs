@@ -1041,6 +1041,7 @@ impl ReconWorker {
         if request.model == ObjectModel::Trellis2 {
             return self.generate_trellis(request, control).await;
         }
+        let _permit = self.job_permit(control).await?;
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
@@ -1048,7 +1049,7 @@ impl ReconWorker {
             control.verify_input(snapshot.path())?;
         }
         // Hashing and reading the cache block, so they run off the async
-        // threads, before taking the shared photograph lane.
+        // threads.
         let workspace = Arc::clone(&self.workspace);
         let image = snapshot.path().to_path_buf();
         let wants_focal = request.fov_degrees.is_none();
@@ -1063,7 +1064,6 @@ impl ReconWorker {
         .map_err(|_| {
             reconstruction_error("failed", "reading the photograph stopped unexpectedly")
         })??;
-        let _permit = self.job_permit(control).await?;
         let staging = tempfile::Builder::new()
             .prefix("printable-object-")
             .tempdir()?;
