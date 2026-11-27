@@ -7,27 +7,32 @@ the order of cost on a processor; the published amd64 images and other
 processors differ.
 
 The input is the script below: a lumpy closed surface 107 mm tall with
-1,000,000 triangles, a 20 mm block overlapping it and a 3 mm cube floating
-beside it. The surface faces inwards, as some exporters write one, and has five
+1,000,000 triangles, a 20 mm block overlapping it and a 3 mm cube beside it.
+The lumpy surface faces inwards, as some exporters write one, and has five
 openings: three missing quadrilaterals and the two poles, whose triangles are
-degenerate. The worker read it and wrote the rebuilt STL with
-`printable-geometry-worker --prepare-print request.json out.stl`, where the
-request held the source path and `{"checks": {"overhang_degrees": 45,
-"min_feature_mm": 0.4}}`, and once more with `"edge_length_mm": 0.2`.
-`/usr/bin/time -v` measured each run three times; the table gives the median.
-The server's own strict check of the result is not included.
+degenerate. The worker read it, rebuilt it, ran the strict check and wrote the
+rebuilt STL with `printable-geometry-worker --prepare-print request.json
+out.stl`, where the request held the source path, `{"checks":
+{"overhang_degrees": 45, "min_feature_mm": 0.4}}`, an overhang angle of 45
+degrees and the subject name; and once more with `"edge_length_mm": 0.2`. This
+is the whole worker run behind `scene` `prepare_print`, including the
+validation of the written mesh. `/usr/bin/time -v` measured each run three
+times; the table gives the median.
 
 | Edge | Address-space limit | Output triangles | Wall seconds | CPU seconds (user + system) | Peak resident memory |
 | --- | --- | --- | --- | --- | --- |
-| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 506,884 | 2.1 | 2.6 | 393 MiB |
-| 0.2 mm | none | 2,941,584 | 9.3 | 11.3 | 1,419 MiB |
+| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 499,060 | 2.8 | 3.3 | 456 MiB |
+| 0.2 mm | none | 2,896,744 | 13.6 | 15.7 | 2,200 MiB |
 | 0.2 mm | 1 GiB | none: the worker was stopped when it ran out of address space | | | |
 
-Both rebuilds turned the inward-facing surface around, closed the five openings,
-merged the overlapping block into one shell and removed the floating cube.
-The default edge fits within the geometry worker's default 1 GiB limit. Finer
-edges need more memory: raise `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them.
-Measured values are in [print-prep-rebuild.json](print-prep-rebuild.json).
+Both runs closed the five openings and, since the surface as a whole enclosed
+negative volume, turned all of it around. That turned the block and the cube,
+which had faced outwards, inwards: the report counts them as two cavities and
+they leave no separate part. Each result was one shell, a valid solid with no
+self-intersections. The default edge fits within the geometry worker's
+default 1 GiB limit. Finer edges need more memory: raise
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. Measured values are in
+[print-prep-rebuild.json](print-prep-rebuild.json).
 
 ```python
 # A lumpy closed surface of about 1,000,000 triangles, 100 mm tall, standing

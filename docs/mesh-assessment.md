@@ -60,11 +60,12 @@ not use Blender:
 The source is read in millimetres with Z up. The preparation:
 
 1. Turns triangles to face the same way as most of their piece and closes
-   each opening whose rim is a simple loop. A closed piece that faces inwards
-   with nothing around it is turned around together with the pieces nested
-   wholly inside it, so the cavity of an inverted hollow part stays empty. A piece
-   inside another keeps its facing relative to the piece around it, so a
-   cavity stays a cavity.
+   each opening whose rim is a simple loop. When the surface as a whole faces
+   inwards, as some exporters write one, all of it is turned around
+   (`turned_inside_out`). Otherwise each closed piece keeps its facing, and
+   one facing inwards is a cavity; `cavities` counts them. A piece facing
+   inwards that lies inside no other part disappears in the rebuild, so
+   check that count when you expect none.
 2. Rebuilds the union of everything as one exact solid with facets about
    `edge_length_mm` long. Overlapping and touching parts merge and
    self-intersections disappear. Detail finer than about one and a half edges
@@ -72,28 +73,28 @@ The source is read in millimetres with Z up. The preparation:
    0.1 mm, keeps the result at a few hundred thousand triangles at any size
    and is about a 0.4 mm nozzle's width on a 100 mm part; choose a smaller
    edge for fine detail.
-3. Removes parts that do not rest on the build plate, which lies under the
-   largest part, since they would print in mid-air; a small fragment below the
-   largest part counts as such a part. A part rests on the plate when its
-   lowest point in the source is within 0.2 mm, about one layer, of the
-   plate's. They are usually debris. Set
-   `keep_floating_parts` to keep them.
-   Separate parts that do rest on the plate are kept and counted.
+3. Reports parts that float above the build plate, which lies under the
+   largest part: a part floats when its lowest point is more than 0.2 mm,
+   about one layer, or one grid step if that is more, above the plate. They
+   would print in mid-air and are usually debris. Every part is kept by
+   default; set `remove_floating_parts` to remove the floating ones. Separate
+   parts resting on the plate are always kept and counted.
 4. Optionally cuts a flat base one grid step above the lowest point and adds a
    cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
    `plinth_chamfer_mm`), and optionally hollows the solid with drain holes
    through the base (`hollow_wall_mm`, `drain_hole_diameter_mm`). Hollowing
    suits resin; FDM infill already saves material. It needs one solid, so join
    separate parts with a plinth first.
-5. With a `printer`, reports surface facing down more steeply than its
-   overhang angle, other than within 0.2 mm of the plate, where the first
+5. With a `printer`, reports surface of the written solid, including any
+   plinth and cavity, facing down more steeply than its overhang angle, other
+   than within 0.2 mm of the plate, where the first
    layer covers it, and walls thinner than its minimum wall, which defaults to
    the nozzle diameter.
 
 The result stands on Z = 0. `preparation` reports the source's triangles,
 shells, open edges and, when it was closed, its volume; what was turned and
-closed; the result's triangles, shells, volume and size; the floating parts
-found and whether they were removed; any plinth and cavity; and the overhang
+closed and any cavities; the result's triangles, shells, volume and size;
+the floating parts found and whether they were removed; any plinth and cavity; and the overhang
 and thin-wall areas with their largest regions. `validation` is the
 `validate_mesh` report of the written file. The rebuild and this check both
 run in the geometry worker, so the full mesh is decoded only under its memory
@@ -102,9 +103,9 @@ limit.
 A prepared mesh is written only when it passes the strict check: a valid solid
 known to be free of self-intersections. Otherwise the request fails with
 `print_check_failed`, names the problems and writes nothing. `head`
-`prepare_print` and photo objects follow the same rule. Rebuilding a
-one-million-triangle mesh at the default edge took about 2 seconds and
-400 MiB on a processor; finer edges need more memory, so raise
+`prepare_print` and photo objects follow the same rule. Rebuilding and
+checking a one-million-triangle mesh at the default edge took about
+3 seconds and 460 MiB on a processor; finer edges need more memory, so raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. See the
 [measurements](../evidence/print-prep-rebuild.md).
 

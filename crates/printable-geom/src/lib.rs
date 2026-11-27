@@ -58,7 +58,8 @@ pub use fit::{
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
 pub use print_prep::{
-    Finding, FloatingParts, PrintPrepOptions, PrintPrepReport, Region, SourceSummary, prepare_print,
+    Finding, KeptParts, Parts, PrintPrepOptions, PrintPrepReport, Region, SourceSummary,
+    prepare_print,
 };
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
 pub use volume::{Material, VolumeComparison, VolumeRegion};

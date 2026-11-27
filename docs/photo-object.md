@@ -431,10 +431,12 @@ therefore rebuilds it before writing it, with the same preparation as the
 - Openings are closed, inconsistent facing is fixed and the surface is rebuilt
   as one exact solid with facets 0.4% of `size_mm` long (0.4 mm at the default
   100 mm), at least 0.1 mm. Finer detail is smoothed away.
-- Pieces that do not rest on the build plate are removed. The result is then
-  scaled again so that its longest side is `size_mm`, centred on the origin
-  and standing on Z = 0, since the generator sized the surface with any
-  removed pieces included. `preparation.size_mm` gives the final size.
+- Only the largest part is kept, since a photograph shows one subject and
+  separate pieces are generator debris; `preparation.smaller_parts` counts
+  those removed. The result is then scaled again so that its longest side is
+  `size_mm`, centred on the origin and standing on Z = 0, since the generator
+  sized the surface with the removed pieces included. `preparation.size_mm`
+  gives the final size.
 - Overhangs steeper than 45 degrees and walls thinner than 0.4 mm, a common
   FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
   with the shells, volume and what was changed.
@@ -444,14 +446,15 @@ therefore rebuilds it before writing it, with the same preparation as the
 - When the rebuild is refused or the geometry worker fails, for example by
   running out of memory, the generated surface is not lost. It is written
   beside the requested path under a new name, `NAME.raw-ID.stl` with a random
-  `ID`, so it never replaces an existing file, and the error message names it.
+  `ID`, or `raw-ID.stl` when that name would exceed 255 bytes, so it never
+  replaces an existing file, and the error message names it.
   If that publication fails, its own error is returned instead. Run `scene` `prepare_print` on it
   with other settings, such as a larger `edge_length_mm`. It is published in
   the job's publishing phase, so a job cancelled before then keeps nothing.
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
-A one-million-triangle surface took about 2 seconds and 400 MiB at the default
+A one-million-triangle surface took about 3 seconds and 460 MiB at the default
 facet size in the [measurements](../evidence/print-prep-rebuild.md). The
 strict check runs there too. The rebuild has whatever remains of the
 generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or

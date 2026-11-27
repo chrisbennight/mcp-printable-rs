@@ -2,17 +2,17 @@
   "date": "2026-11-27",
   "host": {"architecture": "aarch64", "cpus": 8, "os": "Debian GNU/Linux 13 (trixie)", "rustc": "1.97.1"},
   "input": {"triangles": 1000018, "shells": 3, "open_edges": 2012, "stl_bytes": 50000984},
+  "includes": "rebuild, strict validation of the written STL and writing it, in the geometry worker",
   "runs": [
     {"edge_length_mm": 0.47661335754394535, "address_space_limit_bytes": 1073741824, "exit": 0,
-     "output_triangles": 506884, "shells": 1, "shells_turned": 1, "openings_closed": 5,
-     "floating_parts": {"count": 1, "removed": true},
-     "wall_seconds": [2.08, 2.05, 2.09], "user_seconds": [2.44, 2.45, 2.50], "system_seconds": [0.18, 0.16, 0.16],
-     "peak_rss_kib": [402820, 402824, 402692]},
+     "output_triangles": 499060, "shells": 1, "turned_inside_out": true, "cavities": 2, "openings_closed": 5,
+     "solid_geometry": true, "self_intersections": 0,
+     "wall_seconds": [2.80, 2.78, 2.78], "user_seconds": [3.11, 3.09, 3.10], "system_seconds": [0.25, 0.23, 0.24],
+     "peak_rss_kib": [467384, 467576, 422344]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": null, "exit": 0,
-     "output_triangles": 2941584, "shells": 1,
-     "floating_parts": {"count": 1, "removed": true},
-     "wall_seconds": [9.17, 9.27, 9.29], "user_seconds": [10.19, 10.24, 10.31], "system_seconds": [1.02, 1.04, 0.99],
-     "peak_rss_kib": [1452856, 1452900, 1452904]},
+     "output_triangles": 2896744, "shells": 1, "solid_geometry": true, "self_intersections": 0,
+     "wall_seconds": [13.92, 13.64, 13.55], "user_seconds": [14.35, 14.39, 14.32], "system_seconds": [1.57, 1.26, 1.25],
+     "peak_rss_kib": [2258144, 2248712, 2252400]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": 1073741824, "exit": 139, "output_triangles": null}
   ]
 }

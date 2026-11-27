@@ -10592,6 +10592,7 @@ async fn scene_prepare_print_rebuilds_a_mesh_and_reports_what_changed() {
     let prepare = call(json!({
         "source_path": "parts/raw.stl", "path": "parts/ready.stl",
         "edge_length_mm": 0.5, "printer": {"process": "fdm"},
+        "remove_floating_parts": true,
     }));
     let result = dispatch(
         &ws,

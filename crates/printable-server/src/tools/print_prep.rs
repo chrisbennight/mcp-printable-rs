@@ -47,9 +47,9 @@ pub(super) struct MeshPreparePrintParams {
     /// 0.4% of the longest side, at least 0.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge_length_mm: Option<f64>,
-    /// Keep parts not resting on the plate; default false (recommended).
+    /// Remove floating parts; default false keeps and reports them.
     #[serde(default)]
-    keep_floating_parts: bool,
+    remove_floating_parts: bool,
     /// Plinth added below, 2 to 100 mm; none by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plinth_height_mm: Option<f64>,
@@ -250,7 +250,11 @@ pub(super) async fn prepare_print(
     let fdm = printer.is_some_and(|printer| printer.process == PrintProcess::Fdm);
     let options = PrintPrepOptions {
         edge_length_mm,
-        keep_floating_parts: params.keep_floating_parts,
+        parts: if params.remove_floating_parts {
+            printable_geom::KeptParts::Grounded
+        } else {
+            printable_geom::KeptParts::All
+        },
         plinth: plinth_options(
             params.plinth_height_mm,
             params.plinth_diameter_mm,

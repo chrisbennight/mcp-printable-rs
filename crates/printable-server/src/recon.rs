@@ -1165,7 +1165,8 @@ impl ReconWorker {
                 let output = source.with_file_name("prepared.stl");
                 let options = printable_geom::PrintPrepOptions {
                     edge_length_mm: None,
-                    keep_floating_parts: false,
+                    // One photographed subject: generator debris goes.
+                    parts: printable_geom::KeptParts::Largest,
                     plinth: None,
                     hollow: None,
                     checks: Some(printable_geom::PrintChecks {
@@ -1211,7 +1212,8 @@ impl ReconWorker {
 
     /// After a failed rebuild, publish the generated surface beside the
     /// requested path under a new name, `NAME.raw-ID.stl` with a random ID,
-    /// which replaces nothing, and name it in the error, so that it can be
+    /// or `raw-ID.stl` when that name would be too long, which replaces
+    /// nothing, and name it in the error, so that it can be
     /// prepared with other settings without generating it again. A failure to
     /// publish it is returned as it is, so that an interrupted publication is
     /// reported as such.
@@ -1237,7 +1239,19 @@ impl ReconWorker {
             Ok(id) => id,
             Err(failed) => return failed,
         };
-        let raw_path = format!("{stem}.raw-{}.stl", &id[..12]);
+        let id = &id[..12];
+        let mut raw_path = format!("{stem}.raw-{id}.stl");
+        // A file name may have at most 255 bytes; a long one keeps only the ID.
+        if raw_path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.len() > 255)
+        {
+            raw_path = match stem.rsplit_once('/') {
+                Some((directory, _)) => format!("{directory}/raw-{id}.stl"),
+                None => format!("raw-{id}.stl"),
+            };
+        }
         if let Err(failed) = self
             .workspace
             .commit_generated_artifact_bounded(&raw_path, mesh, false, max_bytes)
@@ -1925,6 +1939,13 @@ print(json.dumps({"result": result}))
             b"the caller's own file"
         );
         assert!(!objects.join("figure.stl").exists());
+        // A name too long to extend keeps only the ID.
+        let long = ObjectRequest {
+            mesh_path: format!("objects/{}.stl", "n".repeat(245)),
+            ..rebuilt
+        };
+        let message = worker_message(&worker.generate_object(long).await.unwrap_err());
+        assert!(message.contains("was kept at objects/raw-"), "{message}");
     }
 
     #[tokio::test]

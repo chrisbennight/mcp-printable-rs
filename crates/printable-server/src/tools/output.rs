@@ -768,17 +768,21 @@ fn native_bundle() -> Value {
 fn mesh_preparation() -> Value {
     let count = json!({"type": "integer", "minimum": 0});
     let size = json!({"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3});
+    let parts = object(
+        json!({"count": count, "volume_mm3": {"type": "number"}, "removed": {"type": "boolean"}}),
+        &["count", "volume_mm3", "removed"],
+    );
     let preparation = object(
         json!({
             "source": object(json!({"triangles": count, "shells": count, "open_edges": count,
                 "volume_mm3": {"type": "number"}}), &["triangles", "shells", "open_edges"]),
-            "flipped_triangles": count, "shells_turned": count,
+            "flipped_triangles": count, "turned_inside_out": {"type": "boolean"},
+            "cavities": count,
             "openings_closed": count, "openings_left": count,
             "edge_length_mm": {"type": "number", "exclusiveMinimum": 0},
             "triangles": count, "shells": count,
             "volume_mm3": {"type": "number"}, "size_mm": size,
-            "floating_parts": object(json!({"count": count, "volume_mm3": {"type": "number"},
-                "removed": {"type": "boolean"}}), &["count", "volume_mm3", "removed"]),
+            "floating_parts": parts.clone(), "smaller_parts": parts,
             "plinth": {"type": "object"}, "hollow": {"type": "object"},
             "overhang": {"type": "object"}, "thin": {"type": "object"}
         }),
