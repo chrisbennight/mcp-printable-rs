@@ -226,6 +226,42 @@ fn photo_relief() -> [Value; 2] {
     [relief, waiting]
 }
 
+/// A lithophane or test strip with its preview and report.
+fn photo_lithophane() -> Value {
+    let size =
+        json!({"type":"array","items":{"type":"number","minimum":0},"minItems":3,"maxItems":3});
+    let built = object(
+        json!({"size_mm":size,"triangles":{"type":"integer","minimum":1},
+            "thickness_mm":object(json!({"min":{"type":"number"},"max":{"type":"number"}}), &["min","max"]),
+            "shape":object(json!({"kind":{"enum":["flat","curved"]}}), &["kind"]),
+            "tone_mapping":object(json!({"attenuation_per_mm":{"type":"number","exclusiveMinimum":0},
+                "contrast_ratio":{"type":"number","minimum":1}}), &["attenuation_per_mm","contrast_ratio"]),
+            "checks":object(json!({"solid":{"type":"boolean"},"thickness_within_range":{"type":"boolean"},
+                "passed":{"type":"boolean"}}), &["solid","thickness_within_range","passed"]),
+            "test_strip":{"type":"object"}}),
+        &[
+            "size_mm",
+            "triangles",
+            "thickness_mm",
+            "shape",
+            "tone_mapping",
+            "checks",
+        ],
+    );
+    object(
+        json!({
+            "units":{"const":"millimetres"},
+            "settings":object(json!({"shape":{"enum":["flat","curved"]},"test_strip":{"type":"boolean"}}),
+                &["shape","test_strip"]),
+            "image":{"type":["object","null"]},
+            "lithophane":built,
+            "artifacts":object(json!({"stl":artifact(),"preview":artifact(),"report":artifact()}),
+                &["stl","preview","report"])
+        }),
+        &["units", "settings", "image", "lithophane", "artifacts"],
+    )
+}
+
 fn analysis_job() -> Value {
     object(
         json!({
@@ -1184,6 +1220,7 @@ pub fn schema(name: &str) -> Arc<Map<String, Value>> {
                 photo_analysis(),
                 relief,
                 waiting,
+                photo_lithophane(),
                 object(json!({
                     "jobs":{"type":"array","items":{"anyOf":[photo_job(),analysis_job()]}},
                     "requested_limit":{"type":"integer","minimum":1},

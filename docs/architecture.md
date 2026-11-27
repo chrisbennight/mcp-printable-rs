@@ -57,8 +57,9 @@ current catalog. Reconnecting requires a new subscription; previous streams
 do not replay missed changes.
 
 Only the photograph worker's readiness changes the catalog after startup: it
-gates the `photo` tool and its generation actions, and `head`'s `reconstruct` and `photo_to_bust`
-when a matching head model is mounted. Servers without that worker omit tool-list-change capability and
+gates the `photo` tool's worker actions, and `head`'s `reconstruct` and `photo_to_bust`
+when a matching head model is mounted. The `photo` tool itself is always
+offered; without the worker it offers only `lithophane`. Servers without that worker omit tool-list-change capability and
 accept an empty notification filter. Other notification categories are not advertised.
 See the [MCP subscription requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions)
 and [Streamable HTTP requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).

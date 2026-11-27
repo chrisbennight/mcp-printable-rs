@@ -650,6 +650,7 @@ fn every_random_relief_becomes_a_sound_solid() {
             border_height_mm: random.next() * 2.0,
             mirror: case % 2 == 0,
             invert: case % 4 < 2,
+            fine_bottom: case % 5 == 0,
         };
         let mesh = relief_solid(&relief, &options).unwrap();
         let volume = assert_sound_solid(&mesh);

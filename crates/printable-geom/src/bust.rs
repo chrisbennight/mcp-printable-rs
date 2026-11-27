@@ -1853,6 +1853,33 @@ pub fn bust_stl(mesh: &TriangleMesh) -> Vec<u8> {
     bytes
 }
 
+/// Write a mesh as binary STL with facet normals, the same bytes as
+/// [`bust_stl`], one facet at a time, so memory does not grow with the mesh.
+/// Pass a buffered writer.
+pub fn write_stl<W: std::io::Write>(mesh: &TriangleMesh, mut writer: W) -> std::io::Result<()> {
+    let count = u32::try_from(mesh.triangles.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "binary STL holds at most 2^32 - 1 triangles",
+        )
+    })?;
+    writer.write_all(&[0; 80])?;
+    writer.write_all(&count.to_le_bytes())?;
+    let mut facet = [0u8; 50];
+    for triangle in &mesh.triangles {
+        let [a, b, c] = triangle.map(|index| mesh.vertices[index as usize]);
+        let normal = normalize(cross(sub(b, a), sub(c, a)));
+        for (slot, point) in [normal, a, b, c].iter().enumerate() {
+            for (axis, value) in point.iter().enumerate() {
+                let at = 12 * slot + 4 * axis;
+                facet[at..at + 4].copy_from_slice(&(*value as f32).to_le_bytes());
+            }
+        }
+        writer.write_all(&facet)?;
+    }
+    writer.flush()
+}
+
 fn validate(request: &BustRequest) -> Result<(), GeometryError> {
     let invalid = |message: &str| Err(GeometryError::InvalidOptions(message.into()));
     if !(request.height_mm.is_finite() && request.height_mm > 0.0) {
@@ -4168,5 +4195,13 @@ mod tests {
             prepare_bust(&bad),
             Err(GeometryError::InvalidOptions(_))
         ));
+    }
+
+    #[test]
+    fn streamed_stl_matches_the_in_memory_encoding() {
+        let mesh = mesh_from(&Manifold::cube(10.0, 4.0, 3.0, false));
+        let mut streamed = Vec::new();
+        write_stl(&mesh, &mut streamed).unwrap();
+        assert_eq!(streamed, bust_stl(&mesh));
     }
 }
