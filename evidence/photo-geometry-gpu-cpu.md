@@ -181,8 +181,8 @@ bootstrap intervals from the benchmark's `bootstrap_mean`.
 
 - **The product reproduces the benchmark.** The default route's analysis
   depth scored the benchmark's Depth Anything 3 mono large numbers on every
-  scene, identical at the report's precision (the largest difference is
-  0.0001°, on the lettering scene): 3.75° over nine scenes and 15.3 % over the six shallow scenes,
+  scene, identical at the report's precision (on the lettering scene, for
+  example, 2.5879° against 2.5880°): 3.75° over nine scenes and 15.3 % over the six shallow scenes,
   the 3.8° and 15.3 % #339 recorded. The Marigold route's maps scored the
   benchmark's Marigold V2 numbers to within 0.02° on every scene.
 - **Cross-check.** The benchmark's own Depth Anything 3 prediction for the
