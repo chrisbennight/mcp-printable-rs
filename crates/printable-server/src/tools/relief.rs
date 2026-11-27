@@ -708,6 +708,23 @@ fn coarsen(map: ReliefMap, spacing_mm: f64) -> Result<ReliefMap, WorkerError> {
             heights.push(top * (1.0 - fy) + bottom * fy);
         }
     }
+    // Interpolation can miss the highest and lowest samples; stretch the
+    // result back to the original range so the relief keeps its depth.
+    let range = |values: &[f64]| {
+        values
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
+                (low.min(*value), high.max(*value))
+            })
+    };
+    let (low, high) = range(values);
+    let (new_low, new_high) = range(&heights);
+    if new_high > new_low {
+        let scale = (high - low) / (new_high - new_low);
+        for value in &mut heights {
+            *value = low + (*value - new_low) * scale;
+        }
+    }
     Ok(ReliefMap {
         heights_mm: Grid::new(new_width, new_height, heights)?,
         spacing_mm: [map.spacing_mm[0] * step_x, map.spacing_mm[1] * step_y],
@@ -1159,6 +1176,17 @@ mod tests {
         let values = coarse.heights_mm.values();
         assert_eq!((values[0], values[4], values[14]), (0.0, 8.0, 44.0));
         assert_eq!(coarsen(fine.clone(), 0.05).unwrap(), fine);
+
+        // A single raised sample between coarse samples keeps the full depth.
+        let mut spike = vec![0.0; 49];
+        spike[3 * 7 + 2] = 3.0;
+        let spiked = ReliefMap {
+            heights_mm: Grid::new(7, 7, spike).unwrap(),
+            spacing_mm: [0.1, 0.1],
+        };
+        let kept = coarsen(spiked, 0.15).unwrap();
+        let highest = kept.heights_mm.values().iter().copied().fold(0.0, f64::max);
+        assert!((highest - 3.0).abs() < 1e-12);
     }
 
     #[test]
