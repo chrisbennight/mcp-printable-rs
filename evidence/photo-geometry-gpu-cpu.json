@@ -1,0 +1,1942 @@
+{
+ "date": "2026-11-27",
+ "issue": 338,
+ "environment": {
+  "gpu": "NVIDIA GeForce RTX 4090, 24 GiB",
+  "driver": "595.99.02",
+  "cpu": "24-core (32-thread) x86-64 desktop processor",
+  "ram": "64 GB",
+  "storage": "local NVMe SSD",
+  "os": "Linux, Docker Engine with Compose and the NVIDIA Container Toolkit",
+  "gpu_baseline": "Printable Blender processes held about 416 MiB of GPU memory before each run; nothing else used the GPU"
+ },
+ "release": {
+  "revision": "1194f64c5b71cff950c7d36b78f913ca7f0ba496",
+  "record": "ghcr.io/chrisbennight/mcp-printable-release@sha256:65111008324eda934778b999c24c8301721d13e653f9844003eef0dea60a0133",
+  "images": {
+   "server": "ghcr.io/chrisbennight/mcp-printable-rs:sha-1194f64c5b71@sha256:561ad5c2b7c266e2de7c4811cf9a1ffd3708aafdbb29c8527891131c922311ef",
+   "blender": "ghcr.io/chrisbennight/mcp-printable-blender:sha-1194f64c5b71@sha256:3900724767525decea413886e5ce2480da118d4c39659bc85459476dd01dff4f",
+   "cad": "ghcr.io/chrisbennight/mcp-printable-cad:sha-1194f64c5b71@sha256:15d451cebc5fb02c59043439920511f76dbf70eb90e94493ae8fa12d4151bc7d",
+   "slicer": "ghcr.io/chrisbennight/mcp-printable-slicer:sha-1194f64c5b71@sha256:8a97e6014b1bee00b7363fa66169b1772a4371aa08f3c04c992c3644a5aecd06",
+   "recon": "ghcr.io/chrisbennight/mcp-printable-recon:sha-1194f64c5b71@sha256:a45b45495293889e5c2868c44b47e717572ab99c75278aaee44dda24ae40833e"
+  }
+ },
+ "deployment": {
+  "compose_files": [
+   "compose.yaml",
+   "compose.photo.yaml",
+   "local override"
+  ],
+  "local_override": {
+   "recon-worker": {
+    "mem_limit": "32g",
+    "memswap_limit": "32g",
+    "tmpfs": [
+     "/tmp:rw,exec,size=1g,uid=10001,gid=10001,mode=1770"
+    ],
+    "PRINTABLE_RECON_GEOMETRY_CACHE": "/models/geometry (disk volume)",
+    "PRINTABLE_RECON_DEVICE": "cuda, or cpu for the CPU route",
+    "mounts": [
+     "converted Marigold V2 at /models/marigold, read-only",
+     "Pixal3D files at /models/pixal3d, read-only"
+    ]
+   }
+  },
+  "defaults_kept": [
+   "PRINTABLE_RECON_CPU_THREADS=4",
+   "cpus: 8",
+   "PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB=1024",
+   "PRINTABLE_RECON_TRELLIS_VRAM_MIB=4096"
+  ]
+ },
+ "measurement": {
+  "wall_time": "request to result; jobs polled every 2 s",
+  "gpu": "gpu_peak_allocated_mib from the result; whole-GPU used memory sampled every 0.5 s with nvidia-smi",
+  "ram": "photograph worker container cgroup anon, sampled every 0.5 s; memory_current includes file cache",
+  "disk_reads": "worker container cgroup io.stat rbytes during the run",
+  "cold": "model files dropped from the page cache with posix_fadvise(DONTNEED) before the run, and a photograph not analysed before"
+ },
+ "criteria": {
+  "time_under_15_minutes": "pass with the local override; slowest 54.1 s (CPU deep analysis)",
+  "default_gpu_analysis_in_published_overlay": "miss: resource_limit from a 10 GiB cgroup out-of-memory kill, and from Triton loading a module from a /tmp tmpfs without exec",
+  "default_relief_route_vs_marigold_only": "analysis depth better on surface angle (intervals do not overlap); relief height not distinguishable (intervals overlap); written relief not compared like for like",
+  "relief_hard_checks": "pass: 22 of 22 relief STLs had checks.passed true",
+  "photo_object_strict_print_check": "miss: 0 of 20 object requests produced a result; every solid rebuild failed"
+ },
+ "timing": [
+  {
+   "label": "g-analyze-shallow",
+   "description": "GPU route, analyze shallow (default), 08-stone-relief, models warm in page cache",
+   "wall_seconds": 20.14,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 8913,
+    "worker_peak_anon_bytes": 11042230272,
+    "worker_peak_memory_current_bytes": 11101483008,
+    "worker_block_read_bytes": 4096,
+    "server_peak_anon_bytes": 5472256
+   },
+   "seconds": 15.383,
+   "gpu_peak_allocated_mib": 6816,
+   "settings": {
+    "subject": "shallow",
+    "quality": "best",
+    "depth_model": "da3-mono-large",
+    "mask_model": "moge3-vitg",
+    "focal_model": "dp2-l",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cuda",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 2.119
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 12.382
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 0.523
+    }
+   ],
+   "runs": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "depth"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "focal"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "g-cold-analyze-shallow",
+   "description": "GPU route, analyze shallow, 03-marble-bust, model files evicted from page cache first",
+   "wall_seconds": 24.08,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 8767,
+    "worker_peak_anon_bytes": 10962345984,
+    "worker_peak_memory_current_bytes": 18849062912,
+    "worker_block_read_bytes": 7770882048,
+    "server_peak_anon_bytes": 5599232
+   },
+   "seconds": 15.392,
+   "gpu_peak_allocated_mib": 6794,
+   "settings": {
+    "subject": "shallow",
+    "quality": "best",
+    "depth_model": "da3-mono-large",
+    "mask_model": "moge3-vitg",
+    "focal_model": "dp2-l",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cuda",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 2.127
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 12.452
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 0.53
+    }
+   ],
+   "runs": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "depth"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "focal"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "g-analyze-deep",
+   "description": "GPU route, analyze deep (default), 08-stone-relief, warm",
+   "wall_seconds": 22.1,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 11239,
+    "worker_peak_anon_bytes": 11322064896,
+    "worker_peak_memory_current_bytes": 13346381824,
+    "worker_block_read_bytes": 2085888000,
+    "server_peak_anon_bytes": 5492736
+   },
+   "seconds": 15.798,
+   "gpu_peak_allocated_mib": 8287,
+   "settings": {
+    "subject": "deep",
+    "quality": "best",
+    "depth_model": "dp2-h",
+    "mask_model": "moge3-vitg",
+    "focal_model": "dp2-h",
+    "normals_model": null,
+    "side": 2048,
+    "device": "cuda",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "dp2-h",
+     "device": "cuda",
+     "side": 2048,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 2.678
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 11.935
+    }
+   ],
+   "runs": [
+    {
+     "entry": "dp2-h",
+     "device": "cuda",
+     "side": 2048,
+     "roles": [
+      "depth",
+      "focal"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "g-cold-analyze-deep",
+   "description": "GPU route, analyze deep, 03-marble-bust, cold",
+   "wall_seconds": 24.1,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 12039,
+    "worker_peak_anon_bytes": 11327086592,
+    "worker_peak_memory_current_bytes": 20040376320,
+    "worker_block_read_bytes": 8585773056,
+    "server_peak_anon_bytes": 5603328
+   },
+   "seconds": 16.326,
+   "gpu_peak_allocated_mib": 8803,
+   "settings": {
+    "subject": "deep",
+    "quality": "best",
+    "depth_model": "dp2-h",
+    "mask_model": "moge3-vitg",
+    "focal_model": "dp2-h",
+    "normals_model": null,
+    "side": 2048,
+    "device": "cuda",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "dp2-h",
+     "device": "cuda",
+     "side": 2048,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 2.869
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 12.426
+    }
+   ],
+   "runs": [
+    {
+     "entry": "dp2-h",
+     "device": "cuda",
+     "side": 2048,
+     "roles": [
+      "depth",
+      "focal"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge3-vitg",
+     "device": "cuda",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "g-relief",
+   "description": "relief plaque 100 mm from the cached GPU analysis of 08-stone-relief",
+   "wall_seconds": 0.3,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 1519616,
+    "worker_peak_memory_current_bytes": 2011947008,
+    "worker_block_read_bytes": 7516160,
+    "server_peak_anon_bytes": 5496832
+   },
+   "settings": {
+    "preset": "plaque",
+    "shape": "rectangle",
+    "width_mm": 100.0,
+    "height_mm": null,
+    "relief_depth_mm": 3.0,
+    "base_mm": 2.0,
+    "border_mm": 0.0,
+    "integration": "depth_only",
+    "compression": 1.0,
+    "detail_gain": 1.0,
+    "mirror": false,
+    "invert": false,
+    "nozzle_mm": 0.4,
+    "layer_mm": 0.2
+   },
+   "relief": {
+    "size_mm": [
+     99.99999999999999,
+     151.78041543026706,
+     5.0
+    ],
+    "triangles": 767250,
+    "samples": [
+     500,
+     759
+    ],
+    "checks": {
+     "solid": true,
+     "volume_mm3": 57397.46161699872,
+     "relief_height_mm": 3.0,
+     "minimum_relief_mm": 0.2,
+     "relief_height_within_limits": true,
+     "narrow_ridges": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.0
+     },
+     "narrow_grooves": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.0
+     },
+     "passed": true
+    }
+   }
+  },
+  {
+   "label": "g-cold-relief",
+   "description": "relief plaque 100 mm from the cached GPU analysis of 03-marble-bust",
+   "wall_seconds": 7.4,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 1798144,
+    "worker_peak_memory_current_bytes": 8697733120,
+    "worker_block_read_bytes": 0,
+    "server_peak_anon_bytes": 61972480
+   },
+   "settings": {
+    "preset": "plaque",
+    "shape": "rectangle",
+    "width_mm": 100.0,
+    "height_mm": null,
+    "relief_depth_mm": 3.0,
+    "base_mm": 2.0,
+    "border_mm": 0.0,
+    "integration": "depth_only",
+    "compression": 1.0,
+    "detail_gain": 1.0,
+    "mirror": false,
+    "invert": false,
+    "nozzle_mm": 0.4,
+    "layer_mm": 0.2
+   },
+   "relief": {
+    "size_mm": [
+     100.0,
+     133.37679269882662,
+     5.0
+    ],
+    "triangles": 675824,
+    "samples": [
+     501,
+     667
+    ],
+    "checks": {
+     "solid": true,
+     "volume_mm3": 43800.01969508431,
+     "relief_height_mm": 3.0,
+     "minimum_relief_mm": 0.2,
+     "relief_height_within_limits": true,
+     "narrow_ridges": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.056411732341516085
+     },
+     "narrow_grooves": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.057649577328997115
+     },
+     "passed": true
+    }
+   }
+  },
+  {
+   "label": "c-analyze-shallow",
+   "description": "CPU route (PRINTABLE_RECON_DEVICE=cpu), analyze shallow, 08-stone-relief, cold",
+   "wall_seconds": 48.14,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 3649175552,
+    "worker_peak_memory_current_bytes": 7773126656,
+    "worker_block_read_bytes": 4090425344,
+    "server_peak_anon_bytes": 6332416
+   },
+   "seconds": 43.175,
+   "settings": {
+    "subject": "shallow",
+    "quality": "best",
+    "depth_model": "da3-mono-large",
+    "mask_model": "moge2-vitl-normal",
+    "focal_model": "dp2-l",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cpu",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 24.232
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 10.903
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 7.673
+    }
+   ],
+   "runs": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "depth"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "focal"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "c-analyze-shallow-warm",
+   "description": "CPU route, analyze shallow, 03-marble-bust, second photograph",
+   "wall_seconds": 54.11,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 3145596928,
+    "worker_peak_memory_current_bytes": 10886021120,
+    "worker_block_read_bytes": 2766585856,
+    "server_peak_anon_bytes": 5709824
+   },
+   "seconds": 48.504,
+   "settings": {
+    "subject": "shallow",
+    "quality": "best",
+    "depth_model": "da3-mono-large",
+    "mask_model": "moge2-vitl-normal",
+    "focal_model": "dp2-l",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cpu",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 28.851
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 10.89
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 8.372
+    }
+   ],
+   "runs": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "depth"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "focal"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "c-analyze-deep",
+   "description": "CPU route, analyze deep, 08-stone-relief, cold",
+   "wall_seconds": 54.13,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 5140058112,
+    "worker_peak_memory_current_bytes": 10094473216,
+    "worker_block_read_bytes": 4906340352,
+    "server_peak_anon_bytes": 8167424
+   },
+   "seconds": 48.681,
+   "settings": {
+    "subject": "deep",
+    "quality": "best",
+    "depth_model": "dp2-h",
+    "mask_model": "moge2-vitl-normal",
+    "focal_model": "dp2-h",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cpu",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "dp2-h",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 37.463
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 10.926
+    }
+   ],
+   "runs": [
+    {
+     "entry": "dp2-h",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "depth",
+      "focal"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  },
+  {
+   "label": "c-relief",
+   "description": "relief plaque 100 mm from the cached CPU analysis of 08-stone-relief",
+   "wall_seconds": 0.29,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 1794048,
+    "worker_peak_memory_current_bytes": 4949012480,
+    "worker_block_read_bytes": 0,
+    "server_peak_anon_bytes": 5656576
+   },
+   "settings": {
+    "preset": "plaque",
+    "shape": "rectangle",
+    "width_mm": 100.0,
+    "height_mm": null,
+    "relief_depth_mm": 3.0,
+    "base_mm": 2.0,
+    "border_mm": 0.0,
+    "integration": "depth_only",
+    "compression": 1.0,
+    "detail_gain": 1.0,
+    "mirror": false,
+    "invert": false,
+    "nozzle_mm": 0.4,
+    "layer_mm": 0.2
+   },
+   "relief": {
+    "size_mm": [
+     99.99999999999999,
+     151.78041543026706,
+     5.0
+    ],
+    "triangles": 767250,
+    "samples": [
+     500,
+     759
+    ],
+    "checks": {
+     "solid": true,
+     "volume_mm3": 57308.13244339996,
+     "relief_height_mm": 3.0,
+     "minimum_relief_mm": 0.2,
+     "relief_height_within_limits": true,
+     "narrow_ridges": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.0
+     },
+     "narrow_grooves": {
+      "area_mm2": 0.0,
+      "maximum_loss_mm": 0.0
+     },
+     "passed": true
+    }
+   }
+  },
+  {
+   "label": "litho",
+   "description": "lithophane, default flat plate 100 mm, 08-stone-relief",
+   "wall_seconds": 0.21,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 1511424,
+    "worker_peak_memory_current_bytes": 2019344384,
+    "worker_block_read_bytes": 0,
+    "server_peak_anon_bytes": 5550080
+   },
+   "settings": {
+    "test_strip": false,
+    "shape": "flat",
+    "width_mm": 100.0,
+    "height_mm": null,
+    "radius_mm": null,
+    "arc_degrees": null,
+    "min_thickness_mm": 0.8,
+    "max_thickness_mm": 3.0,
+    "filament": "white_pla",
+    "attenuation_per_mm": 1.5,
+    "border_mm": 0.0,
+    "crop_px": null,
+    "contrast": 1.0,
+    "nozzle_mm": 0.4,
+    "layer_mm": 0.2
+   },
+   "lithophane": {
+    "triangles": 769778,
+    "samples": [
+     501,
+     760
+    ],
+    "checks": {
+     "solid": true,
+     "volume_mm3": 23530.54776509531,
+     "relief_height_mm": 2.1863281050609844,
+     "minimum_relief_mm": 0.0,
+     "relief_height_within_limits": true,
+     "narrow_ridges": {
+      "area_mm2": 416.29574976824483,
+      "maximum_loss_mm": 0.9305491304495315
+     },
+     "narrow_grooves": {
+      "area_mm2": 357.73292343729776,
+      "maximum_loss_mm": 0.9879966561327909
+     },
+     "passed": true,
+     "thickness_within_range": true
+    }
+   }
+  }
+ ],
+ "relief_and_lithophane_memory": {
+  "relief_server_memory_peak_bytes": 85356544,
+  "lithophane_server_memory_peak_bytes": 84709376,
+  "method": "server container cgroup memory.peak after a fresh server start, one request each; includes file cache",
+  "relief_wall_seconds": 0.3,
+  "lithophane_wall_seconds": 0.17,
+  "relief_checks_passed": true
+ },
+ "published_overlay_checks": [
+  {
+   "label": "r10g-analyze-shallow-gpu",
+   "description": "published compose.photo.yaml unchanged (10 GiB, /tmp tmpfs without exec): GPU analyze shallow of 08-stone-relief; the kernel recorded a cgroup out-of-memory kill",
+   "wall_seconds": 18.07,
+   "state": "failed",
+   "failure": {
+    "code": "resource_limit",
+    "message": "photograph analysis ran out of memory or stopped unexpectedly"
+   },
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 1453,
+    "worker_peak_anon_bytes": 10607988736,
+    "worker_peak_memory_current_bytes": 10737397760,
+    "worker_block_read_bytes": 7407169536,
+    "server_peak_anon_bytes": 4689920
+   }
+  },
+  {
+   "label": "g-analyze-shallow",
+   "description": "32 GiB limit, /tmp still without exec: GPU analyze shallow; no out-of-memory kill; Triton could not map its compiled module from /tmp",
+   "wall_seconds": 18.09,
+   "state": "failed",
+   "failure": {
+    "code": "resource_limit",
+    "message": "photograph analysis ran out of memory or stopped unexpectedly"
+   },
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 8901,
+    "worker_peak_anon_bytes": 10907848704,
+    "worker_peak_memory_current_bytes": 15940222976,
+    "worker_block_read_bytes": 7761895424,
+    "server_peak_anon_bytes": 4739072
+   }
+  },
+  {
+   "label": "ship-gpu-10g-exec",
+   "description": "10 GiB limit with an executable /tmp: GPU analyze shallow of 01-portrait-elderly; the kernel recorded a cgroup out-of-memory kill",
+   "wall_seconds": 12.09,
+   "state": "failed",
+   "failure": {
+    "code": "resource_limit",
+    "message": "photograph analysis ran out of memory or stopped unexpectedly"
+   },
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 4407,
+    "worker_peak_anon_bytes": 10618204160,
+    "worker_peak_memory_current_bytes": 10737201152,
+    "worker_block_read_bytes": 101949440,
+    "server_peak_anon_bytes": 5718016
+   }
+  },
+  {
+   "label": "ship-cpu-shallow",
+   "description": "published overlay limits (10 GiB, /tmp without exec), PRINTABLE_RECON_DEVICE=cpu: analyze shallow of 02-dog-fur",
+   "wall_seconds": 48.11,
+   "state": "succeeded",
+   "failure": null,
+   "host_sample": {
+    "gpu_used_mib_before": 416,
+    "gpu_used_mib_peak": 416,
+    "worker_peak_anon_bytes": 3826028544,
+    "worker_peak_memory_current_bytes": 5209387008,
+    "worker_block_read_bytes": 1347895296,
+    "server_peak_anon_bytes": 5668864
+   },
+   "seconds": 43.353,
+   "settings": {
+    "subject": "shallow",
+    "quality": "best",
+    "depth_model": "da3-mono-large",
+    "mask_model": "moge2-vitl-normal",
+    "focal_model": "dp2-l",
+    "normals_model": null,
+    "side": 1024,
+    "device": "cpu",
+    "focal_length_px": null
+   },
+   "timings": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ],
+     "seconds": 24.679
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 10.712
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "passes": [
+      "main"
+     ],
+     "seconds": 7.688
+    }
+   ],
+   "runs": [
+    {
+     "entry": "da3-mono-large",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "depth"
+     ],
+     "passes": [
+      "main",
+      "flip",
+      "rescale"
+     ]
+    },
+    {
+     "entry": "moge2-vitl-normal",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "mask"
+     ],
+     "passes": [
+      "main"
+     ]
+    },
+    {
+     "entry": "dp2-l",
+     "device": "cpu",
+     "side": 1024,
+     "roles": [
+      "focal"
+     ],
+     "passes": [
+      "main"
+     ]
+    }
+   ],
+   "cache_hit": false
+  }
+ ],
+ "scenes": {
+  "scenes": [
+   {
+    "scene": "coin-engraved",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 2.553205274965153,
+     "relief_pct": 19.92931074734631,
+     "absrel": 0.004768254376033011,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 3.4974648572289944,
+     "relief_pct": 19.801396471421747
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 2.5404725187950183,
+     "relief_pct": 20.047383075371386
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 5.852131341277262,
+     "relief_pct": 18.217815115464266,
+     "absrel": 0.004804778287862108,
+     "edge_f1": 0.0
+    },
+    "marigold_normals_deg": 7.2386155247155,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "0032dfd3b234c807f66c54a5f382c019e200d4a7b4cc18bdd18850199fcaad35",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 2.553205274965153,
+     "relief_pct": 19.929310747348033
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 5.839735966494208,
+     "normal_deg": 7.238687992095947,
+     "relief_pct": 18.217806735700933
+    }
+   },
+   {
+    "scene": "coin",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 2.8605183955939344,
+     "relief_pct": 18.05245632705417,
+     "absrel": 0.004526224195742739,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 4.127100459595522,
+     "relief_pct": 15.707795029713395
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 3.7056505899314285,
+     "relief_pct": 13.996210494788702
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 7.365208067295098,
+     "relief_pct": 19.037248443739458,
+     "absrel": 0.0030740451501027888,
+     "edge_f1": null
+    },
+    "marigold_normals_deg": 3.2238897109289604,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "dd0b8cc1bdcb5da503fe07a307057b12afdc97af1bb9e3b57cdb4df753757341",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 2.8605183955939344,
+     "relief_pct": 18.052456327054504
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 7.352537229897286,
+     "normal_deg": 3.22403621673584,
+     "relief_pct": 19.03724996992675
+    }
+   },
+   {
+    "scene": "head",
+    "shallow": false,
+    "default_analysis_depth": {
+     "depth_normal_deg": 3.336125504147901,
+     "relief_pct": 12.850034810478475,
+     "absrel": 0.006326246207715231,
+     "edge_f1": 0.931685783868266
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 13.295474198008968,
+     "relief_pct": 19.926077029845377
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 10.473440474506834,
+     "relief_pct": 18.801851524442654
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 13.318795954635263,
+     "relief_pct": 9.966502088357071,
+     "absrel": 0.007529040500824842,
+     "edge_f1": 0.9779056116193102
+    },
+    "marigold_normals_deg": 3.3600978315251155,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "ee0ea30e6850f3c715d7ccf9374690389a270e597238621cecd1dc070caefc21",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 3.336125504147901,
+     "relief_pct": 12.850034810478483
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 13.320891380830687,
+     "normal_deg": 3.36051082611084,
+     "relief_pct": 9.966505622436564
+    }
+   },
+   {
+    "scene": "lettering",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 2.587915804719262,
+     "relief_pct": 17.419774438125796,
+     "absrel": 0.002449831610488003,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 3.808555246798222,
+     "relief_pct": 19.050991334952336
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 3.8149534172168753,
+     "relief_pct": 19.735848635684697
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 3.885002042325039,
+     "relief_pct": 14.556010395167938,
+     "absrel": 0.0032612649919382835,
+     "edge_f1": null
+    },
+    "marigold_normals_deg": 2.776997364804803,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "cc79a92765cbe2ee2dc5bf7d59813a7c76da734e6206623fa7abef6585525515",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 2.58803530962518,
+     "relief_pct": 17.419774438123117
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 3.8848583342968306,
+     "normal_deg": 2.777348756790161,
+     "relief_pct": 14.556006540391657
+    }
+   },
+   {
+    "scene": "medal-metal",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 4.3526149782056605,
+     "relief_pct": 21.96528607957793,
+     "absrel": 0.006175075744012259,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 8.214264755476947,
+     "relief_pct": 18.63364653127652
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 7.965164257545357,
+     "relief_pct": 17.445208136994626
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 12.962335065034928,
+     "relief_pct": 23.594071609169983,
+     "absrel": 0.015260798598212453,
+     "edge_f1": null
+    },
+    "marigold_normals_deg": 8.595472347779255,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "188ce7a1aa0be4b2a918b4bab9074142b16004297781fb1f0c051cb662dd4392",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 4.3526149782056605,
+     "relief_pct": 21.9652860795779
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 12.966420906049024,
+     "normal_deg": 8.59511947631836,
+     "relief_pct": 23.59408199881428
+    }
+   },
+   {
+    "scene": "relief-shallow",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 2.293377090014711,
+     "relief_pct": 8.87589391476143,
+     "absrel": 0.0023877577856089628,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 2.5445920719372372,
+     "relief_pct": 13.135809259905567
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 2.4804873864140307,
+     "relief_pct": 10.327162686924476
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 2.3035476164639115,
+     "relief_pct": 20.42234769415845,
+     "absrel": 0.0016250225124501093,
+     "edge_f1": null
+    },
+    "marigold_normals_deg": 0.9956572173050415,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "80798cb9e6de9c2568f64fb52529743d94298e9d3d1c47e74dc80df6bb1220a7",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 2.293291405072347,
+     "relief_pct": 8.875893914760843
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 2.3038346589475527,
+     "normal_deg": 0.9958328008651733,
+     "relief_pct": 20.422361910779895
+    }
+   },
+   {
+    "scene": "relief",
+    "shallow": true,
+    "default_analysis_depth": {
+     "depth_normal_deg": 3.359050821703844,
+     "relief_pct": 5.6935542656504685,
+     "absrel": 0.0034275774517440565,
+     "edge_f1": null
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 7.968712026388979,
+     "relief_pct": 13.284684912293685
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 6.363802038986899,
+     "relief_pct": 13.611085633940105
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 4.073284819252077,
+     "relief_pct": 5.835531375052207,
+     "absrel": 0.0029552623160427846,
+     "edge_f1": null
+    },
+    "marigold_normals_deg": 2.0309295652122863,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "36881d1e56f374257e6c270b4694ac9664fc28062c43aec070ccf5909e4cd329",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 3.359050821703844,
+     "relief_pct": 5.693554265650288
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 4.074126807052036,
+     "normal_deg": 2.030761241912842,
+     "relief_pct": 5.835534467968672
+    },
+    "crosscheck_benchmark_da3_through_compare": {
+     "depth_normal_deg": 3.359050821703844,
+     "relief_pct": 5.6935542656504685,
+     "absrel": 0.0034275774517440565
+    }
+   },
+   {
+    "scene": "table",
+    "shallow": false,
+    "default_analysis_depth": {
+     "depth_normal_deg": 8.087799213125226,
+     "relief_pct": null,
+     "absrel": 0.019216633131822272,
+     "edge_f1": 0.8847453527381092
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 16.702926703083335,
+     "relief_pct": null
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 9.006686673088057,
+     "relief_pct": null
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 13.063870360244948,
+     "relief_pct": null,
+     "absrel": 0.011923582603794567,
+     "edge_f1": 0.990986727116289
+    },
+    "marigold_normals_deg": 5.399382629008655,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "3fea29731f4aeef3a3bb67f1049b9af016391c63cf0510ffbc4c3669ebb95b5f",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 8.087799213125226,
+     "relief_pct": null
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 13.066676260892747,
+     "normal_deg": 5.399169445037842,
+     "relief_pct": null
+    }
+   },
+   {
+    "scene": "thin",
+    "shallow": false,
+    "default_analysis_depth": {
+     "depth_normal_deg": 4.342315885851067,
+     "relief_pct": null,
+     "absrel": 0.018151282072024003,
+     "edge_f1": 0.9676304076939918
+    },
+    "default_relief_heightmap": {
+     "depth_normal_deg": 27.94780332440137,
+     "relief_pct": null
+    },
+    "compression0_relief_heightmap": {
+     "depth_normal_deg": 10.192142459998339,
+     "relief_pct": null
+    },
+    "marigold_depth": {
+     "depth_normal_deg": 10.384919352372217,
+     "relief_pct": null,
+     "absrel": 0.02433910323311203,
+     "edge_f1": 0.9929888724208749
+    },
+    "marigold_normals_deg": 2.50924068610295,
+    "relief_default_checks_passed": true,
+    "relief_c0_checks_passed": true,
+    "relief_default_triangles": 1586382,
+    "relief_default_size_mm": [
+     204.8,
+     153.54995112414468,
+     5.0
+    ],
+    "analysis_key": "e7a54c84a8673773a8f03766a83c103b4512ebc3b83b92dc3ffde2f998881cd2",
+    "analysis_cache_hit_after_relief": true,
+    "benchmark_da3": {
+     "depth_normal_deg": 4.342315885851067,
+     "relief_pct": null
+    },
+    "benchmark_marigold": {
+     "depth_normal_deg": 10.377231699619069,
+     "normal_deg": 2.5088164806365967,
+     "relief_pct": null
+    }
+   }
+  ],
+  "summary": {
+   "default_analysis_depth": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 3.752546996480751,
+     "low": 2.8688205548937873,
+     "high": 4.894069174287108
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 3.001113727533761,
+     "low": 2.5272176685258607,
+     "high": 3.607150136186131
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 15.322712628752685,
+     "low": 10.656387297685553,
+     "high": 19.771457088350008
+    }
+   },
+   "default_relief_heightmap": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 9.789654849213285,
+     "low": 5.354307189536675,
+     "high": 15.3018999579207
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 5.026781569570983,
+     "low": 3.3366282607877014,
+     "high": 6.747210463374054
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 16.602387256593875,
+     "low": 14.554597277744472,
+     "high": 18.60481206167705
+    }
+   },
+   "compression0_relief_heightmap": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 6.282533312942538,
+     "low": 4.350650262955975,
+     "high": 8.31453493586383
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 4.478421701481602,
+     "low": 2.9370403773350793,
+     "high": 6.205887638451638
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 15.860483110617333,
+     "low": 13.118292947672591,
+     "high": 18.501313675649246
+    }
+   },
+   "marigold_depth": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 8.134343846544528,
+     "low": 5.389660307195751,
+     "high": 10.752530483249636
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 6.073584825274719,
+     "low": 3.7170859130178733,
+     "high": 9.110758782818564
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 16.94383743879205,
+     "low": 11.92036677637041,
+     "high": 20.88131702764343
+    }
+   },
+   "benchmark_da3": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 3.7525507542544796,
+     "low": 2.8688721962836325,
+     "high": 4.894072932060836
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 3.0011193641943534,
+     "low": 2.527260932302582,
+     "high": 3.607150136186131
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 15.322712628752448,
+     "low": 10.656387297685706,
+     "high": 19.77145708834968
+    }
+   },
+   "benchmark_marigold": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 8.131812582675494,
+     "low": 5.386874578869651,
+     "high": 10.751621706212212
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 6.070252317122822,
+     "low": 3.715208126672502,
+     "high": 9.108810243031256
+    },
+    "relief_pct_shallow": {
+     "n": 6,
+     "mean": 16.943840270597033,
+     "low": 11.920370304167387,
+     "high": 20.881324087469338
+    }
+   },
+   "marigold_normals": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 4.014475875264729,
+     "low": 2.5499804915043334,
+     "high": 5.6354170325055675
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 4.143593621790974,
+     "low": 2.1333547400601556,
+     "high": 6.3799753073657515
+    }
+   },
+   "benchmark_marigold_normals": {
+    "surface_deg_all_scenes": {
+     "n": 9,
+     "mean": 4.014475915167067,
+     "low": 2.5498949511183633,
+     "high": 5.635171939598188
+    },
+    "surface_deg_shallow": {
+     "n": 6,
+     "mean": 4.143631080786387,
+     "low": 2.1335267623265586,
+     "high": 6.379807313283284
+    }
+   }
+  }
+ },
+ "objects": [
+  {
+   "model": "pixal3d",
+   "photograph": "bicycle-spokes",
+   "state": "failed",
+   "failure": {
+    "code": "geometry_resource_limit",
+    "message": "geometry worker failed: geometry worker exceeded its memory budget or terminated unexpectedly; the generated surface was kept at evidence/objects/bicycle-spokes-pixal3d.raw-c200d9318b95.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 38.1,
+   "gpu_used_mib_peak": 4101,
+   "worker_peak_anon_gib": 2.45,
+   "worker_block_read_gib": 17.89
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "bust-in-gallery",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/bust-in-gallery-pixal3d.raw-a9c906faa6e9.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 36.1,
+   "gpu_used_mib_peak": 4125,
+   "worker_peak_anon_gib": 2.96,
+   "worker_block_read_gib": 17.69
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "chess-clutter",
+   "state": "failed",
+   "failure": {
+    "code": "geometry_resource_limit",
+    "message": "geometry worker failed: geometry worker exceeded its memory budget or terminated unexpectedly; the generated surface was kept at evidence/objects/chess-clutter-pixal3d.raw-9de1b4159b0e.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 38.1,
+   "gpu_used_mib_peak": 4101,
+   "worker_peak_anon_gib": 2.38,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "coin-silver",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/coin-silver-pixal3d.raw-60a6793523a4.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 40.4,
+   "gpu_used_mib_peak": 4193,
+   "worker_peak_anon_gib": 2.33,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "dandelion-thin",
+   "state": "failed",
+   "failure": {
+    "code": "geometry_resource_limit",
+    "message": "geometry worker failed: geometry worker exceeded its memory budget or terminated unexpectedly; the generated surface was kept at evidence/objects/dandelion-thin-pixal3d.raw-45a294c06cc2.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 74.2,
+   "gpu_used_mib_peak": 5293,
+   "worker_peak_anon_gib": 2.85,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "dog-fur",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/dog-fur-pixal3d.raw-90a1802f1215.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 38.1,
+   "gpu_used_mib_peak": 4805,
+   "worker_peak_anon_gib": 2.24,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "glass-transparent",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/glass-transparent-pixal3d.raw-019a1f218ae9.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 34.1,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 2.75,
+   "worker_block_read_gib": 17.66
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "glossy-teapot",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/glossy-teapot-pixal3d.raw-85bf8c3427c9.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 34.1,
+   "gpu_used_mib_peak": 4291,
+   "worker_peak_anon_gib": 2.2,
+   "worker_block_read_gib": 17.66
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "lego-minifigure",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/lego-minifigure-pixal3d.raw-2d517a6dbbc8.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 36.1,
+   "gpu_used_mib_peak": 4125,
+   "worker_peak_anon_gib": 2.8,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "marble-bust",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/marble-bust-pixal3d.raw-a451332c12c4.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 36.1,
+   "gpu_used_mib_peak": 4155,
+   "worker_peak_anon_gib": 2.19,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "painting-flat",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/painting-flat-pixal3d.raw-c276e442fb75.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 44.1,
+   "gpu_used_mib_peak": 4393,
+   "worker_peak_anon_gib": 2.29,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "porcelain-figurine",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/porcelain-figurine-pixal3d.raw-11b3768bc8d6.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 34.1,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 2.76,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "portrait-elderly",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/portrait-elderly-pixal3d.raw-0b7f1175728b.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 42.1,
+   "gpu_used_mib_peak": 6289,
+   "worker_peak_anon_gib": 2.44,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "sneaker-product",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/sneaker-product-pixal3d.raw-630bb9ad2be5.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 42.1,
+   "gpu_used_mib_peak": 4333,
+   "worker_peak_anon_gib": 2.36,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "pixal3d",
+   "photograph": "stone-relief",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/stone-relief-pixal3d.raw-69c743390c99.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 42.1,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 2.28,
+   "worker_block_read_gib": 17.67
+  },
+  {
+   "model": "trellis2",
+   "photograph": "bicycle-spokes",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/bicycle-spokes-trellis2.raw-573b0accf8f6.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 354.4,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 5.27,
+   "worker_block_read_gib": 164.84
+  },
+  {
+   "model": "trellis2",
+   "photograph": "bust-in-gallery",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/bust-in-gallery-trellis2.raw-bfeb8e57aae8.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 302.4,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 5.3,
+   "worker_block_read_gib": 164.43
+  },
+  {
+   "model": "trellis2",
+   "photograph": "marble-bust",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/marble-bust-trellis2.raw-3226828111b0.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 298.3,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 5.32,
+   "worker_block_read_gib": 164.84
+  },
+  {
+   "model": "trellis2",
+   "photograph": "porcelain-figurine",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/porcelain-figurine-trellis2.raw-b55b98c28560.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 276.4,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 5.27,
+   "worker_block_read_gib": 164.44
+  },
+  {
+   "model": "trellis2",
+   "photograph": "sneaker-product",
+   "state": "failed",
+   "failure": {
+    "code": "geometry",
+    "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold; the generated surface was kept at evidence/objects/sneaker-product-trellis2.raw-28716e659492.stl: prepare it with scene prepare_print and other settings"
+   },
+   "wall_seconds": 290.4,
+   "gpu_used_mib_peak": 4495,
+   "worker_peak_anon_gib": 5.29,
+   "worker_block_read_gib": 164.43
+  }
+ ],
+ "prepare_print_on_kept_raw_surface": [
+  {
+   "label": "prep-default",
+   "request": {
+    "action": "prepare_print",
+    "params": {
+     "source_path": "evidence/objects/marble-bust-pixal3d.raw-a451332c12c4.stl",
+     "path": "evidence/prepared/marble-bust-pixal3d-default.stl",
+     "printer": {
+      "process": "fdm",
+      "nozzle_diameter_mm": 0.4
+     }
+    }
+   },
+   "result": {
+    "tool": "scene",
+    "error": {
+     "code": "geometry",
+     "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold"
+    }
+   }
+  },
+  {
+   "label": "prep-1mm",
+   "request": {
+    "action": "prepare_print",
+    "params": {
+     "source_path": "evidence/objects/marble-bust-pixal3d.raw-a451332c12c4.stl",
+     "path": "evidence/prepared/marble-bust-pixal3d-1mm.stl",
+     "edge_length_mm": 1.0,
+     "printer": {
+      "process": "fdm",
+      "nozzle_diameter_mm": 0.4
+     }
+    }
+   },
+   "result": {
+    "tool": "scene",
+    "error": {
+     "code": "geometry",
+     "message": "geometry worker failed: geometry analysis failed: the extracted surface is invalid: manifold3d status: NotManifold"
+    }
+   }
+  }
+ ]
+}
