@@ -296,7 +296,8 @@ impl Field {
     ///
     /// The winding count is taken along six rays from the point, both ways
     /// along each axis, and the point is inside when most of them say so.
-    /// For a closed surface every ray gives the same count. Where an opening
+    /// For a closed surface the rays agree, except where the point lies
+    /// exactly on the surface. Where an opening
     /// is left, as in a generated surface, a ray through it miscounts; one
     /// ray alone would then leave a column of material reaching out from the
     /// opening, or a tunnel through the solid. A point outside the surface's

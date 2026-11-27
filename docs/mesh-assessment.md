@@ -72,7 +72,9 @@ The source is read in millimetres with Z up. The preparation:
    from it, both ways along each axis, cross the surface: a generated
    surface's openings mislead the odd ray, but not most of them, so an
    opening neither leaves a column of material reaching out from it nor a
-   tunnel through the solid. A closed inward-facing piece on its own,
+   tunnel through the solid. For a closed surface the rays agree except at a
+   sample lying exactly on the surface, so a well-formed mesh rebuilds almost
+   but not necessarily exactly as it would by a single ray. A closed inward-facing piece on its own,
    meant as a cavity, is filled; `cavities_filled` counts those. Set `keep_cavities` to trust the
    mesh's facing instead: each piece keeps its facing, inward-facing pieces
    stay cavities, counted in `cavities`, and a piece facing inwards that lies
