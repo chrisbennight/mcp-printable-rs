@@ -1015,7 +1015,7 @@ mod tests {
         ("inspect", 5_100, 0),
         ("edit", 5_300, 0),
         ("blender_execute", 2_200, 1_200),
-        ("scene", 4_700, 0),
+        ("scene", 7_074, 0),
         ("scad_build", 5_800, 0),
         ("cad_build", 9_700, 0),
         ("view", 9_400, 0),
@@ -1029,7 +1029,7 @@ mod tests {
         ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
-        ("photo", 11_100, 0),
+        ("photo", 11_223, 0),
         ("library", 3_000, 0),
         ("artifact", 6_400, 0),
     ];
@@ -1037,7 +1037,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 203_450;
+    const CATALOG_BUDGET: usize = 206_321;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {

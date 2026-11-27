@@ -517,8 +517,14 @@ pub const OBJECT_STEPS: std::ops::RangeInclusive<u32> = 1..=50;
 pub const OBJECT_FOV_DEGREES: std::ops::RangeInclusive<f64> = 5.0..=90.0;
 /// Longest sides, in millimetres, an object request may choose.
 pub const OBJECT_SIZES_MM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
+/// The longest side of an object when the request gives none.
+const OBJECT_DEFAULT_SIZE_MM: f64 = 100.0;
 /// Triangle counts an object request may simplify its mesh towards.
 pub const OBJECT_TARGET_TRIANGLES: std::ops::RangeInclusive<u32> = 10_000..=4_000_000;
+/// Generated objects are checked for overhangs steeper than this, and for
+/// walls thinner than a common FDM nozzle.
+const OBJECT_OVERHANG_DEGREES: f64 = 45.0;
+const OBJECT_MINIMUM_WALL_MM: f64 = 0.4;
 /// Largest object mesh committed to the workspace: a binary STL of about 5
 /// million triangles.
 const MAX_OBJECT_MESH_BYTES: u64 = 256 * 1024 * 1024;
@@ -575,12 +581,22 @@ pub struct ObjectRequest {
     /// GB and excludes `target_triangles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simplify: Option<bool>,
+    /// Skip the solid rebuild; default false, true with `simplify` false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_surface: Option<bool>,
     /// Replace an existing file at `mesh_path`.
     #[serde(default)]
     pub overwrite: bool,
 }
 
 impl ObjectRequest {
+    /// Whether the generator's surface is written without the rebuild: by
+    /// default only TRELLIS.2's full-detail output, which exists to keep
+    /// every generated triangle.
+    fn keeps_raw_surface(&self) -> bool {
+        self.raw_surface.unwrap_or(self.simplify == Some(false))
+    }
+
     /// Checks that need no file access.
     pub fn validate(&self) -> Result<(), ToolError> {
         if self.model == ObjectModel::Trellis2 && self.background == Some(false) {
@@ -720,6 +736,21 @@ pub struct ReconConfig {
     /// CPU threads each photograph script may use for numerical work.
     pub cpu_threads: u16,
     pub photo_queue_depth: usize,
+    /// The isolated geometry worker that rebuilds generated objects as
+    /// printable solids, and its address-space limit.
+    pub geometry_worker: PathBuf,
+    pub geometry_worker_memory_bytes: u64,
+}
+
+/// A focal length from a cached photograph analysis.
+struct CachedFocal {
+    /// The analysis's cache key.
+    key: String,
+    /// In the photograph's pixels.
+    px: f64,
+    /// Whether the caller gave it to the analysis, rather than a model
+    /// estimating it.
+    given: bool,
 }
 
 pub struct ReconWorker {
@@ -1016,13 +1047,30 @@ impl ReconWorker {
             return self.generate_trellis(request, control).await;
         }
         let _permit = self.job_permit(control).await?;
-
         let snapshot = self
             .workspace
             .snapshot_artifact_bounded(&request.image, MAX_IMAGE_BYTES)?;
         if let Some(control) = control {
             control.verify_input(snapshot.path())?;
         }
+        // Hashing and reading the cache block, so they run off the async
+        // threads.
+        let workspace = Arc::clone(&self.workspace);
+        let image = snapshot.path().to_path_buf();
+        let wants_focal = request.fov_degrees.is_none();
+        let cancel = control.map(|control| control.cancel.clone());
+        let (image_sha256, analysis) = tokio::task::spawn_blocking(move || {
+            let digest = file_digest(&image)?;
+            let cancelled = || cancel.as_ref().is_some_and(|token| token.is_cancelled());
+            let analysis = wants_focal
+                .then(|| cached_focal_length(&workspace, &digest, cancelled))
+                .transpose()?;
+            Ok::<_, ToolError>((digest, analysis))
+        })
+        .await
+        .map_err(|_| {
+            reconstruction_error("failed", "reading the photograph stopped unexpectedly")
+        })??;
         let staging = tempfile::Builder::new()
             .prefix("printable-object-")
             .tempdir()?;
@@ -1048,9 +1096,15 @@ impl ReconWorker {
                 job[key] = value;
             }
         }
+        if let Some(Some(focal)) = &analysis {
+            job["focal_length_px"] = json!(focal.px);
+            job["focal_length_given"] = json!(focal.given);
+        }
         if let Some(control) = control {
             control.enter(Phase::Generating)?;
         }
+        // Generation and the rebuild share the request's deadline.
+        let deadline = std::time::Instant::now() + self.config.object_timeout;
         let mut result = self
             .run_command(
                 self.python_command(&self.config.object_script),
@@ -1061,6 +1115,36 @@ impl ReconWorker {
                 control,
             )
             .await?;
+        let source = match result["fov_source"].as_str() {
+            Some("photograph") => "the photograph's own focal length",
+            _ => "the default field of view",
+        };
+        match analysis {
+            // The runtime reports whether the cached focal length set the view.
+            Some(Some(focal)) if result["fov_source"] == "analysis" => {
+                result["photo_analysis"] = json!({"cache_key": focal.key,
+                    "focal_length_px": focal.px, "given": focal.given});
+            }
+            Some(Some(_)) => {
+                result["photo_analysis"] = json!({"note": format!(
+                    "a cached photo analyze estimate was not used; the view came from {source}"
+                )});
+            }
+            Some(None) => {
+                result["photo_analysis"] = json!({"note": format!(
+                    "no cached photo analyze result for this photograph; the view came from {source}"
+                )});
+            }
+            None => {}
+        }
+        self.prepare_object(
+            &request,
+            &mesh,
+            &mut result,
+            control,
+            (deadline, MAX_OBJECT_MESH_BYTES),
+        )
+        .await?;
         if let Some(control) = control {
             control.enter(Phase::Publishing)?;
         }
@@ -1071,10 +1155,209 @@ impl ReconWorker {
             MAX_OBJECT_MESH_BYTES,
         )?;
         result["artifact"] = json!(artifact);
-        result["image_sha256"] = json!(file_digest(snapshot.path())?);
+        result["image_sha256"] = json!(image_sha256);
         Ok(result)
     }
 
+    /// Unless the request keeps the raw surface, rebuild the generated
+    /// surface at `mesh` in place as a printable solid with the isolated
+    /// geometry worker, and refuse a result that fails the strict print check.
+    /// Thin walls are measured against a 0.4 mm nozzle. The rebuild has
+    /// until `deadline`; `max_bytes` bounds the generated surface published
+    /// when the rebuild fails, as the backend bounds its own publication.
+    async fn prepare_object(
+        &self,
+        request: &ObjectRequest,
+        mesh: &Path,
+        result: &mut Value,
+        control: Option<&JobControl>,
+        (deadline, max_bytes): (std::time::Instant, u64),
+    ) -> Result<(), ToolError> {
+        if request.keeps_raw_surface() {
+            result["raw_surface"] = json!(true);
+            return Ok(());
+        }
+        if let Some(control) = control {
+            control.enter(Phase::Delivering)?;
+        }
+        let worker = self.config.geometry_worker.clone();
+        let memory = self.config.geometry_worker_memory_bytes;
+        let source = mesh.to_path_buf();
+        let cancel = control.map(|control| control.cancel.clone());
+        // A request that goes away stops the rebuild and its worker.
+        let dropped = tokio_util::sync::CancellationToken::new();
+        let _stop_when_dropped = dropped.clone().drop_guard();
+        let time_limit = deadline.saturating_duration_since(std::time::Instant::now());
+        let size_mm = request.size_mm.unwrap_or(OBJECT_DEFAULT_SIZE_MM);
+        let target_triangles = request.target_triangles;
+        let rebuilt = tokio::task::spawn_blocking(move || {
+            let limit = printable_geom::limit::WorkLimit::new(time_limit, move || {
+                dropped.is_cancelled() || cancel.as_ref().is_some_and(|token| token.is_cancelled())
+            });
+            limit.apply(|| -> Result<_, ToolError> {
+                let output = source.with_file_name("prepared.stl");
+                let options = printable_geom::PrintPrepOptions {
+                    edge_length_mm: None,
+                    target_triangles: target_triangles.map(u64::from),
+                    keep_cavities: false,
+                    // One photographed subject: generator debris goes.
+                    parts: printable_geom::KeptParts::Largest,
+                    plinth: None,
+                    hollow: None,
+                    checks: Some(printable_geom::PrintChecks {
+                        overhang_degrees: OBJECT_OVERHANG_DEGREES,
+                        min_feature_mm: Some(OBJECT_MINIMUM_WALL_MM),
+                    }),
+                    // Removed debris no longer counts towards the size.
+                    longest_side_mm: Some(size_mm),
+                };
+                let prepared = crate::tools::print_prep::run_worker(
+                    &worker,
+                    memory,
+                    &source,
+                    (options, OBJECT_OVERHANG_DEGREES, "object"),
+                    &output,
+                )?;
+                std::fs::rename(&output, &source)?;
+                Ok(prepared)
+            })
+        })
+        .await
+        .map_err(|_| reconstruction_error("failed", "the solid rebuild stopped unexpectedly"))
+        .and_then(|rebuilt| rebuilt);
+        let prepared = match rebuilt {
+            Ok(prepared) => prepared,
+            Err(error) if error.code() == "cancelled" => return Err(error),
+            Err(error) => {
+                return Err(self.keep_raw_surface(request, mesh, error, control, max_bytes));
+            }
+        };
+        let (report, validation) = (prepared.preparation, prepared.validation);
+        // The published mesh is the rebuilt one.
+        result["triangles"] = report["triangles"].clone();
+        result["size_mm"] = report["size_mm"].clone();
+        result["solid_rebuild"] = report;
+        // The whole report, so the assessment's evidence pointers resolve.
+        result["validation"] = validation;
+        Ok(())
+    }
+
+    /// After a failed rebuild, publish the generated surface beside the
+    /// requested path under a new name, `NAME.raw-ID.stl` with a random ID,
+    /// or `raw-ID.stl` when that name would be too long, which replaces
+    /// nothing, and name it in the error, so that it can be
+    /// prepared with other settings without generating it again. A failure to
+    /// publish it is returned as it is, so that an interrupted publication is
+    /// reported as such.
+    fn keep_raw_surface(
+        &self,
+        request: &ObjectRequest,
+        mesh: &Path,
+        error: ToolError,
+        control: Option<&JobControl>,
+        max_bytes: u64,
+    ) -> ToolError {
+        let stem = request
+            .mesh_path
+            .strip_suffix(".stl")
+            .unwrap_or(&request.mesh_path);
+        let id = match crate::upload::random_hex_id() {
+            Ok(id) => id,
+            Err(failed) => return failed,
+        };
+        let id = &id[..12];
+        let mut raw_path = format!("{stem}.raw-{id}.stl");
+        // A file name may have at most 255 bytes; a long one keeps only the ID.
+        if raw_path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.len() > 255)
+        {
+            raw_path = match stem.rsplit_once('/') {
+                Some((directory, _)) => format!("{directory}/raw-{id}.stl"),
+                None => format!("raw-{id}.stl"),
+            };
+        }
+        // A cancelled job publishes nothing; a retained job records the
+        // path before publishing, so an interrupted publication names it.
+        if let Some(control) = control
+            && let Err(cancelled) = control.enter_recovery(&raw_path)
+        {
+            return cancelled;
+        }
+        if let Err(failed) = self
+            .workspace
+            .commit_generated_artifact_bounded(&raw_path, mesh, false, max_bytes)
+        {
+            return failed.into();
+        }
+        reconstruction_error(
+            error.code(),
+            format!(
+                "{}; the generated surface was kept at {raw_path}: prepare it with scene prepare_print and other settings",
+                worker_message(&error)
+            ),
+        )
+    }
+}
+
+/// The focal length of a cached analysis of the photograph with this digest.
+/// Only each cache directory's manifest is read. A focal length the caller
+/// gave the analysis is returned at once; otherwise the first estimate found.
+fn cached_focal_length(
+    workspace: &Workspace,
+    image_sha256: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<CachedFocal>, ToolError> {
+    let root = match workspace.resolve(analysis::CACHE_ROOT, true) {
+        Ok(root) => root,
+        Err(printable_workspace::WsError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut keys: Vec<String> = std::fs::read_dir(root)?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .collect();
+    keys.sort_unstable();
+    let mut estimate = None;
+    for key in keys {
+        if cancelled() {
+            return Err(reconstruction_error(
+                "cancelled",
+                "photograph job was cancelled before publication",
+            ));
+        }
+        let path = format!("{}/{key}/manifest.json", analysis::CACHE_ROOT);
+        // A directory without a readable manifest is not a cached result.
+        let Ok((_, bytes)) = workspace.read_generated_bytes(&path) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let focal = &manifest["focal_length"];
+        let Some(px) = focal["photograph_px"].as_f64() else {
+            continue;
+        };
+        if manifest["image_sha256"] != image_sha256
+            || manifest["cache"]["key"] != key.as_str()
+            || !(px.is_finite() && px > 0.0)
+        {
+            continue;
+        }
+        let found = CachedFocal {
+            key,
+            px,
+            given: focal["source"] == "given",
+        };
+        if found.given {
+            return Ok(Some(found));
+        }
+        estimate.get_or_insert(found);
+    }
+    Ok(estimate)
+}
+
+impl ReconWorker {
     /// Run one job in a fresh Python process with a deadline and return the
     /// result object it prints. The process and any helpers it starts are
     /// killed if the deadline passes, and its memory returns when it exits.
@@ -1366,7 +1649,8 @@ if "blank" in request["image"]:
 open(request["mesh"], "wb").write(b"solid".ljust(80) + bytes(4))
 result = {"triangles": 0, "resolution": request["resolution"], "seed": request["seed"],
     "device": request["device"], "model": request["model"],
-    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles") if key in request}}
+    "fov_source": "analysis" if request.get("focal_length_given") else "photograph",
+    "options": {key: request[key] for key in ("steps", "fov_degrees", "size_mm", "target_triangles", "focal_length_px", "focal_length_given") if key in request}}
 print(json.dumps({"result": result}))
 "#;
 
@@ -1415,6 +1699,8 @@ print(json.dumps({"result": result}))
                 geometry: None,
                 cpu_threads: 4,
                 photo_queue_depth: 8,
+                geometry_worker: runtime.join("absent-geometry-worker"),
+                geometry_worker_memory_bytes: 1 << 30,
             },
         );
         (root, worker)
@@ -1577,6 +1863,8 @@ print(json.dumps({"result": result}))
             size_mm: None,
             target_triangles: None,
             simplify: None,
+            // The stand-in runtime writes no surface to rebuild.
+            raw_surface: Some(true),
             overwrite: false,
         }
     }
@@ -1620,6 +1908,106 @@ print(json.dumps({"result": result}))
             result["options"],
             json!({"steps": 8, "fov_degrees": 35.0, "size_mm": 60.0, "target_triangles": 200_000})
         );
+    }
+
+    #[tokio::test]
+    async fn a_cached_analysis_supplies_the_focal_length() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let digest = file_digest(&root.path().join("workspace/side.png")).unwrap();
+        for (key, image, source, px) in [
+            ("aaa", digest.as_str(), "estimated", 900.0),
+            ("bbb", digest.as_str(), "given", 1200.0),
+            ("ccc", "another photograph", "given", 600.0),
+        ] {
+            let manifest = json!({"image_sha256": image, "cache": {"key": key},
+                "focal_length": {"source": source, "photograph_px": px}});
+            worker
+                .workspace
+                .write_reserved_artifact(
+                    &format!(".printable/photo-analysis/{key}/manifest.json"),
+                    &serde_json::to_vec(&manifest).unwrap(),
+                    true,
+                )
+                .unwrap();
+        }
+        let result = worker
+            .generate_object(object_request("side.png"))
+            .await
+            .unwrap();
+        // A focal length given to the analysis is preferred to an estimate.
+        assert_eq!(result["options"]["focal_length_px"], 1200.0);
+        assert_eq!(result["options"]["focal_length_given"], true);
+        assert_eq!(
+            result["photo_analysis"],
+            json!({"cache_key": "bbb", "focal_length_px": 1200.0, "given": true})
+        );
+        // With only an estimate cached, a photograph with its own focal
+        // length keeps it, and the result does not name the analysis.
+        std::fs::remove_dir_all(root.path().join("workspace/.printable/photo-analysis/bbb"))
+            .unwrap();
+        let estimated = ObjectRequest {
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let result = worker.generate_object(estimated).await.unwrap();
+        assert_eq!(result["options"]["focal_length_given"], false);
+        assert!(result["photo_analysis"].get("cache_key").is_none());
+        assert!(
+            result["photo_analysis"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("photograph's own focal length")
+        );
+        let given = ObjectRequest {
+            fov_degrees: Some(30.0),
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let result = worker.generate_object(given).await.unwrap();
+        assert!(result["options"].get("focal_length_px").is_none());
+        assert!(result.get("photo_analysis").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_keeps_the_generated_surface_beside_the_request() {
+        let (root, worker) = worker(Duration::from_secs(60));
+        let objects = root.path().join("workspace/objects");
+        std::fs::create_dir_all(&objects).unwrap();
+        std::fs::write(objects.join("figure.raw.stl"), b"the caller's own file").unwrap();
+        // The stand-in worker has no geometry worker, so the rebuild fails.
+        let rebuilt = ObjectRequest {
+            raw_surface: None,
+            overwrite: true,
+            ..object_request("side.png")
+        };
+        let mut kept = Vec::new();
+        for _ in 0..2 {
+            let error = worker.generate_object(rebuilt.clone()).await.unwrap_err();
+            assert_eq!(error.code(), "geometry_worker_unavailable");
+            let message = worker_message(&error);
+            let path = message
+                .split_once("was kept at ")
+                .and_then(|(_, rest)| rest.split_once(':'))
+                .map(|(path, _)| path.to_owned())
+                .unwrap_or_else(|| panic!("{message}"));
+            assert!(path.starts_with("objects/figure.raw-") && path.ends_with(".stl"));
+            assert!(root.path().join("workspace").join(&path).is_file());
+            kept.push(path);
+        }
+        // Each failure keeps its own copy and replaces nothing.
+        assert_ne!(kept[0], kept[1]);
+        assert_eq!(
+            std::fs::read(objects.join("figure.raw.stl")).unwrap(),
+            b"the caller's own file"
+        );
+        assert!(!objects.join("figure.stl").exists());
+        // A name too long to extend keeps only the ID.
+        let long = ObjectRequest {
+            mesh_path: format!("objects/{}.stl", "n".repeat(245)),
+            ..rebuilt
+        };
+        let message = worker_message(&worker.generate_object(long).await.unwrap_err());
+        assert!(message.contains("was kept at objects/raw-"), "{message}");
     }
 
     #[tokio::test]
@@ -2311,6 +2699,7 @@ impl ReconClient {
             Some("validation") => "validation",
             Some("already_exists") => "already_exists",
             Some("unavailable") => "unavailable",
+            Some("print_check_failed") => "print_check_failed",
             _ => "failed",
         };
         let message = value

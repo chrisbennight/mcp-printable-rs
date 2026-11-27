@@ -64,8 +64,21 @@ pub(crate) fn overhang(
     degrees: f64,
     head: &[(u32, [f64; 3])],
 ) -> SurfaceFinding {
+    overhang_above(mesh, degrees, head, 0.0)
+}
+
+/// As [`overhang`], with every face lying within `bed_mm` of the lowest
+/// point and facing down counted as resting on the build plate. A rebuilt
+/// surface bevels the edge of a flat base by up to one grid step, and the
+/// first layer covers that bevel.
+pub(crate) fn overhang_above(
+    mesh: &TriangleMesh,
+    degrees: f64,
+    head: &[(u32, [f64; 3])],
+    bed_mm: f64,
+) -> SurfaceFinding {
     let steepest = degrees.to_radians().sin();
-    let on_bed = bed_faces(mesh);
+    let on_bed = bed_faces(mesh, bed_mm);
     let flagged: Vec<bool> = mesh
         .triangles
         .iter()
@@ -80,13 +93,13 @@ pub(crate) fn overhang(
 
 /// Faces that face down and lie at the mesh's lowest point, resting on the
 /// build plate.
-fn bed_faces(mesh: &TriangleMesh) -> Vec<bool> {
+fn bed_faces(mesh: &TriangleMesh, bed_mm: f64) -> Vec<bool> {
     let lowest = mesh
         .vertices
         .iter()
         .map(|vertex| vertex[2])
         .fold(f64::INFINITY, f64::min);
-    let tolerance = BED_TOLERANCE * extent(&mesh.vertices);
+    let tolerance = (BED_TOLERANCE * extent(&mesh.vertices)).max(bed_mm);
     mesh.triangles
         .iter()
         .map(|triangle| {
@@ -111,7 +124,7 @@ pub(crate) fn thin(
     let size = extent(&mesh.vertices);
     let start = RAY_START * size;
     let base = base_mm + BED_TOLERANCE * size;
-    let on_bed = bed_faces(mesh);
+    let on_bed = bed_faces(mesh, 0.0);
     let surface = TriMesh::new(
         mesh.vertices
             .iter()

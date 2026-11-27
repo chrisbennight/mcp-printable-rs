@@ -31,7 +31,9 @@ A request names a workspace photograph and the STL to write:
 The STL is binary, in millimetres, with Z up and the subject facing -Y, as the
 camera saw it. It is centred on the origin and stands on Z = 0. Its longest
 side is `size_mm` long, 5 to 2000 mm (default 100). Existing files are kept
-unless `overwrite` is true.
+unless `overwrite` is true. By default the generated surface is rebuilt as one
+checked, printable solid before it is written; see
+[from the mesh to a print](#from-the-mesh-to-a-print).
 
 The other choices are:
 
@@ -54,6 +56,10 @@ The other choices are:
   [Mesh size](#mesh-size).
 - `simplify`: TRELLIS.2 only, true by default. False writes every generated
   triangle. Omit `target_triangles` when false. Full-detail files can exceed 1 GB.
+- `raw_surface`: true writes the generator's surface without the solid
+  rebuild. The default, false, is recommended for printing; with
+  `simplify: false` the default is true, since that output exists to keep
+  every generated triangle.
 - `background`: true runs Pixal3D as a retained job. By default Pixal3D returns
   its result in the same request. TRELLIS.2 always uses a retained job;
   `background: false` is rejected for that model.
@@ -64,7 +70,11 @@ resolution reached, the steps used, the voxel counts of the structure and last
 shape stages, the seed, the field of view and where it came from, whether the
 background was removed, the device, the time taken, each stage's time and,
 on a GPU, its peak memory, the photograph's SHA-256 and the written
-artifact.
+artifact. A rebuilt object adds `solid_rebuild` and `validation`, described in
+[from the mesh to a print](#from-the-mesh-to-a-print); a raw one reports
+`raw_surface: true`. A Pixal3D request without `fov_degrees` adds
+`photo_analysis`, which names the cached analysis whose focal length set the
+view or says that none was found.
 
 ## Retained generation jobs
 
@@ -262,11 +272,26 @@ field of view decides how much perspective the shape inherits from the
 photograph. The worker chooses it in this order:
 
 1. `fov_degrees` in the request.
-2. The photograph's 35 mm equivalent focal length, from its Exif metadata,
-   scaled to the part of the picture that frames the subject. Phone and camera
-   photographs usually carry it; screenshots and edited images often do not.
-3. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
+2. A focal length the user gave to [`analyze`](photo-geometry.md#analyse-a-photograph)
+   as `focal_length_px`, recorded in a cached analysis of the same
+   photograph, matched by its SHA-256. `fov_source` is `analysis`.
+3. The photograph's 35 mm equivalent focal length, from its Exif metadata.
+   This is the camera's own value. Phone and camera photographs usually carry
+   it; screenshots and edited images often do not. `fov_source` is
+   `photograph`.
+4. A focal length a cached analysis estimated. Depth Pro 2's estimates were
+   8.3% from the Exif values on average in the
+   [depth benchmark](../evidence/depth-benchmark.md#focal-length), so they are
+   used only when the photograph has no Exif focal length. `fov_source` is
+   `analysis`.
+5. Otherwise 20 degrees, the camera of the example rig Pixal3D ships. This is
    an assumption, and the result says so in `fov_source`.
+
+Each focal length is scaled to the part of the picture that frames the
+subject. No new analysis is started: run `analyze` first to use one.
+`photo_analysis` in the result names the cached analysis, its focal length and
+whether it was given only when that focal length set the view; otherwise it
+says that the photograph's own focal length or the default was used.
 
 A shape that looks stretched towards or away from the camera usually means
 the field of view is wrong. Try again with a narrower view, such as 15 degrees,
@@ -398,33 +423,63 @@ under `missing.object`.
 
 ## From the mesh to a print
 
-The STL is the generator's surface, optionally simplified and never checked or repaired.
-Like Pixal3D's own raw surface, it may have holes, small separate pieces,
-edges shared by more than two triangles, triangles facing inconsistently
-and self-intersections. Repair it in Blender before slicing:
+The generator's surface, like Pixal3D's own, may have holes, small separate
+pieces, edges shared by more than two triangles, triangles facing
+inconsistently and self-intersections. Unless `raw_surface` is true, the worker
+therefore rebuilds it before writing it, with the same preparation as the
+`scene` tool's [`prepare_print`](mesh-assessment.md#prepare-a-mesh-for-printing):
 
-1. Import it into the scene with the `scene` tool's `import` action.
-2. Remesh it into a watertight solid with `blender_execute`, choosing a
-   voxel size near your printer's detail, for example 0.2 mm for FDM. Use the
-   object name the import reports:
+- Openings are closed, inconsistent facing is fixed, every closed piece is
+  turned to face outwards, and the surface is rebuilt as one exact solid with
+  facets 0.4% of the longest side of the piece enclosing the most volume, the
+  part that is kept, at least 0.1 mm; after rescaling to `size_mm` that is
+  about 0.4% of `size_mm`. `solid_rebuild.edge_length_mm` gives the facet size
+  on the written mesh. With `target_triangles`, the facet length is chosen instead to give
+  about that many triangles over the area of the piece enclosing the most
+  volume, which is the part kept, at least
+  0.1 mm. Finer detail is smoothed away.
+- Only the largest part is kept, since a photograph shows one subject and
+  separate pieces are generator debris; `solid_rebuild.smaller_parts` counts
+  those removed. The result is then scaled again so that its longest side is
+  `size_mm`, centred on the origin and standing on Z = 0, since the generator
+  sized the surface with the removed pieces included. `solid_rebuild.size_mm`
+  gives the final size.
+- Overhangs steeper than 45 degrees and walls thinner than 0.4 mm, a common
+  FDM nozzle, are reported in `solid_rebuild.overhang` and `solid_rebuild.thin`,
+  with the shells, volume and what was changed.
+- The result must pass the strict check, a valid solid known to be free of
+  self-intersections and of shells touching or crossing. `validation` is the
+  `validate_mesh` report of the written mesh; walls are measured only in
+  `solid_rebuild.thin`. A result that fails is not
+  written: the request or job fails with `print_check_failed`.
+- When the rebuild is refused or the geometry worker fails, for example by
+  running out of memory, the generated surface is not lost. It is written
+  beside the requested path under a new name, `NAME.raw-ID.stl` with a random
+  `ID`, or `raw-ID.stl` when that name would exceed 255 bytes, so it never
+  replaces an existing file, and the error message names it.
+  If that publication fails, its own error is returned instead. Run `scene` `prepare_print` on it
+  with other settings, such as a larger `edge_length_mm`. It is published in
+  the job's publishing phase, so a job cancelled before then keeps nothing.
+  A retained job records the path as `recovery_path` in its status before
+  publishing, so an interrupted publication still names it.
 
-   ```python
-   import bpy
-   shape = bpy.data.objects["figure"]
-   remesh = shape.modifiers.new("Remesh", "REMESH")
-   remesh.mode = "VOXEL"
-   remesh.voxel_size = 0.2
-   bpy.context.view_layer.objects.active = shape
-   bpy.ops.object.modifier_apply(modifier=remesh.name)
-   ```
+The rebuild runs in the isolated geometry worker inside the photograph worker,
+on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024). The
+geometry worker starts with an empty environment, so no setting or credential
+of the photograph worker, such as a model-download token, reaches it.
+A one-million-triangle surface took about 3 seconds and 490 MiB, including the check, at the default
+facet size in the [measurements](../evidence/print-prep-rebuild.md). The
+strict check runs there too. The rebuild has whatever remains of the
+generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or
+`PRINTABLE_RECON_TRELLIS_TIMEOUT_SECONDS` for TRELLIS.2). Retained jobs report
+the rebuild as their `delivering` phase. The result's `triangles` and
+`size_mm` describe the rebuilt mesh that was written; `generated_triangles`
+is the generator's own count.
 
-   Voxel remeshing closes small holes, joins nearby pieces and removes
-   self-intersections. A larger voxel size gives a lighter mesh and softens
-   detail.
-3. Export it with the `scene` tool's `export` action.
-4. Check it with `validate_mesh`, and look at the overhang report before
-   choosing supports.
-5. Slice it with `slice`.
+Then check the object with `validate_mesh` and the printer's own settings, look
+at the overhang report before choosing supports, and slice it with `slice`. For
+another facet size, a plinth or hollowing, generate with `raw_surface: true`
+and run `scene` `prepare_print` on the result.
 
 ## Limits
 

@@ -163,6 +163,9 @@ impl Record {
         ] {
             value[key] = field;
         }
+        if let Some(path) = self.execution.get("recovery_path") {
+            value["recovery_path"] = path.clone();
+        }
         if detail {
             value["request"] = json!(self.request);
             value["image_sha256"] = json!(self.image_sha256);
@@ -424,6 +427,17 @@ impl JobControl {
     }
 
     pub(super) fn enter(&self, phase: Phase) -> Result<(), ToolError> {
+        self.enter_recording(phase, None)
+    }
+
+    /// Enter publishing a generated surface kept after a failed rebuild,
+    /// recording its path first so that an interrupted publication can name
+    /// it.
+    pub(super) fn enter_recovery(&self, path: &str) -> Result<(), ToolError> {
+        self.enter_recording(Phase::Publishing, Some(path))
+    }
+
+    fn enter_recording(&self, phase: Phase, recovery: Option<&str>) -> Result<(), ToolError> {
         let mut store = self.jobs.lock()?;
         let mut record =
             store.records.get(&self.id).cloned().ok_or_else(|| {
@@ -437,6 +451,9 @@ impl JobControl {
         }
         record.state = JobState::Running;
         record.phase = phase;
+        if let Some(path) = recovery {
+            record.execution["recovery_path"] = json!(path);
+        }
         record.updated_unix_ms = now();
         self.jobs.persist(&record)?;
         store.records.insert(self.id.clone(), record);
@@ -765,6 +782,25 @@ print(json.dumps({'result':{'seed':request['seed'],'triangles':1}}))
         assert_eq!(page["returned"], 1);
         check_output(&page);
         assert_eq!(page["jobs"][0]["job_id"], id);
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_records_where_the_generated_surface_was_kept() {
+        let (root, worker, mut request) = fixture();
+        // The stand-in worker has no geometry worker, so the rebuild fails.
+        request.raw_surface = None;
+        let accepted = worker.submit_object(request).unwrap();
+        let id = accepted["job_id"].as_str().unwrap();
+        let failed = wait_for(&worker, id, "state", "failed").await;
+        let kept = failed["recovery_path"].as_str().unwrap();
+        assert!(kept.starts_with("objects/figure.raw-"), "{failed}");
+        assert!(
+            failed["failure"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(kept)
+        );
+        assert!(root.path().join("workspace").join(kept).is_file());
     }
 
     #[tokio::test]

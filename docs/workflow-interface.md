@@ -26,7 +26,8 @@ parameters directly: `status`, `blender_execute`, `compare_renders`,
 its action contract. The response identifies its output schema scope:
 `action` when the contract describes that action's results alone, which is
 the case for every `printer`, `print` and `catalog` action, CAD `inspect` and
-`export`, and `project` `update`, `cover` and `reindex`; `tool` when it
+`export`, `project` `update`, `cover` and `reindex`, and `scene`
+`prepare_print`; `tool` when it
 describes every result the tool can return. Contract resources
 for printer workflows also describe the rejected-call envelope, including typed
 filament deficits and validation fields. Rejections retain the MCP `isError`
@@ -61,7 +62,7 @@ Existing handler-level range, state, and file checks still run before mutation.
 | `inspect` | `scene`, `object`, `node_tree`, `editing_state`, `dependencies` |
 | `edit` | `primitive`, `boolean`, `rename`, `rigid_rotation` |
 | `blender_execute` | Direct `code`, `timeout_seconds`, optional `context` and `expected_scene` |
-| `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export` |
+| `scene` | `open_project`, `attach_cad`, `clear`, `checkpoint`, `restore`, `import`, `export`, and `prepare_print` (rebuild a workspace STL as a checked printable solid without Blender; see [prepare a mesh for printing](mesh-assessment.md#prepare-a-mesh-for-printing)) |
 | `scad_build` | `mesh`, `image`, `section` |
 | `cad_build` | `inspect`, `export`, `model`, `import_step`, `status`, `cancel` |
 | `slice` | `profiles`, `settings`, `prepare`, `status`, `cancel`, `review` |

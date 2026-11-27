@@ -80,6 +80,16 @@ generated supports, brims or actual toolpaths, or establish collision clearance.
 Use `slice.review` for actual toolpaths and combine the available observations
 with geometry and printer information for the clearance assessment below.
 
+When `validate_mesh` reports open edges, inconsistent facing,
+self-intersections, or more shells than the design has, as scans and generated
+objects often do, rebuild it with `scene` `prepare_print` and the printer's
+nozzle, then validate the new file. Set `remove_floating_parts` when the
+reported floating parts are debris rather than intended parts, set
+`keep_cavities` only when inward-facing pieces are intended cavities, and lower `edge_length_mm` when the default would
+smooth away detail that matters. A refused result (`print_check_failed`) wrote
+nothing; report its problems rather than slicing the original. Do not rebuild a
+valid CAD export: the rebuild rounds sharp edges and fitting surfaces.
+
 Choose the orientation against the requested objective:
 
 | Objective | Compare | Keep visible |

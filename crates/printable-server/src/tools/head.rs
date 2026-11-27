@@ -6,9 +6,10 @@ use super::*;
 
 use printable_flame::{FlameModel, FlameParams, Pose, PosedHead, detail, texture};
 use printable_geom::{
-    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, Hollow, Plinth, PrintChecks,
-    Raised, RaisedMap,
+    Body, BodyKind, BustRequest, Displacement, EyeAxis, EyeCarving, PrintChecks, Raised, RaisedMap,
 };
+
+use super::print_prep::{PLINTH_HEIGHT_MM, hollow_options, plinth_options, strict_check};
 
 /// Coefficients are in standard deviations of the heads FLAME was learned
 /// from; well beyond this the model extrapolates into implausible shapes.
@@ -28,13 +29,8 @@ const MAX_TRIANGLES: std::ops::RangeInclusive<usize> = 10_000..=3_000_000;
 /// About the most the geometry worker can prepare within its default 1 GiB
 /// memory limit.
 const DEFAULT_MAX_TRIANGLES: usize = 750_000;
-const PLINTH_HEIGHT_MM: std::ops::RangeInclusive<f64> = 2.0..=100.0;
-const PLINTH_DIAMETER_MM: std::ops::RangeInclusive<f64> = 10.0..=500.0;
 /// The bust above a plinth is at least this tall.
 const MIN_BUST_ABOVE_PLINTH_MM: f64 = 10.0;
-const HOLLOW_WALL_MM: std::ops::RangeInclusive<f64> = 1.0..=20.0;
-const DRAIN_DIAMETER_MM: std::ops::RangeInclusive<f64> = 1.0..=10.0;
-const DEFAULT_DRAIN_DIAMETER_MM: f64 = 3.5;
 /// Largest displacement map accepted, in pixels on each side.
 const MAX_DISPLACEMENT_PIXELS: u32 = 1024;
 /// Detail filter widths, at life size, from a millimetre to the width of a face.
@@ -57,12 +53,8 @@ const DEFAULT_MOUTH_RECESS_MM: f64 = 2.0;
 /// The model region over which detail fades out on a closed or recessed
 /// mouth, so that the lips are not raised into a ridge where they meet.
 const LIPS_REGION: &str = "lips";
-const PLINTH_CHAMFER_MM: std::ops::RangeInclusive<f64> = 0.0..=5.0;
 /// An FDM bust stands on a plinth this fraction of its height by default.
 const FDM_PLINTH_FRACTION: f64 = 0.08;
-/// A chamfer about two layers deep keeps the first layers, which spread as
-/// they are pressed onto the build plate, within the plinth's outline.
-const DEFAULT_FDM_CHAMFER_MM: f64 = 0.5;
 const NOZZLE_DIAMETER_MM: std::ops::RangeInclusive<f64> = 0.1..=2.0;
 const DEFAULT_NOZZLE_DIAMETER_MM: f64 = 0.4;
 const LAYER_HEIGHT_MM: std::ops::RangeInclusive<f64> = 0.01..=1.0;
@@ -463,18 +455,18 @@ pub(super) enum PrintProcess {
 
 /// Printer settings with their defaults filled in.
 #[derive(Clone, Copy, serde::Serialize)]
-struct Printer {
-    process: PrintProcess,
+pub(super) struct Printer {
+    pub(super) process: PrintProcess,
     #[serde(skip_serializing_if = "Option::is_none")]
-    nozzle_diameter_mm: Option<f64>,
-    layer_height_mm: f64,
-    maximum_overhang_degrees: f64,
+    pub(super) nozzle_diameter_mm: Option<f64>,
+    pub(super) layer_height_mm: f64,
+    pub(super) maximum_overhang_degrees: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    minimum_wall_mm: Option<f64>,
+    pub(super) minimum_wall_mm: Option<f64>,
 }
 
 impl PrinterParams {
-    fn resolve(&self) -> Result<Printer, ToolError> {
+    pub(super) fn resolve(&self) -> Result<Printer, ToolError> {
         let fdm = self.process == PrintProcess::Fdm;
         if !fdm && self.nozzle_diameter_mm.is_some() {
             return Err(ToolError::Validation(
@@ -1071,39 +1063,13 @@ async fn print_bust(
         .map(PrinterParams::resolve)
         .transpose()?;
     let fdm = printer.is_some_and(|printer| printer.process == PrintProcess::Fdm);
-    let plinth_height = match params.plinth_height_mm {
-        Some(0.0) => None,
-        Some(height) => Some(in_range("plinth_height_mm", height, &PLINTH_HEIGHT_MM)?),
-        None if fdm => Some((FDM_PLINTH_FRACTION * height_mm).max(*PLINTH_HEIGHT_MM.start())),
-        None => None,
-    };
-    let plinth = match plinth_height {
-        None if params.plinth_diameter_mm.is_some() || params.plinth_chamfer_mm.is_some() => {
-            return Err(ToolError::Validation(
-                "plinth_diameter_mm and plinth_chamfer_mm require a plinth".into(),
-            ));
-        }
-        None => None,
-        Some(height) => Some(Plinth {
-            height_mm: height,
-            diameter_mm: params
-                .plinth_diameter_mm
-                .map(|diameter| in_range("plinth_diameter_mm", diameter, &PLINTH_DIAMETER_MM))
-                .transpose()?,
-            chamfer_mm: match params.plinth_chamfer_mm {
-                Some(chamfer) => in_range("plinth_chamfer_mm", chamfer, &PLINTH_CHAMFER_MM)?,
-                None if fdm => DEFAULT_FDM_CHAMFER_MM,
-                None => 0.0,
-            },
-        }),
-    };
-    if let Some(plinth) = plinth
-        && plinth.chamfer_mm >= plinth.height_mm
-    {
-        return Err(ToolError::Validation(
-            "plinth_chamfer_mm must be less than the plinth's height".into(),
-        ));
-    }
+    let plinth = plinth_options(
+        params.plinth_height_mm,
+        params.plinth_diameter_mm,
+        params.plinth_chamfer_mm,
+        fdm.then(|| (FDM_PLINTH_FRACTION * height_mm).max(*PLINTH_HEIGHT_MM.start())),
+        fdm,
+    )?;
     if let Some(plinth) = plinth
         && height_mm - plinth.height_mm < MIN_BUST_ABOVE_PLINTH_MM
     {
@@ -1111,22 +1077,7 @@ async fn print_bust(
             "height_mm must exceed plinth_height_mm by at least {MIN_BUST_ABOVE_PLINTH_MM} mm"
         )));
     }
-    let hollow = match (params.hollow_wall_mm, params.drain_hole_diameter_mm) {
-        (None, None) => None,
-        (None, Some(_)) => {
-            return Err(ToolError::Validation(
-                "drain_hole_diameter_mm requires hollow_wall_mm".into(),
-            ));
-        }
-        (Some(wall), diameter) => Some(Hollow {
-            wall_mm: in_range("hollow_wall_mm", wall, &HOLLOW_WALL_MM)?,
-            drain_diameter_mm: in_range(
-                "drain_hole_diameter_mm",
-                diameter.unwrap_or(DEFAULT_DRAIN_DIAMETER_MM),
-                &DRAIN_DIAMETER_MM,
-            )?,
-        }),
-    };
+    let hollow = hollow_options(params.hollow_wall_mm, params.drain_hole_diameter_mm)?;
     if params.pose.global != [0.0; 3] {
         return Err(ToolError::Validation(
             "pose.global must be zero for prepare_print: the bust stands on its neck; use pose.neck to turn or tilt the head".into(),
@@ -1485,23 +1436,7 @@ async fn print_bust(
             None,
         )?;
         let bytes = std::fs::read(&output_path)?;
-        let validation = analyze_stl(&bytes, validation_options)?;
-        // The bust is written only when it is known to be free of
-        // self-intersections, not merely when none were found.
-        if !validation.solid_geometry || validation.topology.self_intersections != Some(0) {
-            let issues: Vec<_> = validation
-                .issues
-                .iter()
-                .map(|issue| issue.message.as_str())
-                .collect();
-            return Err(geometry_worker_error(
-                "geometry",
-                format!(
-                    "the prepared bust failed mesh validation and was not written: {}",
-                    issues.join("; ")
-                ),
-            ));
-        }
+        let validation = strict_check(&bytes, validation_options, "bust")?;
         printable_geom::limit::check()?;
         let artifact = workspace.write_generated_bytes(&path, &bytes, overwrite)?;
         let mut report = serde_json::to_value(report)?;
@@ -3290,7 +3225,7 @@ fn no_layout_for_colour(model: &FlameModel) -> ToolError {
     ))
 }
 
-fn in_range<T: PartialOrd + std::fmt::Display>(
+pub(super) fn in_range<T: PartialOrd + std::fmt::Display>(
     name: &str,
     value: T,
     range: &std::ops::RangeInclusive<T>,

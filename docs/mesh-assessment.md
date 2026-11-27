@@ -41,6 +41,93 @@ remains unmeasured; supply a minimum wall to measure it. A tilted closed box can
 the support-free orientation criterion. Neither result proves suitability for
 the intended physical use.
 
+## Prepare a mesh for printing
+
+`validate_mesh` reports problems without changing the mesh. To fix the usual
+ones, such as holes, triangles facing the wrong way, overlapping or
+self-intersecting parts and floating debris, rebuild the mesh with the `scene`
+tool's `prepare_print` action. It runs in the isolated geometry worker and does
+not use Blender:
+
+```json
+{"action": "prepare_print", "params": {
+  "source_path": "models/figure.stl",
+  "path": "models/figure-print.stl",
+  "printer": {"process": "fdm", "nozzle_diameter_mm": 0.4}
+}}
+```
+
+The source is read in millimetres with Z up. The preparation:
+
+1. Turns triangles to face the same way as most of their piece, a piece being
+   the triangles joined through edges that exactly two of them use, and closes
+   each opening whose rim is a simple loop. By default each closed piece is
+   then turned to face outwards: a piece welded to no other, every edge of
+   which is used by exactly two of its own triangles. Pieces that share faces
+   or edges with others keep the facing they were given, so a cavity
+   described that way, such as an inward box sharing the top face of an
+   outward one to make an open cup, stays a cavity. The rebuild then counts
+   everything inside any closed surface as solid, whichever way it faces, so
+   no body is lost to its facing. A closed inward-facing piece on its own,
+   meant as a cavity, is filled; `cavities_filled` counts those. Set `keep_cavities` to trust the
+   mesh's facing instead: each piece keeps its facing, inward-facing pieces
+   stay cavities, counted in `cavities`, and a piece facing inwards that lies
+   inside no other part disappears in the rebuild.
+2. Rebuilds the union of everything as one exact solid with facets about
+   `edge_length_mm` long. Overlapping and touching parts merge and
+   self-intersections disappear. Detail finer than about one and a half edges
+   is smoothed away. The default, 0.4% of the longest side and at least
+   0.1 mm, keeps the result at a few hundred thousand triangles at any size
+   and is about a 0.4 mm nozzle's width on a 100 mm part; choose a smaller
+   edge for fine detail.
+3. Reports parts that float: those whose lowest point is more than 0.2 mm,
+   about one layer, or one grid step if that is more, above the build plate.
+   By default every part is kept, the plate is where the lowest part sits,
+   and the floating parts, which would print in mid-air, are reported. With
+   `remove_floating_parts`, the plate is under the largest part and every
+   other part not resting on it, above or below, is removed; such parts are
+   usually debris. Separate parts resting on the plate are kept and counted.
+   The detection resolution is max(0.2 mm, one grid step), where a grid step
+   is about 1.7 edge lengths: at a coarse edge, a part closer to the plate
+   than one grid step counts as resting on it.
+4. Optionally cuts a flat base one grid step above the lowest point and adds a
+   cylindrical plinth below it (`plinth_height_mm`, `plinth_diameter_mm`,
+   `plinth_chamfer_mm`); a separate part lying wholly within the slice cut
+   off is removed with it and counted in `removed_by_base_cut`, and optionally hollows the solid with drain holes
+   through the base (`hollow_wall_mm`, `drain_hole_diameter_mm`). Hollowing
+   suits resin; FDM infill already saves material. It needs one solid, so join
+   separate parts with a plinth first.
+5. With a `printer`, reports surface of the written solid, including any
+   plinth and cavity, facing down more steeply than its overhang angle, other
+   than within 0.2 mm of the plate, where the first
+   layer covers it, and walls thinner than its minimum wall, which defaults to
+   the nozzle diameter. The thin-wall check does not measure through faces
+   resting on the build plate, so a thin flat part lying on the plate, such as
+   a plate or tab thinner than the minimum, is not reported as thin;
+   `thin.excludes_plate_faces` says so in the report. Walls are measured only
+   here: the `validation` report's wall-thickness criterion stays unmeasured,
+   since measuring walls twice raises the worker's peak memory by about a
+   third.
+
+The result stands on Z = 0. `preparation` reports the source's triangles,
+shells, open edges and, when it was closed, its volume; what was turned and
+closed and the cavities filled or kept; the result's triangles, shells, volume and size;
+the floating parts found and whether they were removed; any plinth and cavity; and the overhang
+and thin-wall areas with their largest regions. `validation` is the
+`validate_mesh` report of the written file. The rebuild and this check both
+run in the geometry worker, so the full mesh is decoded only under its memory
+limit.
+
+A prepared mesh is written only when it passes the strict check: a valid solid
+known to be free of self-intersections and of separate shells touching or
+crossing one another. Otherwise the request fails with
+`print_check_failed`, names the problems and writes nothing. `head`
+`prepare_print` and photo objects follow the same rule. Rebuilding and
+checking a one-million-triangle mesh at the default edge took about
+3 seconds and 490 MiB on a processor; finer edges need more memory, so raise
+`PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. See the
+[measurements](../evidence/print-prep-rebuild.md).
+
 ## Measure wall thickness
 
 Pass `minimum_wall_mm` to `validate_mesh` to measure a valid solid's wall

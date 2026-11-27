@@ -34,6 +34,7 @@ pub mod limit;
 pub mod plate;
 mod print_check;
 pub mod print_collision;
+mod print_prep;
 pub mod relief;
 mod remesh;
 mod thickness;
@@ -56,6 +57,10 @@ pub use fit::{
     Geometry, Measure, RequirementCheck, Shape, VerticalHole, vertical_holes,
 };
 pub use print_check::{PrintChecks, SurfaceFinding, SurfaceRegion};
+pub use print_prep::{
+    Finding, KeptParts, Parts, PrintPrepOptions, PrintPrepReport, Region, SourceSummary,
+    prepare_print,
+};
 pub use thickness::{ThicknessDistribution, ThinRegion, WallThicknessReport};
 pub use volume::{Material, VolumeComparison, VolumeRegion};
 

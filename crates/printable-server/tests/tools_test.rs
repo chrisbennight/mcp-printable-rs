@@ -10553,3 +10553,234 @@ async fn photo_lithophane_turns_an_image_upright_by_its_exif_orientation() {
     );
     assert!(top < bottom, "{top} {bottom}");
 }
+
+/// Binary STLs joined into one, as an exporter writing several bodies does.
+fn joined_stl(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = vec![0; 80];
+    let count: u32 = parts
+        .iter()
+        .map(|part| u32::from_le_bytes(part[80..84].try_into().unwrap()))
+        .sum();
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for part in parts {
+        bytes.extend_from_slice(&part[84..]);
+    }
+    bytes
+}
+
+#[tokio::test]
+async fn scene_prepare_print_rebuilds_a_mesh_and_reports_what_changed() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    // Two overlapping blocks on the plate and a speck floating above them.
+    let source = joined_stl(&[
+        cube_stl_at(10.0, [0.0; 3]),
+        cube_stl_at(10.0, [5.0, 5.0, 0.0]),
+        cube_stl_at(2.0, [30.0, 0.0, 20.0]),
+    ]);
+    ws.write_artifact("parts/raw.stl", &source, false).unwrap();
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    let call = |params: Value| {
+        printable_server::tools::workflows::resolve(
+            "scene",
+            json!({"action": "prepare_print", "params": params}),
+        )
+        .unwrap()
+    };
+    let prepare = call(json!({
+        "source_path": "parts/raw.stl", "path": "parts/ready.stl",
+        "edge_length_mm": 0.5, "printer": {"process": "fdm"},
+        "remove_floating_parts": true,
+    }));
+    let result = dispatch(
+        &ws,
+        &upload,
+        &backend,
+        &config,
+        prepare.name,
+        prepare.arguments,
+    )
+    .await
+    .unwrap();
+    let report = &result["preparation"];
+    assert_eq!(report["source"]["shells"], 3, "{result}");
+    assert_eq!(report["shells"], 1);
+    assert_eq!(report["floating_parts"]["count"], 1);
+    assert_eq!(report["floating_parts"]["removed"], true);
+    let volume = report["volume_mm3"].as_f64().unwrap();
+    assert!((volume - 1750.0).abs() < 50.0, "{report}");
+    // Walls are checked against the default 0.4 mm nozzle.
+    assert_eq!(result["printer"]["minimum_wall_mm"], 0.4);
+    assert_eq!(report["thin"]["area_mm2"], 0.0);
+    assert_eq!(result["validation"]["solid_geometry"], true);
+    assert_eq!(result["validation"]["topology"]["self_intersections"], 0);
+    let (_, written) = ws.read_generated_bytes("parts/ready.stl").unwrap();
+    assert_eq!(result["artifact"]["size_bytes"], written.len());
+    // The response matches the action's published output contract.
+    let contract = printable_server::resources::contracts::read(
+        "printable://contracts/scene/prepare_print",
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(contract["output_schema_scope"], "action");
+    let validator = jsonschema::validator_for(&contract["outputSchema"]).unwrap();
+    validator
+        .validate(&prepare.response.apply(result.clone()))
+        .unwrap();
+    // The tool-wide contract accepts it too.
+    let tool = printable_server::resources::contracts::read(
+        "printable://contracts/scene",
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(tool["output_schema_scope"], "tool");
+    jsonschema::validator_for(&tool["outputSchema"])
+        .unwrap()
+        .validate(&prepare.response.apply(result.clone()))
+        .unwrap();
+
+    // The destination is kept unless replaced, and hollowing needs one solid.
+    let again = call(json!({"source_path": "parts/raw.stl", "path": "parts/ready.stl"}));
+    let error = dispatch(&ws, &upload, &backend, &config, again.name, again.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "already_exists");
+    ws.write_artifact(
+        "parts/apart.stl",
+        &joined_stl(&[
+            cube_stl_at(20.0, [0.0; 3]),
+            cube_stl_at(20.0, [40.0, 0.0, 0.0]),
+        ]),
+        false,
+    )
+    .unwrap();
+    let hollow = call(json!({
+        "source_path": "parts/apart.stl", "path": "parts/hollow.stl",
+        "edge_length_mm": 1.0, "hollow_wall_mm": 3.0,
+    }));
+    let error = dispatch(
+        &ws,
+        &upload,
+        &backend,
+        &config,
+        hollow.name,
+        hollow.arguments,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "validation", "{error}");
+    assert!(ws.stat_artifact("parts/hollow.stl").is_err());
+    let unplinthed = call(json!({
+        "source_path": "parts/apart.stl", "path": "parts/chamfer.stl",
+        "plinth_chamfer_mm": 1.0,
+    }));
+    let error = dispatch(
+        &ws,
+        &upload,
+        &backend,
+        &config,
+        unplinthed.name,
+        unplinthed.arguments,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "validation");
+}
+
+/// A stand-in object generator that writes a 20 mm block with its top open.
+const OPEN_BLOCK_RUNTIME: &str = r#"
+import json, struct, sys
+request = json.load(open(sys.argv[1]))
+v = [(20.0 * (k & 1), 20.0 * (k >> 1 & 1), 20.0 * (k >> 2 & 1)) for k in range(8)]
+faces = [(0,2,1),(1,2,3),(0,1,4),(1,5,4),(2,6,3),(3,6,7),(0,4,2),(2,4,6),(1,3,5),(3,7,5)]
+with open(request["mesh"], "wb") as out:
+    out.write(b"\0" * 80 + struct.pack("<I", len(faces)))
+    for face in faces:
+        out.write(struct.pack("<3f", 0, 0, 0))
+        for k in face:
+            out.write(struct.pack("<3f", *v[k]))
+        out.write(b"\0\0")
+print(json.dumps({"result": {"triangles": len(faces), "fov_source": "assumed"}}))
+"#;
+
+#[tokio::test]
+async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_kept() {
+    use printable_server::recon::{ReconConfig, ReconWorker};
+    let root = tempfile::tempdir().unwrap();
+    let runtime = root.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::write(runtime.join("generate_object.py"), OPEN_BLOCK_RUNTIME).unwrap();
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    std::fs::write(workspace_root.join("figure.png"), b"image bytes").unwrap();
+    let timeout = std::time::Duration::from_secs(120);
+    let worker = ReconWorker::new(
+        Arc::new(Workspace::open(Some(&workspace_root), None).unwrap()),
+        ReconConfig {
+            python: "python3".into(),
+            script: runtime.join("absent.py"),
+            checkpoints: runtime.clone(),
+            landmarker: runtime.join("absent"),
+            segmenter: runtime.join("absent"),
+            device: "cpu".into(),
+            timeout,
+            depth_script: runtime.join("absent.py"),
+            depth_model: runtime.join("absent"),
+            depth_timeout: timeout,
+            object_script: runtime.join("generate_object.py"),
+            object_model: runtime.clone(),
+            object_timeout: timeout,
+            trellis: None,
+            geometry: None,
+            cpu_threads: 1,
+            photo_queue_depth: 1,
+            geometry_worker: test_geometry_worker(),
+            geometry_worker_memory_bytes: 1024 * 1024 * 1024,
+        },
+    );
+    let request = |path: &str, raw: Option<bool>| {
+        serde_json::from_value(json!({
+            "image": "figure.png", "mesh_path": path, "size_mm": 20.0, "raw_surface": raw,
+        }))
+        .unwrap()
+    };
+    let result = worker
+        .generate_object(request("objects/solid.stl", None))
+        .await
+        .unwrap();
+    let report = &result["solid_rebuild"];
+    assert_eq!(report["source"]["open_edges"], 4, "{result}");
+    assert_eq!(report["openings_closed"], 1);
+    assert_eq!(report["shells"], 1);
+    // The top-level counts describe the rebuilt mesh that was written.
+    assert_eq!(result["triangles"], report["triangles"]);
+    assert_eq!(result["size_mm"], report["size_mm"]);
+    assert!((report["volume_mm3"].as_f64().unwrap() - 8000.0).abs() < 300.0);
+    assert!(report["thin"].is_object());
+    assert_eq!(result["validation"]["solid_geometry"], true);
+    assert_eq!(result["validation"]["topology"]["self_intersections"], 0);
+    // The assessment comes with the measurements it points to.
+    assert!(result["validation"]["overhang"].is_object());
+    assert!(result["validation"]["topology"].is_object());
+    // Nothing was cached for this photograph, and the report says so.
+    assert!(result["photo_analysis"]["note"].is_string());
+    let (_, written) = worker
+        .workspace
+        .read_generated_bytes("objects/solid.stl")
+        .unwrap();
+    assert!(written.len() > 84 + 50 * 10);
+
+    let raw = worker
+        .generate_object(request("objects/raw.stl", Some(true)))
+        .await
+        .unwrap();
+    assert_eq!(raw["raw_surface"], true);
+    assert!(raw.get("solid_rebuild").is_none());
+    let (_, written) = worker
+        .workspace
+        .read_generated_bytes("objects/raw.stl")
+        .unwrap();
+    assert_eq!(written.len(), 84 + 50 * 10);
+}

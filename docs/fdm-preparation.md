@@ -67,6 +67,14 @@ check whether a fresh agent follows the guidance on representative tasks.
    Separate predicted benefits and estimates from measured geometry and physical
    results. Physical dispatch uses the existing printing workflow.
 
+A model with holes, inconsistent facing, self-intersections or floating debris,
+such as a scan or a generated object, can be rebuilt as one checked solid with
+`scene` `prepare_print` before slicing; see
+[prepare a mesh for printing](mesh-assessment.md#prepare-a-mesh-for-printing).
+It reports walls thinner than the nozzle and overhangs for the chosen printer.
+Leave well-formed CAD exports alone: the rebuild rounds their sharp edges to the
+chosen facet size.
+
 The optional `slice.compare` action keeps a baseline and up to eight justified
 completed candidates in separate output directories. It binds the objective,
 named face requirements, load assumptions and rationale to exact slice and review

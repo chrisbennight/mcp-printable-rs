@@ -55,6 +55,16 @@ pub(crate) const EDGE_PER_SPACING: f64 = 0.6;
 /// Sampling threads; the geometry worker already runs one job per process.
 const MAX_THREADS: usize = 4;
 
+/// Which winding counts are inside the solid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InsideRule {
+    /// Positive counts: surfaces facing inwards subtract, making cavities.
+    Positive,
+    /// Any nonzero count: inside any closed surface, whichever way it faces,
+    /// so no body is lost to its facing.
+    NonZero,
+}
+
 /// Mesh the union of the closed surfaces in `triangles` with edges of about
 /// `edge` millimetres.
 pub(crate) fn remesh_union(
@@ -62,8 +72,19 @@ pub(crate) fn remesh_union(
     triangles: Vec<[u32; 3]>,
     edge: f64,
 ) -> Result<Manifold, GeometryError> {
+    remesh_union_with(vertices, triangles, edge, InsideRule::Positive)
+}
+
+/// As [`remesh_union`], with the winding counts that `rule` puts inside.
+pub(crate) fn remesh_union_with(
+    vertices: Vec<Point>,
+    triangles: Vec<[u32; 3]>,
+    edge: f64,
+    rule: InsideRule,
+) -> Result<Manifold, GeometryError> {
     let edge = edge / EDGE_PER_SPACING;
-    let field = Field::new(vertices, triangles, edge, BAND_EDGES * edge)?;
+    let mut field = Field::new(vertices, triangles, edge, BAND_EDGES * edge)?;
+    field.rule = rule;
     let margin = 2.0 * edge;
     let low = field.low.map(|value| value - margin);
     let high = field.high.map(|value| value + margin);
@@ -132,6 +153,7 @@ struct Field {
     floor: f64,
     columns: Columns,
     voxels: Voxels,
+    rule: InsideRule,
 }
 
 impl Field {
@@ -171,6 +193,7 @@ impl Field {
             floor: cell * FLOOR_FRACTION,
             columns,
             voxels,
+            rule: InsideRule::Positive,
         })
     }
 
@@ -186,7 +209,7 @@ impl Field {
             UNKNOWN => {
                 // No surface reaches this voxel, so its sign is uniform.
                 let index = voxel.expect("unknown voxels are inside the grid");
-                let inside = self.winding(self.voxels.centre(index)) > 0;
+                let inside = self.inside(self.voxels.centre(index));
                 self.voxels.state[index]
                     .store(if inside { INSIDE } else { OUTSIDE }, Ordering::Relaxed);
                 return if inside { self.band } else { -self.band };
@@ -202,7 +225,7 @@ impl Field {
         // Surfaces buried inside the union have zero distance but no change of
         // sign; a small floor keeps them off the zero level.
         let distance = distance.max(self.floor);
-        if self.winding(point) > 0 {
+        if self.inside(point) {
             distance
         } else {
             -distance
@@ -228,7 +251,7 @@ impl Field {
                 return Some(crossing);
             };
             let middle = origin + direction * ((crossing + next) / 2.0);
-            if self.winding(middle.to_array()) > 0 {
+            if self.inside(middle.to_array()) {
                 return Some(crossing);
             }
             crossing = next;
@@ -238,6 +261,15 @@ impl Field {
 
     /// Outward-facing minus inward-facing crossings of the ray from `point`
     /// along +z.
+    /// Whether `point` is inside the solid by the field's rule.
+    fn inside(&self, point: Point) -> bool {
+        let winding = self.winding(point);
+        match self.rule {
+            InsideRule::Positive => winding > 0,
+            InsideRule::NonZero => winding != 0,
+        }
+    }
+
     fn winding(&self, point: Point) -> i32 {
         let mut winding = 0;
         for &triangle in self.columns.candidates(point) {
