@@ -25,9 +25,12 @@ import os
 import resource
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from PIL import Image, ImageOps
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 ROOT = Path(os.environ.get("BENCH_ROOT", "/bench"))
 IMAGES = ROOT / "images"
@@ -69,6 +72,8 @@ def prepare_inputs() -> list[str]:
 
 
 def _resized(src: Path, side: int, upscale: bool = False) -> Image.Image:
+    from PIL import Image, ImageOps
+
     with Image.open(src) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
         scale = side / max(im.size)
@@ -86,6 +91,8 @@ def inputs(selection: list[str] | None = None, timing: bool = False) -> list[Pat
 
 
 def load_rgb(path: Path) -> np.ndarray:
+    from PIL import Image
+
     with Image.open(path) as im:
         return np.asarray(im.convert("RGB"))
 

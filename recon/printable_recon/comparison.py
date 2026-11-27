@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import struct
+import zipfile
 
 import numpy
 
@@ -37,6 +39,9 @@ SILHOUETTE_THRESHOLD = 0.02
 NORMAL_AGREEMENT_DEGREES = 15.0
 # Aspect ratios closer than this are the same proportions.
 ASPECT_TOLERANCE = 0.01
+# Largest map decoded, in pixels: the photograph limit of the worker's face
+# reconstruction. Header dimensions are checked before any pixel is decoded.
+MAX_PIXELS = 40_000_000
 REGION_NAMES = ("top left", "top", "top right", "left", "centre", "right", "bottom left", "bottom", "bottom right")
 
 
@@ -72,6 +77,7 @@ def load(name: str, path: Path, kind: str) -> Input:
         bit_depth, colour = head[24], head[25]
         if bit_depth != 16 or colour not in (0, 2):
             raise CompareError(f"{name} must be a 16-bit greyscale heightmap or a 16-bit RGB normal map")
+        _check_pixels(name, *struct.unpack(">II", head[16:24]))
         if colour == 2:
             try:
                 levels = read_png16(path).astype(numpy.float64)
@@ -94,7 +100,32 @@ def load(name: str, path: Path, kind: str) -> Input:
     raise CompareError(f"{name} is not a PNG or TIFF map or a rendered mesh")
 
 
+def _check_pixels(name: str, width: int, height: int) -> None:
+    if width * height > MAX_PIXELS:
+        raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
+
+
+def _check_archive(name: str, path: Path) -> None:
+    """Refuse a NumPy archive whose arrays would decode to more than MAX_PIXELS pixels of three channels,
+    from the array headers alone."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                with archive.open(info) as member:
+                    version = numpy.lib.format.read_magic(member)
+                    read = (numpy.lib.format.read_array_header_1_0 if version == (1, 0)
+                            else numpy.lib.format.read_array_header_2_0)
+                    shape, _, _ = read(member)
+                    if int(numpy.prod(shape, dtype=numpy.int64)) > 3 * MAX_PIXELS:
+                        raise CompareError(f"{name} has more than {MAX_PIXELS} pixels")
+    except (zipfile.BadZipFile, ValueError) as error:
+        if isinstance(error, CompareError):
+            raise
+        raise CompareError(f"{name} is not a readable NumPy archive: {error}") from None
+
+
 def _load_rendered(name: str, path: Path) -> Input:
+    _check_archive(name, path)
     with numpy.load(path, allow_pickle=False) as data:
         depth = numpy.asarray(data["depth"], numpy.float64) / 1000.0
         normals = numpy.asarray(data["normals"], numpy.float64)
@@ -110,6 +141,7 @@ def _image_array(path: Path) -> numpy.ndarray:
     from PIL import Image
 
     with Image.open(path) as image:
+        _check_pixels(Path(path).name, *image.size)
         return numpy.asarray(image)
 
 
@@ -161,7 +193,9 @@ def centre_crop(shape: tuple[int, int], aspect: float) -> tuple[slice, slice]:
 
 
 def silhouette(item: Input) -> numpy.ndarray:
-    """Pixels that stand above the input's flat background."""
+    """A mesh's coverage, or for a map the pixels that stand above its flat background."""
+    if item.source == "mesh":
+        return item.valid
     height = -item.depth
     inside = height[item.valid]
     low, high = numpy.percentile(inside, 1), numpy.percentile(inside, 99)
@@ -180,7 +214,7 @@ def outline_distance(first: numpy.ndarray, second: numpy.ndarray) -> dict:
 
     a, b = boundary(first), boundary(second)
     if not a.any() or not b.any():
-        return {"mean_px": None, "p95_px": None, "percent_of_diagonal": None}
+        raise CompareError("an outline is empty, so outline distance cannot be measured")
     to_b = ndimage.distance_transform_edt(~b)[a]
     to_a = ndimage.distance_transform_edt(~a)[b]
     both = numpy.concatenate([to_b, to_a])
@@ -219,18 +253,23 @@ def shading_fit(normals: numpy.ndarray, luminance: numpy.ndarray, mask: numpy.nd
     """Correlation of luminance with the best single directional light on these normals.
 
     Luminance is fitted as a + b . n by least squares; the correlation is
-    between the fitted shading and the photograph. It is None when the
-    normals do not vary.
+    between the fitted shading and the photograph. Normals that do not vary,
+    a flat or inverted relief, explain none of the shading and score 0. A
+    photograph whose brightness does not vary cannot be measured.
     """
     n = normals[mask]
     y = luminance[mask]
+    if n.shape[0] < 4:
+        raise CompareError("too few subject pixels to measure shading")
+    if numpy.std(y) == 0:
+        raise CompareError("the photograph's brightness does not vary inside the subject, so shading cannot be measured")
     design = numpy.concatenate([numpy.ones((n.shape[0], 1)), n], axis=1)
-    if n.shape[0] < 4 or numpy.ptp(n, axis=0).max() < 1e-9:
-        return {"correlation": None, "light": None}
+    if numpy.ptp(n, axis=0).max() < 1e-9:
+        return {"correlation": 0.0, "light": None}
     coefficients, *_ = numpy.linalg.lstsq(design, y, rcond=None)
     fitted = design @ coefficients
-    if numpy.std(fitted) == 0 or numpy.std(y) == 0:
-        return {"correlation": None, "light": None}
+    if numpy.std(fitted) == 0:
+        return {"correlation": 0.0, "light": None}
     light = coefficients[1:]
     norm = float(numpy.linalg.norm(light))
     return {"correlation": float(numpy.corrcoef(fitted, y)[0, 1]),
@@ -312,6 +351,8 @@ def compare_photo(items: list[Input], analysis: dict, luminance: numpy.ndarray) 
         item = resized(item, *mask.shape)
         shape = silhouette(item)
         union = int((shape | mask).sum())
+        if not union:
+            raise CompareError(f"neither {item.name} nor the analysis has any subject pixels")
         inside = scoring.erode(mask & item.valid, 2)
         if inside.sum() < 4:
             raise CompareError(f"{item.name} and the analysis's subject mask have too little overlap to compare")
@@ -323,7 +364,7 @@ def compare_photo(items: list[Input], analysis: dict, luminance: numpy.ndarray) 
             "input": item.name, "source": item.source,
             "crop": {"x": columns.start, "y": rows.start, "width": columns.stop - columns.start,
                      "height": rows.stop - rows.start},
-            "silhouette_iou": float((shape & mask).sum() / union) if union else None,
+            "silhouette_iou": float((shape & mask).sum() / union),
             "outline_distance": outline_distance(shape, mask),
             "normal_angle": {"median_deg": float(numpy.median(selected)),
                              "within_15_deg": float((selected <= NORMAL_AGREEMENT_DEGREES).mean()),
@@ -347,9 +388,10 @@ def compare_synthetic(items: list[Input], truth: dict) -> list[dict]:
             smooth = scoring.smooth_mask(truth["depth"], truth["valid"])
             row = {"normal_deg": scoring.normal_errors(item.normals, truth["normals"], smooth)["median_deg"]}
         else:
-            pred = {"depth": item.depth, "kind": item.kind}
+            # The benchmark stores every prediction in 32-bit floating point.
+            pred = {"depth": item.depth.astype(numpy.float32), "kind": item.kind}
             if item.normals is not None:
-                pred["normals"] = item.normals
+                pred["normals"] = item.normals.astype(numpy.float32)
             row = scoring.scene_scores(pred, truth)
         for key, value in row.items():
             if isinstance(value, float) and not numpy.isfinite(value):
@@ -359,10 +401,21 @@ def compare_synthetic(items: list[Input], truth: dict) -> list[dict]:
 
 
 def load_truth(path: Path) -> dict:
-    """A rendered scene's exact maps, depth in metres, as scoring.scene_scores reads them.
+    """A scene's exact maps, depth in metres, as scoring.scene_scores reads them.
 
-    The relief region is every pixel the mesh covers.
+    Either the depth benchmark's own converted truth for one of its scenes
+    (scoring.save_truth writes it beside the scene), whose relief region is the
+    benchmark's, or a mesh rendered by the render worker, depth in
+    millimetres, whose relief region is every pixel the mesh covers.
     """
+    _check_archive("the scene", path)
+    with numpy.load(path, allow_pickle=False) as data:
+        benchmark = "valid" in data.files
+    if benchmark:
+        try:
+            return scoring.load_truth(path)
+        except (KeyError, ValueError) as error:
+            raise CompareError(f"the scene's truth archive is not the benchmark's: {error}") from None
     with numpy.load(path, allow_pickle=False) as data:
         valid = numpy.asarray(data["mask"], bool)
         depth = numpy.asarray(data["depth"], numpy.float64) / 1000.0

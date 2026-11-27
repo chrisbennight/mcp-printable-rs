@@ -21,7 +21,9 @@ scripts/depth_benchmark/run.sh ~/depth-benchmark
 This downloads the photographs, builds the benchmark image, renders the
 scenes, runs every model on the `gpu`, `budget` and `cpu` tiers, measures
 2048-pixel timings on each tier and writes `results/report.md`, `results/metrics.json`
-and comparison sheets under `~/depth-benchmark`. Stages can be run one at a
+and comparison sheets under `~/depth-benchmark`. The report also writes each
+scene's converted truth, `work/gt/<scene>/truth.zip`, which `photo.compare`
+scores maps against with the report's own numbers. Stages can be run one at a
 time, for example `run.sh ~/depth-benchmark report`.
 
 | Setting | Meaning |

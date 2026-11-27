@@ -57,7 +57,7 @@ pub struct CompareRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub image: Option<String>,
-    /// synthetic: the truth mesh.
+    /// synthetic: a truth mesh, or a benchmark truth.zip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub scene: Option<String>,
@@ -69,6 +69,11 @@ pub struct CompareRequest {
     pub path: String,
     #[serde(default)]
     pub overwrite: bool,
+}
+
+/// The depth benchmark's converted truth for one of its scenes.
+fn is_truth(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".zip")
 }
 
 fn is_mesh(path: &str) -> bool {
@@ -124,8 +129,18 @@ impl CompareRequest {
             CompareMode::Synthetic if photo => {
                 refuse("analysis and image belong to the photo mode")
             }
-            CompareMode::Synthetic if !self.scene.as_deref().is_some_and(is_mesh) => {
-                refuse("scene must be an .stl, .obj, .ply or .glb mesh")
+            CompareMode::Synthetic
+                if !self
+                    .scene
+                    .as_deref()
+                    .is_some_and(|scene| is_mesh(scene) || is_truth(scene)) =>
+            {
+                refuse("scene must be an .stl, .obj, .ply or .glb mesh or a benchmark truth .zip")
+            }
+            CompareMode::Synthetic
+                if self.inputs.is_empty() && self.scene.as_deref().is_some_and(is_truth) =>
+            {
+                refuse("a benchmark truth has its own photograph; give the inputs to score")
             }
             _ => Ok(()),
         }
@@ -144,8 +159,10 @@ impl CompareRequest {
                     .collect(),
                 _ => Vec::new(),
             },
-            scene_photograph: (self.mode == CompareMode::Synthetic && self.inputs.is_empty())
-                .then(|| format!("{stem}.scene.png")),
+            scene_photograph: (self.mode == CompareMode::Synthetic
+                && self.inputs.is_empty()
+                && self.scene.as_deref().is_some_and(is_mesh))
+            .then(|| format!("{stem}.scene.png")),
         }
     }
 }
@@ -200,6 +217,8 @@ impl ReconWorker {
         {
             self.check_destination(path, job.overwrite)?;
         }
+        // Comparisons take their turn with the other photograph work.
+        let _permit = self.permit()?;
         let snapshot = |path: &str| {
             self.workspace
                 .snapshot_artifact_bounded(path, MAX_COMPARE_INPUT_BYTES)
@@ -280,19 +299,32 @@ impl ReconWorker {
                     reconstruction_error("protocol", "the comparison did not report its files")
                 })
         };
+        // Every output is checked before any is published.
+        let sheet_file = file("sheet")?;
+        let difference_files = (1..=job.differences.len())
+            .map(|index| file(&format!("difference_{index}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        for path in std::iter::once(&sheet_file).chain(&difference_files) {
+            if std::fs::metadata(path)?.len() > MAX_COMPARE_OUTPUT_BYTES {
+                return Err(reconstruction_error(
+                    "resource_limit",
+                    "a comparison output is larger than the worker publishes",
+                ));
+            }
+        }
         let mut artifacts = serde_json::Map::new();
         let sheet = self.workspace.commit_generated_artifact_bounded(
             &job.sheet,
-            &file("sheet")?,
+            &sheet_file,
             job.overwrite,
             MAX_COMPARE_OUTPUT_BYTES,
         )?;
         artifacts.insert("sheet".into(), json!(sheet));
         let mut differences = Vec::new();
-        for (index, path) in job.differences.iter().enumerate() {
+        for (path, source) in job.differences.iter().zip(&difference_files) {
             differences.push(self.workspace.commit_generated_artifact_bounded(
                 path,
-                &file(&format!("difference_{}", index + 1))?,
+                source,
                 job.overwrite,
                 MAX_COMPARE_OUTPUT_BYTES,
             )?);
@@ -371,6 +403,10 @@ mod tests {
                 "mesh",
             ),
             (
+                json!({"mode": "synthetic", "scene": "truth.zip", "path": "r.json"}),
+                "inputs to score",
+            ),
+            (
                 json!({"mode": "synthetic", "scene": "s.stl", "image": "p.jpg", "path": "r.json"}),
                 "photo mode",
             ),
@@ -395,6 +431,7 @@ mod tests {
             json!({"mode": "photo", "inputs": ["h.png"], "image": "p.jpg", "analysis": "a".repeat(64), "path": "r.json"}),
             json!({"mode": "synthetic", "scene": "s.stl", "path": "r.json"}),
             json!({"mode": "synthetic", "scene": "s.glb", "inputs": ["d.tiff"], "kind": "metric", "path": "r.json"}),
+            json!({"mode": "synthetic", "scene": "gt/relief/truth.zip", "inputs": ["d.tiff"], "path": "r.json"}),
         ] {
             request(value.clone())
                 .validate()
@@ -489,6 +526,14 @@ print(json.dumps({'result': {'results': results, 'files': files}}))
         let saved: Value = serde_json::from_slice(&saved).unwrap();
         assert_eq!(saved["results"], report["results"]);
         assert!(saved.get("artifacts").is_none());
+        // A comparison waits for no other photograph work: it is busy instead.
+        let held = worker.admission.try_acquire().unwrap();
+        let mut other = job(CompareMode::Outputs, &["a.png", "b.tiff"]);
+        other.report = "cmp/busy.json".into();
+        other.sheet = "cmp/busy.sheet.png".into();
+        other.differences = vec!["cmp/busy.diff-1.tiff".into()];
+        assert_eq!(worker.compare(other).await.unwrap_err().code(), "busy");
+        drop(held);
         // The report is never replaced unless asked.
         let error = worker
             .compare(job(CompareMode::Outputs, &["a.png", "b.tiff"]))

@@ -3886,6 +3886,10 @@ class HandlerValidationTests(unittest.TestCase):
         # The top of the footprint is inside the view, with a margin.
         reach = (lens["origin_z"] - 5.0) * (2.0 / focal)
         self.assertGreater(reach, 20.0)
+        # A photograph's focal length: the footprint's top just fills the frame.
+        photo = geometry_camera(bounds, 4, 2, "perspective", 8.0)
+        self.assertEqual(photo["focal_px"], 8.0)
+        self.assertAlmostEqual((photo["origin_z"] - 5.0) * 4 / 8.0, 40.0)
         with self.assertRaisesRegex(HandlerError, "projection"):
             geometry_camera(bounds, 4, 2, "fisheye")
 
@@ -3904,7 +3908,9 @@ class HandlerValidationTests(unittest.TestCase):
             for change, message in [({"path": "view.zip"}, "internal state"),
                                     ({"path": ".printable/photo-compare/view.png"}, ".zip"),
                                     ({"width": 0}, "width"), ({"height": 5000}, "height"),
-                                    ({"projection": "fisheye"}, "projection"), ({"lens": 1}, "unknown")]:
+                                    ({"projection": "fisheye"}, "projection"), ({"lens": 1}, "unknown"),
+                                    ({"focal_px": 500.0}, "perspective"),
+                                    ({"projection": "perspective", "focal_px": -1}, "focal_px")]:
                 with self.subTest(change=change), self.assertRaisesRegex(Exception, message):
                     handlers._job_render_geometry({**valid, **change})
             watchdog.arm.assert_not_called()

@@ -235,6 +235,33 @@ def scene_scores(pred: dict, truth: dict) -> dict:
     return row
 
 
+TRUTH_KEYS = ("depth", "normals", "valid", "focal", "region")
+
+
+def save_truth(path, truth: dict) -> None:
+    """Store a scene's truth as scene_scores reads it, in a NumPy archive (a zip file).
+
+    Depth is in metres; an absent relief region is stored as an empty mask.
+    """
+    region = truth["region"] if truth["region"] is not None else np.zeros(truth["valid"].shape, bool)
+    with open(path, "wb") as stream:
+        np.savez_compressed(stream, depth=np.asarray(truth["depth"], np.float64),
+                            normals=np.asarray(truth["normals"], np.float32), valid=np.asarray(truth["valid"], bool),
+                            focal=np.float64(truth["focal"]), region=np.asarray(region, bool))
+
+
+def load_truth(path) -> dict:
+    """A scene's truth as save_truth stored it."""
+    with np.load(path, allow_pickle=False) as data:
+        if sorted(data.files) != sorted(TRUTH_KEYS):
+            raise ValueError(f"a truth archive holds {', '.join(TRUTH_KEYS)}")
+        truth = {key: data[key] for key in TRUTH_KEYS}
+    truth["focal"] = float(truth["focal"])
+    if not truth["region"].any():
+        truth["region"] = None
+    return truth
+
+
 def focal_error_pct(estimate: float | None, truth: float | None) -> float | None:
     if not estimate or not truth:
         return None

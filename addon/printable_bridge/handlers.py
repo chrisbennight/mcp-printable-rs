@@ -135,10 +135,16 @@ def geometry_camera(
     width: int,
     height: int,
     projection: str,
+    focal_px: float | None = None,
 ) -> dict[str, Any]:
     """The view of a comparison render from the model's (min x, max x, min y,
     max y, max z) bounds: the frame covers the bounds' footprint, widened to
     the image's proportions, and looks straight down.
+
+    A perspective view uses ``focal_px`` when given, a photograph's focal
+    length, and then stands where the footprint's top just fills the frame, as
+    the photographed subject fills the photograph; otherwise it uses the 50 mm
+    lens with a margin.
 
     Orthographic rays start above the model on a grid of pixel centres;
     perspective rays leave one point. ``ray(row, column)`` gives a pixel's
@@ -162,8 +168,10 @@ def geometry_camera(
                 "pixel_size": frame_width / width, "centre": (centre_x, centre_y), "ray": ray}
     if projection != "perspective":
         raise HandlerError("projection must be orthographic or perspective")
-    focal_px = width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
-    origin_z = top + GEOMETRY_MARGIN * frame_width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
+    margin = 1.0 if focal_px is not None else GEOMETRY_MARGIN
+    if focal_px is None:
+        focal_px = width * GEOMETRY_LENS_MM / GEOMETRY_SENSOR_MM
+    origin_z = top + margin * frame_width * focal_px / width
 
     def ray(row: int, column: int) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         u = (column + 0.5 - width / 2.0) / focal_px
@@ -2021,7 +2029,7 @@ class BlenderHandlers:
         leaves its camera as the scene camera, so a later product render with
         a preserved camera photographs the same view.
         """
-        _only_keys(params, {"path", "width", "height", "projection", "timeout_seconds"})
+        _only_keys(params, {"path", "width", "height", "projection", "focal_px", "timeout_seconds"})
         if self._config.role != "render_worker" or not self._bpy.app.background:
             raise HandlerError("geometry rendering requires the background render worker")
         # A NumPy archive is a zip file; the workspace accepts it as one.
@@ -2031,6 +2039,11 @@ class BlenderHandlers:
         projection = params.get("projection")
         if projection not in {"orthographic", "perspective"}:
             raise HandlerError("projection must be orthographic or perspective")
+        focal_px = None
+        if "focal_px" in params:
+            if projection != "perspective":
+                raise HandlerError("focal_px is only valid for a perspective view")
+            focal_px = _positive_float(params, "focal_px", 1.0)
         timeout_seconds = _positive_float(
             params, "timeout_seconds", DEFAULT_PICTURE_IMPORT_TIMEOUT_SECONDS
         )
@@ -2068,7 +2081,7 @@ class BlenderHandlers:
                 min(v.y for v in vertices), max(v.y for v in vertices),
                 max(v.z for v in vertices),
             )
-            camera = geometry_camera(bounds, width, height, projection)
+            camera = geometry_camera(bounds, width, height, projection, focal_px)
             tree = BVHTree.FromPolygons(vertices, triangles, all_triangles=True)
             depth = numpy.zeros((height, width), numpy.float32)
             normals = numpy.zeros((height, width, 3), numpy.float32)
@@ -2089,7 +2102,7 @@ class BlenderHandlers:
                     normals[row, column] = normal
             if projection == "perspective":
                 camera_data = self._bpy.data.cameras.new("PrintableCompareCamera")
-                camera_data.lens = GEOMETRY_LENS_MM
+                camera_data.lens = camera["focal_px"] * GEOMETRY_SENSOR_MM / width
                 camera_data.sensor_fit = "HORIZONTAL"
                 camera_data.sensor_width = GEOMETRY_SENSOR_MM
                 reach = origin_z - min(v.z for v in vertices)

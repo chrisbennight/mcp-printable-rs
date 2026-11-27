@@ -325,5 +325,36 @@ class RunTests(unittest.TestCase):
                 self.directory / "out" / description["file"])["bit_depth"], 16)
 
 
+
+class FilteredPngTests(unittest.TestCase):
+    def test_every_row_filter_is_undone(self):
+        import struct
+        import zlib
+
+        rng = numpy.random.default_rng(3)
+        pixels = rng.integers(0, 65536, (5, 7, 3)).astype(">u2")
+        raw = pixels.view(numpy.uint8).reshape(5, 7 * 6).astype(numpy.int64)
+        lines = []
+        for y, kind in enumerate([0, 1, 2, 3, 4]):
+            line, above = raw[y], raw[y - 1] if y else numpy.zeros_like(raw[0])
+            left = numpy.concatenate([numpy.zeros(6, numpy.int64), line[:-6]])
+            corner = numpy.concatenate([numpy.zeros(6, numpy.int64), above[:-6]])
+            if kind == 4:
+                estimate = left + above - corner
+                pa, pb, pc = abs(estimate - left), abs(estimate - above), abs(estimate - corner)
+                predictor = numpy.where((pa <= pb) & (pa <= pc), left, numpy.where(pb <= pc, above, corner))
+            else:
+                predictor = [numpy.zeros_like(line), left, above, (left + above) // 2][kind]
+            lines.append(bytes([kind]) + bytes(((line - predictor) % 256).astype(numpy.uint8)))
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "filtered.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 7, 5, 16, 2, 0, 0, 0))
+                             + chunk(b"IDAT", zlib.compress(b"".join(lines))) + chunk(b"IEND", b""))
+            numpy.testing.assert_array_equal(photo_analysis.read_png16(path), pixels.astype(numpy.uint16))
+
 if __name__ == "__main__":
     unittest.main()

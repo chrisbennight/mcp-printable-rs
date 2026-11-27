@@ -64,33 +64,38 @@ pub(super) async fn compare(
     {
         workspace.stat_artifact(path)?;
     }
-    // Meshes are rendered on the grid they are compared on.
-    let size = {
+    // Meshes are rendered on the grid they are compared on; in photo mode,
+    // through the analysis's focal length when it has one.
+    let (size, focal_px) = {
         let (workspace, mode) = (Arc::clone(&workspace), request.mode);
         let (analysis, first_map) = (
             request.analysis.clone().unwrap_or_default(),
             request.inputs.iter().find(|input| !is_mesh(input)).cloned(),
         );
-        blocking(move || -> Result<(u32, u32), ToolError> {
+        blocking(move || -> Result<((u32, u32), Option<f64>), ToolError> {
             match mode {
                 CompareMode::Photo => {
                     let (_, manifest) = relief::analysis_manifest(&workspace, &analysis)?;
                     let (width, height) = relief::analysis_size(&manifest)?;
                     let side =
                         |value: usize| u32::try_from(value).map_err(|_| relief::changed_analysis());
-                    Ok((side(width)?, side(height)?))
+                    let focal = manifest["focal_length"]["px"]
+                        .as_f64()
+                        .filter(|px| px.is_finite() && *px > 0.0);
+                    Ok(((side(width)?, side(height)?), focal))
                 }
-                CompareMode::Synthetic => Ok(SCENE_SIZE),
+                CompareMode::Synthetic => Ok((SCENE_SIZE, None)),
                 CompareMode::Outputs => match first_map {
                     Some(map) => {
                         let snapshot = workspace.snapshot_artifact_bounded(&map, MAX_MAP_BYTES)?;
-                        map_size(snapshot.path()).ok_or_else(|| {
+                        let size = map_size(snapshot.path()).ok_or_else(|| {
                             ToolError::Validation(format!(
                                 "{map} could not be read as a PNG or TIFF map"
                             ))
-                        })
+                        })?;
+                        Ok((size, None))
                     }
-                    None => Ok(MESH_SIZE),
+                    None => Ok((MESH_SIZE, None)),
                 },
             }
         })
@@ -100,8 +105,8 @@ pub(super) async fn compare(
     let meshes: Vec<&String> = request
         .inputs
         .iter()
-        .filter(|input| is_mesh(input))
         .chain(&request.scene)
+        .filter(|path| is_mesh(path))
         .collect();
     let work = format!("{WORK_ROOT}/{}", crate::upload::random_hex_id()?);
     let mut staged = Vec::new();
@@ -117,9 +122,15 @@ pub(super) async fn compare(
             if photograph {
                 staged.push(format!("{prefix}.png"));
             }
-            let projection = if scene { "perspective" } else { "orthographic" };
+            // A synthetic scene and a mesh seen through the photograph's
+            // camera are perspective views; other meshes are seen from above.
+            let view = match (scene, focal_px) {
+                (true, _) => ("perspective", None),
+                (false, Some(focal)) => ("perspective", Some(focal)),
+                (false, None) => ("orthographic", None),
+            };
             let rendered = registry
-                .render_geometry(mesh, &prefix, size, projection, photograph)
+                .render_geometry(mesh, &prefix, size, view, photograph)
                 .await?;
             renders.insert((*mesh).clone(), rendered);
             views.insert((*mesh).clone(), format!("{prefix}.zip"));
@@ -137,10 +148,11 @@ pub(super) async fn compare(
                 .collect(),
             analysis: request.analysis.clone(),
             image: request.image.clone(),
+            // A benchmark truth archive is read as it is; a mesh by its view.
             truth: request
                 .scene
                 .as_ref()
-                .and_then(|scene| views.get(scene).cloned()),
+                .map(|scene| views.get(scene).cloned().unwrap_or_else(|| scene.clone())),
             report: request.path.clone(),
             sheet: companions.sheet.clone(),
             differences: companions.differences.clone(),

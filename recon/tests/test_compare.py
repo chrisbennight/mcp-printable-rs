@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy
 from PIL import Image
@@ -71,7 +72,7 @@ class SyntheticTests(unittest.TestCase):
                           "inputs": [{"name": "maps/agent.tiff", "file": str(directory / "agent.tiff")}]},
                          directory)
             self.assertTrue((directory / "out/sheet.png").is_file())
-        expected = scoring.scene_scores({"depth": agent.astype(numpy.float64), "kind": "relative"}, truth)
+        expected = scoring.scene_scores({"depth": agent, "kind": "relative"}, truth)
         result = answer["result"]["results"][0]
         self.assertEqual(result["source"], "depth map")
         for key, value in expected.items():
@@ -80,6 +81,23 @@ class SyntheticTests(unittest.TestCase):
             else:
                 self.assertEqual(result[key], value, key)
         self.assertIn("relief_pct", result)
+
+    def test_the_benchmarks_own_truth_keeps_its_relief_region(self):
+        v, u = numpy.mgrid[0:H, 0:W].astype(numpy.float64)
+        depth = 0.5 + 0.0005 * v - 0.01 * dome()
+        truth = {"depth": depth, "normals": scoring.normals_from_depth(depth, 140.0).astype(numpy.float32),
+                 "valid": numpy.ones((H, W), bool), "focal": 140.0, "region": dome() > 0.2}
+        agent = (2.0 * depth + 0.3).astype(numpy.float32)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            scoring.save_truth(directory / "truth.zip", truth)
+            Image.fromarray(agent).save(directory / "agent.tiff", format="TIFF")
+            answer = run({"mode": "synthetic", "truth": str(directory / "truth.zip"),
+                          "inputs": [{"name": "agent.tiff", "file": str(directory / "agent.tiff")}]}, directory)
+        expected = scoring.scene_scores({"depth": agent, "kind": "relative"}, truth)
+        result = answer["result"]["results"][0]
+        for key, value in expected.items():
+            self.assertEqual(result[key], value, key)
 
     def test_a_normal_map_is_scored_by_normal_angle(self):
         truth_depth = 0.5 - 0.01 * dome()
@@ -122,10 +140,30 @@ class PhotoTests(unittest.TestCase):
         self.assertLess(correct["normal_angle"]["median_deg"], 3.0)
         self.assertGreater(correct["shading"]["correlation"], 0.95)
         self.assertGreater(inverted["normal_angle"]["median_deg"], correct["normal_angle"]["median_deg"] + 20)
+        self.assertEqual(inverted["shading"]["correlation"], 0.0)
         self.assertEqual(inverted["normal_angle"]["height_scale"], 0.0)
         self.assertLess(shifted["silhouette_iou"], correct["silhouette_iou"] - 0.2)
         self.assertGreater(shifted["outline_distance"]["mean_px"], correct["outline_distance"]["mean_px"] + 5)
         self.assertGreater(shifted["normal_angle"]["median_deg"], correct["normal_angle"]["median_deg"] + 10)
+
+    def test_a_mesh_silhouette_is_its_coverage(self):
+        # A flat mesh seen straight on has no raised area, but covers the disk.
+        disk = dome() > 0
+        flat = comparison.Input("disk.stl", "mesh", numpy.full((H, W), 0.1), None, disk, "metric")
+        numpy.testing.assert_array_equal(comparison.silhouette(flat), disk)
+        normals = height_normals(dome(), 40.0)
+        light = numpy.clip(0.1 + 0.8 * (normals * numpy.array([-0.3, 0.4, 0.87])).sum(-1), 0, 1)
+        result = comparison.compare_photo([flat], {"mask": disk, "normals": normals}, light)[0][0]
+        self.assertEqual(result["silhouette_iou"], 1.0)
+        self.assertEqual(result["outline_distance"]["mean_px"], 0.0)
+        self.assertEqual(result["shading"]["correlation"], 0.0)
+
+    def test_a_photograph_without_shading_is_an_error(self):
+        disk = dome() > 0
+        item = comparison.Input("h.png", "heightmap", 1.0 - dome(), None, numpy.ones((H, W), bool), "relative")
+        with self.assertRaisesRegex(comparison.CompareError, "brightness does not vary"):
+            comparison.compare_photo([item], {"mask": disk, "normals": height_normals(dome(), 40.0)},
+                                     numpy.full((H, W), 0.5))
 
     def test_a_different_aspect_is_compared_with_the_centre_of_the_photograph(self):
         self.assertEqual(comparison.centre_crop((96, 128), 1.0), (slice(0, 96), slice(16, 112)))
@@ -186,6 +224,11 @@ class LoadingTests(unittest.TestCase):
                         focal_px=0.0)
             mesh = comparison.load("part.stl", directory / "mesh.npz", "relative")
             self.assertEqual((mesh.source, mesh.kind, float(mesh.depth.max())), ("mesh", "metric", 0.002))
+            with mock.patch.object(comparison, "MAX_PIXELS", 100):
+                with self.assertRaisesRegex(comparison.CompareError, "more than 100 pixels"):
+                    comparison.load("h.png", directory / "h.png", "relative")
+                with self.assertRaisesRegex(comparison.CompareError, "more than 100 pixels"):
+                    comparison.load("part.stl", directory / "mesh.npz", "relative")
             (directory / "text.png").write_text("not an image")
             with self.assertRaisesRegex(comparison.CompareError, "not a PNG"):
                 comparison.load("text.png", directory / "text.png", "relative")
