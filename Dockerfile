@@ -325,7 +325,9 @@ COPY --from=recon-trellis-build /notices /usr/share/doc/printable/trellis
 COPY recon/licenses /usr/share/doc/printable/trellis
 COPY --from=recon-geometry-code /vendor /opt/printable/recon/vendor
 COPY --from=recon-geometry-code /notices /usr/share/doc/printable/geometry
-COPY recon/reconstruct.py recon/estimate_depth.py recon/estimate_geometry.py recon/analyze_photo.py recon/prepare_geometry.py recon/convert_marigold.py recon/generate_object.py recon/generate_trellis.py /opt/printable/recon/
+COPY recon/reconstruct.py recon/estimate_depth.py recon/estimate_geometry.py recon/analyze_photo.py recon/compare_photo.py recon/prepare_geometry.py recon/convert_marigold.py recon/generate_object.py recon/generate_trellis.py /opt/printable/recon/
+# The depth benchmark's scores, so photo compare reports the benchmark's own numbers.
+COPY scripts/depth_benchmark/scoring.py /opt/printable/recon/scoring.py
 COPY recon/models /opt/printable/recon/models
 COPY recon/printable_recon /opt/printable/recon/printable_recon
 # Every geometry model's code imports with the packages installed above.

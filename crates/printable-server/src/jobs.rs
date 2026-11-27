@@ -806,6 +806,168 @@ impl JobRegistry {
         result
     }
 
+    /// Render a workspace mesh's exact depth, normals and coverage seen from
+    /// above, for a comparison, on the isolated render worker. The view goes
+    /// to `{work}.zip`, through `view`: the projection and, for a
+    /// perspective, an optional focal length in pixels and camera position. With `photograph`, a perspective view is also
+    /// rendered as a picture through the same camera at `{work}.png`. The
+    /// caller removes both files. The render waits for no queue: when a
+    /// render job is queued or running, it is refused as busy so it never
+    /// overtakes queued work.
+    pub(crate) async fn render_geometry(
+        &self,
+        model: &str,
+        work: &str,
+        size: (u32, u32),
+        view: Value,
+        photograph: bool,
+    ) -> Result<Value, ToolError> {
+        let registry = self.clone();
+        let (model, work) = (model.to_owned(), work.to_owned());
+        // A cancelled request cannot release the worker mid-render or leave
+        // its staged model behind.
+        tokio::spawn(async move {
+            registry
+                .make_geometry_render(&model, &work, size, view, photograph)
+                .await
+        })
+        .await
+        .map_err(|error| ToolError::Io(std::io::Error::other(error)))?
+    }
+
+    async fn make_geometry_render(
+        &self,
+        model: &str,
+        work: &str,
+        (width, height): (u32, u32),
+        view: Value,
+        photograph: bool,
+    ) -> Result<Value, ToolError> {
+        if !self.project_pictures_available() {
+            return Err(ToolError::Validation(
+                "rendering a mesh for comparison needs the isolated render worker".into(),
+            ));
+        }
+        let busy = || {
+            ToolError::Job(
+                "the render worker is busy with render jobs; retry the comparison when they finish"
+                    .into(),
+            )
+        };
+        let lane = Arc::clone(&self.inner.render_lane)
+            .try_lock_owned()
+            .map_err(|_| busy())?;
+        if self
+            .inner
+            .state
+            .lock()
+            .await
+            .jobs
+            .values()
+            .any(|job| !job.state.terminal())
+        {
+            return Err(busy());
+        }
+        let worker = self
+            .inner
+            .render_worker
+            .as_ref()
+            .expect("checked render worker");
+        let suffix = std::path::Path::new(model)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .ok_or_else(|| ToolError::Validation("the mesh has no file extension".into()))?
+            .to_ascii_lowercase();
+        let input = format!("{work}.{suffix}");
+        let view_path = format!("{work}.zip");
+        let picture = format!("{work}.png");
+        let workspace = Arc::clone(&self.inner.workspace);
+        let (source, model_path) = (input.clone(), model.to_owned());
+        let (_lane, sha) = tokio::task::spawn_blocking(move || {
+            let limit = crate::projects::pictures::MAX_PREVIEW_MODEL_BYTES;
+            let snapshot = workspace.snapshot_artifact_bounded(&model_path, limit)?;
+            let sha = crate::recon::file_digest(snapshot.path())?;
+            workspace.commit_reserved_generated_artifact_bounded(
+                &source,
+                snapshot.path(),
+                false,
+                limit,
+            )?;
+            Ok::<_, ToolError>((lane, sha))
+        })
+        .await
+        .map_err(|error| ToolError::Io(std::io::Error::other(error)))??;
+        let result = async {
+            // A job submitted while the model was staged goes first.
+            if self
+                .inner
+                .state
+                .lock()
+                .await
+                .jobs
+                .values()
+                .any(|job| !job.state.terminal())
+            {
+                return Err(busy());
+            }
+            let mut transaction = worker.transaction(worker.default_deadline()).await?;
+            let identity = transaction
+                .send_value("bridge_status", Params::new())
+                .await?;
+            if identity["role"] != "render_worker" || identity["background"] != true {
+                return Err(ToolError::Job(
+                    "configured render endpoint is not a background render worker".into(),
+                ));
+            }
+            let budget = Duration::from_secs(600);
+            let params = |value: Value| serde_json::from_value::<Params>(value);
+            transaction
+                .send_value_with_work_budget(
+                    "job_import_model",
+                    params(json!({"path": input, "expected_sha256": sha,
+                        "timeout_seconds": budget.as_secs()}))?,
+                    budget,
+                )
+                .await?;
+            let mut view = view;
+            for (key, value) in [
+                ("path", json!(view_path)),
+                ("width", json!(width)),
+                ("height", json!(height)),
+                ("timeout_seconds", json!(budget.as_secs())),
+            ] {
+                view[key] = value;
+            }
+            let mut rendered = transaction
+                .send_value_with_work_budget("job_render_geometry", params(view)?, budget)
+                .await?;
+            if photograph {
+                let picture_result = transaction
+                    .send_value_with_work_budget(
+                        "job_render_product",
+                        params(json!({
+                            "path": picture, "presentation": {"profile": "studio_neutral"},
+                            "camera_behavior": "preserve", "allow_ground": false,
+                            "width": width, "height": height, "samples": 64, "engine": "CYCLES",
+                            "timeout_seconds": budget.as_secs(),
+                        }))?,
+                        budget,
+                    )
+                    .await?;
+                rendered["photograph"] = picture_result;
+            }
+            Ok(rendered)
+        }
+        .await;
+        if let Err(error) = self.inner.workspace.remove_reserved_artifact(&input) {
+            tracing::warn!(
+                code = error.code(),
+                "could not remove comparison staging file"
+            );
+        }
+        result
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         workspace: Arc<Workspace>,

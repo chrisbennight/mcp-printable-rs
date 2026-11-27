@@ -521,7 +521,7 @@ def write_all(analysis: Analysis, directory: Path) -> dict:
 
 
 def read_png16(path: Path) -> numpy.ndarray:
-    """An H x W x 3 uint16 array from an unfiltered 16-bit RGB PNG, as write_normals stores it."""
+    """An H x W x 3 uint16 array from a non-interlaced 16-bit RGB PNG, as write_normals stores it."""
     import zlib
 
     data, at, chunks = Path(path).read_bytes(), 8, {}
@@ -529,10 +529,57 @@ def read_png16(path: Path) -> numpy.ndarray:
         length, kind = struct.unpack(">I4s", data[at:at + 8])
         chunks.setdefault(kind, []).append(data[at + 8:at + 8 + length])
         at += 12 + length
-    width, height, bit_depth, colour = struct.unpack(">IIBB", chunks[b"IHDR"][0][:10])
+    width, height, bit_depth, colour, _, _, interlace = struct.unpack(">IIBBBBB", chunks[b"IHDR"][0][:13])
     if (bit_depth, colour) != (16, 2):
         raise MapFormatError(f"{Path(path).name} is not a 16-bit RGB PNG")
-    rows = numpy.frombuffer(zlib.decompress(b"".join(chunks[b"IDAT"])), numpy.uint8).reshape(height, 1 + width * 6)
-    if rows[:, 0].any():
-        raise MapFormatError(f"{Path(path).name} uses PNG row filters")
-    return numpy.ascontiguousarray(rows[:, 1:]).view(">u2").reshape(height, width, 3).astype(numpy.uint16)
+    if interlace:
+        raise MapFormatError(f"{Path(path).name} is interlaced")
+    stride = width * 6
+    expected = height * (1 + stride)
+    # Decompress no more than the image holds, so a small file cannot expand without bound.
+    raw = zlib.decompressobj().decompress(b"".join(chunks[b"IDAT"]), expected + 1)
+    if len(raw) != expected:
+        raise MapFormatError(f"{Path(path).name} does not hold {width} x {height} pixels")
+    pixels = _unfilter(raw, height, stride, 6)
+    return pixels.view(">u2").reshape(height, width, 3).astype(numpy.uint16)
+
+
+def _unfilter(raw: bytes, height: int, stride: int, step: int) -> numpy.ndarray:
+    """The image bytes of PNG scanlines after their filters (None, Sub, Up, Average, Paeth) are undone.
+
+    `step` is the bytes per pixel, the distance to the byte the filters call
+    "left".
+    """
+    rows = numpy.frombuffer(raw, numpy.uint8).reshape(height, 1 + stride)
+    out = numpy.zeros((height, stride), numpy.uint8)
+    previous = numpy.zeros(stride, numpy.uint8)
+    for y in range(height):
+        kind, line = int(rows[y, 0]), rows[y, 1:]
+        if kind == 0:
+            current = line.copy()
+        elif kind == 1:
+            # Each byte adds the decoded byte one pixel to its left: a running sum per channel byte.
+            current = (numpy.cumsum(line.reshape(-1, step).astype(numpy.uint64), axis=0) % 256).astype(
+                numpy.uint8).reshape(stride)
+        elif kind == 2:
+            current = line + previous
+        elif kind in (3, 4):
+            current = bytearray(line.tobytes())
+            above = previous.tobytes()
+            for i in range(stride):
+                left = current[i - step] if i >= step else 0
+                up = above[i]
+                if kind == 3:
+                    current[i] = (current[i] + ((left + up) >> 1)) & 255
+                else:
+                    corner = above[i - step] if i >= step else 0
+                    estimate = left + up - corner
+                    pa, pb, pc = abs(estimate - left), abs(estimate - up), abs(estimate - corner)
+                    nearest = left if pa <= pb and pa <= pc else (up if pb <= pc else corner)
+                    current[i] = (current[i] + nearest) & 255
+            current = numpy.frombuffer(bytes(current), numpy.uint8)
+        else:
+            raise MapFormatError(f"unknown PNG row filter {kind}")
+        out[y] = current
+        previous = out[y]
+    return out

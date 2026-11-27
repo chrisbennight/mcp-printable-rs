@@ -358,7 +358,7 @@ impl ReliefRequest {
     }
 }
 
-fn is_cache_key(key: &str) -> bool {
+pub(crate) fn is_cache_key(key: &str) -> bool {
     key.len() == 64
         && key
             .bytes()
@@ -448,14 +448,53 @@ struct WorkerRequest {
     settings: ReliefSettings,
 }
 
-fn changed_analysis() -> ToolError {
+pub(crate) fn changed_analysis() -> ToolError {
     ToolError::Validation(
         "the cached analysis no longer matches its manifest; run the analysis again".into(),
     )
 }
 
+/// A finished analysis's directory and manifest, by its cache key.
+pub(crate) fn analysis_manifest(
+    workspace: &Workspace,
+    key: &str,
+) -> Result<(String, Value), ToolError> {
+    if !is_cache_key(key) {
+        return Err(ToolError::Validation(
+            "analysis must be the cache.key of an analysis".into(),
+        ));
+    }
+    let directory = format!("{ANALYSIS_CACHE_ROOT}/{key}");
+    let bytes = match workspace.read_generated_bytes(&format!("{directory}/manifest.json")) {
+        Ok((_, bytes)) => bytes,
+        Err(WsError::NotFound(_)) => {
+            return Err(ToolError::Validation(
+                "no finished analysis has this cache key".into(),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|_| changed_analysis())?;
+    if manifest["cache"]["key"] != key {
+        return Err(changed_analysis());
+    }
+    Ok((directory, manifest))
+}
+
+/// The size of an analysis's maps, from its manifest.
+pub(crate) fn analysis_size(manifest: &Value) -> Result<(usize, usize), ToolError> {
+    let size = |name: &str| {
+        manifest[name]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(changed_analysis)
+    };
+    Ok((size("width")?, size("height")?))
+}
+
 /// A private copy of one analysis map, checked against its manifest.
-fn snapshot_map(
+pub(crate) fn snapshot_map(
     workspace: &Workspace,
     manifest: &Value,
     directory: &str,
@@ -485,28 +524,8 @@ fn build(
     settings: ReliefSettings,
     outputs: Outputs,
 ) -> Result<Value, ToolError> {
-    let directory = format!("{ANALYSIS_CACHE_ROOT}/{key}");
-    let bytes = match workspace.read_generated_bytes(&format!("{directory}/manifest.json")) {
-        Ok((_, bytes)) => bytes,
-        Err(WsError::NotFound(_)) => {
-            return Err(ToolError::Validation(
-                "no finished analysis has this cache key".into(),
-            ));
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let manifest: Value = serde_json::from_slice(&bytes).map_err(|_| changed_analysis())?;
-    if manifest["cache"]["key"] != key {
-        return Err(changed_analysis());
-    }
-    let size = |name: &str| {
-        manifest[name]
-            .as_u64()
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .ok_or_else(changed_analysis)
-    };
-    let (width, height) = (size("width")?, size("height")?);
+    let (directory, manifest) = analysis_manifest(workspace, key)?;
+    let (width, height) = analysis_size(&manifest)?;
     let integration = settings.integration;
     let mut snapshots = vec![
         snapshot_map(workspace, &manifest, &directory, "depth")?,

@@ -1029,7 +1029,7 @@ mod tests {
         ("collection", 4_300, 0),
         ("catalog", 4_000, 0),
         ("head", 21_800, 0),
-        ("photo", 10_042, 0),
+        ("photo", 11_223, 0),
         ("library", 3_000, 0),
         ("artifact", 6_400, 0),
     ];
@@ -1037,7 +1037,7 @@ mod tests {
     const DESCRIPTION_BUDGET: usize = 600;
     /// Bytes of every advertised tool entry together: names, descriptions,
     /// annotations and schemas.
-    const CATALOG_BUDGET: usize = 205_141;
+    const CATALOG_BUDGET: usize = 206_321;
 
     #[test]
     fn advertised_contracts_stay_within_their_size_budgets() {

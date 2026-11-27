@@ -11,8 +11,9 @@ use axum::{
     routing::{get, post},
 };
 use printable_server::recon::{
-    AnalyzeRequest, DepthRequest, GeometryConfig, ObjectModel, ObjectRequest, PhotoJobListRequest,
-    PhotoJobRequest, ReconConfig, ReconRequest, ReconWorker, TrellisConfig, worker_message,
+    AnalyzeRequest, CompareJob, DepthRequest, GeometryConfig, ObjectModel, ObjectRequest,
+    PhotoJobListRequest, PhotoJobRequest, ReconConfig, ReconRequest, ReconWorker, TrellisConfig,
+    worker_message,
 };
 use printable_workspace::Workspace;
 use serde_json::{Value, json};
@@ -145,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/depth", post(depth))
         .route("/object", post(object))
         .route("/photo/analyze", post(photo_analyze))
+        .route("/photo/compare", post(photo_compare))
         .route("/photo/jobs/status", post(photo_job_status))
         .route("/photo/jobs/list", post(photo_job_list))
         .route("/photo/jobs/cancel", post(photo_job_cancel))
@@ -174,6 +176,19 @@ async fn reconstruct(
     Json(request): Json<ReconRequest>,
 ) -> (StatusCode, Json<Value>) {
     match worker.reconstruct(request).await {
+        Ok(result) => (StatusCode::OK, Json(result)),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"code": error.code(), "message": worker_message(&error)})),
+        ),
+    }
+}
+
+async fn photo_compare(
+    State(worker): State<Arc<ReconWorker>>,
+    Json(job): Json<CompareJob>,
+) -> (StatusCode, Json<Value>) {
+    match worker.compare(job).await {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,

@@ -108,6 +108,20 @@ class EdgeTest(unittest.TestCase):
         flat = np.full((30, 40), 2.0)
         self.assertIsNone(scoring.boundary_f1(flat, flat, np.ones((30, 40), bool)))
 
+    def test_invented_edges_where_the_truth_has_none_score_zero(self):
+        flat = np.full((30, 40), 2.0)
+        self.assertEqual(scoring.boundary_f1(self.step(20), flat, np.ones((30, 40), bool)), 0.0)
+
+    def test_invented_edges_lower_the_score_at_ratios_without_true_edges(self):
+        # The truth jumps by 7 %, an edge only at the 1.05 ratio; a prediction
+        # that jumps by 50 % also shows edges at every larger ratio.
+        truth = np.full((30, 40), 2.0)
+        truth[:, 20:] = 2.14
+        pred = self.step(20)
+        mask = np.ones((30, 40), bool)
+        self.assertAlmostEqual(scoring.boundary_f1(truth, truth, mask), 1.0)
+        self.assertAlmostEqual(scoring.boundary_f1(pred, truth, mask), 1.0 / len(scoring.EDGE_RATIOS))
+
     def test_smooth_mask_excludes_depth_jumps(self):
         truth = self.step(20)
         smooth = scoring.smooth_mask(truth, np.ones(truth.shape, bool))
