@@ -195,8 +195,12 @@ def _unit(values: numpy.ndarray) -> numpy.ndarray:
 def load_analysis(depth: Path, normals: Path, mask: Path) -> dict:
     """The analysis maps the photo mode reads."""
     levels = _image_array(mask)
+    raw = read_png16(normals).astype(numpy.float64) / 65535.0 * 2.0 - 1.0
+    # An encoded zero vector marks a pixel without a normal; it is not a direction.
+    known = numpy.linalg.norm(raw, axis=-1) > 0.5
     return {"depth": _image_array(depth).astype(numpy.float64),
-            "normals": _unit(read_png16(normals).astype(numpy.float64) / 65535.0 * 2.0 - 1.0),
+            "normals": numpy.where(known[..., None], _unit(raw), 0.0),
+            "normals_known": known,
             "mask": levels > 32767}
 
 
@@ -419,13 +423,16 @@ def compare_photo(items: list[Input], analysis: dict, luminance: numpy.ndarray) 
             raise CompareError(f"{item.name} is a normal map; photo compares heightmaps, depth maps and meshes")
         rows, columns = centre_crop(analysis["mask"].shape, item.shape[1] / item.shape[0])
         mask, target = analysis["mask"][rows, columns], analysis["normals"][rows, columns]
+        known = (analysis["normals_known"][rows, columns] if "normals_known" in analysis
+                 else numpy.ones(mask.shape, bool))
         light = luminance[rows, columns]
         item = resized(item, *mask.shape)
         shape = silhouette(item)
         union = int((shape | mask).sum())
         if not union:
             raise CompareError(f"neither {item.name} nor the analysis has any subject pixels")
-        inside = scoring.erode(mask & item.valid, 2)
+        # Only pixels where the analysis has a normal are compared with it.
+        inside = scoring.erode(mask & item.valid, 2) & known
         if inside.sum() < 4:
             raise CompareError(f"{item.name} and the analysis's subject mask have too little overlap to compare")
         if item.source == "mesh":
@@ -481,6 +488,26 @@ def compare_synthetic(items: list[Input], truth: dict) -> list[dict]:
                 raise CompareError(f"{item.name} gave a non-finite {key}; check the map's values")
         results.append({"input": item.name, "source": item.source, **row})
     return results
+
+
+def synthetic_view(item: Input, truth: dict) -> dict:
+    """What the sheet shows of one input against a scene: exactly the pixels
+    and the alignment its score uses.
+
+    A depth input is aligned with the shape fit of the depth error score
+    (absrel), with its relative error over the scored pixels; a normal map
+    has its angle error over the pixels away from depth jumps, where normals
+    are scored.
+    """
+    fitted = resized(item, *truth["depth"].shape)
+    if fitted.depth is not None:
+        scored = truth["valid"] & fitted.valid
+        aligned, _ = scoring.align(fitted.depth, truth["depth"], scored, scoring.shape_kind(item.kind))
+        return {"kind": "depth", "aligned": aligned, "scored": scored,
+                "error": numpy.abs(aligned - truth["depth"]) / truth["depth"]}
+    scored = scoring.smooth_mask(truth["depth"], truth["valid"]) & fitted.valid
+    return {"kind": "normals", "normals": fitted.normals, "scored": scored,
+            "error": scoring.angle_deg(fitted.normals, truth["normals"])}
 
 
 def load_truth(path: Path) -> dict:

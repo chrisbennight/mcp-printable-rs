@@ -88,18 +88,13 @@ def main(argv: list[str]) -> int:
             rows = [[("exact depth", comparison.grey(truth["depth"], truth["valid"])),
                      ("exact normals", comparison.shaded(truth["normals"]))]]
             for item in items:
-                fitted = comparison.resized(item, *truth["depth"].shape)
-                # The sheet shows exactly the pixels that were scored.
-                scored = truth["valid"] & fitted.valid
-                if fitted.depth is not None:
-                    aligned, _ = scoring.align(fitted.depth, truth["depth"], scored, item.kind)
-                    error = numpy.abs(aligned - truth["depth"]) / truth["depth"]
-                    rows.append([(item.name, comparison.grey(aligned, scored)),
-                                 ("depth error, 0 to 10 %", comparison.heat(error, scored, 0.10))])
+                view = comparison.synthetic_view(item, truth)
+                if view["kind"] == "depth":
+                    rows.append([(item.name, comparison.grey(view["aligned"], view["scored"])),
+                                 ("depth error, 0 to 10 %", comparison.heat(view["error"], view["scored"], 0.10))])
                 else:
-                    angles = scoring.angle_deg(fitted.normals, truth["normals"])
-                    rows.append([(item.name, comparison.shaded(fitted.normals)),
-                                 ("normal angle, 0 to 45 deg", comparison.heat(angles, scored, 45.0))])
+                    rows.append([(item.name, comparison.shaded(view["normals"])),
+                                 ("normal angle, 0 to 45 deg", comparison.heat(view["error"], view["scored"], 45.0))])
         comparison.sheet(rows).save(output / "sheet.png", format="PNG")
         files["sheet"] = "sheet.png"
     except comparison.CompareError as error:

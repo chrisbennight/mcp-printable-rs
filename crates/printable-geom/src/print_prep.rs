@@ -167,6 +167,12 @@ pub struct PrintPrepReport {
     pub size_mm: [f64; 3],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floating_parts: Option<Parts>,
+    /// With every part kept, those that `remove_floating_parts` would
+    /// remove: parts other than the largest not resting on the plate under
+    /// it, above or below. They can differ from `floating_parts`, which are
+    /// judged from the lowest part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_remove: Option<Parts>,
     /// With only the largest part kept, the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smaller_parts: Option<Parts>,
@@ -278,8 +284,23 @@ pub fn prepare_print(
     parts.sort_by(|a, b| b.volume().total_cmp(&a.volume()));
     let lowest_of = |part: &Manifold| part.bounding_box().map_or(f64::INFINITY, |b| b.min()[2]);
     let tolerance = PLATE_TOLERANCE_MM.max(spacing);
+    // The parts removing floating parts would delete: those other than the
+    // largest not resting on the plate under it, above or below.
+    let not_grounded = |part: &Manifold, plate: f64| (lowest_of(part) - plate).abs() > tolerance;
+    let mut would_remove = None;
     let (floating_parts, smaller_parts, removed) = match request.parts {
         KeptParts::All => {
+            let largest_plate = parts.first().map_or(0.0, lowest_of);
+            let removable: Vec<&Manifold> = parts
+                .iter()
+                .skip(1)
+                .filter(|part| not_grounded(part, largest_plate))
+                .collect();
+            would_remove = (!removable.is_empty()).then(|| Parts {
+                count: removable.len(),
+                volume_mm3: removable.iter().map(|part| part.volume()).sum(),
+                removed: false,
+            });
             // Every part stays, so the plate is where the lowest one sits.
             let plate = parts.iter().map(lowest_of).fold(f64::INFINITY, f64::min);
             let floating: Vec<&Manifold> = parts
@@ -300,7 +321,7 @@ pub fn prepare_print(
             let floating: Vec<Manifold> = parts
                 .into_iter()
                 .skip(1)
-                .filter(|part| (lowest_of(part) - plate).abs() > tolerance)
+                .filter(|part| not_grounded(part, plate))
                 .collect();
             let report = (!floating.is_empty()).then(|| Parts {
                 count: floating.len(),
@@ -407,6 +428,7 @@ pub fn prepare_print(
         volume_mm3,
         size_mm,
         floating_parts,
+        would_remove,
         smaller_parts,
         removed_by_base_cut,
         plinth,
@@ -897,6 +919,11 @@ mod tests {
             (1, false, 2)
         );
         assert!(floating.volume_mm3 > 7000.0, "{floating:?}");
+        // The report also names what removal would delete: the fragment,
+        // not the largest part it judges as floating.
+        let would = kept.would_remove.unwrap();
+        assert_eq!((would.count, would.removed), (1, false));
+        assert!(would.volume_mm3 < 20.0, "{would:?}");
         // Removing floating parts puts the plate under the largest part and
         // removes the fragment below it.
         let mut grounded = request(0.5);

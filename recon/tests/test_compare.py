@@ -145,6 +145,24 @@ class SyntheticTests(unittest.TestCase):
         self.assertAlmostEqual(result["normal_deg"], 0.0, places=3)
 
 
+    def test_the_sheet_shows_the_scored_fit_and_pixels(self):
+        truth_depth = 0.5 - 0.01 * dome()
+        # A step in the scene: normals are not scored beside it.
+        truth_depth[:, W // 2:] += 0.2
+        truth = {"depth": truth_depth, "normals": scoring.normals_from_depth(truth_depth, 140.0),
+                 "valid": numpy.ones((H, W), bool), "focal": 140.0, "region": None}
+        normal_map = comparison.Input("n.png", "normal map", None, truth["normals"], truth["valid"], "relative")
+        view = comparison.synthetic_view(normal_map, truth)
+        numpy.testing.assert_array_equal(view["scored"], scoring.smooth_mask(truth_depth, truth["valid"]))
+        self.assertFalse(view["scored"][:, W // 2].any())
+        # A metric map off by a constant offset is aligned with scale and
+        # offset, as its depth error is scored, so the panel shows no error.
+        metric = comparison.Input("d.tiff", "depth map", truth_depth + 0.3, None, truth["valid"], "metric")
+        view = comparison.synthetic_view(metric, truth)
+        self.assertLess(float(view["error"][view["scored"]].max()), 1e-6)
+        self.assertAlmostEqual(comparison.compare_synthetic([metric], truth)[0]["absrel"], 0.0, places=6)
+
+
 class PhotoTests(unittest.TestCase):
     """The photo mode tells a correct relief from an inverted or a shifted one."""
 
@@ -207,6 +225,29 @@ class PhotoTests(unittest.TestCase):
         self.assertLess(result["normal_angle"]["median_deg"], 0.01)
         self.assertIsNone(result["normal_angle"]["height_scale"])
         self.assertGreater(result["shading"]["correlation"], 0.99)
+
+    def test_an_analysis_pixel_without_a_normal_is_not_compared(self):
+        normals = height_normals(dome(), 40.0)
+        stored = normals.transpose(2, 0, 1).copy()
+        # The analysis encodes no normal on the left of the dome.
+        stored[:, :, : W // 2] = 0.0
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            photo_analysis.write_depth(numpy.full((H, W), 2.0, numpy.float32), directory / "depth.tiff")
+            write_normals(stored, directory / "normals.png")
+            photo_analysis.write_mask(dome() > 0, directory / "mask.png")
+            analysis = comparison.load_analysis(directory / "depth.tiff", directory / "normals.png",
+                                                directory / "mask.png")
+        self.assertFalse(analysis["normals_known"][:, : W // 2].any())
+        self.assertFalse(analysis["normals"][:, : W // 2].any())
+        light = numpy.clip(0.1 + 0.8 * (normals * numpy.array([-0.3, 0.4, 0.87])).sum(-1), 0, 1)
+        disk = dome() > 0
+        mesh = comparison.Input("dome.stl", "mesh", numpy.full((H, W), 0.1), normals, disk, "metric")
+        whole = comparison.compare_photo([mesh], {"mask": disk, "normals": normals}, light)[0][0]
+        half = comparison.compare_photo([mesh], analysis, light)[0][0]
+        # Only the right half is compared, and it agrees.
+        self.assertLess(half["normal_angle"]["pixels"], 0.6 * whole["normal_angle"]["pixels"])
+        self.assertLess(half["normal_angle"]["median_deg"], 0.05)
 
     def test_a_photograph_without_shading_is_an_error(self):
         disk = dome() > 0

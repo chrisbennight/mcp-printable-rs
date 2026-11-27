@@ -1555,6 +1555,31 @@ pub fn worker_message(error: &ToolError) -> String {
     }
 }
 
+/// The code of a photograph worker refusal, kept as the worker gave it when
+/// it is one the worker reports, including the geometry worker's codes from
+/// a solid rebuild, as a retained job's failure keeps it.
+fn foreground_code(code: Option<&str>) -> &'static str {
+    match code {
+        Some("no_face") => "no_face",
+        Some("no_shape") => "no_shape",
+        Some("busy") => "busy",
+        Some("timeout") => "timeout",
+        Some("checkpoints") => "checkpoints",
+        Some("resource_limit") => "resource_limit",
+        Some("validation") => "validation",
+        Some("already_exists") => "already_exists",
+        Some("unavailable") => "unavailable",
+        Some("cancelled") => "cancelled",
+        Some("print_check_failed") => "print_check_failed",
+        Some("geometry") => "geometry",
+        Some("geometry_resource_limit") => "geometry_resource_limit",
+        Some("geometry_time_limit") => "geometry_time_limit",
+        Some("geometry_worker_unavailable") => "geometry_worker_unavailable",
+        Some("geometry_worker_protocol") => "geometry_worker_protocol",
+        _ => "failed",
+    }
+}
+
 fn reconstruction_error(code: &'static str, message: impl Into<String>) -> ToolError {
     ToolError::Reconstruction {
         code,
@@ -2008,6 +2033,20 @@ print(json.dumps({"result": result}))
         };
         let message = worker_message(&worker.generate_object(long).await.unwrap_err());
         assert!(message.contains("was kept at objects/raw-"), "{message}");
+    }
+
+    #[test]
+    fn foreground_refusals_keep_the_workers_code() {
+        for code in [
+            "geometry_resource_limit",
+            "geometry_worker_unavailable",
+            "print_check_failed",
+            "busy",
+        ] {
+            assert_eq!(foreground_code(Some(code)), code);
+        }
+        assert_eq!(foreground_code(Some("something else")), "failed");
+        assert_eq!(foreground_code(None), "failed");
     }
 
     #[tokio::test]
@@ -2689,19 +2728,7 @@ impl ReconClient {
         if status.is_success() {
             return Ok(value);
         }
-        let code = match value.get("code").and_then(Value::as_str) {
-            Some("no_face") => "no_face",
-            Some("no_shape") => "no_shape",
-            Some("busy") => "busy",
-            Some("timeout") => "timeout",
-            Some("checkpoints") => "checkpoints",
-            Some("resource_limit") => "resource_limit",
-            Some("validation") => "validation",
-            Some("already_exists") => "already_exists",
-            Some("unavailable") => "unavailable",
-            Some("print_check_failed") => "print_check_failed",
-            _ => "failed",
-        };
+        let code = foreground_code(value.get("code").and_then(Value::as_str));
         let message = value
             .get("message")
             .and_then(Value::as_str)
