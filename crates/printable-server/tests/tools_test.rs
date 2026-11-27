@@ -10358,6 +10358,21 @@ async fn photo_lithophane_builds_flat_curved_and_test_strip_plates_without_the_p
         assert_eq!(saved["lithophane"], report["lithophane"]);
     }
 
+    // A wide border on a tight curve cuts through the bent plate, so it is
+    // refused and nothing is written.
+    let call = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "lithophane", "params": {"image": "photos/ramp.png",
+            "path": "lithophanes/bordered.stl", "width_mm": 20.0, "border_mm": 50.0,
+            "shape": "curved", "arc_degrees": 120.0}}),
+    )
+    .unwrap();
+    let error = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "relief_not_printable", "{error}");
+    assert!(ws.stat_artifact("lithophanes/bordered.stl").is_err());
+
     // A crop outside the image is refused, and nothing is written.
     let call = printable_server::tools::workflows::resolve(
         "photo",
@@ -10371,4 +10386,75 @@ async fn photo_lithophane_builds_flat_curved_and_test_strip_plates_without_the_p
     assert_eq!(error.code(), "validation", "{error}");
     assert!(error.to_string().contains("crop_px"), "{error}");
     assert!(ws.stat_artifact("lithophanes/cropped.stl").is_err());
+}
+
+/// CRC-32 as PNG chunks use it.
+fn png_crc(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+#[tokio::test]
+async fn photo_lithophane_turns_an_image_upright_by_its_exif_orientation() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = workspace(Some(temp.path()));
+    // Stored 64 x 32, black at the left; orientation 6 means the viewer
+    // turns it a quarter turn clockwise, to 32 x 64 with black at the top.
+    let png = grey_ramp_png(64, 32);
+    let exif: Vec<u8> = [
+        &b"MM\0*\0\0\0\x08\0\x01"[..],
+        &[
+            0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00,
+        ],
+        &[0, 0, 0, 0],
+    ]
+    .concat();
+    let mut chunk = (exif.len() as u32).to_be_bytes().to_vec();
+    let mut body = b"eXIf".to_vec();
+    body.extend(&exif);
+    chunk.extend(&body);
+    chunk.extend(png_crc(&body).to_be_bytes());
+    // Insert the chunk after the signature and IHDR, before the image data.
+    let ihdr_end = 8 + 4 + 4 + 13 + 4;
+    let tagged = [&png[..ihdr_end], &chunk[..], &png[ihdr_end..]].concat();
+    ws.write_artifact("photos/turned.png", &tagged, false)
+        .unwrap();
+    let upload = uploads();
+    let backend = client("127.0.0.1", 9);
+    let config = settings("127.0.0.1", 9);
+    let call = printable_server::tools::workflows::resolve(
+        "photo",
+        json!({"action": "lithophane", "params": {"image": "photos/turned.png",
+            "path": "lithophanes/turned.stl", "width_mm": 10.0,
+            "crop_px": [0, 0, 32, 64]}}),
+    )
+    .unwrap();
+    let report = dispatch(&ws, &upload, &backend, &config, call.name, call.arguments)
+        .await
+        .unwrap();
+    let image_mm = &report["lithophane"]["image_mm"];
+    assert!(
+        (image_mm[1].as_f64().unwrap() - 20.0).abs() < 1e-9,
+        "{image_mm}"
+    );
+    let (_, png) = ws
+        .read_generated_bytes("lithophanes/turned.preview.png")
+        .unwrap();
+    let preview = image::load_from_memory(&png).unwrap().to_luma8();
+    let middle = preview.width() / 2;
+    let (top, bottom) = (
+        preview.get_pixel(middle, 0).0[0],
+        preview.get_pixel(middle, preview.height() - 1).0[0],
+    );
+    assert!(top < bottom, "{top} {bottom}");
 }

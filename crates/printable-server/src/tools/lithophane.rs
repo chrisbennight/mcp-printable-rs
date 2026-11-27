@@ -15,8 +15,9 @@ use std::{
 };
 
 use image::{GenericImageView, ImageFormat, ImageReader, imageops::FilterType};
+use printable_geom::ValidationOptions;
 use printable_geom::relief::{
-    DEFAULT_MAX_PIXELS, Grid, PrintabilityOptions, ReliefMap, check_relief,
+    DEFAULT_MAX_PIXELS, Grid, PrintabilityOptions, ReliefError, ReliefMap, check_relief,
     lithophane::{
         ToneMapping, bend_around_cylinder, linear_to_srgb, lithophane_map, lithophane_solid,
         srgb_to_linear, step_wedge,
@@ -217,7 +218,8 @@ impl LithophaneRequest {
         let refuse = |message: &str| Err(ToolError::Validation(message.into()));
         match (&self.image, self.test_strip) {
             (Some(image), false) => {
-                if !IMAGE_SUFFIXES.iter().any(|suffix| image.ends_with(suffix)) {
+                let lower = image.to_ascii_lowercase();
+                if !IMAGE_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix)) {
                     return refuse("image must be a .jpg, .jpeg, .png or .webp file");
                 }
             }
@@ -286,6 +288,15 @@ impl LithophaneRequest {
             }
             _ => None,
         };
+        let nozzle_mm = within(
+            "nozzle_mm",
+            self.nozzle_mm.unwrap_or(DEFAULT_NOZZLE_MM),
+            &NOZZLE_MM,
+        )?;
+        let border_mm = within("border_mm", self.border_mm.unwrap_or(0.0), &BORDER_MM)?;
+        if border_mm > 0.0 && border_mm < nozzle_mm {
+            return refuse("border_mm must be 0 or at least nozzle_mm, so the border prints");
+        }
         Ok(LithophaneSettings {
             test_strip: self.test_strip,
             shape: self.shape,
@@ -297,14 +308,10 @@ impl LithophaneRequest {
             max_thickness_mm,
             filament,
             attenuation_per_mm,
-            border_mm: within("border_mm", self.border_mm.unwrap_or(0.0), &BORDER_MM)?,
+            border_mm,
             crop_px: self.crop_px,
             contrast: within("contrast", self.contrast.unwrap_or(1.0), &CONTRAST)?,
-            nozzle_mm: within(
-                "nozzle_mm",
-                self.nozzle_mm.unwrap_or(DEFAULT_NOZZLE_MM),
-                &NOZZLE_MM,
-            )?,
+            nozzle_mm,
             layer_mm: LAYER_MM,
         })
     }
@@ -457,8 +464,9 @@ fn invalid(message: String) -> WorkerError {
     }
 }
 
-/// The image's linear-light brightness, cropped and with its contrast
-/// adjusted, as a grid of its pixels. Transparent parts count as white.
+/// The image's linear-light brightness, turned upright as its EXIF
+/// orientation says, cropped and with its contrast adjusted, as a grid of its
+/// pixels. Transparent parts count as white.
 fn read_brightness(path: &Path, settings: &LithophaneSettings) -> Result<Grid<f64>, WorkerError> {
     let mut reader = ImageReader::open(path)
         .map_err(io_error("cannot open the image"))?
@@ -468,7 +476,12 @@ fn read_brightness(path: &Path, settings: &LithophaneSettings) -> Result<Grid<f6
     limits.max_image_width = Some(MAX_IMAGE_SIDE);
     limits.max_image_height = Some(MAX_IMAGE_SIDE);
     reader.limits(limits);
-    let image = reader.decode().map_err(invalid_image)?;
+    // Turned upright as the photograph decoder does, so crop_px and the
+    // proportions refer to the image as it is viewed.
+    let mut decoder = reader.into_decoder().map_err(invalid_image)?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder).map_err(invalid_image)?;
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(invalid_image)?;
+    image.apply_orientation(orientation);
     let [left, top, width, height] =
         settings
             .crop_px
@@ -592,7 +605,16 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
     .expect("checks serialize");
     let heights = map.heights_mm.values();
     let thinnest = heights.iter().copied().fold(f64::INFINITY, f64::min);
-    let thickest = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // A border is as thick as the darkest parts may be.
+    let thickest = heights
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(if settings.border_mm > 0.0 {
+            settings.max_thickness_mm
+        } else {
+            f64::NEG_INFINITY
+        });
     let within_range =
         thinnest >= settings.min_thickness_mm && thickest <= settings.max_thickness_mm;
     checks["thickness_within_range"] = json!(within_range);
@@ -617,7 +639,7 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
                 (None, Some(arc)) => total_width / arc.to_radians(),
                 (None, None) => return Err(invalid("give radius_mm or arc_degrees".into())),
             };
-            bend_around_cylinder(&mut mesh, radius, spacing_mm[0])?;
+            bend_around_cylinder(&mut mesh, radius)?;
             json!({
                 "kind": "curved",
                 "radius_mm": radius,
@@ -626,6 +648,27 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             })
         }
     };
+    let stl = printable_geom::bust_stl(&mesh);
+    if settings.shape == LithophaneShape::Curved {
+        // Bending keeps the plate closed but can make wide flat triangles
+        // cut through it, so the bent mesh, as the STL stores it, is checked
+        // in full and replaces the flat plate's solid check.
+        let bent = printable_geom::analyze_stl(&stl, ValidationOptions::default())
+            .map_err(ReliefError::from)?;
+        let self_intersections = bent.topology.self_intersections;
+        checks["solid"] = json!(bent.solid_geometry);
+        checks["volume_mm3"] = json!(bent.signed_volume_mm3);
+        checks["self_intersections"] = json!(self_intersections);
+        if !bent.solid_geometry {
+            return Err(WorkerError {
+                code: "relief_not_printable",
+                message: format!(
+                    "the curved lithophane is not a sound solid once bent (self-intersections: {}); use a larger radius_mm, a smaller arc_degrees or a narrower border_mm",
+                    self_intersections.map_or("not counted".into(), |count| count.to_string())
+                ),
+            });
+        }
+    }
     write_preview(&map, &tone, &output.join(PREVIEW_FILE))?;
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
@@ -635,8 +678,7 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, WorkerErr
             high[axis] = high[axis].max(vertex[axis]);
         }
     }
-    fs::write(output.join(STL_FILE), printable_geom::bust_stl(&mesh))
-        .map_err(io_error("cannot write the lithophane STL"))?;
+    fs::write(output.join(STL_FILE), stl).map_err(io_error("cannot write the lithophane STL"))?;
     let darkest = tone.transmission(settings.max_thickness_mm);
     let brightest = tone.transmission(settings.min_thickness_mm);
     let mut report = json!({
@@ -753,6 +795,10 @@ mod tests {
         strip.image = None;
         strip.test_strip = true;
         assert!(strip.settings().unwrap().test_strip);
+        let mut upper = request();
+        upper.image = Some("photos/CAT.JPG".into());
+        upper.border_mm = Some(0.4);
+        assert_eq!(upper.settings().unwrap().border_mm, 0.4);
     }
 
     #[test]
@@ -807,6 +853,13 @@ mod tests {
         let mut nozzle = request();
         nozzle.nozzle_mm = Some(0.1);
         cases.push(nozzle);
+        // A border narrower than the nozzle cannot print.
+        let mut hairline = request();
+        hairline.border_mm = Some(1e-8);
+        cases.push(hairline);
+        let mut narrow = request();
+        narrow.border_mm = Some(0.3);
+        cases.push(narrow);
         for case in cases {
             assert_eq!(
                 case.settings().unwrap_err().code(),

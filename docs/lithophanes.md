@@ -21,7 +21,9 @@ after a storage error, inspect the paths before repeating the request.
 
 ## From brightness to thickness
 
-1. The image is decoded and cropped. Transparent parts count as white.
+1. The image is decoded, turned upright as its EXIF orientation says, and
+   cropped; `crop_px` and the proportions refer to the upright image.
+   Transparent parts count as white.
 2. Each pixel is converted from sRGB to linear light, and its brightness is
    `Y = 0.2126 R + 0.7152 G + 0.0722 B`.
 3. `contrast`, when given, stretches the tones about middle grey on the sRGB
@@ -59,7 +61,7 @@ goes, and the image's top is at the top. Stand it on its lower edge to print.
 
 | Parameter | Values | Default |
 | --- | --- | --- |
-| `image` or `test_strip` | a workspace `.jpg`, `.jpeg`, `.png` or `.webp` image, or `true` for a [test strip](#measure-your-filament) | one is required |
+| `image` or `test_strip` | a workspace `.jpg`, `.jpeg`, `.png` or `.webp` image, in any letter case, or `true` for a [test strip](#measure-your-filament) | one is required |
 | `path` | a new workspace `.stl` | required; `NAME.preview.png` and `NAME.report.json` are written beside it |
 | `overwrite` | `true` to replace existing files | `false` |
 | `width_mm` or `height_mm` | 10 to 300; the other follows the image's proportions | one is required |
@@ -69,7 +71,7 @@ goes, and the image's top is at the top. Stand it on its lower edge to print.
 | `max_thickness_mm` | 0.6 to 10, at least 0.2 above the minimum: the darkest parts | 3 |
 | `filament` | `white_pla`, `natural_pla` or `white_petg` | `white_pla` |
 | `attenuation_per_mm` | 0.05 to 10: a measured `k`, in place of `filament` | none |
-| `border_mm` | 0 to 50: a frame as thick as the darkest parts | 0 |
+| `border_mm` | 0, or `nozzle_mm` to 50: a frame as thick as the darkest parts | 0 |
 | `crop_px` | `[left, top, width, height]` in image pixels | the whole image |
 | `contrast` | 0.1 to 4; 1 leaves the tones unchanged | 1 |
 | `nozzle_mm` | 0.2 to 1: sets the sample spacing and the narrow-detail check | 0.4 |
@@ -131,13 +133,14 @@ the current `k` predicts, relative to the thinnest step, for comparison.
 
 ## Results
 
-The result, which is also the saved report, holds:
+The result holds the following; the saved report holds the same except
+`artifacts`:
 
 - `settings`: every choice with its default filled in;
 - `image`: the image's workspace path and SHA-256, or `null` for a test strip;
 - `lithophane`: the solid's size in millimetres and triangle count, the
   image's size, the sample count and spacing, the thinnest and thickest
-  points, the shape (with the radius and arc of a curve), the tone mapping
+  points (a border is as thick as the maximum thickness), the shape (with the radius and arc of a curve), the tone mapping
   (its formulas, `attenuation_per_mm` and where it came from, the
   transmission range and the contrast ratio), the checks, what the preview
   shows and, for a test strip, its steps;
@@ -148,11 +151,14 @@ plate is closed, manifold and free of self-intersections by construction,
 and narrow ridges and grooves are reported without failing the check.
 `thickness_within_range` confirms every sample lies within the thickness
 range, and `passed` requires it as well as a sound solid. A plate that fails
-is not written; the request returns `relief_not_printable`. A curved plate is
-checked flat and then bent: bending moves its vertices without changing how
-they join. A curve so tight that the flat face's coarse bottom cells would sag
-more than a quarter of the thinnest thickness towards the relief is refused,
-with the smallest radius that fits.
+is not written; the request returns `relief_not_printable`. Bending a curved
+plate keeps it closed, but on a tight curve its wide flat triangles, such as a
+wide border's, can cut through it. So once bent, the curved plate is checked
+again as the STL stores it, for a closed, manifold solid without
+self-intersections; `solid`, `volume_mm3` and `self_intersections` then
+describe the bent plate, and a plate that fails is refused with
+`relief_not_printable`. Use a larger radius, a smaller arc or a narrower
+border.
 
 The preview is an 8-bit sRGB image of the plate's brightness against an even
 backlight, relative to the thinnest part, as seen from the flat face, one pixel

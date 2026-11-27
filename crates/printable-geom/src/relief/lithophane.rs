@@ -18,11 +18,6 @@
 use super::{Grid, ReliefError, ReliefMap, ReliefSolid, SolidOptions, positive, relief_solid};
 use crate::{TriangleMesh, limit};
 
-/// Samples spanned by each bottom cell of a relief solid along each axis.
-/// Bending turns those cells into chords, so it bounds how far the flat face
-/// can sag towards the relief.
-const BOTTOM_CELL_SAMPLES: f64 = 16.0;
-
 /// The value an sRGB-encoded component in 0 to 1 stands for in linear light.
 pub fn srgb_to_linear(encoded: f64) -> f64 {
     let encoded = encoded.clamp(0.0, 1.0);
@@ -141,8 +136,12 @@ pub fn step_wedge(
         ));
     }
     let range = tone.max_thickness_mm - tone.min_thickness_mm;
+    // Clamped, so rounding cannot carry the last step past the maximum.
     let thicknesses: Vec<f64> = (0..steps)
-        .map(|step| tone.min_thickness_mm + range * step as f64 / (steps - 1) as f64)
+        .map(|step| {
+            (tone.min_thickness_mm + range * step as f64 / (steps - 1) as f64)
+                .clamp(tone.min_thickness_mm, tone.max_thickness_mm)
+        })
         .collect();
     let row: Vec<f64> = (0..columns)
         .map(|column| thicknesses[column * steps / columns])
@@ -199,18 +198,13 @@ pub fn lithophane_solid(
 /// at the largest Y.
 ///
 /// Bending moves vertices without changing which triangles join, so a
-/// closed plate stays closed. `sample_spacing_mm` is the plate's sample
-/// spacing along X; the flat face's coarse cells become chords, and the
-/// curve is refused when a chord would sag more than a quarter of the
-/// thinnest plate towards the relief.
-pub fn bend_around_cylinder(
-    mesh: &mut TriangleMesh,
-    radius_mm: f64,
-    sample_spacing_mm: f64,
-) -> Result<(), ReliefError> {
+/// closed plate stays closed, but its wide flat triangles become chords that
+/// can cut through the plate on a tight curve. Check the bent mesh itself,
+/// for example with [`analyze_mesh`](crate::analyze_mesh), before using it.
+pub fn bend_around_cylinder(mesh: &mut TriangleMesh, radius_mm: f64) -> Result<(), ReliefError> {
     let refuse = |message: String| Err(ReliefError::InvalidOptions(message));
-    if !positive(radius_mm) || !positive(sample_spacing_mm) {
-        return refuse("radius_mm and the sample spacing must be positive".into());
+    if !positive(radius_mm) {
+        return refuse("radius_mm must be positive".into());
     }
     let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for vertex in &mesh.vertices {
@@ -227,21 +221,6 @@ pub fn bend_around_cylinder(
     }
     if high[2] >= radius_mm {
         return refuse("radius_mm must be larger than the plate's thickness".into());
-    }
-    // The thinnest point of the plate above the flat face.
-    let thinnest = mesh
-        .vertices
-        .iter()
-        .filter(|vertex| vertex[2] > 0.0)
-        .map(|vertex| vertex[2])
-        .fold(f64::INFINITY, f64::min);
-    let chord = BOTTOM_CELL_SAMPLES * sample_spacing_mm;
-    let sag = chord * chord / (8.0 * radius_mm);
-    if sag > thinnest / 4.0 {
-        return refuse(format!(
-            "radius_mm {radius_mm:.1} is too tight for this plate; use at least {:.1}",
-            chord * chord / (2.0 * thinnest)
-        ));
     }
     let middle = (low[0] + high[0]) / 2.0;
     for (index, vertex) in mesh.vertices.iter_mut().enumerate() {
@@ -355,6 +334,16 @@ mod tests {
             }
         }
         assert!(step_wedge(5, 4, [0.2, 0.2], 10, &TONE).is_err());
+        // The last step is exactly the maximum, even where rounding would
+        // carry it past.
+        let thick = ToneMapping {
+            max_thickness_mm: 4.5,
+            ..TONE
+        };
+        let (map, thicknesses) = step_wedge(50, 4, [0.2, 0.2], 10, &thick).unwrap();
+        assert_eq!(thicknesses[9], 4.5);
+        let highest = map.heights_mm.values().iter().copied().fold(0.0, f64::max);
+        assert!(highest <= 4.5);
     }
 
     fn plate(border_mm: f64) -> (ReliefMap, ReliefSolid) {
@@ -404,8 +393,9 @@ mod tests {
         let (_, solid) = plate(1.0);
         let mut mesh = solid.into_mesh();
         let radius = 20.0;
-        bend_around_cylinder(&mut mesh, radius, 0.2).unwrap();
+        bend_around_cylinder(&mut mesh, radius).unwrap();
         let report = analyze_mesh(&mesh, ValidationOptions::default()).unwrap();
+        assert!(report.solid_geometry, "{:?}", report.issues);
         assert!(report.topology.watertight, "{:?}", report.issues);
         assert_eq!(report.topology.self_intersections.unwrap_or(0), 0);
         assert!(report.signed_volume_mm3 > 0.0);
@@ -417,10 +407,24 @@ mod tests {
             );
             assert!(vertex[2] >= -1e-12);
         }
-        // Too tight to fit, or to keep the flat face's chords clear.
+        // Too tight to fit once around, or within the plate's thickness.
         let (_, solid) = plate(1.0);
         let mut mesh = solid.into_mesh();
-        assert!(bend_around_cylinder(&mut mesh, 1.0, 0.2).is_err());
-        assert!(bend_around_cylinder(&mut mesh, 5.0, 2.0).is_err());
+        assert!(bend_around_cylinder(&mut mesh, 1.0).is_err());
+        assert!(bend_around_cylinder(&mut mesh, 2.9).is_err());
+    }
+
+    #[test]
+    fn a_wide_border_on_a_tight_curve_fails_the_mesh_check() {
+        // The border's few wide triangles become chords that cut through the
+        // plate, which only a check of the bent mesh finds.
+        let (_, linear) = ramp(101, 51);
+        let map = lithophane_map(&linear, [0.2, 0.2], &TONE).unwrap();
+        let solid = lithophane_solid(&map, &TONE, 50.0).unwrap();
+        let mut mesh = solid.into_mesh();
+        let width = 20.0 + 2.0 * 50.0;
+        bend_around_cylinder(&mut mesh, width / 120.0_f64.to_radians()).unwrap();
+        let report = analyze_mesh(&mesh, ValidationOptions::default()).unwrap();
+        assert!(!report.solid_geometry, "{:?}", report.topology);
     }
 }
