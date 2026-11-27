@@ -41,8 +41,10 @@ def main(argv: list[str]) -> int:
         device_name = str(request["device"])
         side = int(request["side"])
         threads = request.get("threads")
-        targets = {key: Path(request["outputs"][key]) for key in ("depth", "valid", "normals")
-                   if request.get("outputs", {}).get(key)}
+        outputs = request.get("outputs", {})
+        if not isinstance(outputs, dict):
+            raise TypeError("outputs must be an object")
+        targets = {key: Path(outputs[key]) for key in ("depth", "valid", "normals") if outputs.get(key)}
     except (OSError, ValueError, KeyError, TypeError) as error:
         return _fail("validation", f"the request is invalid: {error}")
     if device_name not in ("cuda", "cpu") or side not in SIDES:
