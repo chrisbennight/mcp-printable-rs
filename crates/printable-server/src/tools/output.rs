@@ -94,6 +94,7 @@ fn photo_job() -> Value {
             "state":{"enum":["queued","running","succeeded","failed","cancelled","interrupted","outcome_unknown"]},
             "phase":{"enum":["queued","preparing_models","waiting_for_gpu","foreground","generating","delivering","publishing","finished"]},
             "model":{"enum":["pixal3d","trellis2"]}, "mesh_path":{"type":"string"},
+            "recovery_path":{"type":"string"},
             "created_unix_ms":{"type":"integer","minimum":0}, "updated_unix_ms":{"type":"integer","minimum":0},
             "cancellation_requested":{"type":"boolean"}, "cancellable":{"type":"boolean"},
             "result":{"anyOf":[result,{"type":"null"}]},

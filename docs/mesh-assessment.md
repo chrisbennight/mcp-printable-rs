@@ -61,13 +61,15 @@ The source is read in millimetres with Z up. The preparation:
 
 1. Turns triangles to face the same way as most of their piece, a piece being
    the triangles joined through edges that exactly two of them use, and closes
-   each opening whose rim is a simple loop. By default every closed piece,
-   one whose edges are each used by exactly two of its triangles, is then
-   turned to face outwards; open pieces, such as a face two bodies share,
-   keep their facing. The rebuild then counts everything inside any
-   closed surface as solid, whichever way it faces, so no body is lost even
-   where its facing is misjudged; an inward-facing piece meant as a cavity is
-   filled, and `cavities_filled` counts them. Set `keep_cavities` to trust the
+   each opening whose rim is a simple loop. By default each closed piece is
+   then turned to face outwards: a piece welded to no other, every edge of
+   which is used by exactly two of its own triangles. Pieces that share faces
+   or edges with others keep the facing they were given, so a cavity
+   described that way, such as an inward box sharing the top face of an
+   outward one to make an open cup, stays a cavity. The rebuild then counts
+   everything inside any closed surface as solid, whichever way it faces, so
+   no body is lost to its facing. A closed inward-facing piece on its own,
+   meant as a cavity, is filled; `cavities_filled` counts those. Set `keep_cavities` to trust the
    mesh's facing instead: each piece keeps its facing, inward-facing pieces
    stay cavities, counted in `cavities`, and a piece facing inwards that lies
    inside no other part disappears in the rebuild.
@@ -101,8 +103,10 @@ The source is read in millimetres with Z up. The preparation:
    the nozzle diameter. The thin-wall check does not measure through faces
    resting on the build plate, so a thin flat part lying on the plate, such as
    a plate or tab thinner than the minimum, is not reported as thin;
-   `thin.excludes_plate_faces` says so in the report. The `validation`
-   report's own wall-thickness assessment uses the same minimum wall.
+   `thin.excludes_plate_faces` says so in the report. Walls are measured only
+   here: the `validation` report's wall-thickness criterion stays unmeasured,
+   since measuring walls twice raises the worker's peak memory by about a
+   third.
 
 The result stands on Z = 0. `preparation` reports the source's triangles,
 shells, open edges and, when it was closed, its volume; what was turned and
@@ -118,8 +122,8 @@ known to be free of self-intersections and of separate shells touching or
 crossing one another. Otherwise the request fails with
 `print_check_failed`, names the problems and writes nothing. `head`
 `prepare_print` and photo objects follow the same rule. Rebuilding and
-checking a one-million-triangle mesh at the default edge, with walls
-measured, took about 7 seconds and 550 MiB on a processor; finer edges need more memory, so raise
+checking a one-million-triangle mesh at the default edge took about
+3 seconds and 490 MiB on a processor; finer edges need more memory, so raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. See the
 [measurements](../evidence/print-prep-rebuild.md).
 

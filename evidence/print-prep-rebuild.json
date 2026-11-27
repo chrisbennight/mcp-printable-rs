@@ -1,20 +1,19 @@
 {
   "date": "2026-11-27",
-  "host": {"architecture": "aarch64", "cpus": 8, "os": "Debian GNU/Linux 13 (trixie)", "rustc": "1.97.1"},
+  "host": {"architecture": "aarch64", "cpus": 2, "os": "Debian GNU/Linux 13 (trixie)", "rustc": "1.97.1"},
   "input": {"triangles": 1000018, "shells": 3, "open_edges": 2012, "stl_bytes": 50000984},
-  "includes": "rebuild, strict validation of the written STL with walls measured against 0.4 mm, and writing it, in the geometry worker",
+  "includes": "rebuild, thin-wall check against 0.4 mm, strict validation of the written STL and writing it, in the geometry worker",
   "runs": [
     {"edge_length_mm": 0.47661335754394535, "address_space_limit_bytes": 1073741824, "exit": 0,
      "output_triangles": 507332, "shells": 2, "cavities_filled": 1, "openings_closed": 5,
-     "floating_parts": {"count": 1, "removed": false},
-     "solid_geometry": true, "self_intersections": 0, "shell_intersections": 0, "wall_thickness": "failed",
-     "wall_seconds": [7.11, 7.62, 7.23], "user_seconds": [7.49, 8.16, 7.60], "system_seconds": [0.31, 0.27, 0.27],
-     "peak_rss_kib": [567852, 567764, 529384]},
+     "floating_parts": {"count": 1, "removed": false}, "thin_area_mm2": 159.18,
+     "solid_geometry": true, "self_intersections": 0, "shell_intersections": 0,
+     "wall_seconds": [3.25, 3.23, 3.23], "user_seconds": [3.38, 3.36, 3.37], "system_seconds": [0.24, 0.22, 0.22],
+     "peak_rss_kib": [502616, 502744, 502776]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": null, "exit": 0,
      "output_triangles": 2945256, "shells": 2, "floating_parts": {"count": 1, "removed": false},
-     "solid_geometry": true, "wall_thickness": "failed",
-     "wall_seconds": [59.05, 45.57, 43.18], "user_seconds": [59.48, 45.29, 43.50], "system_seconds": [2.22, 2.80, 2.46],
-     "peak_rss_kib": [2756380, 2755568, 2755132]},
+     "wall_seconds": [15.35, 15.36, 17.01], "user_seconds": [15.07, 15.08, 16.77], "system_seconds": [1.56, 1.57, 1.53],
+     "peak_rss_kib": [2558588, 2558588, 2558588]},
     {"edge_length_mm": 0.2, "address_space_limit_bytes": 1073741824, "exit": 139, "output_triangles": null}
   ]
 }

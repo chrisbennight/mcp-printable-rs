@@ -70,7 +70,7 @@ resolution reached, the steps used, the voxel counts of the structure and last
 shape stages, the seed, the field of view and where it came from, whether the
 background was removed, the device, the time taken, each stage's time and,
 on a GPU, its peak memory, the photograph's SHA-256 and the written
-artifact. A rebuilt object adds `preparation` and `validation`, described in
+artifact. A rebuilt object adds `solid_rebuild` and `validation`, described in
 [from the mesh to a print](#from-the-mesh-to-a-print); a raw one reports
 `raw_surface: true`. A Pixal3D request without `fov_degrees` adds
 `photo_analysis`, which names the cached analysis whose focal length set the
@@ -433,24 +433,24 @@ therefore rebuilds it before writing it, with the same preparation as the
   turned to face outwards, and the surface is rebuilt as one exact solid with
   facets 0.4% of the longest side of the piece enclosing the most volume, the
   part that is kept, at least 0.1 mm; after rescaling to `size_mm` that is
-  about 0.4% of `size_mm`. `preparation.edge_length_mm` gives the facet size
+  about 0.4% of `size_mm`. `solid_rebuild.edge_length_mm` gives the facet size
   on the written mesh. With `target_triangles`, the facet length is chosen instead to give
   about that many triangles over the area of the piece enclosing the most
   volume, which is the part kept, at least
   0.1 mm. Finer detail is smoothed away.
 - Only the largest part is kept, since a photograph shows one subject and
-  separate pieces are generator debris; `preparation.smaller_parts` counts
+  separate pieces are generator debris; `solid_rebuild.smaller_parts` counts
   those removed. The result is then scaled again so that its longest side is
   `size_mm`, centred on the origin and standing on Z = 0, since the generator
-  sized the surface with the removed pieces included. `preparation.size_mm`
+  sized the surface with the removed pieces included. `solid_rebuild.size_mm`
   gives the final size.
 - Overhangs steeper than 45 degrees and walls thinner than 0.4 mm, a common
-  FDM nozzle, are reported in `preparation.overhang` and `preparation.thin`,
+  FDM nozzle, are reported in `solid_rebuild.overhang` and `solid_rebuild.thin`,
   with the shells, volume and what was changed.
 - The result must pass the strict check, a valid solid known to be free of
   self-intersections and of shells touching or crossing. `validation` is the
-  `validate_mesh` report of the written mesh, with walls measured against
-  0.4 mm. A result that fails is not
+  `validate_mesh` report of the written mesh; walls are measured only in
+  `solid_rebuild.thin`. A result that fails is not
   written: the request or job fails with `print_check_failed`.
 - When the rebuild is refused or the geometry worker fails, for example by
   running out of memory, the generated surface is not lost. It is written
@@ -460,10 +460,12 @@ therefore rebuilds it before writing it, with the same preparation as the
   If that publication fails, its own error is returned instead. Run `scene` `prepare_print` on it
   with other settings, such as a larger `edge_length_mm`. It is published in
   the job's publishing phase, so a job cancelled before then keeps nothing.
+  A retained job records the path as `recovery_path` in its status before
+  publishing, so an interrupted publication still names it.
 
 The rebuild runs in the isolated geometry worker inside the photograph worker,
 on the processor, under `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` (default 1024).
-A one-million-triangle surface took about 7 seconds and 550 MiB, including the check, at the default
+A one-million-triangle surface took about 3 seconds and 490 MiB, including the check, at the default
 facet size in the [measurements](../evidence/print-prep-rebuild.md). The
 strict check runs there too. The rebuild has whatever remains of the
 generation deadline (`PRINTABLE_RECON_OBJECT_TIMEOUT_SECONDS`, or

@@ -229,11 +229,9 @@ pub fn worker_run(request_path: &Path, output: &Path) -> Result<Value, ToolError
         &bytes,
         ValidationOptions {
             overhang_angle_degrees: request.overhang_angle_degrees,
-            // The assessment measures walls against the printer's minimum.
-            minimum_wall_mm: request
-                .options
-                .checks
-                .and_then(|checks| checks.min_feature_mm),
+            // Walls are measured once, by the preparation's thin-wall check;
+            // measuring them again here raises the worker's peak memory by
+            // about a third.
             ..ValidationOptions::default()
         },
         &request.subject,

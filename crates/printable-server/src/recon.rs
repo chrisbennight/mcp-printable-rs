@@ -1236,7 +1236,7 @@ impl ReconWorker {
         // The published mesh is the rebuilt one.
         result["triangles"] = report["triangles"].clone();
         result["size_mm"] = report["size_mm"].clone();
-        result["preparation"] = report;
+        result["solid_rebuild"] = report;
         // The whole report, so the assessment's evidence pointers resolve.
         result["validation"] = validation;
         Ok(())
@@ -1257,12 +1257,6 @@ impl ReconWorker {
         control: Option<&JobControl>,
         max_bytes: u64,
     ) -> ToolError {
-        // A cancelled job publishes nothing.
-        if let Some(control) = control
-            && let Err(cancelled) = control.enter(Phase::Publishing)
-        {
-            return cancelled;
-        }
         let stem = request
             .mesh_path
             .strip_suffix(".stl")
@@ -1283,6 +1277,13 @@ impl ReconWorker {
                 Some((directory, _)) => format!("{directory}/raw-{id}.stl"),
                 None => format!("raw-{id}.stl"),
             };
+        }
+        // A cancelled job publishes nothing; a retained job records the
+        // path before publishing, so an interrupted publication names it.
+        if let Some(control) = control
+            && let Err(cancelled) = control.enter_recovery(&raw_path)
+        {
+            return cancelled;
         }
         if let Err(failed) = self
             .workspace

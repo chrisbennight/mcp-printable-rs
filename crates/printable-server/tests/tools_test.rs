@@ -10750,7 +10750,7 @@ async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_k
         .generate_object(request("objects/solid.stl", None))
         .await
         .unwrap();
-    let report = &result["preparation"];
+    let report = &result["solid_rebuild"];
     assert_eq!(report["source"]["open_edges"], 4, "{result}");
     assert_eq!(report["openings_closed"], 1);
     assert_eq!(report["shells"], 1);
@@ -10761,13 +10761,9 @@ async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_k
     assert!(report["thin"].is_object());
     assert_eq!(result["validation"]["solid_geometry"], true);
     assert_eq!(result["validation"]["topology"]["self_intersections"], 0);
-    // The assessment comes with the measurements it points to, and walls
-    // were measured against the 0.4 mm nozzle.
+    // The assessment comes with the measurements it points to.
     assert!(result["validation"]["overhang"].is_object());
-    assert_ne!(
-        result["validation"]["assessment"]["criteria"]["wall_thickness"]["status"],
-        "unmeasured"
-    );
+    assert!(result["validation"]["topology"].is_object());
     // Nothing was cached for this photograph, and the report says so.
     assert!(result["photo_analysis"]["note"].is_string());
     let (_, written) = worker
@@ -10781,7 +10777,7 @@ async fn photo_objects_are_rebuilt_as_checked_solids_unless_the_raw_surface_is_k
         .await
         .unwrap();
     assert_eq!(raw["raw_surface"], true);
-    assert!(raw.get("preparation").is_none());
+    assert!(raw.get("solid_rebuild").is_none());
     let (_, written) = worker
         .workspace
         .read_generated_bytes("objects/raw.stl")

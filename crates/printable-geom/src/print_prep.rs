@@ -625,13 +625,12 @@ fn inward_pieces(vertices: &[[f64; 3]], triangles: &mut [[u32; 3]], turn: bool) 
     let mut closed = vec![true; pieces.count];
     for group in undirected_edges(triangles).chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
         // Each piece using this edge must use it exactly twice.
+        let mut uses: HashMap<u32, usize> = HashMap::new();
         for &(_, _, face) in group {
-            let piece = pieces.of_triangle[face as usize];
-            let uses = group
-                .iter()
-                .filter(|(_, _, other)| pieces.of_triangle[*other as usize] == piece)
-                .count();
-            if uses != 2 {
+            *uses.entry(pieces.of_triangle[face as usize]).or_default() += 1;
+        }
+        for (piece, count) in uses {
+            if count != 2 {
                 closed[piece as usize] = false;
             }
         }

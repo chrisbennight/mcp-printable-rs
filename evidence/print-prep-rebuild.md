@@ -1,6 +1,6 @@
 # Rebuilding a one-million-triangle mesh for printing
 
-Date: 2026-11-27. Host: an 8-core aarch64 Linux container (Debian trixie,
+Date: 2026-11-27. Host: an aarch64 Linux container on an 8-core machine (Debian trixie,
 `rust:1.97.1-trixie`) on a development machine, processor only. Binary: the
 release `printable-geometry-worker` built from this branch. These figures show
 the order of cost on a processor; the published amd64 images and other
@@ -16,22 +16,22 @@ out.stl`, where the request held the source path, `{"checks":
 {"overhang_degrees": 45, "min_feature_mm": 0.4}}`, an overhang angle of 45
 degrees and the subject name; and once more with `"edge_length_mm": 0.2`. This
 is the whole worker run behind `scene` `prepare_print`, including the
-validation of the written mesh, whose wall-thickness measurement against the
-0.4 mm minimum takes most of the time. `/usr/bin/time -v` measured each run three
+thin-wall check against 0.4 mm and the strict validation of the written mesh.
+The container was limited to two processors. `/usr/bin/time -v` measured each run three
 times; the table gives the median.
 
 | Edge | Address-space limit | Output triangles | Wall seconds | CPU seconds (user + system) | Peak resident memory |
 | --- | --- | --- | --- | --- | --- |
-| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 507,332 | 7.2 | 7.9 | 554 MiB |
-| 0.2 mm | none | 2,945,256 | 45.6 | 48.1 | 2,691 MiB |
+| 0.48 mm (default, 0.4% of the longest side) | 1 GiB | 507,332 | 3.2 | 3.6 | 491 MiB |
+| 0.2 mm | none | 2,945,256 | 15.4 | 16.7 | 2,499 MiB |
 | 0.2 mm | 1 GiB | none: the worker was stopped when it ran out of address space | | | |
 
 Both runs closed the five openings, turned the inward-facing surface to face
 outwards (`cavities_filled: 1`), merged the overlapping block into it and kept
 the floating cube, which the report lists as one floating part, since every
 part is kept by default. Each result was two shells, a valid solid with no
-self-intersections and no shells touching or crossing; its wall-thickness
-assessment failed, since the lumpy surface has walls thinner than 0.4 mm. The default edge fits within the geometry worker's
+self-intersections and no shells touching or crossing; the thin-wall check
+found 159 mm² thinner than 0.4 mm on the lumpy surface. The default edge fits within the geometry worker's
 default 1 GiB limit. Finer edges need more memory: raise
 `PRINTABLE_GEOMETRY_WORKER_MEMORY_MIB` for them. Measured values are in
 [print-prep-rebuild.json](print-prep-rebuild.json).
