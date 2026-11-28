@@ -120,6 +120,14 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
     };
     let output_schema =
         selected_output.unwrap_or_else(|| Value::Object(output::schema(name).as_ref().clone()));
+    let selected_annotations =
+        action.and_then(|action| workflows::action_annotations(name, action));
+    let annotations_scope = if selected_annotations.is_some() {
+        "action"
+    } else {
+        "tool"
+    };
+    let annotations = selected_annotations.unwrap_or_else(|| (tool.annotations)());
     Some(json!({
         "tool": name,
         "action": action,
@@ -127,8 +135,9 @@ pub fn read(uri: &str, available: workflows::Availability) -> Option<Value> {
         "inputSchema": input,
         "outputSchema": output_schema,
         "output_schema_scope": output_scope,
-        "annotations": (tool.annotations)(),
-        "note": "Invoke the advertised tool with this input. Tool-wide annotations are not an action authorization boundary. output_schema_scope identifies the output selection; failures may set isError."
+        "annotations": annotations,
+        "annotations_scope": annotations_scope,
+        "note": "Invoke the advertised tool with this input. annotations_scope is action when the annotations describe this action alone and tool when they are the tool-wide set. Annotations are hints, not an authorization boundary. output_schema_scope identifies the output selection; failures may set isError."
     }))
 }
 
@@ -234,6 +243,32 @@ mod tests {
                 .unwrap()
                 .contains_key("RenderGalleryParams")
         );
+    }
+
+    #[test]
+    fn action_contracts_carry_their_own_operation_annotations() {
+        let available = workflows::Availability {
+            head: true,
+            ..workflows::Availability::default()
+        };
+        for (uri, scope, read_only, destructive) in [
+            ("printable://contracts/job/list", "action", true, false),
+            ("printable://contracts/job/submit", "action", false, true),
+            ("printable://contracts/artifact/stat", "action", true, false),
+            ("printable://contracts/project/get", "tool", false, true),
+            ("printable://contracts/head/create", "tool", false, true),
+            ("printable://contracts/status", "tool", true, false),
+        ] {
+            let contract = read(uri, available).unwrap();
+            assert_eq!(contract["annotations_scope"], scope, "{uri}");
+            assert_eq!(contract["annotations"]["readOnlyHint"], read_only, "{uri}");
+            assert_eq!(
+                contract["annotations"]["destructiveHint"], destructive,
+                "{uri}"
+            );
+        }
+        let search = read("printable://contracts/catalog/search", available).unwrap();
+        assert_eq!(search["annotations"]["openWorldHint"], true);
     }
 
     #[test]

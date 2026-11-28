@@ -117,6 +117,10 @@ macro_rules! workflow {
         }
 
         impl $name {
+            /// Each request variant and the internal operation it resolves to.
+            const OPERATIONS: &'static [(&'static str, &'static str)] =
+                &[$((stringify!($variant), $operation)),+];
+
             fn resolve(self) -> Result<ResolvedCall, ToolError> {
                 match self {
                     $(Self::$variant(params) => ResolvedCall::new($operation, params)),+
@@ -124,6 +128,117 @@ macro_rules! workflow {
             }
         }
     };
+}
+
+/// A request variant's serialized `action` name, following serde's
+/// `snake_case` renaming of variant names.
+fn action_of(variant: &str) -> String {
+    let mut action = String::with_capacity(variant.len() + 4);
+    for (index, character) in variant.char_indices() {
+        if index > 0 && character.is_uppercase() {
+            action.push('_');
+        }
+        action.push(character.to_ascii_lowercase());
+    }
+    action
+}
+
+/// How a workflow tool's actions reach internal operations.
+struct Routes {
+    /// Request variants paired with the operation each resolves to.
+    actions: &'static [(&'static str, &'static str)],
+    /// The operation that receives every other action the tool offers.
+    otherwise: Option<&'static str>,
+}
+
+/// Request variants of `job`, which [`JobRequest::resolve`] routes by hand.
+const JOB_OPERATIONS: &[(&str, &str)] = &[
+    ("Submit", "printable_render_job_submit"),
+    ("Get", "printable_render_job_status"),
+    ("List", "printable_render_job_list"),
+    ("Artifacts", "printable_render_job_artifacts"),
+    ("Cancel", "printable_render_job_cancel"),
+];
+
+/// Request variants of `project` that leave the general project operation.
+const PROJECT_OPERATIONS: &[(&str, &str)] = &[
+    ("ExportBlender", "printable_project_export_blender"),
+    ("Cover", "printable_project_cover"),
+    ("Reindex", "printable_project_reindex"),
+];
+
+/// Request variants of `catalog`.
+const CATALOG_OPERATIONS: &[(&str, &str)] = &[
+    ("Search", "printable_project_search"),
+    ("Card", "printable_project_card"),
+    ("Status", "printable_project_index_status"),
+];
+
+/// The routes of a tool that takes an `action`, as [`resolve`] follows them.
+/// Tools that take their parameters directly have none.
+fn routes(tool: &str) -> Option<Routes> {
+    let (actions, otherwise) = match tool {
+        "inspect" => (InspectRequest::OPERATIONS, None),
+        "edit" => (EditRequest::OPERATIONS, None),
+        HEAD => (HeadRequest::OPERATIONS, None),
+        PHOTO => (PhotoRequest::OPERATIONS, None),
+        "scene" => (SceneRequest::OPERATIONS, None),
+        "scad_build" => (ScadRequest::OPERATIONS, None),
+        "view" => (ViewRequest::OPERATIONS, None),
+        "render" => (RenderRequest::OPERATIONS, None),
+        "job" => (JOB_OPERATIONS, None),
+        "artifact" => (ArtifactRequest::OPERATIONS, None),
+        "project" => (PROJECT_OPERATIONS, Some("printable_project")),
+        CATALOG => (CATALOG_OPERATIONS, None),
+        // These pass the whole typed request to one operation.
+        "collection" => (&[][..], Some("printable_collection")),
+        LIBRARY => (&[][..], Some("printable_library")),
+        "printer" => (&[][..], Some("printable_printer")),
+        "print" => (&[][..], Some("printable_print")),
+        "skill" => (&[][..], Some("printable_skill")),
+        "slice" => (&[][..], Some("printable_slice")),
+        "cad_build" => (&[][..], Some("printable_cad_build")),
+        _ => return None,
+    };
+    Some(Routes { actions, otherwise })
+}
+
+/// The internal operation an action the tool offers resolves to.
+pub fn action_operation(tool: &str, action: &str) -> Option<&'static str> {
+    let routes = routes(tool)?;
+    routes
+        .actions
+        .iter()
+        .find(|(variant, _)| action_of(variant) == action)
+        .map(|(_, operation)| *operation)
+        .or(routes.otherwise)
+}
+
+/// Internal operations without a tool definition of their own that only read
+/// state. Every other undeclared operation keeps its tool's annotations, so an
+/// omission here can only make an action look riskier than it is.
+const READ_ONLY_OPERATIONS: &[&str] = &[
+    "printable_photo_job_status",
+    "printable_photo_job_list",
+    "printable_flame_models",
+    "printable_editing_state_get",
+    "printable_workspace_transfer_status",
+    "printable_skill",
+];
+
+/// The annotations of the internal operation behind one action, when that
+/// operation declares its own or is listed as read-only. Operations that
+/// serve a whole tool or have no declaration leave the tool's annotations in
+/// force.
+pub fn action_annotations(tool: &str, action: &str) -> Option<ToolAnnotations> {
+    let operation = action_operation(tool, action)?;
+    super::lookup(operation)
+        .map(|definition| (definition.annotations)())
+        .or_else(|| {
+            READ_ONLY_OPERATIONS
+                .contains(&operation)
+                .then(super::read_only_idempotent)
+        })
 }
 
 workflow!(InspectRequest {
@@ -1453,6 +1568,155 @@ mod tests {
             let annotations = (lookup(name).expect("mutating tool").annotations)();
             assert_eq!(annotations.read_only_hint, Some(false));
             assert_eq!(annotations.destructive_hint, Some(true));
+        }
+    }
+
+    /// Every optional tool and action, as a caller could see them.
+    fn everything() -> Availability {
+        Availability {
+            head: true,
+            reconstruct: true,
+            depth: true,
+            object: true,
+            analyze: true,
+            photo_jobs: true,
+            library: true,
+        }
+    }
+
+    #[test]
+    fn read_only_actions_without_a_definition_are_declared_read_only() {
+        for (tool, action) in [
+            (PHOTO, "status"),
+            (PHOTO, "list"),
+            (HEAD, "models"),
+            ("inspect", "editing_state"),
+            ("artifact", "transfer_status"),
+        ] {
+            let annotations = action_annotations(tool, action).expect(action);
+            assert_eq!(annotations.read_only_hint, Some(true), "{tool} {action}");
+            assert_eq!(annotations.destructive_hint, Some(false), "{tool} {action}");
+        }
+        // Publishing registers a downloadable snapshot, so it is not read-only.
+        let publish = action_annotations("artifact", "publish").expect("publish");
+        assert_eq!(publish.read_only_hint, Some(false));
+        assert_eq!(publish.destructive_hint, Some(false));
+        // Reindexing may send project text and pictures to an embeddings service.
+        let reindex = action_annotations("project", "reindex").expect("reindex");
+        assert_eq!(reindex.open_world_hint, Some(true));
+        assert_eq!(reindex.read_only_hint, Some(false));
+        // Writing actions without a definition keep the tool's annotations.
+        assert!(action_annotations(PHOTO, "object").is_none());
+        assert!(action_annotations(PHOTO, "cancel").is_none());
+        for operation in READ_ONLY_OPERATIONS {
+            assert!(
+                super::super::lookup(operation).is_none(),
+                "{operation} has a definition"
+            );
+        }
+    }
+
+    #[test]
+    fn every_offered_action_routes_to_an_operation_and_every_route_is_offered() {
+        for tool in advertised(everything()) {
+            let offered = schema_actions(&(tool.schema)());
+            let Some(routes) = routes(tool.name) else {
+                assert!(offered.is_empty(), "{} offers {offered:?}", tool.name);
+                continue;
+            };
+            assert!(!offered.is_empty(), "{} offers no action", tool.name);
+            for action in &offered {
+                assert!(
+                    action_operation(tool.name, action).is_some(),
+                    "{}.{action} has no operation",
+                    tool.name
+                );
+            }
+            for (variant, operation) in routes.actions {
+                let action = action_of(variant);
+                assert!(
+                    offered.contains(&action),
+                    "{}.{action} ({operation}) is not offered",
+                    tool.name
+                );
+            }
+        }
+        // Hand-written routes name operations that declare annotations.
+        for (_, operation) in JOB_OPERATIONS
+            .iter()
+            .chain(PROJECT_OPERATIONS)
+            .chain(CATALOG_OPERATIONS)
+        {
+            assert!(super::super::lookup(operation).is_some(), "{operation}");
+        }
+        for (action, params) in [
+            ("get", json!({"job_id": "job"})),
+            ("list", json!({"limit": 10})),
+            ("cancel", json!({"job_id": "job"})),
+        ] {
+            let call = resolve("job", json!({"action": action, "params": params})).unwrap();
+            assert_eq!(Some(call.name), action_operation("job", action), "{action}");
+        }
+        assert_eq!(action_of("PhotoToBust"), "photo_to_bust");
+        assert_eq!(action_of("Scene"), "scene");
+    }
+
+    #[test]
+    fn tool_annotations_agree_with_the_actions_they_cover() {
+        let mut read_only_tools = 0;
+        for tool in advertised(everything()) {
+            let offered = schema_actions(&(tool.schema)());
+            if offered.is_empty() {
+                continue;
+            }
+            let tool_annotations = (tool.annotations)();
+            let actions: Vec<_> = offered
+                .iter()
+                .map(|action| action_annotations(tool.name, action))
+                .collect();
+            if actions.iter().all(|action| {
+                action
+                    .as_ref()
+                    .is_some_and(|a| a.read_only_hint == Some(true))
+            }) {
+                read_only_tools += 1;
+                assert_eq!(tool_annotations.read_only_hint, Some(true), "{}", tool.name);
+                assert_eq!(
+                    tool_annotations.destructive_hint,
+                    Some(false),
+                    "{}",
+                    tool.name
+                );
+            }
+            if tool_annotations.read_only_hint == Some(true) {
+                // An action without its own annotations would inherit the
+                // tool's read-only hint, so every action must declare one.
+                for (action, annotations) in offered.iter().zip(&actions) {
+                    assert_eq!(
+                        annotations.as_ref().and_then(|a| a.read_only_hint),
+                        Some(true),
+                        "{}.{action} under a read-only tool must declare read-only annotations",
+                        tool.name
+                    );
+                }
+            }
+        }
+        assert!(read_only_tools > 0);
+        for (tool, action, read_only) in [
+            ("job", "list", true),
+            ("job", "get", true),
+            ("job", "submit", false),
+            ("artifact", "stat", true),
+            ("artifact", "write", false),
+            ("inspect", "object", true),
+            ("catalog", "search", true),
+        ] {
+            let annotations = action_annotations(tool, action).expect("declared operation");
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(read_only),
+                "{tool}.{action}"
+            );
         }
     }
 

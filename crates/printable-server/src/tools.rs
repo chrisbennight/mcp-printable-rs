@@ -1676,15 +1676,27 @@ fn write_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+/// Publishing leaves the artifact unchanged but retains a snapshot against the
+/// storage budget and registers a downloadable file, so it is not read-only.
 fn publish_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
-        .read_only(true)
+        .read_only(false)
         .destructive(false)
         .idempotent(false)
         .open_world(false)
 }
 
 fn code_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(true)
+        .idempotent(false)
+        .open_world(true)
+}
+
+/// Rebuilding the project search index rewrites derived state and may send
+/// project text and pictures to a configured embeddings service.
+fn reindex_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
         .read_only(false)
         .destructive(true)
@@ -1801,7 +1813,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "printable_project_search",
         description: "Find projects in the derived search index by words, meaning or a picture, filters and sort order, returning concise or full library cards.",
         schema: schema_of::<crate::projects::index::SearchParams>,
-        annotations: read_only_idempotent,
+        annotations: catalog_annotations,
     },
     ToolDef {
         name: "printable_project_card",
@@ -1819,7 +1831,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "printable_project_reindex",
         description: "Update the project search index now, retrying failures or rebuilding it.",
         schema: schema_of::<crate::projects::index::ReindexParams>,
-        annotations: write_annotations,
+        annotations: reindex_annotations,
     },
     ToolDef {
         name: "printable_project_export_blender",
