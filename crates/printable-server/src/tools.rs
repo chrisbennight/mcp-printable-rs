@@ -1694,6 +1694,16 @@ fn code_annotations() -> ToolAnnotations {
         .open_world(true)
 }
 
+/// Rebuilding the project search index rewrites derived state and may send
+/// project text and pictures to a configured embeddings service.
+fn reindex_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(true)
+        .idempotent(false)
+        .open_world(true)
+}
+
 /// The user's project library: reads only, but a search may ask a configured
 /// embeddings or re-ranking service.
 fn catalog_annotations() -> ToolAnnotations {
@@ -1821,7 +1831,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "printable_project_reindex",
         description: "Update the project search index now, retrying failures or rebuilding it.",
         schema: schema_of::<crate::projects::index::ReindexParams>,
-        annotations: write_annotations,
+        annotations: reindex_annotations,
     },
     ToolDef {
         name: "printable_project_export_blender",

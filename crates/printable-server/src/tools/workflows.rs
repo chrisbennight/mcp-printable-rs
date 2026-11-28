@@ -223,6 +223,7 @@ const READ_ONLY_OPERATIONS: &[&str] = &[
     "printable_flame_models",
     "printable_editing_state_get",
     "printable_workspace_transfer_status",
+    "printable_skill",
 ];
 
 /// The annotations of the internal operation behind one action, when that
@@ -1600,6 +1601,10 @@ mod tests {
         let publish = action_annotations("artifact", "publish").expect("publish");
         assert_eq!(publish.read_only_hint, Some(false));
         assert_eq!(publish.destructive_hint, Some(false));
+        // Reindexing may send project text and pictures to an embeddings service.
+        let reindex = action_annotations("project", "reindex").expect("reindex");
+        assert_eq!(reindex.open_world_hint, Some(true));
+        assert_eq!(reindex.read_only_hint, Some(false));
         // Writing actions without a definition keep the tool's annotations.
         assert!(action_annotations(PHOTO, "object").is_none());
         assert!(action_annotations(PHOTO, "cancel").is_none());
@@ -1684,11 +1689,13 @@ mod tests {
                 );
             }
             if tool_annotations.read_only_hint == Some(true) {
+                // An action without its own annotations would inherit the
+                // tool's read-only hint, so every action must declare one.
                 for (action, annotations) in offered.iter().zip(&actions) {
-                    assert_ne!(
+                    assert_eq!(
                         annotations.as_ref().and_then(|a| a.read_only_hint),
-                        Some(false),
-                        "{}.{action} writes under a read-only tool",
+                        Some(true),
+                        "{}.{action} under a read-only tool must declare read-only annotations",
                         tool.name
                     );
                 }
