@@ -11,9 +11,10 @@ generated: Pixal3D's colour stages are never run, because a single-colour
 print does not need them and skipping them saves time and memory.
 
 The action runs in the optional photograph worker, the same service that
-estimates depth and reconstructs FLAME heads, on its GPU. The `photo` tool
-offers `object` while the worker reports a usable Pixal3D model or a configured
-[TRELLIS.2 runtime](#trellis2). Status lists the available object models.
+estimates depth and reconstructs FLAME heads, on its GPU. The `object` action
+runs while the worker reports a usable Pixal3D model or a configured
+[TRELLIS.2 runtime](#trellis2), and returns `unavailable` otherwise. Status
+reports `object.ready` and lists the available object models.
 
 ## What it writes
 

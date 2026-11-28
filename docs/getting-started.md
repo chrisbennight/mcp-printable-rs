@@ -88,7 +88,7 @@ client's `--url` and `--bearer-file` options before the subcommand.
 | What happened | Next action |
 | --- | --- |
 | HTTP responds but modeling is unavailable | Check dependency readiness and container state in [installation](installation.md); liveness alone is insufficient |
-| An optional photo, model-site, or printer feature is missing | Check its [setup requirements](index.md#engines-and-integrations) and the available actions in `tools/list` |
+| An optional photo, model-site, or printer feature is missing or returns `unavailable` | Check its [setup requirements](index.md#engines-and-integrations) and its readiness in `status`; photo actions are always listed, so `tools/list` does not show readiness |
 | A CAD waiter disconnects | Inspect the original build with `status` or `wait-cad`; admitted work may still be running |
 | A Blender edit or printer command times out | Inspect state or restore the saved checkpoint before deciding what to do; the mutation may already have happened |
 | A file link expires | Request a fresh publication/download of the retained artifact; do not repeat the modeling operation |
