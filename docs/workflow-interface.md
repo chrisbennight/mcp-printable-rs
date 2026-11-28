@@ -136,8 +136,10 @@ object-generation and analysis jobs. The `upload` tool manages staged file trans
 identifier belongs to the tool that created it. Mixed-action
 tools with any mutating action use conservative mutating annotations for the
 whole tool; selecting a read action does not create a separate MCP
-authorization boundary, although its action contract reports its own
-annotations. Every `catalog` action only reads, so it is annotated
+authorization boundary. An action contract reports the action's own
+annotations when the operation behind it declares them (its
+`annotations_scope` is `action`); otherwise it repeats the tool's
+annotations, as for `project` actions such as `get`. Every `catalog` action only reads, so it is annotated
 read-only and idempotent; it is open-world because a search may ask a
 configured embeddings or re-ranking service.
 

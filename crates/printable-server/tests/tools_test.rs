@@ -690,7 +690,8 @@ fn catalog_schemas_defaults_and_annotations_are_explicit() {
     let publish_schema =
         serde_json::to_value((publish.schema)()).expect("publish schema serializes");
     assert_eq!(publish_schema["required"], json!(["path"]));
-    assert_eq!((publish.annotations)().read_only_hint, Some(true));
+    // Publishing retains a snapshot and registers a downloadable file.
+    assert_eq!((publish.annotations)().read_only_hint, Some(false));
     assert_eq!((publish.annotations)().destructive_hint, Some(false));
     assert_eq!((publish.annotations)().idempotent_hint, Some(false));
     assert_eq!((publish.annotations)().open_world_hint, Some(false));

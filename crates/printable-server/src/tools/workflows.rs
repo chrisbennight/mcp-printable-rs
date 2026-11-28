@@ -1596,6 +1596,10 @@ mod tests {
             assert_eq!(annotations.read_only_hint, Some(true), "{tool} {action}");
             assert_eq!(annotations.destructive_hint, Some(false), "{tool} {action}");
         }
+        // Publishing registers a downloadable snapshot, so it is not read-only.
+        let publish = action_annotations("artifact", "publish").expect("publish");
+        assert_eq!(publish.read_only_hint, Some(false));
+        assert_eq!(publish.destructive_hint, Some(false));
         // Writing actions without a definition keep the tool's annotations.
         assert!(action_annotations(PHOTO, "object").is_none());
         assert!(action_annotations(PHOTO, "cancel").is_none());

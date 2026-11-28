@@ -1676,9 +1676,11 @@ fn write_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+/// Publishing leaves the artifact unchanged but retains a snapshot against the
+/// storage budget and registers a downloadable file, so it is not read-only.
 fn publish_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
-        .read_only(true)
+        .read_only(false)
         .destructive(false)
         .idempotent(false)
         .open_world(false)
