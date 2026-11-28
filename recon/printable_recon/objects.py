@@ -21,9 +21,10 @@ from . import features, files, gpu_memory, meshes, pixal3d
 from .pixal3d import ModelError, Voxels
 
 RESOLUTIONS = (512, 1024, 1536)
-# Stages that use the same GPU memory at every resolution: the photograph is
-# reduced to a bounded size, and the structure and first shape pass are fixed.
-FIXED_MEMORY_STAGES = {"background", "structure", "shape at 512"}
+# Stages that use the same GPU memory at every resolution. The photograph is
+# reduced to a bounded size; every later stage either works at the requested
+# resolution or keeps the finer image features alive for a later stage.
+FIXED_MEMORY_STAGES = {"background"}
 # How a stage is named in a failure message, where it differs from its name.
 STAGE_NAMES = {"background": "background removal"}
 # The structure stage's occupancy is reduced to this grid before the shape stages.
@@ -110,7 +111,7 @@ class _Stage:
         return self
 
     def __exit__(self, _kind, error, _traceback) -> None:
-        if self.device.type == "cuda" and isinstance(error, torch.cuda.OutOfMemoryError):
+        if self.device.type == "cuda" and error is not None and gpu_memory.is_out_of_memory(error):
             lower = self.name not in FIXED_MEMORY_STAGES and self.report.resolution > RESOLUTIONS[0]
             raise gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower) from error
         entry = {"stage": self.name}

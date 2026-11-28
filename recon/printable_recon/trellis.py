@@ -43,9 +43,10 @@ STAGE_NAMES = {
     "shape_sampling": "shape sampling",
     "shape_decoding": "shape decoding",
 }
-# Stages whose GPU memory grows with the requested resolution. Model loading
-# and the fixed-size structure grid use the same memory at every resolution.
-RESOLUTION_STAGES = {"image_features", "shape_sampling", "shape_decoding"}
+# Stages whose GPU memory grows with the requested resolution. Structure
+# sampling counts because the finer image conditioning stays alive through it;
+# only model loading uses the same memory at every resolution.
+RESOLUTION_STAGES = {"image_features", "structure", "shape_sampling", "shape_decoding"}
 
 
 class _ImageFeatures:

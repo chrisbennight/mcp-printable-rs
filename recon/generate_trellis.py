@@ -129,10 +129,11 @@ def main(argv):
     except (OSError, ValueError, KeyError, MemoryError, RuntimeError) as error:
         if isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EDQUOT):
             code, message = "resource_limit", "insufficient disk space for TRELLIS models, scratch data or output"
-        elif isinstance(error, MemoryError):
+        elif isinstance(error, MemoryError) or (isinstance(error, OSError) and error.errno == errno.ENOMEM):
             code, message = "resource_limit", "the TRELLIS stage ran out of host memory"
         elif "out of memory" in str(error).lower():
-            code, message = "resource_limit", "the TRELLIS stage ran out of GPU memory; retry when other GPU work has finished"
+            # GPU stages describe their own failures; this covers the rest.
+            code, message = "resource_limit", "the TRELLIS stage ran out of memory"
         else:
             code, message = "generation", "the TRELLIS stage failed; check its model, image and resource settings"
         print(json.dumps({"error": {"code": code, "message": message}}))

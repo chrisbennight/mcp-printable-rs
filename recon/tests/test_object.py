@@ -702,7 +702,7 @@ class GenerationTest(unittest.TestCase):
 class GpuMemoryTest(unittest.TestCase):
     """A stage that runs out of GPU memory says which stage and whether resolution matters."""
 
-    def _fail(self, stage: str, resolution: int):
+    def _fail(self, stage: str, resolution: int, error: Exception | None = None):
         report = objects.Report(resolution=resolution)
         gib = 1024**3
         with mock.patch.object(torch.cuda, "reset_peak_memory_stats"), \
@@ -710,7 +710,7 @@ class GpuMemoryTest(unittest.TestCase):
                 mock.patch.object(torch.cuda, "mem_get_info", return_value=(gib, 16 * gib)):
             with self.assertRaises(gpu_memory.GpuMemoryError) as caught:
                 with report.stage(stage, torch.device("cuda")):
-                    raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+                    raise error or torch.cuda.OutOfMemoryError("CUDA out of memory")
         self.assertEqual(report.stages, [])
         return str(caught.exception)
 
@@ -722,7 +722,13 @@ class GpuMemoryTest(unittest.TestCase):
     def test_resolution_dependent_stages_suggest_a_lower_resolution_above_the_lowest(self):
         self.assertIn("or lower the resolution", self._fail("surface", 1024))
         self.assertNotIn("resolution", self._fail("surface", 512))
-        self.assertNotIn("resolution", self._fail("shape at 512", 1536))
+        self.assertIn("or lower the resolution", self._fail("structure", 1024))
+        self.assertIn("or lower the resolution", self._fail("shape at 512", 1536))
+        self.assertNotIn("resolution", self._fail("background", 1536))
+
+    def test_a_cuda_library_out_of_memory_error_keeps_the_stage(self):
+        text = self._fail("surface", 1024, RuntimeError("CUDA error: out of memory"))
+        self.assertIn("during surface", text)
 
 
 if __name__ == "__main__":
