@@ -514,7 +514,7 @@ pub fn refuse_unserved(
     let (missing, ready) = match (name, action) {
         (HEAD, _) => (
             "it needs the reconstruction worker to be ready and a FLAME 2020 model to be mounted",
-            "reconstruction.ready",
+            "reconstruction.ready and reconstruction.variant",
         ),
         (_, "depth") => (
             "the photograph worker has no usable depth model",
@@ -529,8 +529,8 @@ pub fn refuse_unserved(
             "analyze.ready",
         ),
         _ => (
-            "the photograph worker has no retained photograph jobs to manage",
-            "depth.ready, object.ready and analyze.ready",
+            "the photograph worker is not ready and has no retained photograph jobs to manage",
+            "whether the photograph worker is configured and ready",
         ),
     };
     Err(ToolError::Reconstruction {
