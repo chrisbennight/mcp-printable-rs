@@ -1801,7 +1801,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "printable_project_search",
         description: "Find projects in the derived search index by words, meaning or a picture, filters and sort order, returning concise or full library cards.",
         schema: schema_of::<crate::projects::index::SearchParams>,
-        annotations: read_only_idempotent,
+        annotations: catalog_annotations,
     },
     ToolDef {
         name: "printable_project_card",

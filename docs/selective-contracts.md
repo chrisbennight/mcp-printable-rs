@@ -18,9 +18,9 @@ python3 scripts/printable_client.py contracts validate_mesh
 
 The first command returns the index. The next commands return only the
 requested contracts, including their input schemas, output schemas,
-descriptions, and whole-tool annotations. They use `resources/read`; they do
-not call `tools/list`. Selected action output schemas identify whether their
-scope is the action or the whole tool. Typed printer contracts are preserved.
+descriptions, and annotations. They use `resources/read`; they do
+not call `tools/list`. Selected action output schemas and annotations identify
+whether their scope is the action or the whole tool. Typed printer contracts are preserved.
 
 Invoke the normal public tools after reading their contracts:
 
