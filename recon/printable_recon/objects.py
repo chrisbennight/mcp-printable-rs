@@ -17,10 +17,15 @@ import numpy
 import torch
 from PIL import Image
 
-from . import features, files, meshes, pixal3d
+from . import features, files, gpu_memory, meshes, pixal3d
 from .pixal3d import ModelError, Voxels
 
 RESOLUTIONS = (512, 1024, 1536)
+# Stages that use the same GPU memory at every resolution: the photograph is
+# reduced to a bounded size, and the structure and first shape pass are fixed.
+FIXED_MEMORY_STAGES = {"background", "structure", "shape at 512"}
+# How a stage is named in a failure message, where it differs from its name.
+STAGE_NAMES = {"background": "background removal"}
 # The structure stage's occupancy is reduced to this grid before the shape stages.
 STRUCTURE_GRID = 32
 # The shape decoder subdivides four times, so a latent grid g gives a surface grid 16g.
@@ -86,6 +91,9 @@ class Report:
     """What a generation did, stage by stage."""
 
     stages: list[dict] = field(default_factory=list)
+    # The requested resolution, which decides whether a lower one could help a
+    # stage that ran out of GPU memory.
+    resolution: int = RESOLUTIONS[0]
 
     def stage(self, name: str, device: torch.device):
         return _Stage(self, name, device)
@@ -101,7 +109,10 @@ class _Stage:
             torch.cuda.reset_peak_memory_stats(self.device)
         return self
 
-    def __exit__(self, *_exc) -> None:
+    def __exit__(self, _kind, error, _traceback) -> None:
+        if self.device.type == "cuda" and isinstance(error, torch.cuda.OutOfMemoryError):
+            lower = self.name not in FIXED_MEMORY_STAGES and self.report.resolution > RESOLUTIONS[0]
+            raise gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower) from error
         entry = {"stage": self.name}
         if self.device.type == "cuda":
             # The stage's queued GPU work counts towards its own time.
@@ -147,7 +158,7 @@ def generate(
     except ValueError as error:
         raise ModelError(str(error)) from error
     settings = read_settings(directory, steps)
-    report = Report()
+    report = Report(resolution=resolution)
     generator = torch.Generator().manual_seed(seed)
 
     with report.stage("background", device):

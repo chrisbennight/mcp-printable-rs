@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy
 import torch
@@ -24,7 +25,7 @@ from PIL import Image
 from safetensors.torch import save_file
 
 import generate_object
-from printable_recon import features, files, meshes, objects, pixal3d, voxels
+from printable_recon import features, files, gpu_memory, meshes, objects, pixal3d, voxels
 
 RECON = Path(__file__).resolve().parent.parent
 
@@ -696,6 +697,32 @@ class GenerationTest(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             generate_object.main([str(path)])
         return json.loads(output.getvalue().strip().splitlines()[-1])
+
+
+class GpuMemoryTest(unittest.TestCase):
+    """A stage that runs out of GPU memory says which stage and whether resolution matters."""
+
+    def _fail(self, stage: str, resolution: int):
+        report = objects.Report(resolution=resolution)
+        gib = 1024**3
+        with mock.patch.object(torch.cuda, "reset_peak_memory_stats"), \
+                mock.patch.object(torch.cuda, "memory_reserved", return_value=gib), \
+                mock.patch.object(torch.cuda, "mem_get_info", return_value=(gib, 16 * gib)):
+            with self.assertRaises(gpu_memory.GpuMemoryError) as caught:
+                with report.stage(stage, torch.device("cuda")):
+                    raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        self.assertEqual(report.stages, [])
+        return str(caught.exception)
+
+    def test_background_removal_never_suggests_a_lower_resolution(self):
+        text = self._fail("background", 1024)
+        self.assertIn("during background removal: 1.0 GiB of 16.0 GiB was free", text)
+        self.assertNotIn("resolution", text)
+
+    def test_resolution_dependent_stages_suggest_a_lower_resolution_above_the_lowest(self):
+        self.assertIn("or lower the resolution", self._fail("surface", 1024))
+        self.assertNotIn("resolution", self._fail("surface", 512))
+        self.assertNotIn("resolution", self._fail("shape at 512", 1536))
 
 
 if __name__ == "__main__":
