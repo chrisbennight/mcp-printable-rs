@@ -16,7 +16,7 @@ use rmcp::{
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
         Resource, ResourceContents, ServerCapabilities, ServerInfo, SubscriptionFilter, Tool,
     },
-    service::{NotificationContext, Peer, RequestContext, SubscriptionContext},
+    service::{RequestContext, SubscriptionContext},
 };
 use serde_json::{Map, Value};
 
@@ -65,8 +65,6 @@ pub struct PrintableServer {
     jobs: Arc<JobRegistry>,
     published_files: Arc<PublishedFiles>,
     incoming_files: Arc<IncomingFiles>,
-    /// Initialized legacy sessions, told when the advertised tools change.
-    sessions: Arc<std::sync::Mutex<Vec<Peer<RoleServer>>>>,
 }
 
 impl PrintableServer {
@@ -109,41 +107,7 @@ impl PrintableServer {
             settings,
             scad,
             jobs,
-            sessions: Arc::default(),
         }
-    }
-
-    /// The advertised `head` schema and `photo` tool depend on what the
-    /// photograph worker can run. Until `cancel` fires, tell every
-    /// initialized session when that changes, so clients list the tools again.
-    pub(crate) fn announce_tool_changes(&self, cancel: tokio_util::sync::CancellationToken) {
-        let Some(recon) = self
-            .settings
-            .recon
-            .as_ref()
-            .filter(|_| self.tool_list_can_change())
-        else {
-            return;
-        };
-        let mut changes = recon.subscribe();
-        let sessions = Arc::clone(&self.sessions);
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    changed = changes.changed() => if changed.is_err() { break },
-                }
-                let peers: Vec<_> = {
-                    let mut sessions = sessions.lock().unwrap_or_else(|poison| poison.into_inner());
-                    sessions.retain(|peer| !peer.is_transport_closed());
-                    sessions.clone()
-                };
-                for peer in peers {
-                    // A session that has gone away simply misses the notice.
-                    let _ = peer.notify_tool_list_changed().await;
-                }
-            }
-        });
     }
 
     pub(crate) fn incoming_files(&self) -> Arc<IncomingFiles> {
@@ -226,13 +190,6 @@ impl PrintableServer {
         }
     }
 
-    /// The photograph worker's readiness changes the catalog: it gates the
-    /// `photo` tool's worker actions, and `reconstruct` when a FLAME 2020
-    /// model is mounted.
-    fn tool_list_can_change(&self) -> bool {
-        self.settings.recon.is_some()
-    }
-
     /// Resolve a tool name and dispatch. An unknown name is a JSON-RPC
     /// method-not-found; a tool-level failure is a successful result flagged
     /// `is_error` carrying a machine code + message.
@@ -251,7 +208,9 @@ impl PrintableServer {
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Map::new()));
-        if let Err(error) = tools::workflows::refuse_unoffered(advertised, &args) {
+        if let Err(error) =
+            tools::workflows::refuse_unserved(advertised.name, self.availability(), &args)
+        {
             return Ok(error_result(&params.name, &error));
         }
 
@@ -598,17 +557,11 @@ impl ServerHandler for PrintableServer {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::V_2026_07_28;
         let capabilities = ServerCapabilities::builder().enable_tools();
-        let mut capabilities = if resources::RESOURCES.is_empty() {
+        let capabilities = if resources::RESOURCES.is_empty() {
             capabilities.build()
         } else {
             capabilities.enable_resources().build()
         };
-        // Only reconstruction readiness changes the tools after startup.
-        if self.tool_list_can_change()
-            && let Some(tools) = capabilities.tools.as_mut()
-        {
-            tools.list_changed = Some(true);
-        }
         info.capabilities = capabilities;
         // `from_build_env` captures rmcp's own package identity (name and
         // version), so override both: the client must see `printable_blender` at
@@ -620,57 +573,18 @@ impl ServerHandler for PrintableServer {
         info
     }
 
-    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        if !self.tool_list_can_change()
-            || context
-                .peer
-                .peer_info()
-                .is_some_and(|info| info.protocol_version >= ProtocolVersion::V_2026_07_28)
-        {
-            return;
-        }
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        sessions.retain(|peer| !peer.is_transport_closed());
-        sessions.push(context.peer);
-    }
-
+    /// The advertised tools never change while the server runs, so no
+    /// notification types are supported; a subscription is acknowledged with
+    /// an empty filter and stays open until the client ends it.
     fn accepted_subscription_filter(
         &self,
         requested: &SubscriptionFilter,
     ) -> Option<SubscriptionFilter> {
-        let supported = if self.tool_list_can_change() {
-            SubscriptionFilter::builder().tools_list_changed().build()
-        } else {
-            SubscriptionFilter::new()
-        };
-        Some(requested.intersection(&supported))
+        Some(requested.intersection(&SubscriptionFilter::new()))
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
-        // The SDK has acknowledged the filter before handing us this context.
-        let Some(recon) = self
-            .settings
-            .recon
-            .as_ref()
-            .filter(|_| context.accepted().tools_list_changed == Some(true))
-        else {
-            context.cancelled().await;
-            return Ok(());
-        };
-        let mut changes = recon.subscribe();
-        loop {
-            tokio::select! {
-                _ = context.cancelled() => break,
-                changed = changes.changed() => if changed.is_err() { break },
-            }
-            tokio::select! {
-                _ = context.cancelled() => break,
-                sent = context.sink().notify_tool_list_changed() => if sent.is_err() { break },
-            }
-        }
+        context.cancelled().await;
         Ok(())
     }
 

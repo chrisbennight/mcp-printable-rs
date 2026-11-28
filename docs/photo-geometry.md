@@ -122,8 +122,9 @@ photograph jobs are unaffected.
 
 The `analyze` action prepares, in one request, what later photograph
 workflows need: depth for broad shape, normals for detail, a subject mask, a
-focal length, and a confidence map with summary scores. It is offered while
-the geometry models are configured; a model that is not yet prepared is
+focal length, and a confidence map with summary scores. It runs while the
+geometry models are configured, which `status` reports as `analyze.ready`, and
+returns `unavailable` otherwise; a model that is not yet prepared is
 downloaded inside the analysis job.
 
 ```json

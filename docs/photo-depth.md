@@ -9,8 +9,8 @@ detail such as hair, fur and sharp edges. Use them with the
 mold master or a displacement map.
 
 The action runs in the optional photograph worker, the same service that
-reconstructs FLAME heads, on its GPU. The `depth` action is advertised only
-while the worker reports its converted Marigold V2 model present.
+reconstructs FLAME heads, on its GPU. The `depth` action returns
+`unavailable` until the worker reports its converted Marigold V2 model present.
 The same worker can also prepare a separate set of
 [photograph geometry models](photo-geometry.md), with measured
 recommendations for choosing among them.

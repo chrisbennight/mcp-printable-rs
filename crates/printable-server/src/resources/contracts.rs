@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn head_contracts_follow_model_availability() {
+    fn head_contracts_follow_model_configuration_not_readiness() {
         let none = workflows::Availability::default();
         let head = workflows::Availability { head: true, ..none };
         let reconstruct = workflows::Availability {
@@ -256,12 +256,15 @@ mod tests {
         assert!(listed(head));
         assert!(read("printable://contracts/head/create", none).is_none());
         assert!(read("printable://contracts/head/create", head).is_some());
-        assert!(read("printable://contracts/head/reconstruct", head).is_none());
-        assert!(read("printable://contracts/head/reconstruct", reconstruct).is_some());
+        assert_eq!(
+            read("printable://contracts/head/reconstruct", head),
+            read("printable://contracts/head/reconstruct", reconstruct)
+        );
+        assert!(read("printable://contracts/head/reconstruct", head).is_some());
     }
 
     #[test]
-    fn photo_contracts_follow_each_models_availability() {
+    fn photo_contracts_do_not_depend_on_model_readiness() {
         let none = workflows::Availability::default();
         let depth = workflows::Availability {
             depth: true,
@@ -287,11 +290,15 @@ mod tests {
         assert!(listed(depth));
         assert!(listed(object));
         assert!(read("printable://contracts/photo/lithophane", none).is_some());
-        assert!(read("printable://contracts/photo/status", none).is_none());
-        assert!(read("printable://contracts/photo/relief", none).is_none());
-        assert!(read("printable://contracts/photo/depth", none).is_none());
-        assert!(read("printable://contracts/photo/object", depth).is_none());
-        assert!(read("printable://contracts/photo/depth", object).is_none());
+        for action in ["status", "relief", "depth", "object", "analyze", "compare"] {
+            let uri = format!("printable://contracts/photo/{action}");
+            assert!(read(&uri, none).is_some(), "{action}");
+            assert_eq!(read(&uri, none), read(&uri, both), "{action}");
+        }
+        assert_eq!(
+            read("printable://contracts/photo/object", depth),
+            read("printable://contracts/photo/object", object)
+        );
         let contract = read("printable://contracts/photo/depth", both).unwrap();
         let validator = jsonschema::validator_for(&contract["inputSchema"]).unwrap();
         assert!(validator.is_valid(&json!({"action": "depth", "params": {

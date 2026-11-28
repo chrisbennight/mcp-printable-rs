@@ -482,29 +482,61 @@ fn schema_actions(schema: &JsonObject) -> Vec<String> {
         .collect()
 }
 
-/// Refuse an action that the tool has but `advertised`, the form of it
-/// this server currently offers, leaves out, with the error an unknown
-/// action gets.
-pub fn refuse_unoffered(advertised: &ToolDef, arguments: &Value) -> Result<(), ToolError> {
-    let (Some(action), Some(full)) = (arguments["action"].as_str(), lookup(advertised.name)) else {
+/// Refuse an advertised action that the worker behind it cannot serve right
+/// now. The advertised contract stays the same while workers start, stop or
+/// load models, so a caller learns at call time, with `unavailable`, and
+/// `status` reports which capabilities are ready. An action the tool does
+/// not have at all is left to request validation.
+pub fn refuse_unserved(
+    name: &str,
+    available: Availability,
+    arguments: &Value,
+) -> Result<(), ToolError> {
+    let Some(action) = arguments["action"].as_str() else {
         return Ok(());
     };
-    if std::ptr::eq(advertised, full) {
+    let (Some(advertised), Some(served)) = (
+        advertised(available).find(|tool| tool.name == name),
+        served(available).find(|tool| tool.name == name),
+    ) else {
         return Ok(());
-    }
-    let offered = schema_actions(&(advertised.schema)());
-    if offered.iter().any(|name| name == action)
-        || !schema_actions(&(full.schema)())
+    };
+    if std::ptr::eq(advertised, served)
+        || !schema_actions(&(advertised.schema)())
             .iter()
-            .any(|name| name == action)
+            .any(|offered| offered == action)
+        || schema_actions(&(served.schema)())
+            .iter()
+            .any(|offered| offered == action)
     {
         return Ok(());
     }
-    let expected: Vec<String> = offered.iter().map(|name| format!("`{name}`")).collect();
-    Err(ToolError::Validation(format!(
-        "unknown variant `{action}`, expected one of {}",
-        expected.join(", ")
-    )))
+    let (missing, ready) = match (name, action) {
+        (HEAD, _) => (
+            "it needs the reconstruction worker to be ready and a FLAME 2020 model to be mounted",
+            "reconstruction.ready and reconstruction.variant",
+        ),
+        (_, "depth") => (
+            "the photograph worker has no usable depth model",
+            "depth.ready",
+        ),
+        (_, "object") => (
+            "the photograph worker has no object generator ready",
+            "object.ready",
+        ),
+        (_, "analyze" | "relief" | "compare") => (
+            "the photograph worker has no photograph geometry models ready",
+            "analyze.ready",
+        ),
+        _ => (
+            "the photograph worker is not ready and has no retained photograph jobs to manage",
+            "whether the photograph worker is configured and ready",
+        ),
+    };
+    Err(ToolError::Reconstruction {
+        code: "unavailable",
+        message: format!("`{action}` is unavailable: {missing}; `status` reports {ready}"),
+    })
 }
 
 pub fn lookup(name: &str) -> Option<&'static ToolDef> {
@@ -514,9 +546,9 @@ pub fn lookup(name: &str) -> Option<&'static ToolDef> {
 /// The workflow tool that exists only while FLAME head models are mounted.
 pub const HEAD: &str = "head";
 
-/// The workflow tool for photograph geometry. Its `lithophane` action is
-/// always offered; the others only while the photograph worker can serve
-/// them.
+/// The workflow tool for photograph geometry. Every action is always
+/// advertised; `lithophane` runs on the server, and the others return
+/// `unavailable` while the photograph worker cannot serve them.
 pub const PHOTO: &str = "photo";
 
 /// The workflow tool that exists only while public model sites are enabled.
@@ -544,34 +576,48 @@ pub struct Availability {
     pub library: bool,
 }
 
-/// Tools this server advertises and accepts. `head` is included only when a
-/// FLAME model is mounted, and offers `reconstruct` only when that can be
-/// served; `photo` offers `lithophane` and only the photograph worker's
-/// actions that can be served; and `library` is included only when a model
-/// site is enabled, so clients never see a capability that cannot be
-/// served.
+/// Tools this server advertises. The set follows configuration only: `head`
+/// is included when a FLAME model is mounted and `library` when a model site
+/// is enabled. Worker readiness never changes an advertised contract, so the
+/// catalog a client or gateway reviews stays the same while workers start,
+/// stop or load models; `refuse_unserved` reports an action the worker
+/// cannot serve at call time.
 pub fn advertised(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
+    configured(available).map(|tool| match tool.name {
+        HEAD => &HEAD_WITH_RECONSTRUCTION,
+        _ => tool,
+    })
+}
+
+fn configured(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
     TOOLS
         .iter()
         .filter(move |tool| tool.name != HEAD || available.head)
         .filter(move |tool| tool.name != LIBRARY || available.library)
-        .map(move |tool| match tool.name {
-            HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
-            PHOTO
-                if !(available.depth
-                    || available.object
-                    || available.analyze
-                    || available.photo_jobs) =>
-            {
-                &PHOTO_LITHOPHANE_ONLY
-            }
-            PHOTO => {
-                &PHOTO_VARIANTS[usize::from(available.depth)
-                    | usize::from(available.object) << 1
-                    | usize::from(available.analyze) << 2]
-            }
-            _ => tool,
-        })
+}
+
+/// The form of each advertised tool that the workers can serve right now:
+/// `head` offers `reconstruct` only when that can be served, and `photo`
+/// offers `lithophane` and only the photograph worker's actions that can be
+/// served.
+fn served(available: Availability) -> impl Iterator<Item = &'static ToolDef> {
+    configured(available).map(move |tool| match tool.name {
+        HEAD if available.reconstruct => &HEAD_WITH_RECONSTRUCTION,
+        PHOTO
+            if !(available.depth
+                || available.object
+                || available.analyze
+                || available.photo_jobs) =>
+        {
+            &PHOTO_LITHOPHANE_ONLY
+        }
+        PHOTO => {
+            &PHOTO_VARIANTS[usize::from(available.depth)
+                | usize::from(available.object) << 1
+                | usize::from(available.analyze) << 2]
+        }
+        _ => tool,
+    })
 }
 
 // The parts of the `photo` description, as macros so `concat!` can join them.
@@ -1041,9 +1087,9 @@ mod tests {
     }
 
     #[test]
-    fn photo_offers_only_the_actions_its_models_serve() {
+    fn photo_serves_only_the_actions_its_models_serve() {
         let photo = |depth, object, analyze| {
-            advertised(Availability {
+            served(Availability {
                 depth,
                 object,
                 analyze,
@@ -1178,7 +1224,7 @@ mod tests {
 
     #[test]
     fn retained_photo_jobs_remain_discoverable_without_models() {
-        let tool = advertised(Availability {
+        let tool = served(Availability {
             photo_jobs: true,
             ..Availability::default()
         })
@@ -1242,9 +1288,9 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_is_advertised_only_when_it_can_be_served() {
+    fn reconstruct_is_served_only_when_it_can_be_served() {
         let head_schema = |reconstruct| {
-            let tool = advertised(Availability {
+            let tool = served(Availability {
                 head: true,
                 reconstruct,
                 depth: false,
@@ -1262,6 +1308,70 @@ mod tests {
         assert!(head_schema(true).contains("reconstruct"));
         assert!(head_schema(true).contains("photo_to_bust"));
         assert!(head_schema(false).contains("prepare_print"));
+    }
+
+    #[test]
+    fn advertised_contracts_ignore_worker_readiness() {
+        let contracts = |ready: bool| {
+            advertised(Availability {
+                head: true,
+                reconstruct: ready,
+                depth: ready,
+                object: ready,
+                analyze: ready,
+                photo_jobs: ready,
+                library: true,
+            })
+            .map(|tool| {
+                (
+                    tool.name,
+                    tool.description,
+                    serde_json::to_string(&*(tool.schema)()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(contracts(false), contracts(true));
+        let photo = advertised(Availability::default())
+            .find(|tool| tool.name == PHOTO)
+            .unwrap();
+        let actions = schema_actions(&(photo.schema)());
+        for action in ["depth", "object", "analyze", "relief", "compare", "status"] {
+            assert!(actions.iter().any(|name| name == action), "{action}");
+        }
+    }
+
+    #[test]
+    fn unready_actions_are_refused_as_unavailable_at_call_time() {
+        let cold = Availability {
+            head: true,
+            ..Availability::default()
+        };
+        for (tool, action) in [(PHOTO, "analyze"), (PHOTO, "object"), (HEAD, "reconstruct")] {
+            let error =
+                refuse_unserved(tool, cold, &json!({"action": action, "params": {}})).unwrap_err();
+            assert_eq!(error.code(), "unavailable", "{tool} {action}");
+            assert!(error.to_string().contains("`status` reports"), "{error}");
+        }
+        // Always-served actions, unknown actions and ready actions pass on to
+        // ordinary request validation.
+        for (tool, action) in [
+            (PHOTO, "lithophane"),
+            (PHOTO, "no_such_action"),
+            (HEAD, "models"),
+        ] {
+            assert!(
+                refuse_unserved(tool, cold, &json!({"action": action})).is_ok(),
+                "{action}"
+            );
+        }
+        let analyze = refuse_unserved(PHOTO, cold, &json!({"action": "relief"})).unwrap_err();
+        assert!(analyze.to_string().contains("analyze.ready"), "{analyze}");
+        let warm = Availability {
+            analyze: true,
+            ..cold
+        };
+        assert!(refuse_unserved(PHOTO, warm, &json!({"action": "analyze"})).is_ok());
     }
 
     #[test]

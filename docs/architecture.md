@@ -47,20 +47,18 @@ editor observations. Neither Blender process exposes a public control port.
 
 Printable explicitly supports MCP revisions `2024-11-05`, `2025-03-26`,
 `2025-06-18`, `2025-11-25`, and `2026-07-28`. Independent HTTP tests exercise
-discovery and tool-list changes against the corresponding client lifecycle.
-Legacy clients initialize a session and receive tool-list changes on its event
-stream. Current clients use per-request metadata and `subscriptions/listen`.
-The subscription acknowledges the requested notification types it supports,
-identifies each notification with the subscription request ID, and ends when
-the HTTP stream closes. After each subscription acknowledgement, read the
-current catalog. Reconnecting requires a new subscription; previous streams
-do not replay missed changes.
+discovery and the tool catalog against the corresponding client lifecycle.
+Legacy clients initialize a session; current clients use per-request metadata.
 
-Only the photograph worker's readiness changes the catalog after startup: it
-gates the `photo` tool's worker actions, and `head`'s `reconstruct` and `photo_to_bust`
-when a matching head model is mounted. The `photo` tool itself is always
-offered; without the worker it offers only `lithophane`. Servers without that worker omit tool-list-change capability and
-accept an empty notification filter. Other notification categories are not advertised.
+The tool catalog follows configuration only and does not change while the
+server runs. `head` is listed when FLAME models are mounted and `library` when
+model sites are enabled; every other tool, including all of `photo` and
+`head`'s `reconstruct` and `photo_to_bust`, is always advertised in full. An
+advertised action whose worker or model is not ready returns `unavailable`
+when called, and `status` reports which capabilities are ready. Because the
+catalog is fixed, the server does not advertise tool-list changes;
+`subscriptions/listen` is acknowledged with an empty notification filter and
+stays open until the client closes it.
 See the [MCP subscription requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions)
 and [Streamable HTTP requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
 

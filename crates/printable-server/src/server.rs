@@ -123,7 +123,6 @@ pub fn build_routers(settings: &Settings, cancel: CancellationToken) -> anyhow::
     published_files.spawn_reaper(cancel.child_token());
     if let Some(recon) = &settings.recon {
         Arc::clone(recon).watch(cancel.child_token());
-        server.announce_tool_changes(cancel.child_token());
     }
 
     let mcp_service = StreamableHttpService::new(

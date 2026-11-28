@@ -44,7 +44,7 @@ or permission to execute scripts or contact a printer.
 A model made from a photograph or by a generator is an estimate. Before
 preparing it, run the hard checks (`validate_mesh` and any relief `checks`),
 then measure it against its photograph or an alternative with the `photo`
-tool's `compare` action when it is offered, and only then review renders by
+tool's `compare` action when `status` reports photograph analysis ready, and only then review renders by
 eye. Never accept such a model on appearance alone; when the same check fails
 twice, change the route that made it rather than repairing the print.
 
