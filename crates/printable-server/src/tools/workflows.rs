@@ -214,11 +214,30 @@ pub fn action_operation(tool: &str, action: &str) -> Option<&'static str> {
         .or(routes.otherwise)
 }
 
+/// Internal operations without a tool definition of their own that only read
+/// state. Every other undeclared operation keeps its tool's annotations, so an
+/// omission here can only make an action look riskier than it is.
+const READ_ONLY_OPERATIONS: &[&str] = &[
+    "printable_photo_job_status",
+    "printable_photo_job_list",
+    "printable_flame_models",
+    "printable_editing_state_get",
+    "printable_workspace_transfer_status",
+];
+
 /// The annotations of the internal operation behind one action, when that
-/// operation declares its own. Operations that serve a whole tool or have no
-/// declaration leave the tool's annotations in force.
+/// operation declares its own or is listed as read-only. Operations that
+/// serve a whole tool or have no declaration leave the tool's annotations in
+/// force.
 pub fn action_annotations(tool: &str, action: &str) -> Option<ToolAnnotations> {
-    super::lookup(action_operation(tool, action)?).map(|operation| (operation.annotations)())
+    let operation = action_operation(tool, action)?;
+    super::lookup(operation)
+        .map(|definition| (definition.annotations)())
+        .or_else(|| {
+            READ_ONLY_OPERATIONS
+                .contains(&operation)
+                .then(super::read_only_idempotent)
+        })
 }
 
 workflow!(InspectRequest {
@@ -1561,6 +1580,30 @@ mod tests {
             analyze: true,
             photo_jobs: true,
             library: true,
+        }
+    }
+
+    #[test]
+    fn read_only_actions_without_a_definition_are_declared_read_only() {
+        for (tool, action) in [
+            (PHOTO, "status"),
+            (PHOTO, "list"),
+            (HEAD, "models"),
+            ("inspect", "editing_state"),
+            ("artifact", "transfer_status"),
+        ] {
+            let annotations = action_annotations(tool, action).expect(action);
+            assert_eq!(annotations.read_only_hint, Some(true), "{tool} {action}");
+            assert_eq!(annotations.destructive_hint, Some(false), "{tool} {action}");
+        }
+        // Writing actions without a definition keep the tool's annotations.
+        assert!(action_annotations(PHOTO, "object").is_none());
+        assert!(action_annotations(PHOTO, "cancel").is_none());
+        for operation in READ_ONLY_OPERATIONS {
+            assert!(
+                super::super::lookup(operation).is_none(),
+                "{operation} has a definition"
+            );
         }
     }
 
