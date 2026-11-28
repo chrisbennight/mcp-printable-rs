@@ -917,13 +917,11 @@ generation, and stops a
 reconstruction that exceeds `PRINTABLE_RECON_TIMEOUT_SECONDS` (default 300). `status` reports whether the
 worker is configured and ready.
 
-The `head` tool offers `reconstruct` only when a matching head model is mounted
-and the worker reports every checkpoint present. The server checks every
-30 seconds. When availability changes, initialized legacy sessions and current
-clients subscribed to tool-list changes receive
-`notifications/tools/list_changed` so that they list the tools again. See
-[MCP compatibility](architecture.md#mcp-compatibility) for subscription and
-reconnection requirements.
+The `head` tool always advertises `reconstruct` and `photo_to_bust`. They run
+only when a matching head model is mounted and the worker reports every
+checkpoint present; until then they return `unavailable`. The server checks
+the worker every 30 seconds, and `status` reports whether reconstruction is
+ready. See [MCP compatibility](architecture.md#mcp-compatibility).
 
 ### Choose photographs
 

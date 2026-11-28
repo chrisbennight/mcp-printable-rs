@@ -8204,7 +8204,7 @@ fn photo_call(arguments: Value) -> CallToolRequestParams {
 }
 
 #[tokio::test]
-async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_depth() {
+async fn photo_depth_is_advertised_and_forwarded_only_when_the_worker_can_estimate_depth() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("photo.jpg"), b"jpeg").unwrap();
     let advertised = |server: &PrintableServer| {
@@ -8217,11 +8217,11 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
 
     let (endpoint, _, task) = fake_recon_worker(true).await;
     let server = recon_server(root.path(), &endpoint).await;
-    // Only lithophane, which needs no worker, is offered.
+    // Every action is advertised whether or not the worker can serve it.
     let schema = serde_json::to_string(&advertised(&server).unwrap().input_schema).unwrap();
-    assert!(schema.contains("max_thickness_mm") && !schema.contains("depth_path"));
-    // An action the tool has but does not offer here is refused like an
-    // unknown one, before it runs.
+    assert!(schema.contains("max_thickness_mm") && schema.contains("depth_path"));
+    // An advertised action the worker cannot serve is refused as unavailable
+    // before it runs; an action the tool does not have fails validation.
     let refused = |action: &str| {
         let server = &server;
         let action = action.to_owned();
@@ -8240,12 +8240,13 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
     };
     let relief = refused("relief").await;
     let unknown = refused("carve").await;
-    assert_eq!(relief["code"], unknown["code"]);
+    assert_eq!(relief["code"], "unavailable", "{relief}");
+    assert_ne!(unknown["code"], "unavailable", "{unknown}");
     assert!(
         relief["message"]
             .as_str()
             .unwrap()
-            .contains("unknown variant `relief`, expected one of `lithophane`"),
+            .contains("`relief` is unavailable"),
         "{relief}"
     );
     assert!(
@@ -8259,7 +8260,7 @@ async fn photo_depth_is_offered_and_forwarded_only_when_the_worker_can_estimate_
 
     let (endpoint, seen, task) = fake_depth_worker().await;
     let server = recon_server(root.path(), &endpoint).await;
-    assert!(!head_offers_reconstruct(&server));
+    assert!(head_offers_reconstruct(&server));
     let tool = advertised(&server).expect("photo is advertised");
     assert!(tool.output_schema.is_none());
     let output = jsonschema::validator_for(&Value::Object(
@@ -8376,14 +8377,27 @@ async fn photo_object_is_offered_and_forwarded_only_when_the_worker_can_generate
             .find(|tool| tool.name == "photo")
     };
 
-    // A worker that can only estimate depth does not offer objects.
+    // A worker that can only estimate depth still advertises objects and
+    // refuses them as unavailable.
     let (endpoint, _, task) = fake_depth_worker().await;
     let server = recon_server(root.path(), &endpoint).await;
     let tool = advertised(&server).expect("photo is advertised");
     assert!(
-        !serde_json::to_string(&tool.input_schema)
+        serde_json::to_string(&tool.input_schema)
             .unwrap()
             .contains("mesh_path")
+    );
+    let refused = server
+        .invoke_tool(photo_call(json!({
+            "action": "object",
+            "params": {"image": "figure.jpg", "mesh_path": "figure.stl"}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert_eq!(
+        refused.structured_content.unwrap()["error"]["code"],
+        "unavailable"
     );
     task.abort();
 
@@ -8391,7 +8405,7 @@ async fn photo_object_is_offered_and_forwarded_only_when_the_worker_can_generate
     let server = recon_server(root.path(), &endpoint).await;
     let tool = advertised(&server).expect("photo is advertised");
     let schema = serde_json::to_string(&tool.input_schema).unwrap();
-    assert!(schema.contains("mesh_path") && !schema.contains("depth_path"));
+    assert!(schema.contains("mesh_path") && schema.contains("depth_path"));
     assert!(tool.output_schema.is_none());
     let output = jsonschema::validator_for(&Value::Object(
         printable_server::tools::output::schema("photo")
@@ -8486,16 +8500,32 @@ fn head_offers_reconstruct(server: &PrintableServer) -> bool {
 }
 
 #[tokio::test]
-async fn head_reconstruct_is_offered_only_when_the_worker_is_ready() {
+async fn head_reconstruct_is_advertised_but_runs_only_when_the_worker_is_ready() {
     let root = tempfile::tempdir().unwrap();
+    let refused = |server: &PrintableServer| {
+        let server = server.clone();
+        async move {
+            let result = server
+                .invoke_tool(head_call(json!({
+                    "action": "reconstruct",
+                    "params": {"images": ["face.jpg"]}
+                })))
+                .await
+                .unwrap();
+            result.is_error == Some(true)
+                && result.structured_content.unwrap()["error"]["code"] == "unavailable"
+        }
+    };
     let (endpoint, _, task) = fake_recon_worker(false).await;
     let server = recon_server(root.path(), &endpoint).await;
-    assert!(!head_offers_reconstruct(&server));
+    assert!(head_offers_reconstruct(&server));
+    assert!(refused(&server).await);
     task.abort();
 
     let (endpoint, _, task) = fake_recon_worker(true).await;
     let server = recon_server(root.path(), &endpoint).await;
     assert!(head_offers_reconstruct(&server));
+    assert!(!refused(&server).await);
     task.abort();
 
     // A model other than FLAME 2020 generic cannot take the coefficients.
@@ -8514,7 +8544,8 @@ async fn head_reconstruct_is_offered_only_when_the_worker_is_ready() {
         Arc::new(client("127.0.0.1", 9)),
         Arc::new(cfg),
     );
-    assert!(!head_offers_reconstruct(&server));
+    assert!(head_offers_reconstruct(&server));
+    assert!(refused(&server).await);
     task.abort();
 }
 
