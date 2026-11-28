@@ -403,10 +403,12 @@ A project's picture is its cover, or else its
 [generated Blender or plate picture](#generated-pictures), or else the first plate
 thumbnail in its newest slice's package. A search `picture` is a PNG, JPEG or WebP file in the
 workspace of at most 16 MiB and 8192 pixels on a side; upload one with the
-workspace file tools first. If the model refuses pictures, picture search is
-reported unavailable with reason `pictures_rejected`, and no more pictures are
-sent until the embedding settings or the model change, or until a pass runs
-with the setting off. An answer of `413`, request too large, does not count as
+workspace file tools first. If the model refuses a project picture while
+indexing, picture search is reported unavailable with reason
+`pictures_rejected`, and no more pictures are sent until the embedding settings
+or the model change, or until a pass runs with the setting off. If it refuses a
+search `picture`, that search reports `pictures_rejected` and the index is left
+as it was, because searching only reads the index. An answer of `413`, request too large, does not count as
 a refusal: that picture is tried again later like any other failed input.
 
 Re-ranking requests use the shape that Cohere, Jina, vLLM and Text Embeddings

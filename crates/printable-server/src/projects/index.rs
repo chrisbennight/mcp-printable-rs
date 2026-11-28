@@ -3410,20 +3410,15 @@ impl ProjectIndex {
             embeddings::prepare_picture(&cover::read_picture(&pictures_from, &path)?)
         })
         .await?;
-        let refused = |detail: &str| {
-            format!(
-                "{detail}, so pictures are not sent again until the embedding settings or the model change"
-            )
-        };
+        // Searching only reads the index: a refusal is reported for this query,
+        // and indexing records it when it next sends a project picture.
         Ok(match service.embed(&[Input::Picture(&png)]).await {
             Ok(embedded) if identity.matches(&embedded) => embedded.vectors.into_iter().next(),
             Ok(embedded) if embedded.model == identity.service_model => {
-                let detail = PICTURE_LENGTH_DIFFERS.to_owned();
-                self.refuse_pictures(identity, detail.clone()).await?;
                 degraded.push(note(
                     Capability::Picture,
                     Reason::PicturesRejected,
-                    Some(refused(&detail)),
+                    Some(PICTURE_LENGTH_DIFFERS.to_owned()),
                 ));
                 None
             }
@@ -3438,12 +3433,10 @@ impl ProjectIndex {
             Err(ServiceError::Refused(status))
                 if ServiceError::Refused(status).refuses_pictures() =>
             {
-                let detail = pictures_refused_with(status);
-                self.refuse_pictures(identity, detail.clone()).await?;
                 degraded.push(note(
                     Capability::Picture,
                     Reason::PicturesRejected,
-                    Some(refused(&detail)),
+                    Some(pictures_refused_with(status)),
                 ));
                 None
             }
@@ -5450,7 +5443,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_refused_query_picture_turns_picture_search_off() {
+        async fn a_refused_query_picture_is_reported_without_changing_the_index() {
             let server = MockServer::start().await;
             served(
                 &server,
@@ -5483,11 +5476,15 @@ mod tests {
             }
             assert_eq!(
                 picture_requests(&server).await,
-                1,
-                "pictures are not sent again"
+                2,
+                "each search sends its own picture"
             );
-            let status = index.status(&workspace).unwrap();
-            assert!(status.methods.meaning && !status.methods.picture);
+            let refused = index
+                .with_connection(|connection| Ok(read_identity(connection)?))
+                .unwrap()
+                .unwrap()
+                .pictures_refused;
+            assert_eq!(refused, None, "a search does not record the refusal");
         }
 
         #[tokio::test]
