@@ -274,15 +274,13 @@ much other processes held. For example:
 ```text
 the GPU ran out of memory during background removal: 1.1 GiB of 16.0 GiB was
 free, this job held 0.6 GiB of its 4.0 GiB budget and other processes held
-about 14.3 GiB. To continue, retry when other GPU work has finished or ask
-the operator to raise the worker's GPU memory budget.
+about 14.3 GiB. To continue, retry when other GPU work has finished.
 ```
 
 The worker cannot tell how much the failed request asked for, so the message
 lists every remedy the figures leave open rather than naming one cause:
 
-- **Retry when other GPU work has finished**, offered when other processes
-  held at least 1 GiB, or when the device could not be queried. "Other
+- **Retry when other GPU work has finished**, always offered. "Other
   processes" is total minus free minus what the job held, so it also includes
   the job's own CUDA context, typically well under 1 GiB.
 - **Lower the resolution**, offered only for stages whose memory depends on
@@ -291,10 +289,8 @@ lists every remedy the figures leave open rather than naming one cause:
   stages either work at the requested resolution or keep finer image
   features in memory for a later stage.
 - **Raise the budget** (`PRINTABLE_RECON_TRELLIS_VRAM_MIB`), offered only for
-  TRELLIS.2 and only when the budget is below the GPU's total memory.
-
-When none applies, the message says the stage needs more GPU memory than is
-available.
+  TRELLIS.2, only when more memory was free than the budget still allowed,
+  and only when the budget is below the GPU's total memory.
 
 ## Photographs that work
 

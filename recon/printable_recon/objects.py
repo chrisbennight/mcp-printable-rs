@@ -130,7 +130,8 @@ class _Stage:
 
     def _out_of_memory(self) -> gpu_memory.GpuMemoryError:
         lower = self.name not in FIXED_MEMORY_STAGES and self.report.resolution > RESOLUTIONS[0]
-        return gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower)
+        return gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower,
+                                  device=self.device)
 
 
 @dataclass

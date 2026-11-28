@@ -15,9 +15,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 GIB = 1024**3
-# Memory held outside this job's allocator below this amount is its own CUDA
-# context and driver overhead rather than other software.
-OTHER_SOFTWARE = GIB
 
 
 class GpuMemoryError(Exception):
@@ -51,20 +48,14 @@ def message(stage: str, *, lower_resolution_helps: bool, free: int | None, total
         text += ": " + ", ".join(facts[:-1]) + (" and " if len(facts) > 1 else "") + facts[-1]
     # The size of the failed request is unknown, so every remedy the figures
     # leave open is offered rather than a guess at a single cause.
-    remedies = []
-    if others is None or others >= OTHER_SOFTWARE:
-        remedies.append("retry when other GPU work has finished")
+    remedies = ["retry when other GPU work has finished"]
     if lower_resolution_helps:
         remedies.append("lower the resolution")
-    # The worker caps its memory fraction at the whole device, so a budget at
-    # or above the device's size cannot usefully be raised.
-    if budget is not None and total is not None and budget < total:
+    # A larger budget helps only when more memory was free than the budget
+    # still allowed, and the worker caps its memory fraction at the device.
+    if None not in (budget, total, free, held) and budget < total and free >= budget - held:
         remedies.append("ask the operator to raise the worker's GPU memory budget")
-    if remedies:
-        advice = "To continue, " + ", ".join(remedies[:-1]) + (" or " if len(remedies) > 1 else "") + remedies[-1]
-    else:
-        advice = "This stage needs more GPU memory than is available"
-    return f"{text}. {advice}."
+    return f"{text}. To continue, " + ", ".join(remedies[:-1]) + (" or " if len(remedies) > 1 else "") + remedies[-1] + "."
 
 
 def is_out_of_memory(error: BaseException) -> bool:
@@ -75,17 +66,20 @@ def is_out_of_memory(error: BaseException) -> bool:
     """
     import torch
 
+    text = str(error).lower()
     return isinstance(error, torch.cuda.OutOfMemoryError) or (
-        isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
+        isinstance(error, RuntimeError) and ("out of memory" in text or "cuda_error_out_of_memory" in text))
 
 
-def failure(stage: str, *, lower_resolution_helps: bool, budget: int | None = None) -> GpuMemoryError:
-    """Describe an out-of-memory failure that has just happened in this process."""
+def failure(stage: str, *, lower_resolution_helps: bool, budget: int | None = None,
+            device=None) -> GpuMemoryError:
+    """Describe an out-of-memory failure that has just happened in this process on
+    `device`, or on the current CUDA device when none is given."""
     import torch
 
-    held = int(torch.cuda.memory_reserved())
+    held = int(torch.cuda.memory_reserved(device))
     try:
-        free, total = torch.cuda.mem_get_info()
+        free, total = torch.cuda.mem_get_info(device)
     except RuntimeError:
         # Querying an exhausted device can fail too; report what is known.
         free = total = None

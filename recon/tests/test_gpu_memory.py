@@ -19,8 +19,8 @@ def fake_torch(free=1.1 * GIB, total=16 * GIB, held=0.6 * GIB, query_fails=False
             raise RuntimeError("CUDA error: out of memory")
         return int(free), int(total)
 
-    cuda = types.SimpleNamespace(OutOfMemoryError=FakeOutOfMemory, mem_get_info=mem_get_info,
-                                 memory_reserved=lambda: int(held))
+    cuda = types.SimpleNamespace(OutOfMemoryError=FakeOutOfMemory, mem_get_info=lambda device=None: mem_get_info(),
+                                 memory_reserved=lambda device=None: int(held))
     return types.SimpleNamespace(cuda=cuda)
 
 
@@ -30,21 +30,19 @@ class MessageTests(unittest.TestCase):
                        free=int(1.1 * GIB), total=16 * GIB, held=int(0.6 * GIB), budget=4 * GIB)
         self.assertEqual(text, "the GPU ran out of memory during background removal: 1.1 GiB of 16.0 GiB was free, "
                                "this job held 0.6 GiB of its 4.0 GiB budget and other processes held about 14.3 GiB. "
-                               "To continue, retry when other GPU work has finished or ask the operator to raise "
-                               "the worker's GPU memory budget.")
+                               "To continue, retry when other GPU work has finished.")
 
     def test_every_open_remedy_is_offered_when_the_cause_is_ambiguous(self):
         # Live allocations near the budget while other software holds most of the GPU.
         text = message("shape sampling", lower_resolution_helps=True,
                        free=GIB // 2, total=16 * GIB, held=3 * GIB, budget=4 * GIB)
-        self.assertIn("To continue, retry when other GPU work has finished, lower the resolution or ask the "
-                      "operator to raise the worker's GPU memory budget.", text)
+        self.assertTrue(text.endswith("To continue, retry when other GPU work has finished or lower the resolution."))
 
-    def test_retrying_is_not_offered_when_other_processes_hold_little(self):
+    def test_raising_the_budget_is_offered_only_when_more_was_free_than_it_allowed(self):
         text = message("shape sampling", lower_resolution_helps=True,
                        free=12 * GIB, total=16 * GIB, held=int(3.5 * GIB), budget=4 * GIB)
-        self.assertNotIn("retry", text)
-        self.assertIn("To continue, lower the resolution or ask the operator to raise", text)
+        self.assertTrue(text.endswith("To continue, retry when other GPU work has finished, lower the resolution "
+                                      "or ask the operator to raise the worker's GPU memory budget."))
 
     def test_resolution_is_offered_only_where_it_helps(self):
         text = message("background removal", lower_resolution_helps=False,
@@ -54,16 +52,18 @@ class MessageTests(unittest.TestCase):
     def test_a_budget_at_or_above_the_device_size_is_never_offered_for_raising(self):
         text = message("shape decoding", lower_resolution_helps=True,
                        free=int(14.5 * GIB), total=16 * GIB, held=GIB, budget=24 * GIB)
-        self.assertEqual(text.split(". ", 1)[1], "To continue, lower the resolution.")
+        self.assertEqual(text.split(". ", 1)[1],
+                         "To continue, retry when other GPU work has finished or lower the resolution.")
 
     def test_without_a_budget_none_is_mentioned(self):
         text = message("surface", lower_resolution_helps=False, free=8 * GIB, total=16 * GIB, held=GIB)
         self.assertIn("this job held 1.0 GiB and other processes held about 7.0 GiB.", text)
         self.assertNotIn("budget", text)
 
-    def test_with_no_remedy_left_the_message_says_so(self):
-        text = message("surface", lower_resolution_helps=False, free=0, total=16 * GIB, held=int(15.5 * GIB))
-        self.assertTrue(text.endswith("This stage needs more GPU memory than is available."))
+    def test_without_free_memory_raising_the_budget_is_never_offered(self):
+        text = message("surface", lower_resolution_helps=False, free=None, total=None, held=int(3.9 * GIB),
+                       budget=4 * GIB)
+        self.assertNotIn("raise", text)
 
     def test_unknown_figures_are_left_out_and_retrying_stays_open(self):
         text = message("structure sampling", lower_resolution_helps=False, free=None, total=None, held=None,
@@ -98,6 +98,12 @@ class WatchTests(unittest.TestCase):
                 with gpu_memory.watch("shape sampling", lower_resolution_helps=True):
                     raise RuntimeError("CUDA error: out of memory")
         self.assertEqual(caught.exception.stage, "shape sampling")
+
+    def test_a_cuda_driver_status_out_of_memory_error_is_described_too(self):
+        with patch.dict(sys.modules, {"torch": fake_torch()}):
+            with self.assertRaises(GpuMemoryError):
+                with gpu_memory.watch("shape sampling", lower_resolution_helps=True):
+                    raise RuntimeError("CUDA driver error: CUDA_ERROR_OUT_OF_MEMORY")
 
     def test_other_errors_pass_through_unchanged(self):
         with patch.dict(sys.modules, {"torch": fake_torch()}):
