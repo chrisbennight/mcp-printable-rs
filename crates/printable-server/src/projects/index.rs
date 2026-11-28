@@ -2846,12 +2846,9 @@ impl ProjectIndex {
             deadline,
         };
         let more = self.embed_texts(&step, &mut report).await?;
-        // A search may have recorded a picture refusal while texts were sent.
-        let refused = self
-            .db(|connection| read_identity(connection))
-            .await?
-            .is_none_or(|stored| stored.pictures_refused.is_some());
-        if more && pictures && !refused {
+        // Passes run one at a time and only a pass records a picture refusal,
+        // so the identity read at the start of this pass is still current.
+        if more && pictures && identity.pictures_refused.is_none() {
             self.embed_pictures(workspace, &step, &mut report).await?;
         }
         Ok(report)
@@ -5445,6 +5442,26 @@ mod tests {
         #[tokio::test]
         async fn a_refused_query_picture_is_reported_without_changing_the_index() {
             let server = MockServer::start().await;
+            served(&server, FakeModel::new()).await;
+            let (_root, workspace) = workspace();
+            library(&workspace);
+            set_cover(&workspace, "vase", [220, 30, 30]);
+            let index = configured(&server, &[("PRINTABLE_EMBEDDING_IMAGES", "on")]);
+            index.run(&workspace, PassKind::Incremental).await.unwrap();
+            let stored_pictures = || {
+                index
+                    .with_connection(|connection| {
+                        Ok(connection.query_row(
+                            "SELECT COUNT(*) FROM vectors WHERE kind = 'picture'",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )?)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(stored_pictures(), 1, "the cover is embedded");
+
+            server.reset().await;
             served(
                 &server,
                 FakeModel {
@@ -5453,15 +5470,6 @@ mod tests {
                 },
             )
             .await;
-            let (_root, workspace) = workspace();
-            library(&workspace);
-            let index = configured(&server, &[("PRINTABLE_EMBEDDING_IMAGES", "on")]);
-            index.run(&workspace, PassKind::Incremental).await.unwrap();
-            assert_eq!(
-                picture_requests(&server).await,
-                0,
-                "no project has a picture"
-            );
             workspace
                 .write_artifact("queries/red.png", &coloured_png([250, 0, 0]), false)
                 .unwrap();
@@ -5485,6 +5493,11 @@ mod tests {
                 .unwrap()
                 .pictures_refused;
             assert_eq!(refused, None, "a search does not record the refusal");
+            assert_eq!(
+                stored_pictures(),
+                1,
+                "a search keeps stored picture vectors"
+            );
         }
 
         #[tokio::test]
