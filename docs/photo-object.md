@@ -274,29 +274,27 @@ much other processes held. For example:
 ```text
 the GPU ran out of memory during background removal: 1.1 GiB of 16.0 GiB was
 free, this job held 0.6 GiB of its 4.0 GiB budget and other processes held
-about 14.3 GiB. The GPU did not have enough free memory for this stage,
-usually because other software is using it; retry when that work has
-finished.
+about 14.3 GiB. To continue, retry when other GPU work has finished or ask
+the operator to raise the worker's GPU memory budget.
 ```
 
-The advice depends on which limit was tighter:
+The worker cannot tell how much the failed request asked for, so the message
+lists every remedy the figures leave open rather than naming one cause:
 
-- If less memory was free than the TRELLIS.2 budget still allowed and other
-  processes held a substantial amount, other software was using the GPU.
-  Retry once that work has finished or released its memory.
-- If more memory was free than the budget still allowed, the stage needed
-  more than the budget. Lower the resolution, or raise
-  `PRINTABLE_RECON_TRELLIS_VRAM_MIB` when it is below the GPU's total memory.
-- If other processes held little, the stage needs more memory than the GPU
-  has at that resolution.
-- "Other processes" is estimated as total minus free minus what the job
-  held, so it also includes the job's own CUDA context, typically well under
-  1 GiB.
-- Only background removal and TRELLIS.2 model loading use the same memory at
-  every resolution. Later stages either work at the requested resolution or
-  keep finer image features in memory for a later stage, so the message
-  suggests a lower resolution for them, but never at the lowest resolution,
-  512.
+- **Retry when other GPU work has finished**, offered when other processes
+  held at least 1 GiB, or when the device could not be queried. "Other
+  processes" is total minus free minus what the job held, so it also includes
+  the job's own CUDA context, typically well under 1 GiB.
+- **Lower the resolution**, offered only for stages whose memory depends on
+  it and only above the lowest resolution, 512. Background removal and
+  TRELLIS.2 model loading use the same memory at every resolution. Later
+  stages either work at the requested resolution or keep finer image
+  features in memory for a later stage.
+- **Raise the budget** (`PRINTABLE_RECON_TRELLIS_VRAM_MIB`), offered only for
+  TRELLIS.2 and only when the budget is below the GPU's total memory.
+
+When none applies, the message says the stage needs more GPU memory than is
+available.
 
 ## Photographs that work
 

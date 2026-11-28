@@ -726,6 +726,19 @@ class GpuMemoryTest(unittest.TestCase):
         self.assertIn("or lower the resolution", self._fail("shape at 512", 1536))
         self.assertNotIn("resolution", self._fail("background", 1536))
 
+    def test_an_out_of_memory_error_surfacing_at_synchronization_keeps_the_stage(self):
+        report = objects.Report(resolution=1024)
+        gib = 1024**3
+        with mock.patch.object(torch.cuda, "reset_peak_memory_stats"), \
+                mock.patch.object(torch.cuda, "synchronize", side_effect=RuntimeError("CUDA error: out of memory")), \
+                mock.patch.object(torch.cuda, "memory_reserved", return_value=gib), \
+                mock.patch.object(torch.cuda, "mem_get_info", return_value=(gib, 16 * gib)):
+            with self.assertRaises(gpu_memory.GpuMemoryError) as caught:
+                with report.stage("structure", torch.device("cuda")):
+                    pass
+        self.assertIn("during structure", str(caught.exception))
+        self.assertEqual(report.stages, [])
+
     def test_a_cuda_library_out_of_memory_error_keeps_the_stage(self):
         text = self._fail("surface", 1024, RuntimeError("CUDA error: out of memory"))
         self.assertIn("during surface", text)

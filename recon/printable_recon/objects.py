@@ -112,16 +112,25 @@ class _Stage:
 
     def __exit__(self, _kind, error, _traceback) -> None:
         if self.device.type == "cuda" and error is not None and gpu_memory.is_out_of_memory(error):
-            lower = self.name not in FIXED_MEMORY_STAGES and self.report.resolution > RESOLUTIONS[0]
-            raise gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower) from error
+            raise self._out_of_memory() from error
         entry = {"stage": self.name}
         if self.device.type == "cuda":
-            # The stage's queued GPU work counts towards its own time.
-            torch.cuda.synchronize(self.device)
+            # The stage's queued GPU work counts towards its own time, and a
+            # failure in that work surfaces here.
+            try:
+                torch.cuda.synchronize(self.device)
+            except RuntimeError as failure:
+                if error is None and gpu_memory.is_out_of_memory(failure):
+                    raise self._out_of_memory() from failure
+                raise
             entry["peak_gpu_memory_bytes"] = int(torch.cuda.max_memory_allocated(self.device))
             torch.cuda.empty_cache()
         entry["seconds"] = round(time.monotonic() - self.started, 3)
         self.report.stages.append(entry)
+
+    def _out_of_memory(self) -> gpu_memory.GpuMemoryError:
+        lower = self.name not in FIXED_MEMORY_STAGES and self.report.resolution > RESOLUTIONS[0]
+        return gpu_memory.failure(STAGE_NAMES.get(self.name, self.name), lower_resolution_helps=lower)
 
 
 @dataclass
