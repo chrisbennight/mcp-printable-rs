@@ -918,8 +918,8 @@ mod tests {
     /// Bytes of compact JSON that `tools/list` advertises for each tool, with
     /// every optional capability available: (tool, input schema, output
     /// schema). A zero output budget means the tool advertises none. Budgets
-    /// equal the measured sizes, so any growth fails this test until a budget
-    /// is raised, and the pull request that raises one states why.
+    /// equal the measured sizes, so any change in size fails this test until
+    /// the budget is updated, and the pull request that raises one states why.
     const CONTRACT_BUDGETS: &[(&str, usize, usize)] = &[
         ("skill", 613, 0),
         ("slice", 15_946, 0),
@@ -978,19 +978,18 @@ mod tests {
             let output = tool.output_schema.as_ref().map_or(0, |schema| {
                 compact(&serde_json::Value::Object((**schema).clone()))
             });
-            if input > input_budget {
+            if input != input_budget {
                 violations.push(format!(
                     "{}: input schema is {input} bytes (budget {input_budget})",
                     meta.name
                 ));
             }
-            if output > output_budget {
+            if output != output_budget {
                 violations.push(format!(
                     "{}: output schema is {output} bytes (budget {output_budget})",
                     meta.name
                 ));
             }
-            assert_eq!(output == 0, output_budget == 0, "{}", meta.name);
             assert!(
                 meta.description.chars().count() <= DESCRIPTION_BUDGET,
                 "{}: description is {} characters",
@@ -1001,15 +1000,17 @@ mod tests {
             names.push(meta.name);
         }
         assert_eq!(names.len(), CONTRACT_BUDGETS.len(), "{names:?}");
-        if catalog > CATALOG_BUDGET {
+        if catalog != CATALOG_BUDGET {
             violations.push(format!(
                 "tools/list entries are {catalog} bytes (budget {CATALOG_BUDGET})"
             ));
         }
         assert!(
             violations.is_empty(),
-            "{}\nMove reference material into descriptions or contract resources where it \
-             fits; otherwise raise the budget and state the reason in the pull request.",
+            "{}\nBudgets equal the measured sizes. Lower a budget when its schema shrinks. \
+             Before raising one, move reference material into descriptions or contract \
+             resources where it fits; otherwise raise it and state the reason in the pull \
+             request.",
             violations.join("\n")
         );
     }
