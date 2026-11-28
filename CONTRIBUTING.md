@@ -47,6 +47,15 @@ reader's task, show real results, and replace generic praise with concrete behav
 New capabilities should work through public tools rather than depending on a
 particular gateway or model provider.
 
+A client that lists tools receives the whole catalog, so each tool's advertised
+input and output schemas have a size budget in bytes, and so does the catalog
+as a whole. The budgets equal the measured sizes, so a change that adds to a
+schema fails `advertised_contracts_stay_within_their_size_budgets`. Before
+raising a budget, keep argument descriptions to what a caller needs to fill in
+the argument, and move longer reference material into the tool's guide under
+`docs/` or a contract resource. If the growth is still needed, raise the
+budget to the new measured size and say why in the pull request.
+
 ## Review and support
 
 Open pull requests against `main`. Required GitHub checks must pass; merges

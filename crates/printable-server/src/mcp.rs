@@ -918,34 +918,34 @@ mod tests {
     /// Bytes of compact JSON that `tools/list` advertises for each tool, with
     /// every optional capability available: (tool, input schema, output
     /// schema). A zero output budget means the tool advertises none. Budgets
-    /// sit a little above the measured sizes, so growth is a deliberate
-    /// choice.
+    /// equal the measured sizes, so any growth fails this test until a budget
+    /// is raised, and the pull request that raises one states why.
     const CONTRACT_BUDGETS: &[(&str, usize, usize)] = &[
-        ("skill", 700, 0),
-        ("slice", 16_000, 0),
-        ("printer", 4_300, 0),
-        ("print", 13_700, 0),
-        ("status", 300, 2_700),
-        ("inspect", 5_100, 0),
-        ("edit", 5_300, 0),
-        ("blender_execute", 2_200, 1_200),
+        ("skill", 613, 0),
+        ("slice", 15_946, 0),
+        ("printer", 4_047, 0),
+        ("print", 13_036, 0),
+        ("status", 208, 2_604),
+        ("inspect", 4_829, 0),
+        ("edit", 4_970, 0),
+        ("blender_execute", 2_031, 1_116),
         ("scene", 7_074, 0),
-        ("scad_build", 5_800, 0),
-        ("cad_build", 9_700, 0),
-        ("view", 9_400, 0),
-        ("render", 10_400, 0),
-        ("compare_renders", 900, 1_300),
-        ("validate_mesh", 7_000, 14_500),
-        ("analyze_assembly", 2_400, 1_600),
-        ("bake_texture", 2_900, 3_500),
-        ("job", 9_600, 0),
-        ("project", 15_300, 0),
-        ("collection", 4_300, 0),
-        ("catalog", 4_000, 0),
-        ("head", 21_800, 0),
+        ("scad_build", 5_438, 0),
+        ("cad_build", 9_149, 0),
+        ("view", 8_900, 0),
+        ("render", 9_851, 0),
+        ("compare_renders", 768, 1_148),
+        ("validate_mesh", 6_975, 14_424),
+        ("analyze_assembly", 2_249, 1_449),
+        ("bake_texture", 1_191, 2_084),
+        ("job", 9_097, 0),
+        ("project", 15_285, 0),
+        ("collection", 4_272, 0),
+        ("catalog", 3_874, 0),
+        ("head", 20_685, 0),
         ("photo", 11_223, 0),
-        ("library", 3_000, 0),
-        ("artifact", 6_400, 0),
+        ("library", 2_810, 0),
+        ("artifact", 6_332, 0),
     ];
     /// Characters in one tool's description.
     const DESCRIPTION_BUDGET: usize = 600;
@@ -1006,7 +1006,12 @@ mod tests {
                 "tools/list entries are {catalog} bytes (budget {CATALOG_BUDGET})"
             ));
         }
-        assert!(violations.is_empty(), "{}", violations.join("\n"));
+        assert!(
+            violations.is_empty(),
+            "{}\nMove reference material into descriptions or contract resources where it \
+             fits; otherwise raise the budget and state the reason in the pull request.",
+            violations.join("\n")
+        );
     }
 
     #[test]
