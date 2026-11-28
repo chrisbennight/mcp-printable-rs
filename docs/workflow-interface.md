@@ -37,8 +37,9 @@ operation behind it declares them, so `printable://contracts/job/list` reports
 a read-only action although the `job` tool can submit and cancel work.
 `annotations_scope` is `action` in that case and `tool` when the contract
 repeats the tool-wide annotations because the operation declares none of its
-own, which includes every action of a tool that passes the whole request to one
-operation. `tools/list` keeps the tool-wide annotations.
+own. A tool that passes the whole request to one operation reports `tool` scope
+for every action, unless that operation is declared read-only, as the `skill`
+reader is. `tools/list` keeps the tool-wide annotations.
 Contract resources do not invoke operations or grant authorization, and
 annotations are hints rather than an authorization boundary. Direct MCP and
 gateway Code Mode continue to invoke the advertised tool names.
