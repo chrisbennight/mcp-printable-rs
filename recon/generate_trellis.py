@@ -44,7 +44,7 @@ def prepare(request):
 
 def foreground(request):
     import torch
-    from printable_recon import features
+    from printable_recon import features, gpu_memory
     from printable_recon.trellis_errors import UnavailableError
 
     photo, _ = features.open_photograph(Path(request["image"]))
@@ -52,9 +52,13 @@ def foreground(request):
     if photo.mode != "RGBA":
         if not torch.cuda.is_available():
             raise UnavailableError("TRELLIS foreground preparation requires a CUDA GPU")
-        torch.cuda.set_per_process_memory_fraction(min(1.0, request["vram_budget_bytes"] / torch.cuda.get_device_properties(0).total_memory))
-        model = features.load_segmenter(ROOT / "vendor/birefnet", Path(request["snapshot"]) / "birefnet", torch.device("cuda"))
-        photo = features.remove_background(features.reduce(photo), model, torch.device("cuda"))
+        budget = request["vram_budget_bytes"]
+        torch.cuda.set_per_process_memory_fraction(min(1.0, budget / torch.cuda.get_device_properties(0).total_memory))
+        # The photograph is reduced to a bounded size first; the requested
+        # resolution does not change this stage's memory.
+        with gpu_memory.watch("background removal", lower_resolution_helps=False, budget=budget):
+            model = features.load_segmenter(ROOT / "vendor/birefnet", Path(request["snapshot"]) / "birefnet", torch.device("cuda"))
+            photo = features.remove_background(features.reduce(photo), model, torch.device("cuda"))
     photo.save(request["cutout"])
     return {"background": background, "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_initialized() else 0}
 
@@ -99,6 +103,7 @@ def main(argv):
         return 2
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     sys.path[:0] = [str(ROOT), str(ROOT / "vendor/trellis2")]
+    from printable_recon.gpu_memory import GpuMemoryError
     from printable_recon.model_cache import PreparationError
     from printable_recon.trellis_errors import NoShapeError, UnavailableError
     started = time.monotonic()
@@ -118,11 +123,17 @@ def main(argv):
     except (NoShapeError, UnavailableError) as error:
         print(json.dumps({"error": {"code": "no_shape" if isinstance(error, NoShapeError) else "unavailable", "message": str(error)}}))
         return 2
+    except GpuMemoryError as error:
+        print(json.dumps({"error": {"code": "resource_limit", "message": str(error)}}))
+        return 2
     except (OSError, ValueError, KeyError, MemoryError, RuntimeError) as error:
         if isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EDQUOT):
             code, message = "resource_limit", "insufficient disk space for TRELLIS models, scratch data or output"
-        elif isinstance(error, MemoryError) or "out of memory" in str(error).lower():
-            code, message = "resource_limit", "the TRELLIS stage exceeded available memory; reduce resolution or free resources"
+        elif isinstance(error, MemoryError) or (isinstance(error, OSError) and error.errno == errno.ENOMEM):
+            code, message = "resource_limit", "the TRELLIS stage ran out of host memory"
+        elif "out of memory" in str(error).lower():
+            # GPU stages describe their own failures; this covers the rest.
+            code, message = "resource_limit", "the TRELLIS stage ran out of memory"
         else:
             code, message = "generation", "the TRELLIS stage failed; check its model, image and resource settings"
         print(json.dumps({"error": {"code": code, "message": message}}))

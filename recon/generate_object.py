@@ -84,7 +84,7 @@ def main(argv: list[str]) -> int:
     import torch
     from PIL import Image
 
-    from printable_recon import features, objects, pixal3d
+    from printable_recon import features, gpu_memory, objects, pixal3d
 
     if device == "auto":
         if not torch.cuda.is_available():
@@ -118,8 +118,10 @@ def main(argv: list[str]) -> int:
         return _fail("checkpoints", str(error))
     except objects.GenerationError as error:
         return _fail("no_shape", str(error))
+    except gpu_memory.GpuMemoryError as error:
+        return _fail("resource_limit", str(error))
     except torch.cuda.OutOfMemoryError:
-        return _fail("resource_limit", "the GPU ran out of memory; lower the resolution or free GPU memory")
+        return _fail("resource_limit", "the GPU ran out of memory; retry when other GPU work has finished")
     except MemoryError:
         return _fail("resource_limit", "the worker ran out of memory")
     extent = write_stl(shape.vertices, shape.triangles, size_mm, mesh_path)

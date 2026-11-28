@@ -14,6 +14,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from printable_recon.gpu_memory import GpuMemoryError
 from printable_recon.model_cache import Manifest, ModelFile, PreparationError
 from printable_recon.trellis_errors import NoShapeError, UnavailableError
 
@@ -64,7 +65,13 @@ class StageTests(unittest.TestCase):
             answer = json.loads(output.getvalue())["result"]
             self.assertGreater(answer["peak_ram_bytes"], 0)
             self.assertNotIn("private diagnostic", output.getvalue())
+            gpu = GpuMemoryError("background removal", lower_resolution_helps=False,
+                                 free=1024**3, total=16 * 1024**3, held=1024**3, budget=4 * 1024**3)
             for error, code, fragment in [(OSError(errno.ENOSPC, "private volume"), "resource_limit", "disk space"),
+                                           (gpu, "resource_limit", "during background removal: 1.0 GiB of 16.0 GiB was free"),
+                                           (MemoryError(), "resource_limit", "host memory"),
+                                           (RuntimeError("CUDA error: out of memory at private path"), "resource_limit", "ran out of memory"),
+                                           (OSError(errno.ENOMEM, "private mapping"), "resource_limit", "host memory"),
                                            (RuntimeError("private endpoint and body"), "generation", "stage failed"),
                                            (UnavailableError("requires a CUDA GPU"), "unavailable", "CUDA GPU"),
                                            (NoShapeError("no subject was found"), "no_shape", "no subject")]:

@@ -16,7 +16,7 @@ from PIL import Image
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from . import features
+from . import features, gpu_memory
 from .trellis_memory import stream_parameters
 from .trellis_errors import NoShapeError, UnavailableError
 
@@ -35,6 +35,18 @@ MODEL_TYPES = {
     "shape_slat_flow_model_1024": "SLatFlowModel",
     "shape_slat_decoder": "FlexiDualGridVaeDecoder",
 }
+# How each generation stage is named in a failure message.
+STAGE_NAMES = {
+    "load_models": "model loading",
+    "image_features": "image features",
+    "structure": "structure sampling",
+    "shape_sampling": "shape sampling",
+    "shape_decoding": "shape decoding",
+}
+# Stages whose GPU memory grows with the requested resolution. Structure
+# sampling counts because the finer image conditioning stays alive through it;
+# only model loading uses the same memory at every resolution.
+RESOLUTION_STAGES = {"image_features", "structure", "shape_sampling", "shape_decoding"}
 
 
 class _ImageFeatures:
@@ -168,8 +180,10 @@ def generate(
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
         started = time.monotonic()
-        yield
-        torch.cuda.synchronize()
+        with gpu_memory.watch(STAGE_NAMES[name], budget=vram_budget_bytes,
+                              lower_resolution_helps=name in RESOLUTION_STAGES and resolution > 512):
+            yield
+            torch.cuda.synchronize()
         stages.append({"stage": name, "seconds": time.monotonic() - started,
                        "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated(),
                        "reserved_gpu_memory_bytes": torch.cuda.max_memory_reserved()})

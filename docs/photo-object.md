@@ -258,6 +258,40 @@ delivery together), and `PRINTABLE_RECON_TRELLIS_PREPARATION_TIMEOUT_SECONDS`
 (default 86400 for model preparation). The server reads process environment;
 it does not load `.env.example` automatically.
 
+## Running out of GPU memory
+
+`PRINTABLE_RECON_TRELLIS_VRAM_MIB` caps only the TRELLIS.2 process's own
+allocations, and Pixal3D has no cap. Neither can reserve memory: other
+software on the same GPU, such as a Blender instance rendering with CUDA or
+OptiX, can leave less free memory than a stage needs, even when the budget
+would allow more.
+
+When a stage runs out of GPU memory, the job fails with `resource_limit` and
+a message that names the stage and, when the device can still be queried,
+reports the GPU's free and total memory, how much the job held, and about how
+much other processes held. For example:
+
+```text
+the GPU ran out of memory during background removal: 1.1 GiB of 16.0 GiB was
+free, this job held 0.6 GiB of its 4.0 GiB budget and other processes held
+about 14.3 GiB. To continue, retry when other GPU work has finished.
+```
+
+The worker cannot tell how much the failed request asked for, so the message
+lists every remedy the figures leave open rather than naming one cause:
+
+- **Retry when other GPU work has finished**, always offered. "Other
+  processes" is total minus free minus what the job held, so it also includes
+  the job's own CUDA context, typically well under 1 GiB.
+- **Lower the resolution**, offered only for stages whose memory depends on
+  it and only above the lowest resolution, 512. Background removal and
+  TRELLIS.2 model loading use the same memory at every resolution. Later
+  stages either work at the requested resolution or keep finer image
+  features in memory for a later stage.
+- **Raise the budget** (`PRINTABLE_RECON_TRELLIS_VRAM_MIB`), offered only for
+  TRELLIS.2, only when more memory was free than the budget still allowed,
+  and only when the budget is below the GPU's total memory.
+
 ## Photographs that work
 
 - One subject, whole in the frame, against a background that contrasts with
@@ -340,9 +374,9 @@ results passed between stages. On an NVIDIA GeForce RTX 4060 Ti with 16 GB, a
 job at the default resolution of 1024 took 96 seconds. Its largest stage,
 background removal, peaked at 3.3 GB of GPU memory, and each transformer stage
 peaked between 2.9 and 3.3 GB. Other GPUs, photographs and settings differ, so
-read each stage's `peak_gpu_memory_bytes` in your own results, and lower
-`resolution` if a shared GPU runs short; a job that runs out of GPU memory
-fails with `resource_limit` and leaves the worker ready for the next one.
+read each stage's `peak_gpu_memory_bytes` in your own results. A job that runs
+out of GPU memory fails with `resource_limit` and leaves the worker ready for
+the next one; see [Running out of GPU memory](#running-out-of-gpu-memory).
 
 The price is disk reading: each job reads its stages' weights from disk,
 about 20 GB at resolutions above 512 and 14 GB at 512. The operating system's file
