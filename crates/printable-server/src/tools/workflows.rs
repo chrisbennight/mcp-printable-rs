@@ -511,17 +511,31 @@ pub fn refuse_unserved(
     {
         return Ok(());
     }
-    let missing = match name {
-        HEAD => {
-            "head reconstruction needs the reconstruction worker to be ready and a FLAME 2020 model to be mounted"
-        }
-        _ => "the photograph worker does not serve it right now",
+    let (missing, ready) = match (name, action) {
+        (HEAD, _) => (
+            "it needs the reconstruction worker to be ready and a FLAME 2020 model to be mounted",
+            "reconstruction.ready",
+        ),
+        (_, "depth") => (
+            "the photograph worker has no usable depth model",
+            "depth.ready",
+        ),
+        (_, "object") => (
+            "the photograph worker has no object generator ready",
+            "object.ready",
+        ),
+        (_, "analyze" | "relief" | "compare") => (
+            "the photograph worker has no photograph geometry models ready",
+            "analyze.ready",
+        ),
+        _ => (
+            "the photograph worker has no retained photograph jobs to manage",
+            "depth.ready, object.ready and analyze.ready",
+        ),
     };
     Err(ToolError::Reconstruction {
         code: "unavailable",
-        message: format!(
-            "`{action}` is unavailable: {missing}; `status` reports which capabilities are ready"
-        ),
+        message: format!("`{action}` is unavailable: {missing}; `status` reports {ready}"),
     })
 }
 
@@ -1337,7 +1351,7 @@ mod tests {
             let error =
                 refuse_unserved(tool, cold, &json!({"action": action, "params": {}})).unwrap_err();
             assert_eq!(error.code(), "unavailable", "{tool} {action}");
-            assert!(error.to_string().contains("`status`"), "{error}");
+            assert!(error.to_string().contains("`status` reports"), "{error}");
         }
         // Always-served actions, unknown actions and ready actions pass on to
         // ordinary request validation.
@@ -1351,6 +1365,8 @@ mod tests {
                 "{action}"
             );
         }
+        let analyze = refuse_unserved(PHOTO, cold, &json!({"action": "relief"})).unwrap_err();
+        assert!(analyze.to_string().contains("analyze.ready"), "{analyze}");
         let warm = Availability {
             analyze: true,
             ..cold

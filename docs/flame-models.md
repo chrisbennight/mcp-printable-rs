@@ -151,8 +151,8 @@ Each valid file loads once at startup, keyed by its `variant`. When no model
 loads, the `head` tool is not advertised. `status` lists the loaded models and
 any file that was skipped, with the reason.
 
-The `head` workflow has five actions, and a sixth when photo reconstruction is
-available:
+The `head` workflow has seven actions. `reconstruct` and `photo_to_bust` need
+the photograph worker and return `unavailable` until it is ready:
 
 - `models` lists the mounted variants, their basis sizes, whether each has a
   texture layout and the regions it was converted with.
@@ -163,6 +163,7 @@ available:
 - `prepare_print` writes a bust STL to the workspace without using Blender.
 - `reconstruct` estimates a head from photographs; see
   [Reconstruct a head from photographs](#reconstruct-a-head-from-photographs).
+- `photo_to_bust` reconstructs a head and prepares its bust in one step.
 
 ```json
 {"action": "create", "params": {

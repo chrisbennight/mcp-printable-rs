@@ -60,7 +60,7 @@ they improve release without erasing useful detail. Keep foreground features and
 shallow background texture independently adjustable.
 
 For photographs, use supplied measured depth when available. Otherwise, when
-the `photo` tool offers its `relief` action, use it: choose the preset (`plaque`,
+`status` reports `analyze.ready`, use the `photo` tool's `relief` action: choose the preset (`plaque`,
 `coin`, `mold` or `artwork`), the width or coin diameter and the relief depth,
 and it returns a checked STL, a 16-bit heightmap with its millimetre scale and
 a report. The first request for a photograph returns an analysis job; follow it
@@ -68,8 +68,8 @@ with `photo.status` and repeat the same request once it succeeds. Review the
 report's `checks`, narrow ridges and grooves, and the analysis warnings, then
 continue with the validation and slicing below. For painted artwork, the
 default depth model invents sculpted depth; name a MoGe model in
-`advanced.depth_model` for a flat reading. Without `relief`, estimate depth with
-the `depth` action, with `normals_path` when fine surface detail matters, and
+`advanced.depth_model` for a flat reading. When analysis is not ready but
+`depth.ready` is, estimate depth with the `depth` action, with `normals_path` when fine surface detail matters, and
 calibrate it as described next; without either, author or infer a relief.
 Either way, label the result an interpretation rather than recovered physical
 geometry.
